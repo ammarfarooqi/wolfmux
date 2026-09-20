@@ -20,7 +20,8 @@
 #
 # Settings (environment, else ~/.config/wolfmux/config):
 #   WOLFMUX_GLM_AUTH_MODE  helper | env
-#   WOLFMUX_GLM_CONTEXT    1m -> request the 1M-token window (uses quota faster)
+#   WOLFMUX_GLM_CONTEXT    1m -> request the 1M-token window (uses quota faster);
+#                          a number -> the window to declare (default 200000)
 #   WOLFMUX_CLAUDE_BIN     explicit path to the claude binary
 #   WOLFMUX_DRY_RUN=1      print what would run (no secrets) and exit
 #   WOLFMUX_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
@@ -71,11 +72,28 @@ case "$AUTH_MODE" in
     ;;
 esac
 
+# Claude Code does not know the GLM model ids, so it assumes a 200k window and says so in a
+# long yellow notice in every pane. Declaring that same window keeps the behaviour and drops
+# the notice (measured against the real CLI; see docs/VERIFICATION.md). With the 1M option
+# the [1m] suffix already tells it. The variable is on the scrub list on purpose (a Fable
+# child must never inherit a GLM window), so your own number goes through WOLFMUX_GLM_CONTEXT.
 SUFFIX=""
-if [ "${WOLFMUX_GLM_CONTEXT:-}" = "1m" ]; then
-  SUFFIX="[1m]"
-  export CLAUDE_CODE_AUTO_COMPACT_WINDOW="1000000"
-fi
+case "${WOLFMUX_GLM_CONTEXT:-}" in
+  1m)
+    SUFFIX="[1m]"
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="1000000"
+    CONTEXT_NOTE="1M ([1m] suffix)"
+    ;;
+  "" | *[!0-9]*)
+    [ -z "${WOLFMUX_GLM_CONTEXT:-}" ] || echo "$SELF: WOLFMUX_GLM_CONTEXT must be '1m' or a number of tokens (got '$WOLFMUX_GLM_CONTEXT'); using 200000" >&2
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="200000"
+    CONTEXT_NOTE="200000 tokens (declared; WOLFMUX_GLM_CONTEXT=1m for the 1M window)"
+    ;;
+  *)
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$WOLFMUX_GLM_CONTEXT"
+    CONTEXT_NOTE="$WOLFMUX_GLM_CONTEXT tokens (declared by WOLFMUX_GLM_CONTEXT)"
+    ;;
+esac
 
 export ANTHROPIC_BASE_URL="$WOLFMUX_ZAI_BASE_URL"
 export ANTHROPIC_MODEL="${PRIMARY}${SUFFIX}"
@@ -111,6 +129,7 @@ if [ "${WOLFMUX_DRY_RUN:-}" = "1" ]; then
   echo "billing:         Z.ai GLM Coding Plan (Anthropic-compatible endpoint)"
   echo "endpoint:        $ANTHROPIC_BASE_URL"
   echo "model:           ${PRIMARY}${SUFFIX}   (haiku/background tier: ${GLM_FLASH}${SUFFIX})"
+  echo "context window:  $CONTEXT_NOTE"
   echo "auth mode:       $AUTH_MODE   (key source: macOS Keychain service '${WOLFMUX_ZAI_KEYCHAIN_SERVICE}')"
   if wolfmux_zai_key_exists; then echo "keychain item:   present"; else echo "keychain item:   MISSING"; fi
   echo "login guard:     on (children can never present your claude.ai login to Z.ai)"

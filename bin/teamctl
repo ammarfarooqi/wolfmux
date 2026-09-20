@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify; do
+for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -26,7 +26,7 @@ usage() {
 teamctl — tmux panes, models, worktrees and lifecycle for your AI team
 
   Lead  (the only manager; start/stop/restart/destroy/policy/approve are reserved for it and for you)
-    teamctl start <fable|astra> [--no-attach] [--init-beads|--skip-beads]
+    teamctl start <fable|astra> [--no-attach] [--continue] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
   Workers
     teamctl spawn <role> <glm53|flash|fable|astra> [--base <ref>] [--no-kickoff]
@@ -43,6 +43,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl capture <role> [-n <lines>|--all]         recent terminal output
     teamctl log <role>                                full scrollback
     teamctl attach                 (alias: open)      teamctl focus <role>
+    teamctl layout [lead-left|lead-top|tiled]         how the panes are arranged (default: lead-left)
   Git
     teamctl worktrees
     teamctl diff <role> [--stat|--names|--commits|--working]
@@ -89,6 +90,7 @@ main() {
     destroy) cmd_destroy "$@" ;;
     nudge) cmd_nudge "$@" ;;
     policy) cmd_policy "$@" ;;
+    layout) cmd_layout "$@" ;;
     approvals) cmd_approvals "$@" ;;
     approve) cmd_approve "$@" ;;
     deny) cmd_deny "$@" ;;

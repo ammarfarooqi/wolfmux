@@ -139,10 +139,17 @@ Process state comes from tmux, work state from Beads; terminal text is never par
 
 ## The wolf, and notifications
 
+- Arrangement: the lead is the large pane on the left, teammates are stacked on the right,
+  and the lead stays put when workers come and go. `teamctl layout lead-top|tiled|lead-left`
+  changes it for the project; `Ctrl-b Space` cycles, `Ctrl-b T` puts it back.
+- Quit every agent and run `teamctl start` again: you get a new session, not the finished
+  panes. Quit only the lead: `teamctl start` brings it back, workers keep running.
+  Add `--continue` to resume the lead's last conversation.
 - Opening a team (`teamctl start`, `teamctl attach`) shows the wolf in a popup. Any key
   closes it, or 3 seconds. `WOLFMUX_SPLASH=off` in `~/.config/wolfmux/config` removes it.
 - The manager is the wolf: `🐺 lead · <model>` in its pane border, an amber border
-  whether focused or not, `🐺 team/lead` inside Claude Code. Workers have neither.
+  whether focused or not, `🐺 team/lead` inside Claude Code. Every teammate is a dog of
+  the pack: `🐶 backend · <model>`, `🐶 team/backend`, grey border.
   The status line starts with `🐺 WOLFMUX`; the terminal tab is titled `🐺 <session>`.
 - When an agent finishes a turn you get a desktop notification (`🐺 lead: …`,
   `backend: …`). It is sent through the terminal attached to the team, so clicking it
@@ -223,7 +230,9 @@ Launcher knobs are read from `~/.config/wolfmux/config` (a pane's environment co
 the tmux server, not from the shell you typed `teamctl spawn` in):
 `WOLFMUX_GLM_AUTH_MODE=env` switches workers to Z.ai's documented `ANTHROPIC_AUTH_TOKEN`
 variable — use it if workers report an authentication error in the default helper mode;
-`WOLFMUX_GLM_CONTEXT=1m` opts into the 1M window (uses quota faster).
+`WOLFMUX_GLM_CONTEXT=1m` opts into the 1M window (uses quota faster); by default the
+launcher declares a 200k window, which is what keeps Claude Code from printing its
+"isn't described by this version's model catalog" notice in worker panes.
 `~/.config/wolfmux/glm-worker-settings.json` is a Claude Code settings overlay applied to
 GLM workers only. It ships with `claude-mem` turned off there: that plugin runs a
 long-lived summarizer daemon which inherits the environment of whichever session starts

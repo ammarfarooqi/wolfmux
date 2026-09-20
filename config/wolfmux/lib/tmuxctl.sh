@@ -11,11 +11,14 @@ tmx() { "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
 # tm_adopt_legacy_server — zero-downtime rename: while the new server has no session
 # and the pre-rename server still has one, keep talking to that one. Off when the
 # socket was chosen explicitly, unless WOLFMUX_ADOPT_LEGACY=1 says otherwise (tests).
+# Safe to call again: after the last pre-rename session ends, it switches back.
 tm_adopt_legacy_server() {
   [ "${WOLFMUX_ADOPT_LEGACY:-0}" = "1" ] && [ -n "$TMUX_BIN" ] || return 0
-  if ! "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" has-session 2>/dev/null &&
+  if ! "$TMUX_BIN" -L "$WOLFMUX_OWN_SOCKET" has-session 2>/dev/null &&
     "$TMUX_BIN" -L "$WOLFMUX_LEGACY_SOCKET" has-session 2>/dev/null; then
     WOLFMUX_TMUX_SOCKET="$WOLFMUX_LEGACY_SOCKET"
+  else
+    WOLFMUX_TMUX_SOCKET="$WOLFMUX_OWN_SOCKET"
   fi
 }
 
@@ -107,10 +110,11 @@ tm_split() {
   local target="$1" dir="$2" window pane
   shift 2
   window="$(tmx display-message -p -t "$target" '#{window_id}')" || return 1
+  # An even grid first: it leaves the most room for one more split. The caller
+  # arranges the team afterwards (layout_apply).
   tmx select-layout -t "$window" tiled >/dev/null 2>&1 || true
   pane="$(tmx split-window -d -t "$target" -c "$dir" -P -F '#{pane_id}' "$@" 2>/dev/null)" ||
     pane="$(tmx split-window -d -f -t "$target" -c "$dir" -P -F '#{pane_id}' "$@")" || return 1
-  tmx select-layout -t "$window" tiled >/dev/null 2>&1 || true
   printf '%s\n' "$pane"
 }
 
@@ -128,10 +132,51 @@ tm_tag() {
   tmx set-option -p -t "$1" @ai_label "$3"
 }
 
-tm_retile() {
-  local window
-  window="$(tmx list-panes -s -t "=$1" -F '#{window_id} #{@ai_role}' 2>/dev/null | awk 'NF == 2 { print $1; exit }')"
-  [ -n "$window" ] && tmx select-layout -t "$window" tiled >/dev/null 2>&1 || true
+# tm_team_window <session> — id of the window that holds the agents
+tm_team_window() {
+  tmx list-panes -s -t "=$1" -F '#{window_id} #{@ai_role}' 2>/dev/null | awk 'NF == 2 { print $1; found = 1; exit } END { exit !found }'
+}
+
+# tm_alive_count <session> — panes whose process is still running. A shell you opened
+# by hand in the team window counts too: a session with anything alive is never cleared.
+tm_alive_count() {
+  { tmx list-panes -s -t "=$1" -F '#{pane_dead}' 2>/dev/null || true; } | awk '$1 == "0" { n++ } END { print n + 0 }'
+}
+
+# tm_set_main_size <window> <main-pane-width|main-pane-height> <percent> — a percentage
+# where tmux takes one, otherwise the same share in cells
+tm_set_main_size() {
+  local window="$1" option="$2" percent="$3" total
+  if tmx set-option -w -t "$window" "$option" "$percent%" 2>/dev/null; then return 0; fi
+  case "$option" in
+    main-pane-width) total="$(tmx display-message -p -t "$window" '#{window_width}')" ;;
+    *) total="$(tmx display-message -p -t "$window" '#{window_height}')" ;;
+  esac
+  case "$total" in "" | *[!0-9]*) return 1 ;; esac
+  tmx set-option -w -t "$window" "$option" "$((total * percent / 100))"
+}
+
+# tm_apply_layout <session> <lead-left|lead-top|tiled> — tmux's "main" pane is the first
+# one in the window, so the lead is moved there first (it is not after it was re-created).
+tm_apply_layout() {
+  local session="$1" layout="$2" window lead first
+  window="$(tm_team_window "$session")" || return 0
+  lead="$(tm_pane_for_role "$session" "$WOLFMUX_LEAD_ROLE")"
+  first="$(tmx list-panes -t "$window" -F '#{pane_index} #{pane_id}' | sort -n | awk 'NR == 1 { print $2 }')"
+  if [ -n "$lead" ] && [ -n "$first" ] && [ "$lead" != "$first" ]; then
+    tmx swap-pane -d -s "$lead" -t "$first" 2>/dev/null || true
+  fi
+  case "$layout" in
+    lead-top)
+      tm_set_main_size "$window" main-pane-height "$WOLFMUX_LEAD_HEIGHT_PERCENT" || true
+      tmx select-layout -t "$window" main-horizontal >/dev/null 2>&1 || true
+      ;;
+    tiled) tmx select-layout -t "$window" tiled >/dev/null 2>&1 || true ;;
+    *)
+      tm_set_main_size "$window" main-pane-width "$WOLFMUX_LEAD_WIDTH_PERCENT" || true
+      tmx select-layout -t "$window" main-vertical >/dev/null 2>&1 || true
+      ;;
+  esac
 }
 
 # tm_pane_state <pane> — running | exited:<status> | gone

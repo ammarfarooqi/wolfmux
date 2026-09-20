@@ -56,7 +56,13 @@ cmd_status() {
     return 0
   fi
   say "project   $(short_path "$ROOT")"
-  if [ -n "$SESSION_LIVE" ]; then say "session   $SESSION  (running)"; else say "session   $SESSION  (not running)"; fi
+  if [ -z "$SESSION_LIVE" ]; then
+    say "session   $SESSION  (not running)"
+  elif [ "$(tm_alive_count "$SESSION")" -eq 0 ]; then
+    say "session   $SESSION  (ended: every agent has exited — 'teamctl start <fable|astra>' opens a new one)"
+  else
+    say "session   $SESSION  (running)"
+  fi
   say "policy    manager: $WOLFMUX_LEAD_MARK lead · $(policy_summary) · approvals pending: $(approvals_pending_count)"
   say ""
   if [ -z "$rows" ]; then

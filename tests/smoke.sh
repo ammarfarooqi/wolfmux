@@ -63,6 +63,12 @@ if command -v bd >/dev/null 2>&1; then
   START_FLAGS="--init-beads"
 fi
 
+echo "== launchers (dry run: nothing is started, no key is read)"
+glm_dry() { env -u WOLFMUX_GLM_CONTEXT WOLFMUX_DRY_RUN=1 "$@" "$REPO/bin/claude-glm" 2>&1; }
+check "claude-glm: declares a 200k context window, so Claude Code prints no model-catalog notice" 'glm_dry | grep -q "^context window: *200000 tokens"'
+check "claude-glm: 1m uses the [1m] suffix instead; a number of yours is declared; nonsense falls back with a warning" 'glm_dry WOLFMUX_GLM_CONTEXT=1m | grep -q "^context window: *1M" && glm_dry WOLFMUX_GLM_CONTEXT=128000 | grep -q "^context window: *128000 tokens" && glm_dry WOLFMUX_GLM_CONTEXT=huge | grep -q "must be .1m. or a number"'
+check "claude-glm: a context value from outside never reaches the worker (it is scrubbed, then set)" 'glm_dry CLAUDE_CODE_MAX_CONTEXT_TOKENS=5 | grep -q "^context window: *200000 tokens"'
+
 echo "== lifecycle"
 teamctl start astra --no-attach $START_FLAGS >/dev/null 2>&1
 check "start: session running, lead registered" 'teamctl status --json | jq -e ".session_running and (.agents[0].role == \"lead\")"'
@@ -77,7 +83,7 @@ check "spawn: --base recorded" 'teamctl diff backend | grep -q "base:    release
 check "spawn: role environment set inside the pane" 'teamctl capture backend -n 8 | grep -q "STUB role=backend actor=backend model=glm53"'
 check "spawn: no provider or agent-session variable leaks into a pane" 'teamctl capture backend -n 8 | grep -Eq "^STUB leaked= *$"'
 check "spawn: kickoff prompt passed by default, omitted with --no-kickoff" 'teamctl capture backend -n 8 | grep -q "argc=6" && teamctl capture qa -n 8 | grep -q "argc=5"'
-check "spawn: tiled 2x2-style layout, lead first" '[ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_index}:#{@ai_role}" | head -1)" = "0:lead" ]'
+check "spawn: the lead is the first pane" '[ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_index}:#{@ai_role}" | head -1)" = "0:lead" ]'
 check "spawn: pane titles are roles" 'tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_title}" | grep -q "^backend · GLM-5.3$"'
 check "validation: duplicate role refused" '! teamctl spawn backend glm53'
 check "validation: reserved and malformed roles refused" '! teamctl spawn lead glm53 && ! teamctl spawn "Bad Role" glm53'
@@ -91,10 +97,20 @@ check "wolf: opening the session shows the splash (popup on client-attached)" 't
 check "wolf: the splash draws the wolf, the wordmark and the team line" 'out="$(teamctl _splash </dev/null)" && [ "$(printf "%s\n" "$out" | grep -c "█")" -ge 12 ] && printf "%s\n" "$out" | grep -q "W O L F M U X" && printf "%s\n" "$out" | grep -q "lead GPT-6 Astra · 2 workers"'
 check "wolf: no colour codes outside a terminal" '! teamctl _splash </dev/null | grep -q "$(printf "\033")"'
 check "wolf: the splash still works outside any project" '(cd / && teamctl _splash </dev/null | grep -q "W O L F M U X")'
-check "wolf: only the manager pane carries the mark and the amber border" 'border_of lead | grep -q "🐺.*fg=colour214" && ! border_of backend | grep -q "🐺" && border_of backend | grep -q "fg=colour244"'
+check "wolf: the manager pane carries the wolf and the amber border; a teammate is a dog with a grey one" 'border_of lead | grep -q "🐺.*fg=colour214" && ! border_of lead | grep -q "🐶" && border_of backend | grep -q "🐶.*fg=colour244" && ! border_of backend | grep -q "🐺"'
 check "wolf: the manager pane opens with the wolf" '[ "$(teamctl capture lead --all | grep -c "█")" -ge 12 ] && [ "$(teamctl capture backend --all | grep -c "█")" = 0 ]'
 check "wolf: status line and terminal title carry it" 'tmux -L "$WOLFMUX_TMUX_SOCKET" show-options -gv status-left | grep -q "🐺" && tmux -L "$WOLFMUX_TMUX_SOCKET" show-options -gv set-titles-string | grep -q "🐺"'
 check "wolf: WOLFMUX_SPLASH=off removes the popup, the default brings it back" 'WOLFMUX_SPLASH=off teamctl attach; ! tmux -L "$WOLFMUX_TMUX_SOCKET" show-hooks -t "=$SESSION_NAME:" | grep -q display-popup && { teamctl attach; tmux -L "$WOLFMUX_TMUX_SOCKET" show-hooks -t "=$SESSION_NAME:" | grep -q display-popup; }'
+
+echo "== pane arrangement"
+# role left top width height window_width window_height, one line per pane
+geometry() { tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F '#{@ai_role} #{pane_left} #{pane_top} #{pane_width} #{pane_height} #{window_width} #{window_height}'; }
+lead_left() { geometry | awk '$1 == "lead" { lead = ($2 == 0 && $5 >= $7 - 2 && $4 * 2 > $6); edge = $4 } $1 != "lead" { columns[$2] = 1; if ($2 == 0) wrong = 1 } END { n = 0; for (c in columns) n++; exit !(lead && !wrong && n == 1) }'; }
+lead_top() { geometry | awk '$1 == "lead" { lead = ($2 == 0 && $3 <= 1 && $4 == $6 && $5 * 2 > $7) } $1 != "lead" { rows[$3] = 1; if ($3 <= 1) wrong = 1 } END { n = 0; for (r in rows) n++; exit !(lead && !wrong && n == 1) }'; }
+check "layout: by default the lead is the large pane on the left, workers stacked on the right" 'lead_left'
+check "layout: lead-top puts the lead across the top, workers side by side below" 'teamctl layout lead-top && lead_top'
+check "layout: tiled is available; the choice is remembered; nonsense is refused (exit 64)" 'teamctl layout tiled && teamctl layout | grep -q "^layout: tiled" && { teamctl layout diagonal; [ $? -eq 64 ]; }'
+teamctl layout lead-left >/dev/null 2>&1
 
 echo "== desktop notifications that lead back to the team"
 FAKE_OSA="$WORK/fake-osascript"
@@ -102,11 +118,11 @@ printf '#!/bin/bash\nprintf "%%s\\n" "$@" >"%s"\n' "$WORK/osa.args" >"$FAKE_OSA"
 /bin/chmod 755 "$FAKE_OSA"
 notify() { WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" _notify; }
 check "notify: every Claude agent gets the Stop hook; the plugin notifier is silenced, the user's own entry kept" 'teamctl capture backend --all | grep -q "STUB notify={\"stop\":true,\"silenced\":\"post:example,stop:desktop-notify\"}"'
-check "notify: goes to the attached terminal as OSC 9 — first line, markdown dropped" 'printf "%s" "{\"last_assistant_message\":\"\\n**Done:** built \`x\`\\nsecond line\"}" | TEAM_ROLE=backend WOLFMUX_NOTIFY_TTY="$WORK/tty1" notify && [ "$(/bin/cat "$WORK/tty1")" = "$(printf "\033]9;backend: Done: built x\007")" ]'
+check "notify: goes to the attached terminal as OSC 9 — first line, markdown dropped" 'printf "%s" "{\"last_assistant_message\":\"\\n**Done:** built \`x\`\\nsecond line\"}" | TEAM_ROLE=backend WOLFMUX_NOTIFY_TTY="$WORK/tty1" notify && [ "$(/bin/cat "$WORK/tty1")" = "$(printf "\033]9;🐶 backend: Done: built x\007")" ]'
 check "notify: the manager is marked with the wolf" 'printf "%s" "{\"last_assistant_message\":\"merged\"}" | TEAM_ROLE=lead WOLFMUX_NOTIFY_TTY="$WORK/tty2" notify && grep -q "🐺 lead: merged" "$WORK/tty2"'
 check "notify: escape sequences in a message never reach the terminal" 'jq -cn "{last_assistant_message: \"ok \u001b]52;c;aGk=\u0007 \u001b[2J done\"}" | TEAM_ROLE=qa WOLFMUX_NOTIFY_TTY="$WORK/tty3" notify && [ "$(LC_ALL=C tr -cd "\033\007" <"$WORK/tty3" | wc -c | tr -d " ")" = 2 ]'
 check "notify: long messages are shortened" 'jq -cn "{last_assistant_message: (\"x\" * 400)}" | TEAM_ROLE=qa WOLFMUX_NOTIFY_TTY="$WORK/tty4" notify && [ "$(wc -m <"$WORK/tty4" | tr -d " ")" -lt 120 ]'
-check "notify: with no terminal attached it falls back, text passed as an argument, and never fails" 'printf "not json" | TEAM_ROLE=qa notify && grep -q "^qa: finished$" "$WORK/osa.args" && grep -q "teamctl attach" "$WORK/osa.args"'
+check "notify: with no terminal attached it falls back, text passed as an argument, and never fails" 'printf "not json" | TEAM_ROLE=qa notify && grep -q "^🐶 qa: finished$" "$WORK/osa.args" && grep -q "teamctl attach" "$WORK/osa.args"'
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_NOTIFY lead
 teamctl restart qa >/dev/null 2>&1
 sleep 2
@@ -129,6 +145,7 @@ check "spawning: the record and status say who spawned whom" 'teamctl status --j
 check "spawning: the lead is told" 'sleep 1; teamctl capture lead -n 12 | grep -q "Team change: backend spawned teammate helper (GLM-5.3 Flash)"'
 teamctl stop helper >/dev/null 2>&1
 teamctl policy worker-spawn off >/dev/null 2>&1
+check "layout: the arrangement survives a spawn and a stop" 'lead_left'
 
 echo "== the lead decides workers' permission requests (worker-permissions=lead)"
 teamctl policy worker-permissions lead >/dev/null 2>&1
@@ -200,9 +217,26 @@ sleep 1
 check "rename: an explicitly chosen socket is never redirected" 'teamctl status --json | jq -e ".session_running | not"'
 check "rename: teamctl follows the team on the old socket" 'follow status --json | jq -e ".session_running and (.agents[0].state == \"running\")"'
 check "rename: new panes join that team" 'follow spawn docs flash --no-kickoff && sleep 1 && tmux -L "$OLD_NAME_SOCKET" list-panes -a -F "#{@ai_role}" | grep -qx docs'
+for pane in $(tmux -L "$OLD_NAME_SOCKET" list-panes -a -F '#{pane_id}'); do tmux -L "$OLD_NAME_SOCKET" send-keys -t "$pane" C-d; done
+sleep 1
+check "rename: a pre-rename team whose agents have all exited is replaced by a fresh one on the new socket" 'follow start astra --no-attach --skip-beads && tmux -L "$WOLFMUX_TMUX_SOCKET" has-session && ! tmux -L "$OLD_NAME_SOCKET" has-session 2>/dev/null && follow status --json | jq -e "[.agents[] | select(.role == \"docs\")][0].state == \"stopped\""'
 check "rename: destroy ends it" 'follow destroy --worktrees --yes && ! tmux -L "$OLD_NAME_SOCKET" has-session 2>/dev/null'
 check "rename: the next team starts on the new socket" 'follow start fable --no-attach --skip-beads && tmux -L "$WOLFMUX_TMUX_SOCKET" has-session && ! tmux -L "$OLD_NAME_SOCKET" has-session 2>/dev/null'
-check "wolf: a Claude lead is named with the mark inside its own CLI, workers are not" 'follow spawn docs flash --no-kickoff && sleep 2 && teamctl capture lead --all | grep -q "STUB name=🐺 team/lead" && teamctl capture docs --all | grep -q "STUB name=team/docs"'
+check "wolf: inside their own CLI a Claude lead is named with the wolf, a teammate with the dog" 'follow spawn docs flash --no-kickoff && sleep 2 && teamctl capture lead --all | grep -q "STUB name=🐺 team/lead" && teamctl capture docs --all | grep -q "STUB name=🐶 team/docs"'
+
+echo "== closing agents and starting again"
+role_pane() { follow status --json | jq -r --arg role "$1" '.agents[] | select(.role == $role) | .pane'; }
+end_agent() { tmux -L "$WOLFMUX_TMUX_SOCKET" send-keys -t "$1" C-d; } # the stub is `cat`: end of input ends it, the pane stays (remain-on-exit)
+DOCS_PANE="$(role_pane docs)"
+end_agent "$(role_pane lead)"
+sleep 1
+check "start again: a lead that exited comes back in place, workers are not touched" 'follow status --json | jq -e "[.agents[] | select(.role == \"lead\")][0].state | startswith(\"exited\")" && follow start fable --no-attach --skip-beads && sleep 1 && follow status --json | jq -e --arg pane "$DOCS_PANE" "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and ([.agents[] | select(.role == \"docs\")][0] | .state == \"running\" and .pane == \$pane)" && lead_left'
+for pane in $(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F '#{pane_id}'); do end_agent "$pane"; done
+sleep 1
+check "start again: status says the session has ended when every agent has exited" 'follow status | grep -q "ended: every agent has exited"'
+check "start again: when every agent has exited, start opens a fresh session, not the dead one" 'follow start fable --no-attach --skip-beads --continue && sleep 1 && [ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a | wc -l | tr -d " ")" = 1 ] && follow status --json | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")"'
+check "start again: --continue resumes the lead's last conversation" 'teamctl capture lead --all | grep -q "STUB flags=.*--continue"'
+check "start again: a stopped worker kept its worktree and returns with restart" 'follow restart docs && sleep 1 && follow status --json | jq -e "[.agents[] | select(.role == \"docs\")][0].state == \"running\"" && lead_left'
 teamctl destroy --worktrees --yes >/dev/null 2>&1
 /bin/mkdir -p "$PROJECT/.beads/hooks"
 printf '#!/bin/bash\n# ai-team-hook v1 — written before the rename\nexit 0\n' >"$PROJECT/.beads/hooks/on_create"

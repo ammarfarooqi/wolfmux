@@ -2,7 +2,7 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-WOLFMUX_VERSION="1.3.0"
+WOLFMUX_VERSION="1.4.0"
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
 # This project was first called "ai-team". A team started under that name keeps
@@ -13,6 +13,7 @@ if [ -z "${WOLFMUX_TMUX_SOCKET:-}" ]; then
   WOLFMUX_ADOPT_LEGACY="${WOLFMUX_ADOPT_LEGACY:-1}"
 fi
 WOLFMUX_LEGACY_SOCKET="${WOLFMUX_LEGACY_SOCKET:-ai-team}"
+WOLFMUX_OWN_SOCKET="$WOLFMUX_TMUX_SOCKET" # what we go back to once the old-name server has ended
 WOLFMUX_BIN_DIR="${WOLFMUX_BIN_DIR:-$HOME/bin}"
 WOLFMUX_WINDOW="team"
 WOLFMUX_LEAD_ROLE="lead"

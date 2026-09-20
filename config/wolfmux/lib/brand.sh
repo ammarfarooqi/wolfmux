@@ -6,7 +6,9 @@
 # the terminal, the README and the diagrams). Everything else here is hand-written.
 # Rule for this file: nothing in it may ever make a command fail.
 
-WOLFMUX_LEAD_MARK="🐺" # the manager's mark: pane border, Claude session name, status line
+WOLFMUX_LEAD_MARK="🐺"   # the manager's mark: pane border, Claude session name, notifications, status line
+WOLFMUX_WORKER_MARK="🐶" # every teammate: pane border, Claude session name, notifications
+# (tmux.conf repeats both: a tmux format cannot read shell variables)
 WOLFMUX_WOLF_COLS=36    # size of the drawing below
 WOLFMUX_WOLF_ROWS=16
 WOLFMUX_SPLASH_WIDTH=52 # popup (border included) that fits the drawing plus the lines under it

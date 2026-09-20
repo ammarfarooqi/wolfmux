@@ -10,7 +10,10 @@
 #           report an authentication error in helper mode.
 #WOLFMUX_GLM_AUTH_MODE=helper
 
-# 1m = request GLM's 1M-token context window (uses plan quota faster). Default: standard window.
+# GLM context window. Default: 200000 tokens, declared to Claude Code so it does not print
+# its "isn't described by this version's model catalog" notice in every worker pane.
+#   1m        request GLM's 1M-token window (uses plan quota faster)
+#   <number>  declare another window, in tokens
 #WOLFMUX_GLM_CONTEXT=1m
 
 # --- team policy defaults (per project: `teamctl policy`, or flags on `teamctl start`) ---
@@ -24,6 +27,12 @@
 #WOLFMUX_WORKER_SPAWN=off
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
+
+# How the panes are arranged (per project: `teamctl layout <name>`).
+#   lead-left (default)  the lead large on the left, workers stacked on the right
+#   lead-top             the lead across the top, workers side by side below
+#   tiled                an even grid
+#WOLFMUX_LAYOUT=lead-top
 
 # The wolf that greets you when you open a team (teamctl start / attach). Any key closes it.
 #WOLFMUX_SPLASH=off

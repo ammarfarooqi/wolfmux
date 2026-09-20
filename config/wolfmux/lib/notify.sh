@@ -91,7 +91,7 @@ cmd_notify() {
   [ -n "$JQ_BIN" ] || return 0
   role="${TEAM_ROLE:-agent}"
   body="$role: $(notify_text "$input")"
-  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then body="$WOLFMUX_LEAD_MARK $body"; fi
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then body="$WOLFMUX_LEAD_MARK $body"; else body="$WOLFMUX_WORKER_MARK $body"; fi
 
   while IFS= read -r tty; do
     # One short write, so it cannot land inside one of tmux's own sequences.

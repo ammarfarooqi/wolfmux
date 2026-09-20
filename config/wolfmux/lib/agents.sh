@@ -60,10 +60,11 @@ new_record() {
 
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
-  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn=""
+  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role run stopped=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-attach | -d) attach=0 ;;
+      --continue) resume=1 ;;
       --init-beads) beads="yes" ;;
       --skip-beads) beads="skip" ;;
       --lead-permissions | --worker-permissions | --worker-spawn)
@@ -83,7 +84,7 @@ cmd_start() {
   done
   case "$model" in
     fable | astra) ;;
-    *) die_usage "usage: teamctl start <fable|astra> [--no-attach] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]" ;;
+    *) die_usage "usage: teamctl start <fable|astra> [--no-attach] [--continue] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]" ;;
   esac
   require_tools
   load_project
@@ -98,15 +99,44 @@ cmd_start() {
 
   SESSION="$(session_name_for_project)"
   if tm_session_exists "$SESSION"; then
-    info "team session '$SESSION' is already running (lead: $(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || printf unknown))."
-    lock_release
-    if [ "$attach" -eq 1 ]; then cmd_attach; fi
-    return 0
+    if [ "$(tm_pane_state "$(tm_pane_for_role "$SESSION" "$WOLFMUX_LEAD_ROLE")")" = "running" ]; then
+      info "team session '$SESSION' is already running (lead: $(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || printf unknown))."
+      lock_release
+      if [ "$attach" -eq 1 ]; then cmd_attach; fi
+      return 0
+    fi
+    if [ "$(tm_alive_count "$SESSION")" -gt 0 ]; then
+      # Something is still running in that session (workers, or a shell of yours); only the
+      # manager is gone. Bring it back where it was and leave the rest alone.
+      info "the lead of '$SESSION' had exited; other panes are still running. Bringing the lead back."
+      branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
+      new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
+      meta_put lead_model "$model"
+      lock_release
+      if [ "$resume" -eq 1 ]; then cmd_restart "$WOLFMUX_LEAD_ROLE" --continue; else cmd_restart "$WOLFMUX_LEAD_ROLE"; fi
+      tm_set_splash "$SESSION"
+      if [ "$attach" -eq 1 ] && [ -t 0 ] && [ -t 1 ]; then cmd_attach; fi
+      return 0
+    fi
+    # Every process has exited (tmux keeps the panes so their last output stays readable).
+    # That is a finished session, not a team: clear it away and start a new one.
+    info "the previous session '$SESSION' had ended (every agent had exited); starting a new one."
+    tmx kill-session -t "=$SESSION" 2>/dev/null || true
+    for role in $(reg_list); do
+      if [ "$(reg_field "$role" kind)" = "worker" ]; then
+        reg_set "$role" pane_id "" state stopped
+        stopped="$stopped $role"
+      fi
+    done
+    event_log cleanup "$WOLFMUX_LEAD_ROLE" "ended session replaced"
+    tm_adopt_legacy_server # that may have been the last session of a server from before the rename
   fi
 
   branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
   new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
-  pane="$(tm_new_session "$SESSION" "$ROOT" "$TEAMCTL_SELF" _run-agent "$ROOT" "$WOLFMUX_LEAD_ROLE")" || {
+  run=("$TEAMCTL_SELF" _run-agent "$ROOT" "$WOLFMUX_LEAD_ROLE")
+  if [ "$resume" -eq 1 ]; then run+=(--continue); fi
+  pane="$(tm_new_session "$SESSION" "$ROOT" "${run[@]}")" || {
     reg_delete "$WOLFMUX_LEAD_ROLE"
     die "could not create tmux session '$SESSION'"
   }
@@ -121,11 +151,15 @@ cmd_start() {
   event_log start "$WOLFMUX_LEAD_ROLE" "$model"
   lock_release
   tm_set_splash "$SESSION"
+  layout_apply
 
   brand_banner
   say "team session:  $SESSION   (tmux socket: $WOLFMUX_TMUX_SOCKET)"
   say "lead:          $MODEL_LABEL via $MODEL_LAUNCHER in $(short_path "$ROOT")"
   say "policy:        $(policy_summary)   (teamctl policy)"
+  if [ -n "$stopped" ]; then
+    say "stopped:      $stopped   (worktrees and branches kept; bring one back with: teamctl restart <role> [--continue])"
+  fi
   say "next:          teamctl spawn backend glm53 · teamctl status · teamctl attach"
   if [ "$attach" -eq 1 ] && [ -t 0 ] && [ -t 1 ]; then
     cmd_attach
@@ -190,6 +224,7 @@ cmd_spawn() {
   fi
   tm_tag "$pane" "$role" "$MODEL_LABEL"
   reg_set "$role" pane_id "$pane" state running
+  layout_apply
   event_log spawn "$role" "$model $branch by ${spawner:-operator}"
   lock_release
   # The manager always knows who is on the team, whoever did the spawning.
@@ -323,8 +358,8 @@ $prompt
       fi
       ;;
     *)
-      # The wolf marks the manager inside Claude Code's own frame as well as on the pane border.
-      if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then name="$WOLFMUX_LEAD_MARK team/$role"; else name="team/$role"; fi
+      # The same marks as on the pane border, inside Claude Code's own frame: wolf = manager, dog = teammate.
+      if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then name="$WOLFMUX_LEAD_MARK team/$role"; else name="$WOLFMUX_WORKER_MARK team/$role"; fi
       args=(--append-system-prompt "$prompt" --name "$name")
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
       if [ "$resume" -eq 1 ]; then
@@ -350,7 +385,7 @@ cmd_stop() {
   pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
   if [ -n "$pane" ]; then
     tmx kill-pane -t "$pane" 2>/dev/null || true
-    if tm_session_exists "$SESSION"; then tm_retile "$SESSION"; fi
+    layout_apply
   fi
   reg_set "$role" pane_id "" state stopped
   event_log stop "$role"
@@ -392,6 +427,7 @@ cmd_restart() {
   fi
   tm_tag "$pane" "$role" "$(reg_field "$role" label)"
   reg_set "$role" pane_id "$pane" state running
+  layout_apply
   if [ "$resume" -eq 1 ]; then
     event_log restart "$role" continue
     say "restarted: $role in pane $pane (continuing its previous conversation)"
