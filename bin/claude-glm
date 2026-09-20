@@ -1,0 +1,156 @@
+#!/bin/bash
+# claude-glm / claude-glm-flash — Claude Code against the Z.ai GLM Coding Plan.
+#
+# Invoked as `claude-glm`        -> GLM-5.3
+# Invoked as `claude-glm-flash`  -> GLM-5.3 Flash   (symlink to this file)
+#
+# The Z.ai endpoint and model mapping exist ONLY inside this process. Nothing is
+# written to ~/.claude/settings.json, the shell profile, or any file, so plain
+# `claude` and `claude-fable` stay on the Claude subscription.
+#
+# The Coding Plan key is read from the macOS Keychain (service: zai-coding-plan).
+#   helper (default)  Claude Code gets a command that reads the Keychain on demand.
+#                     The key never enters the environment, so the agent's
+#                     subprocesses, transcripts and tmux scrollback cannot hold it.
+#   env               Z.ai's documented ANTHROPIC_AUTH_TOKEN variable; set
+#                     AI_TEAM_GLM_AUTH_MODE=env in ~/.config/ai-team/config if
+#                     workers report an authentication error in helper mode.
+# In both modes an inert guard value keeps your claude.ai login away from anything
+# the worker spawns (see AI_TEAM_GLM_GUARD_TOKEN in lib/provider-env.sh).
+#
+# Settings (environment, else ~/.config/ai-team/config):
+#   AI_TEAM_GLM_AUTH_MODE  helper | env
+#   AI_TEAM_GLM_CONTEXT    1m -> request the 1M-token window (uses quota faster)
+#   AI_TEAM_CLAUDE_BIN     explicit path to the claude binary
+#   AI_TEAM_DRY_RUN=1      print what would run (no secrets) and exit
+# ~/.config/ai-team/glm-worker-settings.json, when present, is a Claude Code
+# settings overlay for GLM workers only (default: turns off claude-mem there).
+set -euo pipefail
+
+SELF="$(basename "$0")"
+AI_TEAM_HOME="${AI_TEAM_HOME:-$HOME/.config/ai-team}"
+LIB="$AI_TEAM_HOME/lib/provider-env.sh"
+if [ ! -r "$LIB" ]; then
+  echo "$SELF: missing $LIB — refusing to launch without environment scrubbing" >&2
+  exit 78
+fi
+# shellcheck source=/dev/null
+. "$LIB"
+ai_team_load_config
+
+# The Coding Plan only covers these two model ids; anything else can be refused
+# or billed against account balance, so every alias below maps to one of them.
+readonly GLM_MAIN="glm-5.3"
+readonly GLM_FLASH="glm-5.3-flash"
+
+case "$SELF" in
+  claude-glm-flash) PRIMARY="$GLM_FLASH" ;;
+  *) PRIMARY="$GLM_MAIN" ;;
+esac
+
+SCRUBBED="$(ai_team_list_set_vars "$AI_TEAM_CLAUDE_PROVIDER_VARS" "$AI_TEAM_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
+ai_team_scrub_claude_env
+
+CLAUDE_BIN="$(ai_team_resolve_claude)" || {
+  echo "$SELF: Claude Code CLI not found. Install: https://code.claude.com/docs/en/setup" >&2
+  exit 127
+}
+
+# Housekeeping subcommands (doctor, update, mcp, ...) never talk to a model.
+if ai_team_is_claude_subcommand "${1:-}"; then
+  exec "$CLAUDE_BIN" "$@"
+fi
+
+AUTH_MODE="${AI_TEAM_GLM_AUTH_MODE:-helper}"
+case "$AUTH_MODE" in
+  helper | env) ;;
+  *)
+    echo "$SELF: AI_TEAM_GLM_AUTH_MODE must be 'helper' or 'env' (got '$AUTH_MODE')" >&2
+    exit 64
+    ;;
+esac
+
+SUFFIX=""
+if [ "${AI_TEAM_GLM_CONTEXT:-}" = "1m" ]; then
+  SUFFIX="[1m]"
+  export CLAUDE_CODE_AUTO_COMPACT_WINDOW="1000000"
+fi
+
+export ANTHROPIC_BASE_URL="$AI_TEAM_ZAI_BASE_URL"
+export ANTHROPIC_MODEL="${PRIMARY}${SUFFIX}"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="${PRIMARY}${SUFFIX}"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="${PRIMARY}${SUFFIX}"
+export ANTHROPIC_DEFAULT_FABLE_MODEL="${PRIMARY}${SUFFIX}"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="${GLM_FLASH}${SUFFIX}"
+export CLAUDE_CODE_SUBAGENT_MODEL="${PRIMARY}${SUFFIX}"
+export API_TIMEOUT_MS="3000000"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
+export CLAUDE_CODE_OAUTH_TOKEN="$AI_TEAM_GLM_GUARD_TOKEN"
+
+KEY_CMD="/usr/bin/security find-generic-password -s ${AI_TEAM_ZAI_KEYCHAIN_SERVICE} -w"
+JQ_BIN="$(command -v jq 2>/dev/null || true)"
+[ -n "$JQ_BIN" ] || JQ_BIN="/usr/bin/jq"
+OVERLAY="$AI_TEAM_HOME/glm-worker-settings.json"
+
+# One --settings value: the optional overlay file, plus the key helper in helper mode.
+SETTINGS_JSON="{}"
+if [ -r "$OVERLAY" ]; then
+  SETTINGS_JSON="$("$JQ_BIN" -c . "$OVERLAY" 2>/dev/null)" || {
+    echo "$SELF: $OVERLAY is not valid JSON — fix or delete it" >&2
+    exit 78
+  }
+fi
+if [ "$AUTH_MODE" = "helper" ]; then
+  SETTINGS_JSON="$(printf '%s' "$SETTINGS_JSON" | "$JQ_BIN" -c --arg helper "$KEY_CMD" '. + {apiKeyHelper: $helper}')" || {
+    echo "$SELF: jq is required for helper mode (looked for $JQ_BIN)" >&2
+    exit 78
+  }
+fi
+
+CMD=("$CLAUDE_BIN")
+if [ "$SETTINGS_JSON" != "{}" ]; then
+  CMD+=(--settings "$SETTINGS_JSON")
+fi
+if ! ai_team_args_have_model "$@"; then
+  CMD+=(--model "${PRIMARY}${SUFFIX}")
+fi
+CMD+=("$@")
+
+if [ "${AI_TEAM_DRY_RUN:-}" = "1" ]; then
+  echo "launcher:        $SELF"
+  echo "billing:         Z.ai GLM Coding Plan (Anthropic-compatible endpoint)"
+  echo "endpoint:        $ANTHROPIC_BASE_URL"
+  echo "model:           ${PRIMARY}${SUFFIX}   (haiku/background tier: ${GLM_FLASH}${SUFFIX})"
+  echo "auth mode:       $AUTH_MODE   (key source: macOS Keychain service '${AI_TEAM_ZAI_KEYCHAIN_SERVICE}')"
+  if ai_team_zai_key_exists; then echo "keychain item:   present"; else echo "keychain item:   MISSING"; fi
+  echo "login guard:     on (children can never present your claude.ai login to Z.ai)"
+  if [ -r "$OVERLAY" ]; then echo "overlay:         $OVERLAY"; else echo "overlay:         none"; fi
+  echo "scrubbed vars:   ${SCRUBBED:-(none were set)}"
+  printf 'would exec:     '
+  printf ' %q' "${CMD[@]}"
+  echo
+  exit 0
+fi
+
+if ! ai_team_zai_key_exists; then
+  {
+    echo "$SELF: no Keychain item for service '${AI_TEAM_ZAI_KEYCHAIN_SERVICE}'."
+    echo
+    ai_team_zai_key_help
+  } >&2
+  exit 78
+fi
+
+if [ "$AUTH_MODE" = "env" ]; then
+  ANTHROPIC_AUTH_TOKEN="$($KEY_CMD)" || {
+    echo "$SELF: could not read the Keychain item (is the login keychain unlocked?)" >&2
+    exit 78
+  }
+  [ -n "$ANTHROPIC_AUTH_TOKEN" ] || {
+    echo "$SELF: Keychain item is empty" >&2
+    exit 78
+  }
+  export ANTHROPIC_AUTH_TOKEN
+fi
+
+exec "${CMD[@]}"

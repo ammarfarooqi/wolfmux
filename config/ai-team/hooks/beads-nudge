@@ -1,0 +1,48 @@
+#!/bin/bash
+# beads-nudge — Beads event hook target (on_create / on_update / on_close).
+#
+# Beads is the data plane: the bead already holds the full task or message.
+# This only turns "a bead now needs <role>'s attention" into a short tmux pane
+# notification via `teamctl nudge`. It never blocks, slows or fails a bd command.
+#
+# argv:  <bead-id> <create|update|close>       stdin: the bead as JSON
+event="${2:-}"
+payload="$(/bin/cat)"
+
+jq_bin="$(command -v jq 2>/dev/null || true)"
+[ -n "$jq_bin" ] || jq_bin="/usr/bin/jq"
+teamctl_bin="${AI_TEAM_BIN_DIR:-$HOME/bin}/teamctl"
+[ -x "$jq_bin" ] && [ -x "$teamctl_bin" ] || exit 0
+
+# Unit separator, not tab: a whitespace IFS would collapse empty fields (an
+# unassigned bead) and shift every later field one place left.
+fields="$(printf '%s' "$payload" | "$jq_bin" -r '[.id // "", .assignee // "", .issue_type // "", .status // ""] | join("\u001f")' 2>/dev/null)" || exit 0
+IFS=$'\037' read -r bead_id assignee bead_type status <<EOF
+$fields
+EOF
+
+actor="${BEADS_ACTOR:-${TEAM_ROLE:-}}"
+lead="lead"
+target=""
+
+case "$event" in
+  create | update)
+    # Someone else put, or changed, something on <assignee>'s plate.
+    if [ -n "$assignee" ] && [ "$assignee" != "$actor" ] && [ "$status" != "closed" ]; then
+      target="$assignee"
+    # A worker flagged its task as blocked: the lead should know.
+    elif [ "$bead_type" != "message" ] && [ "$status" = "blocked" ] && [ -n "$actor" ] && [ "$actor" != "$lead" ]; then
+      target="$lead"
+    fi
+    ;;
+  close)
+    # A worker finished a task (closing a message only marks it read).
+    if [ "$bead_type" != "message" ] && [ -n "$actor" ] && [ "$actor" != "$lead" ]; then
+      target="$lead"
+    fi
+    ;;
+esac
+
+[ -n "$target" ] || exit 0
+("$teamctl_bin" nudge "$target" --quiet --id "$bead_id" >/dev/null 2>&1 &)
+exit 0

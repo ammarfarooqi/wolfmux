@@ -1,0 +1,250 @@
+# ai-team — a local multi-model AI development team in tmux
+
+One lead (Fable **or** Astra) plus any number of GLM workers, every agent visible in
+its own tmux pane, all inference on subscriptions — no API keys, no metered proxy.
+
+```
+                     LEAD  (pick one)
+          claude-fable            codex-astra
+          Claude Code             Codex CLI
+          Fable 5.1               GPT-6 Astra
+          Claude subscription     ChatGPT/Codex subscription
+                 └──────────┬──────────┘
+        teamctl  = tmux panes · models · worktrees · lifecycle
+        bd       = tasks · dependencies · messages   (Beads)
+                            │
+      ┌─────────────────────┼─────────────────────┐
+  claude-glm           claude-glm           claude-glm-flash
+  backend · GLM-5.3    frontend · GLM-5.3   qa · GLM-5.3 Flash
+      └──────────── Z.ai GLM Coding Plan ─────────┘
+```
+
+`teamctl` never stores a task or a message, and Beads never touches tmux. The only
+glue is a three-line Beads hook that calls `teamctl nudge <role>` when a bead needs
+someone, which types one fixed line into that agent's pane. Bodies stay in Beads.
+
+## One-time setup
+
+```bash
+# Z.ai Coding Plan key -> macOS Keychain (you are prompted; nothing is echoed or logged)
+security add-generic-password -U -s zai-coding-plan -a "$USER" -l "Z.ai Coding Plan API key" -w
+
+teamctl doctor        # must show no "!! WARNING !!" lines
+```
+
+## Starting with Fable
+
+```bash
+cd ~/code/your-project
+teamctl start fable
+```
+
+## Starting with Astra
+
+```bash
+teamctl start astra
+```
+
+Same session, same workers, same commands; only the lead's launcher differs.
+The first start in a repository offers to initialize Beads in stealth mode
+(`bd init --stealth --skip-hooks --skip-agents`): no commit, no tracked files, no
+git hooks, no AGENTS.md/CLAUDE.md changes. Use `--init-beads` to skip the question,
+or run your own `bd init` flavour first.
+
+`Ctrl-b d` detaches; the team keeps running. `teamctl attach` comes back.
+
+## Spawning workers
+
+```bash
+teamctl spawn backend glm53      # GLM-5.3: substantial implementation
+teamctl spawn frontend glm53
+teamctl spawn qa flash           # GLM-5.3 Flash: simple / repetitive / QA
+```
+
+Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
+`~/.ai-team/worktrees/<project>/`, its own pane titled `<role> · <model>`, and
+`TEAM_ROLE` / `BEADS_ACTOR` set to its role. Panes re-tile automatically
+(lead top-left). A worker reads its Beads inbox as soon as it boots, so assign
+work first, then spawn. Options: `--base <ref>`, `--no-kickoff`.
+
+## Messaging (Beads)
+
+```bash
+bd create "Subject" -t message -a backend -d "body"            # send; recipient's pane is notified
+bd create "Subject" -t message -a backend --body-file msg.md   # long / code-heavy body
+bd list --assignee $TEAM_ROLE --status open --include-infra    # inbox: new tasks + unread messages
+bd show <id>                    # read            bd close <id> -r read       # mark read
+bd create "Re: ..." -t message -a frontend -d "..." --deps replies-to:<id>    # reply
+bd show <id> --thread           # conversation    bd list --type message --all    # history
+```
+
+Broadcast = one message per role. Lead and workers use exactly the same commands,
+and workers message each other directly.
+
+## Tasks (Beads)
+
+```bash
+bd create "Title" -t task -p 1 -a backend -d "what + acceptance criteria"
+bd dep add <task> <blocker>        bd ready        bd list --status in_progress,blocked
+bd update <id> --claim             bd update <id> --status blocked
+bd close <id> -r "commit <sha>; tests pass"
+```
+
+Status map: pending = open/unassigned · assigned = open+assignee · in_progress ·
+blocked · completed = closed · failed = closed + label `failed`.
+
+## Monitoring
+
+```bash
+teamctl status [--json]     # role, model, running/exited(N)/stopped, pane, branch, commits ahead, dirty
+teamctl panes               # what tmux reports: command, pid, cwd
+teamctl capture backend     # last 80 lines of a pane   (-n 200 | --all;  teamctl log backend)
+teamctl focus backend       # jump to a pane            teamctl nudge backend   # re-notify
+```
+
+Process state comes from tmux, work state from Beads; terminal text is never parsed.
+
+## Git
+
+```bash
+teamctl worktrees
+teamctl diff backend --stat        # then: teamctl diff backend | --commits | --names | --working
+git cherry-pick <sha>              # the lead integrates, in the project root
+```
+
+Completion flow: worker tests → commits → sends a `Done:` message (summary, test
+status, commit hash, risks) → closes its task → lead reviews the diff → requests
+changes, cherry-picks, rejects, or asks another worker to review. The lead owns
+integration. Full rules: `TEAM_PROTOCOL.md` (injected into every agent at launch).
+
+## Stopping
+
+```bash
+teamctl stop backend               # close one pane; worktree, branch, commits stay
+teamctl restart backend            # same worktree + branch   (--continue resumes its conversation)
+teamctl destroy                    # end the tmux session; keeps everything else
+teamctl destroy --worktrees        # also removes CLEAN worktrees and FULLY MERGED ai/* branches
+```
+
+`destroy` never deletes source files, commits, unmerged branches, dirty worktrees,
+credentials or Beads data, and always asks first (`--yes` to skip).
+
+## Diagnostics
+
+```bash
+teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins
+AI_TEAM_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
+```
+
+## Where things live
+
+| What | Where |
+|------|-------|
+| Launchers + CLI | `~/bin/` — `teamctl`, `claude-fable`, `codex-astra`, `claude-glm`, `claude-glm-flash` → `claude-glm`, `codex` → ChatGPT.app's bundled CLI |
+| Code, tmux config, protocol, this file | `~/.config/ai-team/` (`lib/*.sh`, `hooks/beads-nudge`, `tmux.conf`, `TEAM_PROTOCOL.md`, `config`, `glm-worker-settings.json`) |
+| Z.ai credential | macOS login Keychain, service `zai-coding-plan`. Nowhere else. |
+| Claude / Codex logins | wherever those CLIs keep them (`/login`, `codex login`); untouched |
+| Worktrees | `~/.ai-team/worktrees/<project>-<hash>/<role>-<timestamp>/` |
+| teamctl state (role ↔ model ↔ worktree, event log) | `~/.ai-team/state/<project>-<hash>/` — nothing is written into your repository |
+| Tasks + messages | the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode) |
+| tmux | dedicated server: `tmux -L ai-team`; your default tmux and `~/.tmux.conf` are untouched |
+| Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, read-only git/tmux; ask on `teamctl destroy`), `~/.codex/rules/ai-team.rules` |
+
+## How subscription separation works
+
+- **No global variable, no settings entry.** Nothing in `~/.zshrc` or
+  `~/.claude/settings.json` points anywhere. Plain `claude` is exactly what it was.
+- **Launchers scrub, then exec.** Each launcher removes every provider / credential /
+  model override (`ANTHROPIC_*`, `CLAUDE_CODE_USE_*`, `OPENAI_*`, `CODEX_API_KEY`, …)
+  and every inherited agent-session variable from *its own process*, then execs the CLI.
+- `claude-fable`: no key, no endpoint → the only credential left is your `/login`.
+- `codex-astra`: `forced_login_method="chatgpt"`, `model_provider="openai"`,
+  `model="gpt-6-astra"` → an API key cannot be used even if one appears later.
+- `claude-glm*`: sets `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` (the Coding
+  Plan endpoint) inside that process only, and maps **every** Claude alias (opus, sonnet,
+  fable, haiku, subagents) to `glm-5.3` / `glm-5.3-flash` — the only two ids the plan
+  covers. The key reaches Claude Code through `apiKeyHelper` (a Keychain read), so it is
+  never in the environment, the agent's subprocesses, transcripts or tmux scrollback.
+- **Login guard.** Measured on a localhost mock endpoint: a Claude Code process that
+  inherits a custom base URL but no token sends your real claude.ai login to that URL.
+  Every GLM worker therefore carries an inert `CLAUDE_CODE_OAUTH_TOKEN` placeholder that
+  outranks the stored login, so anything a worker spawns fails closed at Z.ai instead of
+  handing it your Claude token. `claude-fable` drops that placeholder again.
+- The team tmux server is started with a scrubbed environment, so panes inherit none of it.
+
+Launcher knobs are read from `~/.config/ai-team/config` (a pane's environment comes from
+the tmux server, not from the shell you typed `teamctl spawn` in):
+`AI_TEAM_GLM_AUTH_MODE=env` switches workers to Z.ai's documented `ANTHROPIC_AUTH_TOKEN`
+variable — use it if workers report an authentication error in the default helper mode;
+`AI_TEAM_GLM_CONTEXT=1m` opts into the 1M window (uses quota faster).
+`~/.config/ai-team/glm-worker-settings.json` is a Claude Code settings overlay applied to
+GLM workers only. It ships with `claude-mem` turned off there: that plugin runs a
+long-lived summarizer daemon which inherits the environment of whichever session starts
+it, and one started from a GLM worker would route your normal sessions' memory traffic
+to Z.ai. Delete the file to make workers identical to your normal sessions.
+
+What no local tool can prove: account-side switches. Keep claude.ai "extra usage" off,
+do not buy Codex credits, and keep the Z.ai cash balance at zero.
+
+## Verify provider and model inside each CLI
+
+| Pane | Type | Expect |
+|------|------|--------|
+| Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.1 |
+| Astra lead | `/status` | Signed in with ChatGPT · model `gpt-6-astra` |
+| GLM worker | `/status` | Base URL `https://api.z.ai/api/anthropic` · auth: apiKeyHelper (or ANTHROPIC_AUTH_TOKEN in env mode) · model `glm-5.3` / `glm-5.3-flash` |
+
+## Updating safely
+
+```bash
+claude update                 # native installer; launchers resolve `claude` at run time
+# Codex: update the ChatGPT desktop app (its bundled CLI is what ~/bin/codex points to).
+#        A standalone install (curl -fsSL https://chatgpt.com/codex/install.sh | sh) lands in
+#        ~/.local/bin, which precedes ~/bin, so it takes over automatically.
+bd export --all > beads-backup.jsonl   # then replace ~/.local/bin/bd with a verified release; see Beads upgrade guide
+teamctl doctor                # after any update
+```
+
+Never run `codex login --with-api-key`, never export `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY` globally, never paste a Z.ai block into `~/.claude/settings.json`.
+
+## tmux keys (team server only)
+
+Mouse: click = focus, drag border = resize, wheel = scroll. `Ctrl-b` then: arrows =
+move · `Ctrl`-arrows / `Alt`-arrows = resize · `z` = zoom · `T` = re-tile · `q` = pane
+numbers · `d` = detach · `"` `%` `c` = new pane/window in the current directory.
+
+## Uninstall (the CLIs stay untouched)
+
+```bash
+teamctl destroy --worktrees                      # in each project that has a team
+rm ~/bin/teamctl ~/bin/claude-fable ~/bin/codex-astra ~/bin/claude-glm ~/bin/claude-glm-flash ~/bin/codex
+rm -r ~/.config/ai-team ~/.ai-team
+rm ~/.codex/rules/ai-team.rules
+security delete-generic-password -s zai-coding-plan
+# ~/.zshrc: delete the block between ">>> ai-team >>>" and "<<< ai-team <<<"
+# ~/.claude/settings.json: delete the teamctl / bd / git / tmux allow lines and the "ask" entry
+#   (or restore ~/.claude/settings.json.backup-<timestamp>)
+# Beads itself (optional): rm ~/.local/bin/bd; per project: rm -r .beads and its .git/info/exclude lines
+```
+
+## Manual cleanup
+
+```bash
+tmux -L ai-team ls                          # sessions on the team server
+tmux -L ai-team kill-server                 # stop every team at once
+git worktree list && git worktree prune     # in a project
+git branch --list 'ai/*'                    # leftover worker branches (delete merged ones: git branch -d)
+ls ~/.ai-team/state ~/.ai-team/worktrees    # per-project state and worktrees
+```
+
+## Limits worth knowing
+
+- Notifications are typed into a pane. If an agent is mid-turn its CLI queues the line;
+  if a CLI is showing a modal dialog (first-run folder trust), answer the dialog first.
+- Beads runs in embedded mode (no daemon): writes are serialized by a file lock.
+  16 parallel writers were tested clean, but each waits its turn. Heavy swarms should
+  switch the project to Beads server mode (`bd init --server`, needs the `dolt` CLI).
+- Comments on beads notify nobody; send a message when someone must act.
+- Workers share your `~/.claude` (plugins, hooks, skills, permissions). That is
+  deliberate, and it means hooks you add there also run inside GLM workers.

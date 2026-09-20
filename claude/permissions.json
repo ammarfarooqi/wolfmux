@@ -1,0 +1,16 @@
+{
+  "allow": [
+    "Bash(teamctl *)",
+    "Bash(bd *)",
+    "Bash(git status *)",
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(git show *)",
+    "Bash(git worktree list *)",
+    "Bash(tmux -L ai-team list-panes *)",
+    "Bash(tmux -L ai-team capture-pane *)"
+  ],
+  "ask": [
+    "Bash(teamctl destroy *)"
+  ]
+}

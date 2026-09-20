@@ -1,0 +1,104 @@
+#!/bin/bash
+# teamctl — tmux processes, models, git worktrees and lifecycle for a local
+# multi-model AI development team. Nothing else: tasks and messages live in
+# Beads (bd). No daemon, no network service, no API keys.
+#
+# Code:    ~/.config/ai-team/lib/*.sh      State: ~/.ai-team/state/<project>/
+# Docs:    ~/.config/ai-team/README.md     Worktrees: ~/.ai-team/worktrees/<project>/
+set -euo pipefail
+
+AI_TEAM_HOME="${AI_TEAM_HOME:-$HOME/.config/ai-team}"
+TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
+
+for module in provider-env common registry tmuxctl worktree beads agents views doctor; do
+  if [ ! -r "$AI_TEAM_HOME/lib/$module.sh" ]; then
+    echo "teamctl: missing $AI_TEAM_HOME/lib/$module.sh" >&2
+    exit 78
+  fi
+  # shellcheck source=/dev/null
+  . "$AI_TEAM_HOME/lib/$module.sh"
+done
+
+usage() {
+  /bin/cat <<'EOF'
+teamctl — tmux panes, models, worktrees and lifecycle for your AI team
+
+  Lead
+    teamctl start <fable|astra> [--no-attach] [--init-beads|--skip-beads]
+  Workers
+    teamctl spawn <role> <glm53|flash|fable|astra> [--base <ref>] [--no-kickoff]
+    teamctl stop <role>
+    teamctl restart <role> [--continue]
+    teamctl nudge <role>|--all [--id <bead-id>]     one fixed notification line in a pane
+  Look
+    teamctl status [--json]        (alias: workers)   process + worktree state per role
+    teamctl panes                                     what tmux reports per pane
+    teamctl capture <role> [-n <lines>|--all]         recent terminal output
+    teamctl log <role>                                full scrollback
+    teamctl attach                 (alias: open)      teamctl focus <role>
+  Git
+    teamctl worktrees
+    teamctl diff <role> [--stat|--names|--commits|--working]
+  Housekeeping
+    teamctl doctor                                    provider / billing isolation report
+    teamctl destroy [--worktrees] [--yes]
+    teamctl version | help
+
+  Tasks and messages are Beads, not teamctl:
+    bd create "Title" -t task -p 1 -a backend -d "what to do"      assign work
+    bd create "Subject" -t message -a frontend -d "body"            message an agent
+    bd list --assignee <role> --status open --include-infra        an agent's inbox (tasks + messages)
+    bd show <id> · bd update <id> --claim · bd close <id> -r "..."  · bd ready
+  Full protocol: ~/.config/ai-team/TEAM_PROTOCOL.md      Docs: ~/.config/ai-team/README.md
+EOF
+}
+
+moved_to_beads() {
+  /bin/cat >&2 <<EOF
+teamctl: '$1' is not a teamctl command — tasks and messages live in Beads (bd).
+
+  message an agent     bd create "Subject" -t message -a <role> -d "body"      (long body: --body-file <file>)
+  your inbox           bd list --assignee \$TEAM_ROLE --status open --include-infra
+  read / mark read     bd show <id>   then   bd close <id> -r read
+  reply in a thread    bd create "Re: ..." -t message -a <role> -d "..." --deps replies-to:<id>
+  message history      bd list --type message --all          thread: bd show <id> --thread
+  create a task        bd create "Title" -t task -p 1 -a <role> -d "details" [--deps <blocker-id>]
+  claim / block / done bd update <id> --claim · bd update <id> --status blocked · bd close <id> -r "commit <sha>; tests pass"
+  what is ready        bd ready            everything in progress: bd list --status in_progress
+
+The recipient's pane is notified automatically (Beads hook -> teamctl nudge).
+EOF
+  exit 64
+}
+
+main() {
+  local command="${1:-help}"
+  [ "$#" -gt 0 ] && shift
+  case "$command" in
+    start) cmd_start "$@" ;;
+    spawn) cmd_spawn "$@" ;;
+    stop) cmd_stop "$@" ;;
+    restart) cmd_restart "$@" ;;
+    destroy) cmd_destroy "$@" ;;
+    nudge) cmd_nudge "$@" ;;
+    status | workers) cmd_status "$@" ;;
+    panes) cmd_panes "$@" ;;
+    capture) cmd_capture "$@" ;;
+    log) cmd_capture "$@" --all ;;
+    focus) cmd_focus "$@" ;;
+    attach | open) cmd_attach "$@" ;;
+    worktrees) cmd_worktrees "$@" ;;
+    diff) cmd_diff "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    _run-agent) cmd_run_agent "$@" ;;
+    send | inbox | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
+    version | --version | -V) say "teamctl $AI_TEAM_VERSION" ;;
+    help | --help | -h) usage ;;
+    *)
+      usage >&2
+      die_usage "unknown command: $command"
+      ;;
+  esac
+}
+
+main "$@"

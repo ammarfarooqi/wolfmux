@@ -1,0 +1,5 @@
+.DS_Store
+*.backup-*
+*.tmp.*
+.beads/
+.claude/settings.local.json

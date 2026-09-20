@@ -1,0 +1,18 @@
+# ai-team launcher settings — plain KEY=value lines, read by the launchers in ~/bin.
+# A pane's environment comes from the tmux server, not from the shell you typed
+# `teamctl spawn` in, so persistent knobs live here. An environment variable of
+# the same name still wins for a launcher you start by hand.
+#
+# How GLM workers receive the Z.ai Coding Plan key (always read from the Keychain):
+#   helper  the key is handed to Claude Code through apiKeyHelper and never enters
+#           the environment, so a worker's subprocesses cannot see or leak it (default)
+#   env     Z.ai's documented ANTHROPIC_AUTH_TOKEN variable. Use this if workers
+#           report an authentication error in helper mode.
+#AI_TEAM_GLM_AUTH_MODE=helper
+
+# 1m = request GLM's 1M-token context window (uses plan quota faster). Default: standard window.
+#AI_TEAM_GLM_CONTEXT=1m
+
+# Model pins.
+#AI_TEAM_FABLE_MODEL=claude-fable-5-1[1m]
+#AI_TEAM_ASTRA_MODEL=gpt-6-astra
