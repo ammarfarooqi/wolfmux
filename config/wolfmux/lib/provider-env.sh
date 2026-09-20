@@ -6,15 +6,20 @@
 # by `teamctl doctor` (to report what a launcher would have to scrub).
 # Contains no credentials. Compatible with macOS /bin/bash 3.2.
 
+# The glm row's endpoint and Keychain service under the names the GLM-only code used
+# before the provider table existed (doctor.sh and tests/credential-routing.sh read
+# them). tests/providers.sh fails if they ever drift from the row in lib/providers.sh.
 WOLFMUX_ZAI_BASE_URL="https://api.z.ai/api/anthropic"
 WOLFMUX_ZAI_KEYCHAIN_SERVICE="zai-coding-plan"
 
-# Exported as CLAUDE_CODE_OAUTH_TOKEN inside every GLM worker. It is not a secret
+# Exported as CLAUDE_CODE_OAUTH_TOKEN inside every third-party worker (the name is
+# GLM's because GLM came first; it is the same value for every provider in the table
+# and for the launcher's own refusal to start without it). It is not a secret
 # and authenticates nowhere. Measured against a localhost mock endpoint: a Claude
 # Code process that inherits ANTHROPIC_BASE_URL but no token presents the real
 # claude.ai login to that URL. This inert value ranks above the stored login
-# (and below ANTHROPIC_AUTH_TOKEN and apiKeyHelper), so anything a GLM worker
-# spawns fails closed at Z.ai instead of handing it the Claude subscription token.
+# (and below ANTHROPIC_AUTH_TOKEN and apiKeyHelper), so anything such a worker
+# spawns fails closed at the provider instead of handing it the Claude subscription token.
 WOLFMUX_GLM_GUARD_TOKEN="wolfmux-glm-worker-no-anthropic-credential"
 
 # Settings a launcher may take from ~/.config/wolfmux/config (KEY=value lines).
@@ -56,6 +61,7 @@ CLAUDE_CODE_EXTRA_BODY
 CLAUDE_CODE_MAX_CONTEXT_TOKENS
 CLAUDE_CODE_AUTO_COMPACT_WINDOW
 CLAUDE_CODE_API_KEY_HELPER_TTL_MS
+CLAUDE_CODE_EFFORT_LEVEL
 "
 
 # Prefixes swept after the explicit list, so a variable added by a future CLI
@@ -98,6 +104,32 @@ WOLFMUX_CODEX_PROVIDER_PREFIXES="OPENAI_"
 # Subcommands of `claude` that do not start a model session; --model and
 # --append-system-prompt are not injected in front of them.
 WOLFMUX_CLAUDE_SUBCOMMANDS="agents attach auth auto-mode doctor gateway import install logs mcp plugin plugins project respawn rm setup-token stop kill ultrareview update upgrade"
+
+# The provider table. Last of the variable section on purpose: the loop below reads it.
+# shellcheck source=providers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/providers.sh"
+
+# One setting per provider, added to the allow list above rather than written out, so a
+# new row in lib/providers.sh cannot be forgotten here. WOLFMUX_METERED is global: it is
+# how the owner, and only the owner, opens the gate in front of a metered provider.
+_wolfmux_allow() { # append one key, unless the literal list above already names it
+  case " $WOLFMUX_CONFIG_KEYS " in
+    *" $1 "*) ;;
+    *) WOLFMUX_CONFIG_KEYS="$WOLFMUX_CONFIG_KEYS $1" ;;
+  esac
+}
+_wolfmux_allow WOLFMUX_METERED
+for _wolfmux_provider in $WOLFMUX_PROVIDERS; do
+  _wolfmux_up="$(printf '%s' "$_wolfmux_provider" | tr '[:lower:]' '[:upper:]')"
+  _wolfmux_allow "WOLFMUX_${_wolfmux_up}_AUTH_MODE"
+  _wolfmux_allow "WOLFMUX_${_wolfmux_up}_CONTEXT"
+  if wolfmux_provider_info "$_wolfmux_provider" && [ "$PROVIDER_PINNABLE" = 1 ]; then
+    _wolfmux_allow "WOLFMUX_${_wolfmux_up}_MODEL"
+    _wolfmux_allow "WOLFMUX_${_wolfmux_up}_FAST_MODEL"
+  fi
+done
+unset _wolfmux_provider _wolfmux_up
+unset -f _wolfmux_allow
 
 # Names of exported variables starting with any of the given prefixes.
 _wolfmux_vars_with_prefixes() {
@@ -251,17 +283,12 @@ wolfmux_args_have_model() {
   return 1
 }
 
-# True when the Z.ai Coding Plan key exists in the login Keychain. Reads no secret.
+# The GLM key helpers, kept under their old names for doctor.sh and for anything of
+# yours that calls them. The table's own functions (lib/providers.sh) do the work.
 wolfmux_zai_key_exists() {
-  /usr/bin/security find-generic-password -s "$WOLFMUX_ZAI_KEYCHAIN_SERVICE" >/dev/null 2>&1
+  wolfmux_provider_key_exists glm
 }
 
 wolfmux_zai_key_help() {
-  cat <<EOF
-Add your Z.ai Coding Plan API key to the macOS Keychain (you will be prompted for
-the key; it is never echoed, never written to shell history):
-
-  security add-generic-password -U -s ${WOLFMUX_ZAI_KEYCHAIN_SERVICE} -a "\$USER" -l "Z.ai Coding Plan API key" -w
-
-EOF
+  wolfmux_provider_key_help glm
 }

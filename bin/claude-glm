@@ -1,32 +1,48 @@
 #!/bin/bash
-# claude-glm / claude-glm-flash — Claude Code against the Z.ai GLM Coding Plan.
+# claude-glm — Claude Code against one of the Anthropic-compatible providers in
+# config/wolfmux/lib/providers.sh. One file; the name it is called by picks the row
+# (the claude-fable precedent, ADR-0017):
 #
-# Invoked as `claude-glm`        -> GLM-5.3
-# Invoked as `claude-glm-flash`  -> GLM-5.3 Flash   (symlink to this file)
+#   claude-glm        -> GLM-5.3          claude-glm-flash -> GLM-5.3 Flash
+#   claude-kimi       -> Kimi Code        claude-moonshot  -> Kimi K3 (open platform)
+#   claude-deepseek   -> DeepSeek V4      claude-minimax   -> MiniMax M3
+#   claude-qwen       -> Qwen 3.7 Plus
 #
-# The Z.ai endpoint and model mapping exist ONLY inside this process. Nothing is
-# written to ~/.claude/settings.json, the shell profile, or any file, so plain
-# `claude` and `claude-fable` stay on the Claude subscription.
+# The endpoint, the key and the model mapping exist ONLY inside this process. Nothing is
+# written to ~/.claude/settings.json, the shell profile, or any file, so plain `claude`
+# and `claude-fable` stay on the Claude subscription.
 #
-# The Coding Plan key is read from the macOS Keychain (service: zai-coding-plan).
+# The key is read from the macOS Keychain (service: see the provider's row).
 #   helper (default)  Claude Code gets a command that reads the Keychain on demand.
 #                     The key never enters the environment, so the agent's
 #                     subprocesses, transcripts and tmux scrollback cannot hold it.
-#   env               Z.ai's documented ANTHROPIC_AUTH_TOKEN variable; set
-#                     WOLFMUX_GLM_AUTH_MODE=env in ~/.config/wolfmux/config if
+#   env               the variable the vendor documents (ANTHROPIC_AUTH_TOKEN, or
+#                     ANTHROPIC_API_KEY for Kimi Code); set
+#                     WOLFMUX_<PROVIDER>_AUTH_MODE=env in ~/.config/wolfmux/config if
 #                     workers report an authentication error in helper mode.
 # In both modes an inert guard value keeps your claude.ai login away from anything
-# the worker spawns (see WOLFMUX_GLM_GUARD_TOKEN in lib/provider-env.sh).
+# the worker spawns (see WOLFMUX_GLM_GUARD_TOKEN in lib/provider-env.sh). This
+# launcher refuses to start without it.
 #
-# Settings (environment, else ~/.config/wolfmux/config):
-#   WOLFMUX_GLM_AUTH_MODE  helper | env
-#   WOLFMUX_GLM_CONTEXT    1m -> request the 1M-token window (uses quota faster);
-#                          a number -> the window to declare (default 200000)
+# A provider billed per token (PROVIDER_BILLING=metered) is refused unless the owner's
+# ~/.config/wolfmux/config carries WOLFMUX_METERED=on. The config file and nothing else:
+# no agent can decide to spend money, and a variable in a pane's environment came from
+# the tmux server, not from the owner.
+#
+# Settings (environment, else ~/.config/wolfmux/config), <P> being the provider in
+# capitals:
+#   WOLFMUX_<P>_AUTH_MODE  helper | env
+#   WOLFMUX_<P>_CONTEXT    the window to declare, in tokens; WOLFMUX_GLM_CONTEXT=1m
+#                          additionally asks Z.ai for its 1M window (uses quota faster)
+#   WOLFMUX_<P>_MODEL      pin the main model id; WOLFMUX_<P>_FAST_MODEL the haiku
+#                          tier (both ignored for glm: the plan covers two ids)
+#   WOLFMUX_METERED=on     allow a provider billed per token (the config file only:
+#                          the environment never opens that gate)
 #   WOLFMUX_CLAUDE_BIN     explicit path to the claude binary
 #   WOLFMUX_DRY_RUN=1      print what would run (no secrets) and exit
 #   WOLFMUX_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
-# ~/.config/wolfmux/glm-worker-settings.json, when present, is a Claude Code
-# settings overlay for GLM workers only (default: turns off claude-mem there).
+# ~/.config/wolfmux/glm-worker-settings.json, when present, is a Claude Code settings
+# overlay for third-party workers only (default: turns off claude-mem there).
 set -euo pipefail
 
 SELF="$(basename "$0")"
@@ -40,15 +56,18 @@ fi
 . "$LIB"
 wolfmux_load_config
 
-# The Coding Plan only covers these two model ids; anything else can be refused
-# or billed against account balance, so every alias below maps to one of them.
-readonly GLM_MAIN="glm-5.3"
-readonly GLM_FLASH="glm-5.3-flash"
-
-case "$SELF" in
-  claude-glm-flash) PRIMARY="$GLM_FLASH" ;;
-  *) PRIMARY="$GLM_MAIN" ;;
-esac
+# Which row, and which tier of it, this name stands for.
+PROVIDER_AND_VARIANT="$(wolfmux_provider_of_launcher "$SELF")" || {
+  echo "$SELF: not a provider launcher name. Install one of: $(wolfmux_provider_launcher_names)" >&2
+  exit 64
+}
+PROVIDER="${PROVIDER_AND_VARIANT%% *}"
+VARIANT="${PROVIDER_AND_VARIANT##* }"
+wolfmux_provider_info "$PROVIDER" || {
+  echo "$SELF: no row for provider '$PROVIDER' in lib/providers.sh" >&2
+  exit 64
+}
+UP="$(printf '%s' "$PROVIDER" | tr '[:lower:]' '[:upper:]')"
 
 SCRUBBED="$(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
 wolfmux_scrub_claude_env
@@ -63,53 +82,133 @@ if wolfmux_is_claude_subcommand "${1:-}"; then
   exec "$CLAUDE_BIN" "$@"
 fi
 
-AUTH_MODE="${WOLFMUX_GLM_AUTH_MODE:-helper}"
+AUTH_MODE="$(wolfmux_provider_setting "$PROVIDER" AUTH_MODE)"
+AUTH_MODE="${AUTH_MODE:-helper}"
 case "$AUTH_MODE" in
   helper | env) ;;
   *)
-    echo "$SELF: WOLFMUX_GLM_AUTH_MODE must be 'helper' or 'env' (got '$AUTH_MODE')" >&2
+    echo "$SELF: WOLFMUX_${UP}_AUTH_MODE must be 'helper' or 'env' (got '$AUTH_MODE')" >&2
     exit 64
     ;;
 esac
 
-# Claude Code does not know the GLM model ids, so it assumes a 200k window and says so in a
-# long yellow notice in every pane. Declaring that same window keeps the behaviour and drops
-# the notice (measured against the real CLI; see docs/VERIFICATION.md). With the 1M option
-# the [1m] suffix already tells it. The variable is on the scrub list on purpose (a Fable
-# child must never inherit a GLM window), so your own number goes through WOLFMUX_GLM_CONTEXT.
+# Claude Code does not know these model ids, so it assumes a 200k window and says so in a
+# long yellow notice in every pane. Declaring the provider's real window keeps the
+# behaviour and drops the notice (measured against the real CLI; see docs/VERIFICATION.md).
+# A model id carrying the [1m] suffix already tells it, and then the number belongs to
+# CLAUDE_CODE_AUTO_COMPACT_WINDOW instead. Both variables are on the scrub list on purpose
+# (a Fable child must never inherit a provider's window), so the owner's own number goes
+# through WOLFMUX_<P>_CONTEXT.
+CONTEXT_SET="$(wolfmux_provider_setting "$PROVIDER" CONTEXT)"
 SUFFIX=""
-case "${WOLFMUX_GLM_CONTEXT:-}" in
-  1m)
+GLM_1M=0
+CONTEXT_FROM=""
+case "$PROVIDER:$CONTEXT_SET" in
+  glm:1m)
+    # Z.ai sells its 1M window as a model-id suffix, and it spends plan quota faster.
     SUFFIX="[1m]"
-    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="1000000"
-    CONTEXT_NOTE="1M ([1m] suffix)"
-    ;;
-  "" | *[!0-9]*)
-    [ -z "${WOLFMUX_GLM_CONTEXT:-}" ] || echo "$SELF: WOLFMUX_GLM_CONTEXT must be '1m' or a number of tokens (got '$WOLFMUX_GLM_CONTEXT'); using 200000" >&2
-    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="200000"
-    CONTEXT_NOTE="200000 tokens (declared; WOLFMUX_GLM_CONTEXT=1m for the 1M window)"
+    WINDOW="1000000"
+    GLM_1M=1
     ;;
   *)
-    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$WOLFMUX_GLM_CONTEXT"
-    CONTEXT_NOTE="$WOLFMUX_GLM_CONTEXT tokens (declared by WOLFMUX_GLM_CONTEXT)"
+    case "$CONTEXT_SET" in
+      "" | *[!0-9]*)
+        if [ -n "$CONTEXT_SET" ]; then
+          if [ "$PROVIDER" = glm ]; then
+            echo "$SELF: WOLFMUX_${UP}_CONTEXT must be '1m' or a number of tokens (got '$CONTEXT_SET'); using $PROVIDER_CONTEXT" >&2
+          else
+            echo "$SELF: WOLFMUX_${UP}_CONTEXT must be a number of tokens (got '$CONTEXT_SET'); using $PROVIDER_CONTEXT" >&2
+          fi
+        fi
+        WINDOW="$PROVIDER_CONTEXT"
+        if [ "$PROVIDER" = glm ]; then
+          CONTEXT_FROM="declared; WOLFMUX_GLM_CONTEXT=1m for the 1M window"
+        else
+          CONTEXT_FROM="declared; WOLFMUX_${UP}_CONTEXT to change it"
+        fi
+        ;;
+      *)
+        WINDOW="$CONTEXT_SET"
+        CONTEXT_FROM="declared by WOLFMUX_${UP}_CONTEXT"
+        ;;
+    esac
     ;;
 esac
 
-export ANTHROPIC_BASE_URL="$WOLFMUX_ZAI_BASE_URL"
-export ANTHROPIC_MODEL="${PRIMARY}${SUFFIX}"
-export ANTHROPIC_DEFAULT_OPUS_MODEL="${PRIMARY}${SUFFIX}"
-export ANTHROPIC_DEFAULT_SONNET_MODEL="${PRIMARY}${SUFFIX}"
-export ANTHROPIC_DEFAULT_FABLE_MODEL="${PRIMARY}${SUFFIX}"
-export ANTHROPIC_DEFAULT_HAIKU_MODEL="${GLM_FLASH}${SUFFIX}"
-export CLAUDE_CODE_SUBAGENT_MODEL="${PRIMARY}${SUFFIX}"
+MAIN="$PROVIDER_MAIN_MODEL"
+FAST="$PROVIDER_FAST_MODEL"
+if [ "$PROVIDER_PINNABLE" = 1 ]; then
+  PINNED="$(wolfmux_provider_setting "$PROVIDER" MODEL)"
+  [ -z "$PINNED" ] || MAIN="$PINNED"
+  PINNED="$(wolfmux_provider_setting "$PROVIDER" FAST_MODEL)"
+  [ -z "$PINNED" ] || FAST="$PINNED"
+fi
+MAIN="${MAIN}${SUFFIX}"
+FAST="${FAST}${SUFFIX}"
+case "$VARIANT" in
+  fast) PRIMARY="$FAST" ;;
+  *) PRIMARY="$MAIN" ;;
+esac
+
+# Which variable carries the number depends on the model id, so this waits until the
+# id is known: a [1m] id already tells Claude Code the window, and then the number is
+# the point at which it starts compacting.
+case "$PRIMARY" in
+  *'[1m]')
+    export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$WINDOW"
+    # Read back, not repeated: the line below then reports the number the environment
+    # really carries (the same reason the login guard line is read back).
+    DECLARED="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}"
+    if [ "$GLM_1M" = 1 ]; then
+      CONTEXT_NOTE="1M ([1m] suffix)"
+      [ -n "$DECLARED" ] || CONTEXT_NOTE="NOT DECLARED ([1m] suffix)"
+    else
+      CONTEXT_NOTE="${DECLARED:-NOT DECLARED} tokens (auto-compact window, the model id carries [1m]; $CONTEXT_FROM)"
+    fi
+    ;;
+  *)
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$WINDOW"
+    DECLARED="${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}"
+    CONTEXT_NOTE="${DECLARED:-NOT DECLARED} tokens ($CONTEXT_FROM)"
+    ;;
+esac
+
+export ANTHROPIC_BASE_URL="$PROVIDER_BASE_URL"
+export ANTHROPIC_MODEL="$PRIMARY"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$MAIN"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$MAIN"
+export ANTHROPIC_DEFAULT_FABLE_MODEL="$MAIN"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$FAST"
+export CLAUDE_CODE_SUBAGENT_MODEL="$MAIN"
 export API_TIMEOUT_MS="3000000"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
 export CLAUDE_CODE_OAUTH_TOKEN="$WOLFMUX_GLM_GUARD_TOKEN"
 
-KEY_CMD="/usr/bin/security find-generic-password -s ${WOLFMUX_ZAI_KEYCHAIN_SERVICE} -w"
+# What the vendor's own Claude Code guide asks for, after the scrub so a value inherited
+# from elsewhere cannot survive. Every name here is on the scrub list, so a Claude
+# subscription child of this worker does not inherit it either.
+if [ -n "$PROVIDER_EXTRA_ENV" ]; then
+  for pair in $PROVIDER_EXTRA_ENV; do
+    export "${pair%%=*}=${pair#*=}"
+  done
+fi
+
+# Billed per token: the owner decides, never an agent, and only in the config file.
+# The gate is checked before the Keychain, so the refusal says which of the two
+# problems it is.
+METERED_GATE=""
+if [ "$PROVIDER_BILLING" = "metered" ]; then
+  if wolfmux_metered_on; then
+    METERED_GATE="open (WOLFMUX_METERED=on in $WOLFMUX_HOME/config)"
+  else
+    METERED_GATE="closed"
+  fi
+fi
+
+KEY_CMD="/usr/bin/security find-generic-password -s ${PROVIDER_KEYCHAIN} -w"
 OVERLAY="$WOLFMUX_HOME/glm-worker-settings.json"
 
-# One --settings value: the GLM overlay, then the per-agent settings teamctl
+# One --settings value: the worker overlay, then the per-agent settings teamctl
 # generated for this pane (they win), plus the key helper in helper mode.
 HELPER=""
 if [ "$AUTH_MODE" = "helper" ]; then HELPER="$KEY_CMD"; fi
@@ -120,47 +219,92 @@ if [ "$SETTINGS_JSON" != "{}" ]; then
   CMD+=(--settings "$SETTINGS_JSON")
 fi
 if ! wolfmux_args_have_model "$@"; then
-  CMD+=(--model "${PRIMARY}${SUFFIX}")
+  CMD+=(--model "$PRIMARY")
 fi
 CMD+=("$@")
 
+# The guard is the one export that must never be missing, so it is read back rather than
+# assumed: this reports the environment that is actually there, in dry run and for real.
+GUARD_NOTE="OFF"
+if [ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$WOLFMUX_GLM_GUARD_TOKEN" ]; then
+  GUARD_NOTE="on (children can never present your claude.ai login to ${PROVIDER_VENDOR%% *})"
+fi
+
+# Read back for the same reason: the line then says what the environment holds, not what
+# the table asked for.
+EXTRA_NOTE=""
+for pair in $PROVIDER_EXTRA_ENV; do
+  EXTRA_NAME="${pair%%=*}"
+  EXTRA_NOTE="$EXTRA_NOTE $EXTRA_NAME=${!EXTRA_NAME:-(NOT SET)}"
+done
+EXTRA_NOTE="${EXTRA_NOTE# }"
+
 if [ "${WOLFMUX_DRY_RUN:-}" = "1" ]; then
   echo "launcher:        $SELF"
-  echo "billing:         Z.ai GLM Coding Plan (Anthropic-compatible endpoint)"
+  echo "provider:        $PROVIDER ($PROVIDER_VENDOR)"
+  case "$PROVIDER_BILLING" in
+    metered) echo "billing:         METERED: $PROVIDER_BILLING_NOTE" ;;
+    *) echo "billing:         plan: $PROVIDER_BILLING_NOTE" ;;
+  esac
+  [ -z "$METERED_GATE" ] || echo "metered gate:    $METERED_GATE"
   echo "endpoint:        $ANTHROPIC_BASE_URL"
-  echo "model:           ${PRIMARY}${SUFFIX}   (haiku/background tier: ${GLM_FLASH}${SUFFIX})"
+  echo "model:           ${ANTHROPIC_MODEL:-NOT SET}   (haiku/background tier: ${ANTHROPIC_DEFAULT_HAIKU_MODEL:-NOT SET})"
   echo "context window:  $CONTEXT_NOTE"
-  echo "auth mode:       $AUTH_MODE   (key source: macOS Keychain service '${WOLFMUX_ZAI_KEYCHAIN_SERVICE}')"
-  if wolfmux_zai_key_exists; then echo "keychain item:   present"; else echo "keychain item:   MISSING"; fi
-  echo "login guard:     on (children can never present your claude.ai login to Z.ai)"
+  echo "auth mode:       $AUTH_MODE   (key source: macOS Keychain service '${PROVIDER_KEYCHAIN}')"
+  if wolfmux_provider_key_exists "$PROVIDER"; then echo "keychain item:   present"; else echo "keychain item:   MISSING"; fi
+  [ -z "$EXTRA_NOTE" ] || echo "extra env:       $EXTRA_NOTE"
+  echo "login guard:     $GUARD_NOTE"
   if [ -r "$OVERLAY" ]; then echo "overlay:         $OVERLAY"; else echo "overlay:         none"; fi
   echo "agent settings:  ${WOLFMUX_EXTRA_SETTINGS:-none (not started by teamctl)}"
   echo "scrubbed vars:   ${SCRUBBED:-(none were set)}"
   printf 'would exec:     '
   printf ' %q' "${CMD[@]}"
   echo
+  [ "$GUARD_NOTE" != "OFF" ] || exit 78
   exit 0
 fi
 
-if ! wolfmux_zai_key_exists; then
+if [ "$GUARD_NOTE" = "OFF" ]; then
+  echo "$SELF: the login guard is not in this process: refusing to launch (a child could present your claude.ai login to ${PROVIDER_VENDOR%% *})" >&2
+  exit 78
+fi
+
+if [ "$METERED_GATE" = "closed" ]; then
   {
-    echo "$SELF: no Keychain item for service '${WOLFMUX_ZAI_KEYCHAIN_SERVICE}'."
+    echo "$SELF: $PROVIDER is billed per token ($PROVIDER_BILLING_NOTE), and the meter is closed."
     echo
-    wolfmux_zai_key_help
+    echo "Only you can open it, not an agent, and only in your config file. Add this"
+    echo "line to $WOLFMUX_HOME/config:"
+    echo
+    echo "  WOLFMUX_METERED=on"
+    echo
+    echo "A variable in the environment does not open it: a pane's environment comes from"
+    echo "the tmux server, not from the shell you typed the command in."
+    echo
+  } >&2
+  exit 78
+fi
+
+if ! wolfmux_provider_key_exists "$PROVIDER"; then
+  {
+    echo "$SELF: no Keychain item for service '${PROVIDER_KEYCHAIN}'."
+    echo
+    wolfmux_provider_key_help "$PROVIDER"
   } >&2
   exit 78
 fi
 
 if [ "$AUTH_MODE" = "env" ]; then
-  ANTHROPIC_AUTH_TOKEN="$($KEY_CMD)" || {
+  KEY_VALUE="$($KEY_CMD)" || {
     echo "$SELF: could not read the Keychain item (is the login keychain unlocked?)" >&2
     exit 78
   }
-  [ -n "$ANTHROPIC_AUTH_TOKEN" ] || {
+  [ -n "$KEY_VALUE" ] || {
     echo "$SELF: Keychain item is empty" >&2
     exit 78
   }
-  export ANTHROPIC_AUTH_TOKEN
+  export "$PROVIDER_AUTH_VAR=$KEY_VALUE"
+  unset KEY_VALUE
 fi
 
 exec "${CMD[@]}"
