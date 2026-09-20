@@ -226,9 +226,15 @@ if [ "$DO_CLAUDE" -eq 1 ]; then
   settings="$HOME/.claude/settings.json"
   /bin/mkdir -p "$HOME/.claude"
   [ -f "$settings" ] || printf '{}\n' >"$settings"
+  # "retired": rules an earlier version added that are wider than they read. A rule is a prefix
+  # match, so `git log *` also allowed `git log --output=<any file>`, and the tmux ones allowed
+  # `... \; run-shell <anything>` -- in every Claude Code session on this machine. They are
+  # never added again and are taken out here; `teamctl diff|panes|capture` cover the same needs.
+  retired="$(jq -r --slurpfile p "$REPO/claude/permissions.json" '
+    ($p[0].retired // []) as $gone | [(.permissions.allow // [])[] | select(. as $rule | $gone | index($rule))] | join(", ")' "$settings")"
   merged="$(jq --slurpfile p "$REPO/claude/permissions.json" '
     .permissions = (.permissions // {})
-    | .permissions.allow = (reduce $p[0].allow[] as $rule (.permissions.allow // []; if index($rule) then . else . + [$rule] end))
+    | .permissions.allow = (reduce $p[0].allow[] as $rule ((.permissions.allow // []) - ($p[0].retired // []); if index($rule) then . else . + [$rule] end))
     | .permissions.ask   = (reduce $p[0].ask[]   as $rule (.permissions.ask   // []; if index($rule) then . else . + [$rule] end))
   ' "$settings")"
   if [ "$(jq -S . "$settings")" = "$(printf '%s' "$merged" | jq -S .)" ]; then
@@ -238,7 +244,11 @@ if [ "$DO_CLAUDE" -eq 1 ]; then
     printf '%s\n' "$merged" >"$settings.tmp.$$"
     /bin/mv -f "$settings.tmp.$$" "$settings"
     /bin/chmod 600 "$settings"
-    note "merged allow/ask rules (nothing removed)"
+    if [ -n "$retired" ]; then
+      note "merged allow/ask rules; retired (they allowed more than they read, see claude/permissions.json): $retired"
+    else
+      note "merged allow/ask rules (nothing removed)"
+    fi
   fi
 fi
 

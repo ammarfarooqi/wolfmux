@@ -3,14 +3,16 @@
     "Bash(teamctl *)",
     "Bash(bd *)",
     "Bash(git status *)",
-    "Bash(git diff *)",
-    "Bash(git log *)",
-    "Bash(git show *)",
-    "Bash(git worktree list *)",
-    "Bash(tmux -L wolfmux list-panes *)",
-    "Bash(tmux -L wolfmux capture-pane *)"
+    "Bash(git worktree list *)"
   ],
   "ask": [
     "Bash(teamctl destroy *)"
+  ],
+  "retired": [
+    "Bash(git diff *)",
+    "Bash(git log *)",
+    "Bash(git show *)",
+    "Bash(tmux -L wolfmux list-panes *)",
+    "Bash(tmux -L wolfmux capture-pane *)"
   ]
 }

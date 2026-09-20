@@ -295,7 +295,7 @@ build_role_prompt() {
 }
 
 kickoff_text() {
-  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$1"
+  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `git log --oneline -5` in your worktree and continue it, do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$1"
 }
 
 # write_agent_settings <role> — Claude Code settings for one Claude-based agent; prints
@@ -700,9 +700,9 @@ _nudge_one() {
     return 2
   fi
   if [ -n "$bead" ]; then
-    text="[wolfmux] Beads update for $role ($bead). Run: bd show $bead -- then: bd list --assignee $role --status open --include-infra"
+    text="[wolfmux] Beads update for $role ($bead). Run: bd show $bead -- then: bd list --assignee $role --status open,in_progress,blocked --include-infra"
   else
-    text="[wolfmux] Beads update for $role. Run: bd list --assignee $role --status open --include-infra"
+    text="[wolfmux] Beads update for $role. Run: bd list --assignee $role --status open,in_progress,blocked --include-infra"
   fi
   nudge_mark "$role"
   tm_type_line "$pane" "$text"

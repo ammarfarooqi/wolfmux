@@ -107,7 +107,7 @@ and the lead keep the feature exactly as you configured it.
 ```bash
 bd create "Subject" -t message -a backend -d "body"            # send; recipient's pane is notified
 bd create "Subject" -t message -a backend --body-file msg.md   # long / code-heavy body
-bd list --assignee $TEAM_ROLE --status open --include-infra    # inbox: new tasks + unread messages
+bd list --assignee $TEAM_ROLE --status open,in_progress,blocked --include-infra    # inbox: your tasks (new, claimed, blocked) + unread messages
 bd show <id>                    # read            bd close <id> -r read       # mark read
 bd create "Re: ..." -t message -a frontend -d "..." --deps replies-to:<id>    # reply
 bd show <id> --thread           # conversation    bd list --type message --all    # history
@@ -216,7 +216,7 @@ WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec —
 | teamctl state (role ↔ model ↔ worktree, event log) | `~/.wolfmux/state/<project>-<hash>/` — nothing is written into your repository |
 | Tasks + messages | the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode) |
 | tmux | dedicated server: `tmux -L wolfmux`; your default tmux and `~/.tmux.conf` are untouched. A team started before the rename from "ai-team" stays on `tmux -L ai-team` until it ends; `teamctl` follows it |
-| Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, read-only git/tmux; ask on `teamctl destroy`), `~/.codex/rules/wolfmux.rules` |
+| Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, `git status`, `git worktree list`; ask on `teamctl destroy`), `~/.codex/rules/wolfmux.rules` |
 
 ## How subscription separation works
 

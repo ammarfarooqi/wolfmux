@@ -86,7 +86,7 @@ cmd_status() {
       printf '%-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$width" "$role" "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
     done
   say ""
-  say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open --include-infra"
+  say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
 }
 
 # teamctl panes — what tmux itself reports for every pane of the team session

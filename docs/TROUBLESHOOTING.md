@@ -28,7 +28,7 @@ Start with `teamctl doctor`, then `teamctl status`, then `teamctl capture <role>
 | GLM worker reports `1113 Insufficient Balance` | the call fell outside the Coding Plan (wrong endpoint or a non-plan model id) | `WOLFMUX_DRY_RUN=1 claude-glm` must show `https://api.z.ai/api/anthropic` and a `glm-5.3*` model; check the plan is active on the account that issued the key |
 | a new worker sits on "Do you trust this folder?" | first time this repository is opened with that CLI | answer it once in the lead pane; Claude Code keys trust on the main checkout, so worker worktrees inherit it |
 | a worker never reacts to a message | its CLI was showing a dialog, or the hook is missing | `teamctl nudge <role>`; `teamctl doctor` must say the pane-notification hooks are installed (`teamctl start` reinstalls them) |
-| inbox looks empty although a message was sent | message beads are hidden by default | add `--include-infra`: `bd list --assignee <role> --status open --include-infra` |
+| inbox looks empty although a message was sent | message beads are hidden by default | add `--include-infra`: `bd list --assignee <role> --status open,in_progress,blocked --include-infra` |
 | `could not create a tmux pane … window too small` | the terminal cannot be split further | enlarge the terminal (or `teamctl attach` first), retry; `Ctrl-b T` re-tiles |
 | `another teamctl operation holds the project lock` | a `teamctl` command was killed mid-operation | wait 30 s (dead holders are reclaimed automatically) or `rmdir ~/.wolfmux/state/<project>/.lock` |
 | `teamctl attach` says you are inside another tmux server | nesting tmux servers is blocked on purpose | open a new terminal tab and run `teamctl attach` there |

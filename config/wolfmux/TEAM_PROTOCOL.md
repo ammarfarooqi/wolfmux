@@ -33,7 +33,7 @@ lead — including a worker that was spawned by another worker.
 ## Beads in 60 seconds
 
 ```bash
-bd list --assignee $TEAM_ROLE --status open --include-infra     # YOUR INBOX: new tasks + unread messages
+bd list --assignee $TEAM_ROLE --status open,in_progress,blocked --include-infra     # YOUR INBOX: your tasks (new, claimed, blocked) + unread messages
 bd show <id>                                    # read one item in full
 bd ready                                        # unblocked work nobody is doing yet
 bd list --status in_progress                    # who is doing what

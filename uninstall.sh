@@ -86,7 +86,7 @@ settings="$HOME/.claude/settings.json"
 if [ -f "$settings" ] && command -v jq >/dev/null 2>&1; then
   cleaned="$(jq --slurpfile p "$REPO/claude/permissions.json" '
     if .permissions then
-      .permissions.allow = ((.permissions.allow // []) - $p[0].allow)
+      .permissions.allow = ((.permissions.allow // []) - $p[0].allow - ($p[0].retired // []))
       | .permissions.ask = ((.permissions.ask // []) - $p[0].ask)
       | if (.permissions.ask | length) == 0 then del(.permissions.ask) else . end
     else . end' "$settings")"

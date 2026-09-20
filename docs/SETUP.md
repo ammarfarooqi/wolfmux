@@ -41,7 +41,7 @@ What it does, and nothing else:
 | copies files | `bin/*` → `~/bin/`, `config/wolfmux/*` → `~/.config/wolfmux/` (a differing existing file is backed up first; `config` and `glm-worker-settings.json` are never overwritten) |
 | two symlinks | `~/bin/claude-glm-flash` → `claude-glm`; `~/bin/codex` → ChatGPT.app's CLI, only when no `codex` is on PATH |
 | `~/.zshrc` | appends one marked block that adds `~/bin` to the **end** of `PATH`, so nothing in it can shadow an existing tool |
-| `~/.claude/settings.json` | merges the rules in `claude/permissions.json`: allow `teamctl`, `bd`, read-only `git` and read-only tmux on the team server; **ask** before `teamctl destroy` |
+| `~/.claude/settings.json` | merges the rules in `claude/permissions.json`: allow `teamctl`, `bd`, `git status` and `git worktree list`; **ask** before `teamctl destroy`. Rules under `retired` (`git diff/log/show *`, tmux on the team server) are taken out again: a rule is a prefix match, and those also allowed `git log --output=<file>` and `tmux … \; run-shell …` in every Claude Code session |
 | `~/.codex/rules/wolfmux.rules` | a separate execpolicy file: `teamctl` and `bd` may run outside the Codex sandbox, `teamctl destroy` prompts. `default.rules` is not touched |
 
 Every edited file gets `<file>.backup-YYYYMMDD-HHMMSS`. Running it again changes
