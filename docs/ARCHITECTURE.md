@@ -1,0 +1,190 @@
+# Architecture
+
+## Two tools, two planes
+
+| Plane | Tool | Owns | Never touches |
+|-------|------|------|---------------|
+| Control | `teamctl` | tmux panes, which model runs where, git worktrees and branches, start / stop / restart / destroy, diagnostics | tasks, messages |
+| Data | `bd` (Beads) | tasks, dependencies, messages, history, who-did-what | processes, panes, worktrees |
+
+The only glue between them is a three-line Beads event hook that calls
+`teamctl nudge <role>`. Beads does not know tmux exists; `teamctl` never reads or
+writes a bead.
+
+```mermaid
+flowchart TB
+  human([You]) -->|teamctl start fable / astra| T[teamctl]
+  T -->|dedicated server: tmux -L ai-team| S[(tmux session)]
+  S --> L[lead pane<br/>claude-fable or codex-astra]
+  S --> W1[worker pane<br/>claude-glm]
+  S --> W2[worker pane<br/>claude-glm-flash]
+  L -->|teamctl spawn / status / diff| T
+  T -->|git worktree add| G[(~/.ai-team/worktrees)]
+  L -->|bd create -a backend| B[(Beads .beads/)]
+  W1 -->|bd create -a lead| B
+  B -->|on_create / on_update / on_close hook| N[beads-nudge]
+  N -->|teamctl nudge role| T
+  T -->|one fixed line via send-keys| W1
+```
+
+## Components
+
+### Launchers (`~/bin`)
+
+Each launcher cleans **its own process environment** and then `exec`s the real CLI.
+The user's shell is never modified. The list of variables to remove lives in one
+file, `lib/provider-env.sh`, shared with `teamctl doctor` so scrubbing and
+diagnostics can never drift apart.
+
+| Launcher | CLI | Billing | What it pins |
+|----------|-----|---------|--------------|
+| `claude-fable` | Claude Code | Claude subscription (`/login`) | `--model claude-fable-5-1[1m]`; no key, no endpoint |
+| `codex-astra` | Codex CLI | ChatGPT / Codex subscription | `forced_login_method="chatgpt"`, `model_provider="openai"`, `model="gpt-6-astra"` |
+| `claude-glm` | Claude Code | Z.ai GLM Coding Plan | endpoint `https://api.z.ai/api/anthropic`, every model alias → `glm-5.3` (background tier → `glm-5.3-flash`) |
+| `claude-glm-flash` | symlink to `claude-glm` | same | every alias → `glm-5.3-flash` |
+
+Scrubbed in every Claude launcher: all `ANTHROPIC_*` and `CLAUDE_CODE_USE_*`
+variables (explicit list plus a prefix sweep for future ones), model and subagent
+overrides, and the session variables Claude Code sets in its own subprocesses
+(`CLAUDECODE`, `CLAUDE_CODE_CHILD_SESSION`, …) — otherwise a CLI started from an
+agent's shell believes it is a child session and stops persisting transcripts.
+Scrubbed in `codex-astra`: all `OPENAI_*`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`.
+
+`AI_TEAM_DRY_RUN=1 <launcher>` prints exactly what would be executed, without
+secrets and without starting anything.
+
+Persistent launcher settings come from `~/.config/ai-team/config` (parsed as
+`KEY=value`, never sourced). A file is needed because a pane's environment comes
+from the tmux server, not from the shell that ran `teamctl spawn`.
+
+### teamctl (`~/bin/teamctl` + `~/.config/ai-team/lib/`)
+
+About 2,200 lines of bash in small modules, written for macOS `/bin/bash` 3.2
+under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
+
+| Module | Responsibility |
+|--------|----------------|
+| `provider-env.sh` | the scrub lists, binary resolution, the GLM login guard, config parsing |
+| `common.sh` | output, validation, tool lookup, **the model table**, project resolution |
+| `registry.sh` | the only module that touches state files; project lock; nudge debounce |
+| `tmuxctl.sh` | every tmux call |
+| `worktree.sh` | worktree and branch creation, `worktrees`, `diff` |
+| `beads.sh` | Beads bootstrap (stealth init) and hook installation |
+| `agents.sh` | `start`, `spawn`, the pane process (`_run-agent`), `stop`, `restart`, `destroy`, `nudge` |
+| `views.sh` | `status`, `panes`, `capture`, `log`, `focus`, `attach` |
+| `doctor.sh` | `teamctl doctor` |
+
+The **model table** in `common.sh` is the single place that knows which launcher
+serves which model key (`fable`, `astra`, `glm53`, `flash`) and which CLI family it
+belongs to. Nothing else in the code is model-specific, which is what makes the
+two leads interchangeable.
+
+### tmux
+
+Teams run on a **dedicated tmux server** (`tmux -L ai-team`) started with its own
+config file (`~/.config/ai-team/tmux.conf`). The user's default tmux server and any
+`~/.tmux.conf` are untouched; the team config sources the user's config first if one
+exists. It adds mouse support, 100k lines of scrollback, role titles on pane
+borders, `remain-on-exit` (a crashed agent keeps its pane and its error), and
+current-directory inheritance for new panes. One extra key: `prefix T` re-tiles.
+
+- The server is started with a scrubbed environment, so panes never inherit
+  provider or agent-session variables from whoever started it.
+- A pane runs the agent **directly** (`tmux split-window … teamctl _run-agent <root>
+  <role>`, passed as separate arguments, so there is no `sh -c` and no quoting
+  layer). `_run-agent` exports the role, changes into the worktree, builds the
+  protocol prompt and `exec`s the launcher, so the pane's process *is* the agent.
+- Panes are found by a pane option, `@ai_role`, not by index or title. tmux is the
+  source of truth for "is this agent alive" (`pane_dead`, `pane_dead_status`).
+- New panes are split off the last pane, then the window is re-tiled, which keeps
+  spawn order: lead top-left, then workers left-to-right, top-to-bottom.
+
+### Git worktrees
+
+`teamctl spawn <role> <model>` creates branch `ai/<role>-<timestamp>` from the
+lead's current `HEAD` (or `--base <ref>`) in a worktree at
+`~/.ai-team/worktrees/<project>-<hash>/<role>-<timestamp>/` — outside the
+repository, so nothing is nested in the project. Git itself refuses to check one
+branch out twice, and `teamctl` refuses a duplicate role, so two agents can never
+share a working tree. Claude Code keys folder trust on the main checkout, so
+trusting the project once covers every worker worktree.
+
+### Beads
+
+Initialized per project in **stealth, embedded** mode:
+`bd init --stealth --skip-hooks --skip-agents --non-interactive --prefix <name>`.
+That makes no commit, adds no tracked file (it uses `.git/info/exclude`), installs
+no git hooks and edits no AGENTS.md. Embedded means Dolt runs inside each `bd`
+process; there is no server. Linked worktrees find the main checkout's `.beads/`
+through git's common directory, so every agent shares one database with no
+configuration.
+
+Conventions (the full set is in `TEAM_PROTOCOL.md`):
+
+| Need | Beads primitive |
+|------|-----------------|
+| task | `bd create "Title" -t task -a <role>`; claim with `bd update <id> --claim` (atomic) |
+| dependency | `bd dep add <task> <blocker>` |
+| message | a bead of type `message`; assignee = recipient, open = unread, `bd close <id> -r read` = read |
+| thread | `--deps replies-to:<id>`, shown with `bd show <id> --thread` |
+| inbox | `bd list --assignee <role> --status open --include-infra` (without `--include-infra`, message beads are hidden) |
+| identity | `BEADS_ACTOR=<role>`, exported into every pane |
+
+## Flows
+
+### Spawning a worker
+
+1. validate role and model key; take the project lock (`mkdir`, released on exit)
+2. `git worktree add -b ai/<role>-<stamp> <path> <base>`
+3. write the registry record (role, model, launcher, worktree, branch, base)
+4. split a pane that runs `teamctl _run-agent <root> <role>`; tag it with `@ai_role`
+5. re-tile; record the pane id. If the pane cannot be created, the fresh worktree,
+   branch and record are rolled back.
+
+### A message from lead to worker
+
+1. lead: `bd create "Subject" -t message -a backend -d "…"` — durable, atomic, in Beads
+2. Beads fires `.beads/hooks/on_create` with the bead as JSON on stdin
+3. `beads-nudge` sees an assignee that is not the actor and calls
+   `teamctl nudge backend --quiet --id <bead-id>` in the background
+4. `teamctl` validates role and id, debounces bursts (3 s, under a per-role guard),
+   and types **one fixed line** into the pane:
+   `[ai-team] Beads update for backend (<id>). Run: bd show <id> -- then: bd list …`
+5. the worker runs the command it was shown and reads the body from Beads
+
+The message body never travels through tmux, so there is nothing to quote, escape
+or truncate. The same hook tells the lead when a worker closes a task or marks
+one blocked. Comments fire no hook, by Beads' design.
+
+### Completion
+
+Worker tests → commits on its branch → sends `Done: …` to the lead (summary, test
+status, commit hash, risks) → closes its task. Lead runs `teamctl diff <role>`,
+reviews, then requests changes, cherry-picks, rejects, or asks another worker to
+review. Only the lead changes the main checkout.
+
+## State and file layout
+
+```
+~/bin/                          teamctl + launchers
+~/.config/ai-team/              code, tmux.conf, TEAM_PROTOCOL.md, README.md, config, glm-worker-settings.json
+~/.ai-team/state/<project>/     meta.json, agents/<role>.json, events.jsonl, nudge/
+~/.ai-team/worktrees/<project>/ one directory per worker
+<project>/.beads/               tasks and messages (Beads)
+macOS Keychain                  service "zai-coding-plan"
+```
+
+`<project>` is `<directory-name>-<6 hex of the path hash>`. Nothing of `teamctl`'s
+is written inside the repository. The registry holds process and worktree facts
+only and is reached exclusively through `reg_*` functions, so the JSON files could
+be replaced by another store without touching a command.
+
+## How agents learn the rules
+
+`_run-agent` builds a prompt from a short header (role, kind, model, worktree,
+branch, base) plus `TEAM_PROTOCOL.md` and injects it at launch:
+`--append-system-prompt` for Claude Code, `-c developer_instructions='''…'''` for
+Codex. No CLAUDE.md or AGENTS.md is edited, and only team sessions see the
+protocol. Workers also get a one-sentence kickoff prompt telling them to read
+their inbox (`--no-kickoff` skips it); the lead gets none, because the human
+drives it.
