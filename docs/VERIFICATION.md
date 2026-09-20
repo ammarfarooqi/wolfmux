@@ -6,7 +6,7 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 2 to 4 minutes, 177 checks, isolated from any running team
+tests/smoke.sh                 # 2 to 4 minutes, 181 checks, isolated from any running team
 tests/providers.sh             # the provider table, 116 checks
 tests/docs.sh                  # ~2 seconds, 28 checks, starts nothing
 tests/migration.sh             # ~30 seconds, 24 checks, in a throwaway HOME
@@ -20,7 +20,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 177 of 177 pass (v1.10)
+## smoke.sh: 181 of 181 pass (v1.10.1)
 
 | Area | Checks |
 |------|--------|
@@ -42,7 +42,7 @@ real team was live on the same machine; the real team was unaffected.
 | git | `diff` commits / stat / patch · uncommitted leftovers visible · main checkout untouched by worker commits · `worktrees` lists everyone |
 | the wolf | the session has the `client-attached` popup hook · the splash draws wolf, wordmark and team line · no colour codes outside a terminal · it works outside any project · only the manager pane has the mark and the amber border · the manager pane opens with the wolf · status line and tab title carry it · `WOLFMUX_SPLASH=off` removes the popup and the default restores it · a Claude lead is named `🐺 team/lead`, workers are not |
 | arrangement | by default the lead is the large pane on the left and workers share one column on the right · `lead-top` puts the lead across the top · `tiled` is available, the choice is remembered, an unknown name is refused (exit 64) · the arrangement survives a spawn and a stop |
-| closing and coming back | a lead that exited comes back in place and the worker keeps its pane · asking for the other lead model brings it back as that model · when every agent has exited, `start` opens a fresh session with one pane and marks workers stopped · `--continue` reaches the lead's CLI · a stopped worker returns with `restart` into the arrangement · **a pre-rename team whose agents have all exited is replaced by a fresh one on the new socket** |
+| closing and coming back | a lead that exited comes back in place and the worker keeps its pane · asking for the other lead model brings it back as that model · when every agent has exited, `start` opens a fresh session with one pane and marks workers stopped · `--continue` reaches the lead's CLI · a stopped worker returns with `restart` into the arrangement · with no tmux session left (a reboot), `restart lead [--continue]` starts the team again as the model that led it, in a named team too, and a worker's refusal names the exact two commands, with `--team` and `--continue` · **a pre-rename team whose agents have all exited is replaced by a fresh one on the new socket** |
 | desktop notifications | every Claude agent gets the `Stop` hook, the plugin notifier is silenced and the user's own disabled hook is kept · OSC 9 to the attached terminal with the first line, markdown dropped · the lead is marked · **an OSC 52 and a clear-screen sequence inside a message never reach the terminal** (exactly two control bytes come out: ours) · long messages are cut · no terminal attached → `osascript` with the text as an argument, never a failure · nobody attached → the message is handed to Wolfmux.app, not to `osascript`, and the project is remembered · the app fetches its message exactly once, so its next start is a click · a message it never fetched is not posted late · a click opens a terminal on the team (script with the project and `teamctl attach`) · `WOLFMUX_NOTIFY=lead` keeps workers quiet |
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |

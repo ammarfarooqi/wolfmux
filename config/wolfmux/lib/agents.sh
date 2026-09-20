@@ -535,6 +535,26 @@ cmd_stop() {
   say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
 }
 
+# restart_without_session <role> <resume 0|1> — the tmux session is gone (it was ended, or the
+# machine restarted) and the records remain. Restarting the lead is starting the team again, as
+# the model that led it; a worker needs that session first, and is told the exact commands.
+restart_without_session() {
+  local role="$1" resume="$2" model team_flag="" continue_flag="" start_args
+  model="$(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || true)"
+  if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then team_flag=" --team $TEAM"; fi
+  if [ "$resume" -eq 1 ]; then continue_flag=" --continue"; fi
+  if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
+    die "team '$TEAM' has no session (it was ended, or the machine restarted). Bring the lead back in its last conversation: teamctl start ${model:-<fable|astra>}$team_flag --continue   then: teamctl restart $role$team_flag$continue_flag"
+  fi
+  info "team '$TEAM' has no session (it was ended, or the machine restarted); starting it again."
+  start_args=("$model")
+  if [ "$resume" -eq 1 ]; then start_args+=(--continue); fi
+  # A team that ran without Beads is not asked about Beads again.
+  if ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
+  WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
+  cmd_start "${start_args[@]}"
+}
+
 cmd_restart() {
   local role="" resume=0 pane workdir target
   while [ "$#" -gt 0 ]; do
@@ -552,7 +572,10 @@ cmd_restart() {
   workdir="$(reg_field "$role" workdir)"
   [ -d "$workdir" ] || die "cannot restart '$role': its working directory is gone ($workdir)"
   SESSION="$(session_name_for_project)"
-  tm_session_exists "$SESSION" || die "no team session. Start one first: teamctl start $(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || printf '<fable|astra>')"
+  if ! tm_session_exists "$SESSION"; then
+    restart_without_session "$role" "$resume"
+    return
+  fi
   require_manager restart
   lock_acquire
   # A restart picks up the current policy.

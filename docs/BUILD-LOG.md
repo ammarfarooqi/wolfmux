@@ -382,6 +382,12 @@ group stays forbidden; each of the others is one more table row later.
 `tests/providers.sh`: new, 116 checks. `tests/smoke.sh`: 159 → 177. `tests/docs.sh`: 28 → 28.
 `tests/migration.sh`: 21 → 24. v1.10.0.
 
+v1.10.1, the same night: the machine lost its tmux server, and `teamctl restart lead --continue`
+answered `no team session. Start one first: teamctl start fable`. That line drops the team and
+`--continue`, so following it opened a new conversation and the old one looked lost. Now a
+`restart` of the lead without a session starts the team again, as the model that led it, and
+`--continue` goes with it; a worker's refusal names the exact two commands. `tests/smoke.sh`: 177 → 181.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

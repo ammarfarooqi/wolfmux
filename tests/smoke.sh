@@ -448,6 +448,16 @@ check "start again: status says the session has ended when every agent has exite
 check "start again: when every agent has exited, start opens a fresh session, not the dead one" 'follow start fable --no-attach --skip-beads --continue && sleep 1 && [ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a | wc -l | tr -d " ")" = 1 ] && follow status --json | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")"'
 check "start again: --continue resumes the lead's last conversation" 'teamctl capture lead --all | grep -q "STUB flags=.*--continue"'
 check "start again: a stopped worker kept its worktree and returns with restart" 'follow restart docs && sleep 1 && follow status --json | jq -e "[.agents[] | select(.role == \"docs\")][0].state == \"running\"" && lead_left'
+# The tmux server is gone (a reboot, or tmux was ended): every record remains, no session does.
+follow start astra --team night --no-attach --skip-beads >/dev/null 2>&1
+follow spawn qa flash --team night --no-kickoff >/dev/null 2>&1
+tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
+sleep 1
+check "restart without a session: a worker's refusal names the exact commands, with the team and --continue" 'out="$(follow restart qa --continue --team night 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start astra --team night --continue" && printf "%s" "$out" | grep -q -- "teamctl restart qa --team night --continue" && out="$(follow restart docs --team default 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start fable --continue" && ! printf "%s" "$out" | grep -q -- "--team"'
+check "restart without a session: restart lead --continue starts the team again in the lead's last conversation" 'follow restart lead --continue --team default </dev/null && sleep 1 && follow status --json --team default | jq -e "([.agents[] | select(.role == \"lead\")][0] | .state == \"running\" and .model == \"fable\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")" && teamctl capture lead --team default --all | grep -q "STUB flags=.*--continue"'
+check "restart without a session: the same in a named team, as the model that led it (Codex resumes with: resume --last)" 'follow restart lead --continue --team night </dev/null && sleep 1 && follow status --json --team night | jq -e "[.agents[] | select(.role == \"lead\")][0] | .state == \"running\" and .model == \"astra\"" && teamctl capture lead --team night --all | grep -q "STUB lastarg=--last"'
+check "restart without a session: a plain restart of the lead starts a fresh conversation" 'tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server; sleep 1; follow restart lead --team default </dev/null && sleep 1 && teamctl capture lead --team default --all | grep "STUB flags=" | grep -vq -- "--continue"'
+teamctl destroy --team night --purge --yes >/dev/null 2>&1
 teamctl destroy --worktrees --yes >/dev/null 2>&1
 
 echo "== several teams in one project"

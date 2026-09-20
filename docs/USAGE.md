@@ -232,7 +232,9 @@ read its last output); quitting all of them leaves a window of finished panes. `
 workers are not touched; if everyone had exited, the old window is cleared and a new session
 starts. Workers from before are listed as stopped, with their worktrees — `teamctl restart
 <role> --continue` brings one back with its conversation. `teamctl start … --continue` does
-the same for the lead. To end a team on purpose: `teamctl destroy`.
+the same for the lead. After a reboot no tmux session is left at all: `teamctl restart lead
+--continue` (with `--team <name>` for a named team) starts the team again in the lead's last
+conversation, then `restart` each teammate. To end a team on purpose: `teamctl destroy`.
 
 Notifications and the session names (`🐺 team/lead`, `🐶 team/<role>`) reach an agent when it starts:
 after an update, `teamctl restart <role> --continue`.
