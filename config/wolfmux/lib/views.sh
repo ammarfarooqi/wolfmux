@@ -25,10 +25,10 @@ _status_rows() { # emits one JSON object per agent
     fi
     dirty="$(wt_dirty_count "$workdir")"
     "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$(reg_field "$role" model)" \
-      --arg label "$(reg_field "$role" label)" --arg state "$state" --arg pane "$pane" \
+      --arg label "$(reg_field "$role" label)" --arg family "$(reg_field "$role" family)" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
-      '{role: $role, kind: $kind, model: $model, label: $label, state: $state, pane: $pane,
+      '{role: $role, kind: $kind, model: $model, label: $label, family: $family, state: $state, pane: $pane,
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
         branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir}'

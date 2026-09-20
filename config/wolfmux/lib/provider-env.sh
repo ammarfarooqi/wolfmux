@@ -19,6 +19,7 @@ WOLFMUX_GLM_GUARD_TOKEN="wolfmux-glm-worker-no-anthropic-credential"
 
 # Settings a launcher may take from ~/.config/wolfmux/config (KEY=value lines).
 WOLFMUX_CONFIG_KEYS="WOLFMUX_GLM_AUTH_MODE WOLFMUX_GLM_CONTEXT WOLFMUX_FABLE_MODEL WOLFMUX_ASTRA_MODEL
+WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL
 WOLFMUX_LEAD_PERMISSIONS WOLFMUX_WORKER_PERMISSIONS WOLFMUX_WORKER_SPAWN WOLFMUX_WORKER_ISOLATION WOLFMUX_APPROVAL_TIMEOUT
 WOLFMUX_SPLASH WOLFMUX_NOTIFY WOLFMUX_LAYOUT WOLFMUX_TERMINAL"
 
@@ -202,13 +203,30 @@ wolfmux_resolve_claude() {
 
 # Resolve the Codex CLI: explicit override, PATH, then the copy bundled with the
 # ChatGPT / Codex desktop app.
+# wolfmux_real_file <path> — the file a chain of symlinks ends at, as a physical path
+wolfmux_real_file() {
+  local path="$1" target hops=0
+  while [ -L "$path" ] && [ "$hops" -lt 16 ]; do
+    target="$(readlink "$path")"
+    case "$target" in
+      /*) path="$target" ;;
+      *) path="$(dirname "$path")/$target" ;;
+    esac
+    hops=$((hops + 1))
+  done
+  printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")"
+}
+
+# Codex finds its helper programs (codex-code-mode-host, its command runner) next to the
+# path it was STARTED AS. Through a symlink in ~/bin that is ~/bin, where they are not, and
+# an agent that cannot run a command is no agent. So the real file is what gets executed.
 wolfmux_resolve_codex() {
   local candidate
   for candidate in "${WOLFMUX_CODEX_BIN:-}" "$(command -v codex 2>/dev/null || true)" \
     "/Applications/ChatGPT.app/Contents/Resources/codex" \
     "/Applications/Codex.app/Contents/Resources/codex"; do
     if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-      printf '%s\n' "$candidate"
+      wolfmux_real_file "$candidate"
       return 0
     fi
   done

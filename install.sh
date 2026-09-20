@@ -171,14 +171,35 @@ if [ ! -e "$BIN_DIR/claude-glm-flash" ]; then
   /bin/ln -s claude-glm "$BIN_DIR/claude-glm-flash"
   note "linked: $BIN_DIR/claude-glm-flash -> claude-glm"
 fi
+# The other Claude-subscription models: the same launcher under another name.
+for name in claude-opus claude-sonnet claude-haiku; do
+  if [ ! -e "$BIN_DIR/$name" ] && [ ! -L "$BIN_DIR/$name" ]; then
+    /bin/ln -s claude-fable "$BIN_DIR/$name"
+    note "linked: $BIN_DIR/$name -> claude-fable"
+  fi
+done
 BUNDLED_CODEX="/Applications/ChatGPT.app/Contents/Resources/codex"
-if command -v codex >/dev/null 2>&1; then
+# A wrapper, not a symlink: Codex looks for its helper programs (its command runner among
+# them) next to the path it was started as, and through a symlink that would be ~/bin.
+write_codex_wrapper() {
+  /bin/rm -f "$BIN_DIR/codex"
+  {
+    printf '#!/bin/sh\n# wolfmux-codex-wrapper: the Codex CLI inside ChatGPT.app, started by its real path\n'
+    printf '# (as a symlink, Codex would look for its helper programs in this directory).\n'
+    printf 'exec "%s" "$@"\n' "$BUNDLED_CODEX"
+  } >"$BIN_DIR/codex"
+  /bin/chmod 755 "$BIN_DIR/codex"
+}
+if [ -L "$BIN_DIR/codex" ] && [ "$(readlink "$BIN_DIR/codex")" = "$BUNDLED_CODEX" ]; then
+  write_codex_wrapper
+  note "replaced the symlink $BIN_DIR/codex with a wrapper (Codex could not find its command runner through a symlink)"
+elif command -v codex >/dev/null 2>&1; then
   note "codex already on PATH: $(command -v codex)"
 elif [ -e "$BIN_DIR/codex" ]; then
   note "codex already present: $BIN_DIR/codex"
 elif [ -x "$BUNDLED_CODEX" ]; then
-  /bin/ln -s "$BUNDLED_CODEX" "$BIN_DIR/codex"
-  note "linked: $BIN_DIR/codex -> ChatGPT.app's bundled Codex CLI"
+  write_codex_wrapper
+  note "wrote: $BIN_DIR/codex (starts ChatGPT.app's bundled Codex CLI)"
 else
   note "no Codex CLI found; the Astra lead needs one (https://chatgpt.com/codex)"
 fi

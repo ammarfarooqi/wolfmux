@@ -2,6 +2,8 @@
 # Stand-in for an agent CLI. Shows how it was wired, makes no model call, then
 # echoes whatever gets typed into its pane so notifications can be observed.
 flags=""
+modelarg=""
+codexnotify=false
 name=""
 previous=""
 for arg in "$@"; do
@@ -9,6 +11,8 @@ for arg in "$@"; do
     --dangerously-skip-permissions | --dangerously-bypass-approvals-and-sandbox | --continue) flags="$flags$arg " ;;
   esac
   if [ "$previous" = "--name" ]; then name="$arg"; fi
+  if [ "$previous" = "--model" ]; then modelarg="$arg"; fi
+  case "$arg" in notify=*_notify*) codexnotify=true ;; esac
   previous="$arg"
 done
 echo "STUB role=${TEAM_ROLE:-} actor=${BEADS_ACTOR:-} model=${WOLFMUX_MODEL:-} argc=$#"
@@ -16,6 +20,9 @@ echo "STUB cwd=$PWD branch=$(git branch --show-current 2>/dev/null)"
 echo "STUB leaked=$(env | cut -d= -f1 | grep -E '^(ANTHROPIC_|OPENAI_|CLAUDECODE$|CLAUDE_CODE_CHILD_SESSION$)' | tr '\n' ' ')"
 echo "STUB flags=${flags:-none}"
 echo "STUB name=${name:-none}"
+echo "STUB modelarg=${modelarg:-none}"
+echo "STUB astra_model=${WOLFMUX_ASTRA_MODEL:-none}"
+echo "STUB codexnotify=$codexnotify"
 if [ -n "${WOLFMUX_EXTRA_SETTINGS:-}" ] && [ -r "$WOLFMUX_EXTRA_SETTINGS" ]; then
   echo "STUB settings=$(jq -c '{teams: .env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, mode: .teammateMode, hook: (.hooks.PermissionRequest != null)}' "$WOLFMUX_EXTRA_SETTINGS")"
   echo "STUB guard=$(jq -c '(.hooks.PreToolUse // []) | map(.hooks[].command) | join(" ") | test("_guard")' "$WOLFMUX_EXTRA_SETTINGS")"

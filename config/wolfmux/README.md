@@ -59,6 +59,8 @@ or run your own `bd init` flavour first.
 teamctl spawn backend glm53      # GLM-5.3: substantial implementation
 teamctl spawn frontend glm53
 teamctl spawn qa flash           # GLM-5.3 Flash: simple / repetitive / QA
+teamctl spawn fe-review astra    # any model can join any team: fable · opus · sonnet · haiku · astra
+teamctl spawn x claude:<model-id>   # …or codex:<model-id>, for a model that has no key
 ```
 
 Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under

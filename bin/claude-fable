@@ -1,12 +1,16 @@
 #!/bin/bash
 # claude-fable — Claude Code on the Claude subscription (OAuth /login), pinned to Fable.
+# Also installed as claude-opus, claude-sonnet and claude-haiku (symlinks): the same
+# launcher, the model chosen by the name it is called by.
 #
 # Holds no credential and sets no endpoint. It removes every provider, credential
 # and model override from ITS OWN process environment, then execs the normal
 # `claude` binary, so the only credential left is the subscription login.
 # Your shell environment is not modified.
 #
-#   WOLFMUX_FABLE_MODEL   model to pin (default: claude-fable-5-1[1m])
+#   WOLFMUX_FABLE_MODEL   model to pin (default: claude-fable-5-1[1m]); likewise
+#   WOLFMUX_OPUS_MODEL (claude-opus-5), WOLFMUX_SONNET_MODEL (claude-sonnet-5),
+#   WOLFMUX_HAIKU_MODEL (claude-haiku-4-5-20251001)
 #   WOLFMUX_CLAUDE_BIN    explicit path to the claude binary
 #   WOLFMUX_DRY_RUN=1     print what would run (no secrets) and exit
 #   WOLFMUX_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
@@ -29,7 +33,13 @@ CLAUDE_BIN="$(wolfmux_resolve_claude)" || {
   exit 127
 }
 
-MODEL="${WOLFMUX_FABLE_MODEL:-claude-fable-5-1[1m]}"
+SELF="$(basename "$0")"
+case "$SELF" in
+  claude-opus) MODEL="${WOLFMUX_OPUS_MODEL:-claude-opus-5}" ;;
+  claude-sonnet) MODEL="${WOLFMUX_SONNET_MODEL:-claude-sonnet-5}" ;;
+  claude-haiku) MODEL="${WOLFMUX_HAIKU_MODEL:-claude-haiku-4-5-20251001}" ;;
+  *) MODEL="${WOLFMUX_FABLE_MODEL:-claude-fable-5-1[1m]}" ;;
+esac
 
 if wolfmux_is_claude_subcommand "${1:-}"; then
   exec "$CLAUDE_BIN" "$@"
@@ -47,7 +57,7 @@ fi
 CMD+=("$@")
 
 if [ "${WOLFMUX_DRY_RUN:-}" = "1" ]; then
-  echo "launcher:        claude-fable"
+  echo "launcher:        $SELF"
   echo "billing:         Claude subscription (OAuth login); no key, no custom endpoint"
   echo "scrubbed vars:   ${SCRUBBED:-(none were set)}"
   echo "provider env now: $(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')(none expected)"

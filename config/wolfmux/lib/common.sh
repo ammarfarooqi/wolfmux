@@ -2,7 +2,7 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-WOLFMUX_VERSION="1.6.0"
+WOLFMUX_VERSION="1.7.0"
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
 # This project was first called "ai-team". A team started under that name keeps
@@ -123,11 +123,38 @@ valid_bead_id() {
 
 # --- model table (the only place that knows which CLI serves which model) -----
 # model_info <key> — sets MODEL_KEY MODEL_LAUNCHER MODEL_LABEL MODEL_FAMILY
+# A model is a key from this table, or "claude:<model id>" / "codex:<model id>" for any
+# other model of those two subscriptions. (GLM: the Coding Plan covers only the two ids
+# behind glm53 and flash, so there is no "glm:<id>".)
+valid_model_id() {
+  case "$1" in
+    "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}._\[\]-]*) return 1 ;;
+  esac
+  [ "${#1}" -le 64 ]
+}
+
 model_info() {
-  MODEL_KEY="$1"
+  MODEL_KEY="$1" MODEL_ID=""
   case "$1" in
     fable)
       MODEL_LAUNCHER="claude-fable" MODEL_LABEL="Fable 5.1" MODEL_FAMILY="claude"
+      ;;
+    opus)
+      MODEL_LAUNCHER="claude-opus" MODEL_LABEL="Opus 5" MODEL_FAMILY="claude"
+      ;;
+    sonnet)
+      MODEL_LAUNCHER="claude-sonnet" MODEL_LABEL="Sonnet 5" MODEL_FAMILY="claude"
+      ;;
+    haiku)
+      MODEL_LAUNCHER="claude-haiku" MODEL_LABEL="Haiku 4.5" MODEL_FAMILY="claude"
+      ;;
+    claude:*)
+      valid_model_id "${1#claude:}" || return 1
+      MODEL_ID="${1#claude:}" MODEL_LAUNCHER="claude-fable" MODEL_LABEL="${1#claude:}" MODEL_FAMILY="claude"
+      ;;
+    codex:*)
+      valid_model_id "${1#codex:}" || return 1
+      MODEL_ID="${1#codex:}" MODEL_LAUNCHER="codex-astra" MODEL_LABEL="${1#codex:}" MODEL_FAMILY="codex"
       ;;
     astra)
       MODEL_LAUNCHER="codex-astra" MODEL_LABEL="GPT-6 Astra" MODEL_FAMILY="codex"
@@ -142,13 +169,16 @@ model_info() {
   esac
 }
 
-WOLFMUX_MODEL_KEYS="fable astra glm53 flash"
+WOLFMUX_MODEL_KEYS="glm53 flash fable opus sonnet haiku astra claude:<model-id> codex:<model-id>"
 
 # launcher_path <key> — WOLFMUX_LAUNCHER_<KEY> overrides the default (used by tests).
 launcher_path() {
   local key="$1" upper override
   model_info "$key" || return 1
-  upper="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
+  case "$key" in
+    *:*) upper="$(printf '%s' "$MODEL_FAMILY" | tr '[:lower:]' '[:upper:]')" ;; # claude:<id> / codex:<id>
+    *) upper="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')" ;;
+  esac
   eval "override=\"\${WOLFMUX_LAUNCHER_${upper}:-}\""
   if [ -n "$override" ]; then
     printf '%s\n' "$override"

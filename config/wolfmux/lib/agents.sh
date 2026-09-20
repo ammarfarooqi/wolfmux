@@ -50,8 +50,8 @@ new_record() {
   "$JQ_BIN" -n --arg role "$1" --arg kind "$2" --arg model "$3" --arg label "$MODEL_LABEL" \
     --arg family "$MODEL_FAMILY" --arg launcher "$launcher" --arg workdir "$4" --arg branch "$5" \
     --arg base_ref "$6" --arg base_commit "$7" --arg kickoff "$8" --arg now "$(now_iso)" \
-    --arg spawned_by "${9:-operator}" --arg permissions "$permissions" \
-    '{role: $role, kind: $kind, model: $model, label: $label, family: $family, launcher: $launcher,
+    --arg spawned_by "${9:-operator}" --arg permissions "$permissions" --arg model_id "$MODEL_ID" \
+    '{role: $role, kind: $kind, model: $model, model_id: $model_id, label: $label, family: $family, launcher: $launcher,
       workdir: $workdir, branch: $branch, base_ref: $base_ref, base_commit: $base_commit,
       kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions,
       pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
@@ -82,10 +82,8 @@ cmd_start() {
     esac
     shift
   done
-  case "$model" in
-    fable | astra) ;;
-    *) die_usage "usage: teamctl start <fable|astra> [--no-attach] [--continue] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]" ;;
-  esac
+  [ -n "$model" ] && model_info "$model" ||
+    die_usage "usage: teamctl start <fable|astra|…> [--no-attach] [--continue] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]   (models: $WOLFMUX_MODEL_KEYS)"
   require_tools
   load_project
   require_manager start
@@ -197,7 +195,7 @@ cmd_spawn() {
     esac
     shift
   done
-  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <glm53|flash|fable|astra> [--base <ref>] [--no-kickoff]"
+  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
   require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
@@ -323,7 +321,7 @@ write_agent_settings() {
     * (if $notify_command != ""
        then {hooks: {Stop: [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}]}} else {} end)
     * (if $guard_command != ""
-       then {hooks: {PreToolUse: [{matcher: "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Bash",
+       then {hooks: {PreToolUse: [{matcher: "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Bash|mcp__.*",
                                    hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
     * (if $kind == "worker" and $mode == "lead"
        then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $permission_command, timeout: $timeout}]}]}}
@@ -332,7 +330,7 @@ write_agent_settings() {
 }
 
 cmd_run_agent() {
-  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name
+  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id
   [ -n "$root" ] && [ -n "$role" ] || die_usage "internal use: _run-agent <root> <role> [--continue]"
   if [ "${3:-}" = "--continue" ]; then resume=1; fi
   export WOLFMUX_ROOT="$root"
@@ -360,6 +358,7 @@ cmd_run_agent() {
   cd "$workdir" || die "cannot enter $workdir"
 
   permissions="$(reg_field "$role" permissions)"
+  model_id="$(reg_field "$role" model_id)" # only for claude:<id> / codex:<id>
   if [ "$family" != "codex" ]; then
     WOLFMUX_EXTRA_SETTINGS="$(write_agent_settings "$role")"
     export WOLFMUX_EXTRA_SETTINGS
@@ -377,6 +376,11 @@ cmd_run_agent() {
       args=(-c "developer_instructions='''
 $prompt
 '''")
+      if [ -n "$model_id" ]; then export WOLFMUX_ASTRA_MODEL="$model_id"; fi
+      # Codex has no Stop hook; its `notify` program is the same thing under another name.
+      if notify_wanted "$(reg_field "$role" kind)"; then
+        args+=(-c "notify=[\"$TEAMCTL_SELF\",\"_notify\",\"--codex\"]")
+      fi
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-bypass-approvals-and-sandbox); fi
       if [ "$resume" -eq 1 ]; then
         args+=(resume --last)
@@ -388,6 +392,7 @@ $prompt
       # The same marks as on the pane border, inside Claude Code's own frame: wolf = manager, dog = teammate.
       if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then name="$WOLFMUX_LEAD_MARK team/$role"; else name="$WOLFMUX_WORKER_MARK team/$role"; fi
       args=(--append-system-prompt "$prompt" --name "$name")
+      if [ -n "$model_id" ]; then args+=(--model "$model_id"); fi
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
       if [ "$resume" -eq 1 ]; then
         args+=(--continue)
@@ -480,7 +485,7 @@ _inside_worktrees() {
 # uncommitted files or commits that are not in your current branch is refused, and the
 # refusal lists them. With --force the same list is shown and one question is asked.
 cmd_remove() {
-  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane
+  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
@@ -506,12 +511,23 @@ cmd_remove() {
   done
 
   lock_acquire
+  # All or nothing: nobody is removed when one of them cannot be.
+  if [ "$force" -ne 1 ]; then
+    for role in $roles; do
+      path="$(reg_field "$role" workdir)"
+      branch="$(reg_field "$role" branch)"
+      unmerged=0
+      if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
+      if [ "$(wt_dirty_count "$path")" != "0" ] || [ "$unmerged" != "0" ]; then holding="$holding $role"; fi
+    done
+  fi
   for role in $roles; do
     path="$(reg_field "$role" workdir)"
     branch="$(reg_field "$role" branch)"
     dirty="$(wt_dirty_count "$path")"
     unmerged=0
     if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
+    if [ -n "$holding" ] && [ "$dirty" = "0" ] && [ "$unmerged" = "0" ]; then continue; fi # reported below, removed never
     if [ "$dirty" != "0" ] || [ "$unmerged" != "0" ]; then
       say "$role still holds work that is nowhere else:"
       if [ "$unmerged" != "0" ]; then
@@ -525,8 +541,7 @@ cmd_remove() {
       if [ "$force" -ne 1 ]; then
         say "  keep it:    commit in that worktree, then: git merge $branch"
         say "  discard it: teamctl remove $role --force"
-        lock_release
-        die "'$role' was not removed."
+        continue
       fi
       if [ "$assume_yes" -ne 1 ]; then
         confirm "Discard all of that and remove '$role'?" || { lock_release; die "aborted; nothing was removed (pass --yes to skip this question)"; }
@@ -561,6 +576,7 @@ cmd_remove() {
   done
   layout_apply
   lock_release
+  [ -z "$holding" ] || die "nothing was removed:$holding still hold$([ "$(printf '%s' "$holding" | wc -w | tr -d ' ')" = "1" ] && printf s) work."
 }
 
 _destroy_worker_artifacts() {

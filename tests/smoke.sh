@@ -20,6 +20,8 @@ export WOLFMUX_LAUNCHER_FABLE="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_ASTRA="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_GLM53="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_FLASH="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_OPUS="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_SONNET="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_HAIKU="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_CLAUDE="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_CODEX="$REPO/tests/stub-agent" # for claude:<id> / codex:<id>
 export ECC_DISABLED_HOOKS="post:example" # a hook the user already disables; teamctl must keep it
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
 teamctl() { "$REPO/bin/teamctl" "$@"; }
@@ -69,6 +71,17 @@ check "claude-glm: declares a 200k context window, so Claude Code prints no mode
 check "claude-glm: 1m uses the [1m] suffix instead; a number of yours is declared; nonsense falls back with a warning" 'glm_dry WOLFMUX_GLM_CONTEXT=1m | grep -q "^context window: *1M" && glm_dry WOLFMUX_GLM_CONTEXT=128000 | grep -q "^context window: *128000 tokens" && glm_dry WOLFMUX_GLM_CONTEXT=huge | grep -q "must be .1m. or a number"'
 check "claude-glm: a context value from outside never reaches the worker (it is scrubbed, then set)" 'glm_dry CLAUDE_CODE_MAX_CONTEXT_TOKENS=5 | grep -q "^context window: *200000 tokens"'
 
+# Codex looks for its helper binaries next to the path it was started as. Started through a
+# symlink in ~/bin it could not find its command runner and the Astra lead could run nothing.
+/bin/mkdir -p "$WORK/app/Resources" "$WORK/linkbin"
+printf '#!/bin/bash\nexit 0\n' >"$WORK/app/Resources/codex"
+/bin/chmod 755 "$WORK/app/Resources/codex"
+/bin/ln -s "$WORK/app/Resources/codex" "$WORK/linkbin/codex"
+REAL_CODEX="$(cd "$WORK/app/Resources" && pwd -P)/codex"
+check "codex-astra: starts Codex by its real path, never through a symlink" 'WOLFMUX_DRY_RUN=1 WOLFMUX_CODEX_BIN="$WORK/linkbin/codex" "$REPO/bin/codex-astra" | grep -qF "would exec:      $REAL_CODEX "'
+for name in opus sonnet haiku; do /bin/ln -s "$REPO/bin/claude-fable" "$WORK/linkbin/claude-$name"; done
+check "claude-opus / -sonnet / -haiku: the same subscription launcher, each pinned to its model" 'WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-5" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-opus" | grep -q -- "--model claude-opus-5" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-haiku" | grep -q -- "--model claude-haiku-4-5" && WOLFMUX_DRY_RUN=1 WOLFMUX_SONNET_MODEL=claude-sonnet-9 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-9" && WOLFMUX_DRY_RUN=1 "$REPO/bin/claude-fable" | grep -q -- "--model claude-fable-5-1"'
+
 echo "== lifecycle"
 teamctl start astra --no-attach $START_FLAGS >/dev/null 2>&1
 check "start: session running, lead registered" 'teamctl status --json | jq -e ".session_running and (.agents[0].role == \"lead\")"'
@@ -94,6 +107,20 @@ check "validation: a role an older version let through (capitals) can still be l
 check "validation: a role name can never leave the registry directory" 'teamctl stop "../backend"; [ $? -eq 64 ] && teamctl capture "a/b"; [ $? -eq 64 ]'
 /bin/rm -f "$LEGACY_RECORD"
 check "validation: flag without value reports usage (exit 64)" 'teamctl spawn x glm53 --base; [ $? -eq 64 ]'
+
+echo "== any model for any teammate"
+teamctl spawn fe-review astra --no-kickoff >/dev/null 2>&1
+teamctl spawn summary sonnet --no-kickoff >/dev/null 2>&1
+teamctl spawn triage claude:claude-haiku-4-5-20251001 --no-kickoff >/dev/null 2>&1
+teamctl spawn second codex:gpt-6-astra-mini --no-kickoff >/dev/null 2>&1
+sleep 2
+agent() { teamctl status --json | jq -c --arg role "$1" '.agents[] | select(.role == $role) | {label, family, state}'; }
+check "models: a Codex teammate in a team that is led by another model" '[ "$(agent fe-review)" = "{\"label\":\"GPT-6 Astra\",\"family\":\"codex\",\"state\":\"running\"}" ] && teamctl capture fe-review --all | grep -q "STUB role=fe-review"'
+check "models: a Claude-subscription teammate (sonnet) beside GLM workers" '[ "$(agent summary)" = "{\"label\":\"Sonnet 5\",\"family\":\"claude\",\"state\":\"running\"}" ] && teamctl capture summary --all | grep -q "STUB guard=true"'
+check "models: any model id of a family — claude:<id> and codex:<id> reach the CLI" 'teamctl capture triage --all | grep -q "STUB modelarg=claude-haiku-4-5-20251001" && teamctl capture second --all | grep -q "STUB astra_model=gpt-6-astra-mini"'
+check "models: a Codex teammate reports finished turns too (notify program set)" 'teamctl capture fe-review --all | grep -q "STUB codexnotify=true"'
+check "models: nonsense is refused before anything is created (exit 64)" 'for m in gpt claude: "claude:bad;id" "glm:glm-9" "codex:a b"; do teamctl spawn bogus "$m"; [ $? -eq 64 ] || exit 1; done; [ -z "$(git branch --list "ai/bogus-*")" ]'
+for role in fe-review summary triage second; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
 
 echo "== the wolf (cosmetic: it may never break a command)"
 SESSION_NAME="$(teamctl status --json | jq -r .session)"
@@ -176,6 +203,10 @@ check "guard: it may read the lead's checkout, never a teammate's work in progre
 check "guard: ordinary shell work passes" 'all allow Bash "$(sh "npm test")" "$(sh "git status && git add -A && git commit -m wip")" "$(sh "git checkout -- src/app.ts")" "$(sh "git push -u origin HEAD")" "$(sh "cat $ROOT_REAL/.env.example")" "$(sh "cp $ROOT_REAL/.env .")" "$(sh "teamctl status")" "$(sh "bd list --assignee backend --status open --include-infra")" "$(sh "git rebase main")"'
 check "guard: shell commands that reach into other worktrees or write into the lead's checkout are refused" 'all deny Bash "$(sh "cat $QA_TREE/secret.txt")" "$(sh "cat $(cd "$QA_TREE" && pwd -P)/secret.txt")" "$(sh "cd $ROOT_REAL && git commit -am x")" "$(sh "git -C $ROOT_REAL reset --hard")" "$(sh "rm -rf $ROOT_REAL/src")" "$(sh "cp fix.ts $ROOT_REAL/src/")" "$(sh "echo x > $ROOT_REAL/notes.txt")"'
 check "guard: branches, worktrees, tmux and pushes to main are the lead's" 'all deny Bash "$(sh "git switch main")" "$(sh "git checkout main")" "$(sh "git checkout -b feature")" "$(sh "git branch -D ai/qa-1")" "$(sh "git worktree add ../x")" "$(sh "tmux capture-pane -p -t %0")" "$(sh "git push origin main")" "$(sh "git push --force origin +HEAD:main")"'
+check "guard: words are not commands — prose in quotes and heredocs never triggers it" 'all allow Bash "$(sh "git commit -m \"note: do not use tmux directly; git checkout main is how you go back\"")" "$(sh "bd create \"Use tmux?\" -t message -a lead -d \"should I git switch main, or rm the file in $ROOT_REAL/docs?\"")" "$(sh "git commit -m \"cleanup: rm stale fixtures, docs live in $ROOT_REAL/docs now\"")" "$(sh "cat $ROOT_REAL/.env; rm tmpfile")" "$(jq -cn "{command: \"git commit -F - <<EOF\\nfix: tmux pane handling\\n\\ngit checkout main is documented, rm -rf too\\nEOF\"}")"'
+check "guard: a quoted PATH is still a path" 'all deny Bash "$(sh "cd \"$ROOT_REAL\" && ls")" "$(sh "cat \"$QA_TREE/notes.md\"")" "$(sh "rm -rf \"$ROOT_REAL/src\"")" && all deny Read "$(file "$OWN_TREE/nope/../../$(basename "$QA_TREE")/x")"'
+mcp() { jq -cn --arg p "$1" '{path: $p, content: "text that mentions tmux and git checkout main"}'; }
+check "guard: MCP tools are held to the same lanes" '[ "$(guard mcp__filesystem__write_file "$(mcp "$ROOT_REAL/README.md")")" = deny ] && [ "$(guard mcp__filesystem__read_file "$(mcp "$QA_TREE/README.md")")" = deny ] && [ "$(guard mcp__filesystem__write_file "$(mcp "$OWN_TREE/README.md")")" = allow ] && [ "$(guard mcp__filesystem__read_file "$(mcp "$ROOT_REAL/README.md")")" = allow ] && [ "$(guard mcp__github__create_issue "$(jq -cn "{title: \"x\", body: \"see /etc/hosts and tmux\"}")")" = allow ]'
 check "guard: the lead is not guarded, and an agent it cannot place is allowed (fails open)" '[ -z "$(file "$QA_TREE/x" | as_write | TEAM_ROLE=lead WOLFMUX_WORKTREE="$OWN_TREE" "$REPO/bin/teamctl" _guard)" ] && [ -z "$(file "$QA_TREE/x" | as_write | TEAM_ROLE=backend "$REPO/bin/teamctl" _guard)" ]'
 teamctl policy worker-isolation off >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
@@ -265,6 +296,8 @@ check "destroy: says which workers it kept, why, and how to keep or discard thei
 check "remove: without --force, work is never discarded, and the refusal says what would be lost" 'out="$(teamctl remove backend 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "1 commit" && printf "%s" "$out" | grep -q "feat: work" && printf "%s" "$out" | grep -q "uncommitted" && [ -d "$BACKEND_DIR" ]'
 check "remove: a worker cannot remove anyone (exit 77)" 'TEAM_ROLE=qa teamctl remove backend --force --yes; [ $? -eq 77 ] && [ -d "$BACKEND_DIR" ]'
 check "remove: --force needs a yes when nobody can be asked" '! teamctl remove backend --force </dev/null && [ -d "$BACKEND_DIR" ]'
+jq -n '{role: "idle-one", kind: "worker", model: "glm53", label: "GLM-5.3", family: "claude", launcher: "/bin/true", workdir: "/nonexistent/wolfmux", branch: "ai/idle-one-1", base_ref: "main", base_commit: "", kickoff: "0", spawned_by: "operator", permissions: "skip", pane_id: "", state: "stopped"}' >"$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/idle-one.json"
+check "remove: all or nothing — one worker that holds work stops the whole command" 'teamctl remove idle-one backend; [ $? -eq 1 ] && teamctl status --json | jq -e "[.agents[].role] | (index(\"idle-one\") != null) and (index(\"backend\") != null)" && teamctl remove idle-one && ! teamctl status --json | jq -e ".agents[] | select(.role == \"idle-one\")"'
 BACKEND_BRANCH="$(git -C "$BACKEND_DIR" branch --show-current)"
 check "remove --force --yes: worktree, branch and record are gone; the main checkout is untouched" 'teamctl remove backend --force --yes && [ ! -d "$BACKEND_DIR" ] && ! git rev-parse -q --verify "refs/heads/$BACKEND_BRANCH" && ! teamctl status --json | jq -e ".agents[] | select(.role == \"backend\")" && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && ! git worktree list | grep -q backend'
 PRECIOUS="$WORK/precious"

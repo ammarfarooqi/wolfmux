@@ -41,14 +41,19 @@ for name in teamctl claude-fable codex-astra claude-glm; do
     note "removed: $BIN_DIR/$name"
   fi
 done
-if [ -L "$BIN_DIR/claude-glm-flash" ]; then
-  /bin/rm -f "$BIN_DIR/claude-glm-flash"
-  note "removed: $BIN_DIR/claude-glm-flash"
-fi
+for name in claude-glm-flash claude-opus claude-sonnet claude-haiku; do
+  if [ -L "$BIN_DIR/$name" ]; then
+    /bin/rm -f "$BIN_DIR/$name"
+    note "removed: $BIN_DIR/$name"
+  fi
+done
 # Only our own symlink to the app-bundled CLI; a real codex install is left alone.
 if [ -L "$BIN_DIR/codex" ] && [ "$(readlink "$BIN_DIR/codex")" = "/Applications/ChatGPT.app/Contents/Resources/codex" ]; then
   /bin/rm -f "$BIN_DIR/codex"
   note "removed: $BIN_DIR/codex (symlink)"
+elif [ -f "$BIN_DIR/codex" ] && grep -q 'wolfmux-codex-wrapper' "$BIN_DIR/codex" 2>/dev/null; then
+  /bin/rm -f "$BIN_DIR/codex"
+  note "removed: $BIN_DIR/codex (wrapper)"
 fi
 /bin/rmdir "$BIN_DIR" 2>/dev/null && note "removed empty $BIN_DIR" || true
 

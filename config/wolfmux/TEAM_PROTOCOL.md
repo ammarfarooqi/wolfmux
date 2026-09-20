@@ -85,6 +85,15 @@ integration; you do not do the bulk implementation yourself.
    teamctl spawn frontend glm53
    teamctl spawn qa flash           # GLM-5.3 Flash: simple, repetitive, QA, integration checks
    ```
+   Any model can join any team, whatever model leads it. GLM is the default for
+   workers; use another model when the human asks for it or the task needs it:
+   ```bash
+   teamctl spawn fe-review astra    # GPT-6 Astra (Codex CLI), e.g. a second opinion on the frontend
+   teamctl spawn summary sonnet     # Claude: fable · opus · sonnet · haiku
+   teamctl spawn x claude:<model-id>   # or codex:<model-id>, for a model without a key
+   ```
+   When the human says "spawn a teammate for X", that means `teamctl spawn`, a Beads
+   task for it, and nothing else: not a subagent, not a new terminal.
    Create and assign the beads first, then spawn: a new worker reads its inbox on start.
    Give workers disjoint files where you can; say so in the task.
 3. **Watch structured state, not terminals.** `teamctl status` (process + branch

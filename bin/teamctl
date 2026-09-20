@@ -26,10 +26,12 @@ usage() {
 teamctl — tmux panes, models, worktrees and lifecycle for your AI team
 
   Lead  (the only manager; start/stop/restart/destroy/policy/approve are reserved for it and for you)
-    teamctl start <fable|astra> [--no-attach] [--continue] [--init-beads|--skip-beads]
+    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
   Workers
-    teamctl spawn <role> <glm53|flash|fable|astra> [--base <ref>] [--no-kickoff]
+    teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]
+        models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
+                claude:<model-id> · codex:<model-id>      any model in any team, whoever leads
     teamctl stop <role>                               close the pane; worktree, branch and record stay
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else

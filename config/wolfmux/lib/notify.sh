@@ -190,7 +190,12 @@ cmd_open_team() {
 # cmd_notify — internal (`teamctl _notify`): Stop hook, JSON on stdin
 cmd_notify() {
   local input role body tty sent=0 osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}"
-  input="$(/bin/cat 2>/dev/null || true)"
+  if [ "${1:-}" = "--codex" ]; then
+    # Codex: `notify` program, JSON as the last argument, "last-assistant-message"
+    input="$(printf '%s' "${2:-}" | "$JQ_BIN" -c '{last_assistant_message: (.["last-assistant-message"] // "")}' 2>/dev/null || true)"
+  else
+    input="$(/bin/cat 2>/dev/null || true)"
+  fi
   [ -n "$JQ_BIN" ] || return 0
   role="${TEAM_ROLE:-agent}"
   body="$role: $(notify_text "$input")"

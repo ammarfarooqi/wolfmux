@@ -67,6 +67,29 @@ guard_tokenize() {
   printf '%s' "$c"
 }
 
+# guard_strip_prose <tokenized command> — words are not commands. A commit message or a
+# Beads description may say "tmux" or "git checkout main" or name the lead's checkout;
+# only what the shell would run counts. Heredoc bodies go, then quoted text goes, unless
+# it looks like a path (starts with one of our tokens, /, ~, ./ or ../): `cd "/some dir"`
+# is still a cd.
+guard_strip_prose() {
+  local mark=$'\001'
+  printf '%s\n' "$1" |
+    awk '
+      skipping { if ($0 ~ "^[[:space:]]*" marker "[[:space:]]*[)\"]*[[:space:]]*$") skipping = 0; next }
+      { print }
+      match($0, /<<-?[[:space:]]*["\047\\]?[A-Za-z_][A-Za-z0-9_]*/) {
+        marker = substr($0, RSTART, RLENGTH); sub(/^<<-?[[:space:]]*["\047\\]?/, "", marker); skipping = 1
+      }' |
+    tr '\n' ' ' |
+    sed -E \
+      -e 's/"((@[A-Z]+@|~|\.{0,2}\/)[^"]*)"/'"$mark"'\1'"$mark"'/g' \
+      -e "s/'((@[A-Z]+@|~|\.{0,2}\/)[^']*)'/$mark\\1$mark/g" \
+      -e 's/"[^"]*"/ /g' \
+      -e "s/'[^']*'/ /g" \
+      -e "s/$mark/\"/g"
+}
+
 # guard_shell <command> — prints a reason when the command reaches outside
 guard_shell() {
   local c word
@@ -78,6 +101,7 @@ guard_shell() {
   c="$(guard_tokenize "$c" @TREES@ "$GUARD_TREES" "$WOLFMUX_DATA/worktrees")"
   c="$(guard_tokenize "$c" @STATE@ "$GUARD_STATE" "$WOLFMUX_DATA/state")"
   c="$(guard_tokenize "$c" @ROOT@ "$GUARD_ROOT" "${WOLFMUX_ROOT:-}")"
+  c="$(guard_strip_prose "$c")"
   local edge='(^|[;&|(){}[:space:]])' git='git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:]]*)?)*[[:space:]]+'
 
   case "$c" in
@@ -111,7 +135,7 @@ guard_shell() {
       if printf '%s' "$c" | grep -Eq "${edge}(cd|pushd)[[:space:]]+[\"']?@ROOT@" ||
         printf '%s' "$c" | grep -Eq "(-C|--git-dir|--work-tree)[[:space:]=]*[\"']?@ROOT@" ||
         printf '%s' "$c" | grep -Eq ">[>|]?[[:space:]]*[\"']?@ROOT@" ||
-        printf '%s' "$c" | grep -Eq "${edge}(rm|mv|rmdir|chmod|chown|ln|truncate|dd|tee|install|sed[[:space:]]+-[a-zA-Z]*i|perl[[:space:]]+-[a-zA-Z]*i)([[:space:]]|\$)" ||
+        printf '%s' "$c" | grep -Eq "${edge}(rm|mv|rmdir|chmod|chown|ln|truncate|dd|tee|install|sed[[:space:]]+-[a-zA-Z]*i[^[:space:];&|]*|perl[[:space:]]+-[a-zA-Z]*i[^[:space:];&|]*)[[:space:]][^;&|]*@ROOT@" ||
         printf '%s' "$c" | grep -Eq "${edge}(cp|rsync|ditto)[[:space:]][^;&|]*@ROOT@[^[:space:];&|]*[\"']?[[:space:]]*(\$|[;&|])"; then
         printf "the lead's checkout (%s) is read-only for you; that command would change it." "$GUARD_ROOT" && return 0
       fi
@@ -159,10 +183,28 @@ cmd_guard() {
       target="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.file_path // .tool_input.path // ""' 2>/dev/null || true)"
       [ -n "$target" ] || return 0
       path="$(guard_abspath "$target" "$cwd")"
+      case "$path" in */../* | */..) guard_deny "'$target' does not resolve to a plain path." && return 0 ;; esac
       if guard_inside "$path" "$GUARD_OWN"; then return 0; fi
       if guard_inside "$path" "$GUARD_TREES" || guard_inside "$path" "$GUARD_STATE" || [ "$path" = "$GUARD_TREES" ] || [ "$path" = "$GUARD_STATE" ]; then
         guard_deny "'$target' is another teammate's worktree or teamctl's state; their work in progress is not yours to read."
       fi
+      ;;
+    mcp__*)
+      # An MCP tool's input has no fixed shape: every string that is an absolute path counts.
+      # Another teammate's worktree and teamctl's state are off limits for any of them; the
+      # lead's checkout only for a tool whose name says it changes things.
+      while IFS= read -r target; do
+        case "$target" in /* | "~"/*) ;; *) continue ;; esac
+        path="$(guard_abspath "$target" "$cwd")"
+        if guard_inside "$path" "$GUARD_OWN"; then continue; fi
+        if guard_inside "$path" "$GUARD_TREES" || guard_inside "$path" "$GUARD_STATE"; then
+          guard_deny "'$target' is another teammate's worktree or teamctl's state." && return 0
+        fi
+        if [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT" &&
+          printf '%s' "$tool" | grep -Eiq '(write|edit|create|delete|remove|move|rename|patch|apply|append|insert|replace|mkdir|upload|save)'; then
+          guard_deny "'$target' is in the lead's checkout, which is read-only for you." && return 0
+        fi
+      done < <(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input | [.. | strings] | .[]' 2>/dev/null | head -100)
       ;;
     Bash)
       target="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.command // ""' 2>/dev/null || true)"

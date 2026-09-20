@@ -74,9 +74,12 @@ _doc_tools() {
 }
 
 _doc_fable() {
-  local bin inherited auth_json auth_method
+  local bin inherited auth_json auth_method other
   _head "Lead option 1 — Claude Code + Fable 5.1   (expected billing: Claude subscription)"
   _doc_launcher claude-fable
+  for other in claude-opus claude-sonnet claude-haiku; do
+    if [ -x "$WOLFMUX_BIN_DIR/$other" ]; then _ok "launcher  $other (same login, another model: teamctl spawn <role> ${other#claude-})"; else _note "launcher $other is missing; ./install.sh links it"; fi
+  done
   if bin="$(wolfmux_resolve_claude)"; then _ok "claude    $bin  ($("$bin" --version 2>/dev/null | head -1))"; else _fail "Claude Code CLI not found"; fi
   inherited="$(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
   case " $inherited" in *" ANTHROPIC_API_KEY "*) _risk "ANTHROPIC_API_KEY is set in this environment. claude-fable removes it, but plain 'claude' would bill the Anthropic API." ;; *) _ok "ANTHROPIC_API_KEY is not inherited" ;; esac

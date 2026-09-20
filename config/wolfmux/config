@@ -48,6 +48,9 @@
 # iterm | terminal (default: the one you last attached from, else iTerm2 if installed)
 #WOLFMUX_TERMINAL=iterm
 
-# Model pins.
+# Model pins (what the keys fable, opus, sonnet, haiku and astra mean).
 #WOLFMUX_FABLE_MODEL=claude-fable-5-1[1m]
+#WOLFMUX_OPUS_MODEL=claude-opus-5
+#WOLFMUX_SONNET_MODEL=claude-sonnet-5
+#WOLFMUX_HAIKU_MODEL=claude-haiku-4-5-20251001
 #WOLFMUX_ASTRA_MODEL=gpt-6-astra
