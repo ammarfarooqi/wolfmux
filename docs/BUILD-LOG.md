@@ -379,8 +379,8 @@ Novita, SiliconFlow, forbidden by [GOALS.md](GOALS.md)), a third CLI family (Gem
 Grok Build, Mistral Vibe), a base-URL setting, and the China-region endpoints. The first
 group stays forbidden; each of the others is one more table row later.
 
-`tests/providers.sh`: new, N checks. `tests/smoke.sh`: 159 → N. `tests/docs.sh`: 28 → N.
-`tests/migration.sh`: 21 → N. v1.10.0.
+`tests/providers.sh`: new, 114 checks. `tests/smoke.sh`: 159 → 177. `tests/docs.sh`: 28 → 28.
+`tests/migration.sh`: 21 → 24. v1.10.0.
 
 ## Footprint on the machine
 
