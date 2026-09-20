@@ -278,6 +278,16 @@ teamctl deny A2 "use npm ci instead" >/dev/null 2>&1
 sleep 2
 check "lead mode: deny -> the worker's CLI receives deny with the reason" 'jq -e ".hookSpecificOutput.decision.behavior == \"deny\" and (.hookSpecificOutput.decision.message | contains(\"use npm ci instead\"))" "$WORK/hook2.out"'
 check "lead mode: no answer -> no decision, so the worker's own prompt appears" 'out="$(printf "%s" "$HOOK_IN" | WOLFMUX_APPROVAL_TIMEOUT=2 TEAM_ROLE=qa teamctl _permission-hook)"; [ -z "$out" ] && teamctl approvals --all | grep -q "A3 .*expired"'
+# The same setting from ~/.config/wolfmux/config (a copy of the program folder with its own config file).
+/bin/mkdir -p "$WORK/home-with-config"
+for entry in "$REPO"/config/wolfmux/*; do [ "$(basename "$entry")" = "config" ] || /bin/ln -s "$entry" "$WORK/home-with-config/"; done
+printf 'WOLFMUX_APPROVAL_TIMEOUT=2\n' >"$WORK/home-with-config/config"
+printf '%s' "$HOOK_IN" >"$WORK/hook-in.json"
+WOLFMUX_HOME="$WORK/home-with-config" TEAM_ROLE=qa "$REPO/bin/teamctl" _permission-hook <"$WORK/hook-in.json" >/dev/null 2>&1 &
+CONFIG_HOOK_PID=$!
+sleep 6
+check "lead mode: the waiting time is also read from the config file" 'grep -l "no decision within 2s" "$WOLFMUX_DATA"/state/*/approvals/A4.json'
+kill "$CONFIG_HOOK_PID" >/dev/null 2>&1
 teamctl policy worker-permissions ask >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
 sleep 2
@@ -386,6 +396,10 @@ teamctl remove scribe --team review --force --yes >/dev/null 2>&1
 check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "-a review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
 check "teams: a notification finds the right team by identity" 'teamctl nudge review.backend --id abc-9 && sleep 1 && teamctl capture backend --team review -n 12 | grep -q "Beads update for review.backend (abc-9)" && ! teamctl capture backend --team default -n 12 | grep -q "abc-9"'
 check "teams: a lead manages its own team only (exit 77 for another team)" 'TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend --team default; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"stopped\"" && teamctl status --json --team default | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"running\""'
+(TEAM_ROLE=backend WOLFMUX_TEAM=review "$REPO/bin/teamctl" _permission-hook <"$WORK/hook-in.json" >"$WORK/hook-review.out" 2>/dev/null) &
+sleep 3
+check "teams: a permission request in a named team is filed with, and announced to, its own lead" 'teamctl approvals --team review | grep -q "A1 .*backend .*pending" && teamctl capture lead --team review -n 12 | grep -q "Permission request A1 from backend" && ! teamctl approvals --team default | grep -q "^A[0-9].* pending "'
+check "teams: another team's lead cannot decide it (exit 77); its own lead can, and the worker's CLI receives allow" 'TEAM_ROLE=lead WOLFMUX_TEAM=default teamctl approve A1 --team review; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl approve A1 && sleep 2 && jq -e ".hookSpecificOutput.decision.behavior == \"allow\"" "$WORK/hook-review.out"'
 check "teams: desktop notifications name the team" 'printf "%s" "{\"last_assistant_message\":\"review done\"}" | TEAM_ROLE=lead WOLFMUX_TEAM=review WOLFMUX_NOTIFY_TTY="$WORK/tty-team" notify && grep -q "🐺 review/lead: review done" "$WORK/tty-team" && [ "$(sed -n 2p "$WOLFMUX_DATA/notify/last")" = review ]'
 check "teams: a bad team name is refused (exit 64)" 'for name in "Bad Name" "a/b" "../x" "x."; do teamctl start fable --team "$name" --no-attach --skip-beads; [ $? -eq 64 ] || exit 1; done'
 if [ "$HAVE_BD" -eq 1 ]; then

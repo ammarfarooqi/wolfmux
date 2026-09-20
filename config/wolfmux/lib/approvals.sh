@@ -9,8 +9,13 @@
 # decision back to the worker's CLI. No answer in time: the hook returns nothing
 # and the normal prompt appears in the worker's pane, so a human can still decide.
 
-APPROVAL_TIMEOUT="${WOLFMUX_APPROVAL_TIMEOUT:-600}"
-case "$APPROVAL_TIMEOUT" in "" | *[!0-9]*) APPROVAL_TIMEOUT=600 ;; esac
+# approval_timeout — seconds a worker waits for the lead's decision. Read when it is needed,
+# not when this file is sourced: ~/.config/wolfmux/config is loaded after the modules.
+approval_timeout() {
+  local seconds="${WOLFMUX_APPROVAL_TIMEOUT:-600}"
+  case "$seconds" in "" | *[!0-9]*) seconds=600 ;; esac
+  printf '%s\n' "$seconds"
+}
 
 approvals_dir() { printf '%s/approvals\n' "$STATE_DIR"; }
 
@@ -136,7 +141,7 @@ cmd_deny() {
 # internal: the PermissionRequest hook of a worker. Must never break the worker:
 # every failure path prints nothing and exits 0, which means "show the usual prompt".
 cmd_permission_hook() {
-  local input role tool summary id deadline status
+  local input role team tool summary id deadline status timeout
   set +e
   input="$(/bin/cat)"
   role="${TEAM_ROLE:-}"
@@ -144,8 +149,12 @@ cmd_permission_hook() {
   [ -n "$TMUX_BIN" ] && [ -n "$JQ_BIN" ] && [ -n "$GIT_BIN" ] || exit 0
   ROOT="$(resolve_root 2>/dev/null)" || exit 0
   PROJECT_KEY="$(project_key "$ROOT")"
-  STATE_DIR="$WOLFMUX_DATA/state/$PROJECT_KEY"
-  WORKTREES_DIR="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
+  PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
+  PROJECT_TREES="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
+  # The worker's own team: its approvals, its session, its lead. Never another team's.
+  team="${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}"
+  valid_team_name "$team" || exit 0
+  team_paths "$team"
   [ -d "$STATE_DIR" ] || exit 0
   SESSION="$(session_name_for_project)"
   # Nobody to ask: do not make the worker wait for a lead that is not there.
@@ -157,7 +166,8 @@ cmd_permission_hook() {
   event_log approval-request "$role" "$id"
   notify_lead approval "$id" "$role"
 
-  deadline=$(($(now_epoch) + APPROVAL_TIMEOUT))
+  timeout="$(approval_timeout)"
+  deadline=$(($(now_epoch) + timeout))
   while [ "$(now_epoch)" -lt "$deadline" ]; do
     status="$(approval_field "$id" status)"
     case "$status" in
@@ -173,6 +183,6 @@ cmd_permission_hook() {
     esac
     sleep 1
   done
-  approval_decide "$id" expired "" "no decision within ${APPROVAL_TIMEOUT}s"
+  approval_decide "$id" expired "" "no decision within ${timeout}s"
   exit 0
 }

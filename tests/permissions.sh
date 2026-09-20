@@ -55,10 +55,23 @@ check "upgrade: your own rules and every other setting are untouched" 'allowed "
 check "upgrade: a second run changes nothing" 'grep -q "rules already present" "$WORK/install-3.log"'
 
 echo "== uninstall"
+check "uninstall: an option it does not know is refused (exit 64) before anything is touched" '"$REPO/uninstall.sh" --purg; [ $? -eq 64 ] && [ -x "$HOME/bin/teamctl" ] && allowed "Bash(teamctl *)"'
 jq --arg unsafe "$UNSAFE" '.permissions.allow += ($unsafe | split("|"))' "$SETTINGS" >"$SETTINGS.tmp" && /bin/mv -f "$SETTINGS.tmp" "$SETTINGS"
 "$REPO/uninstall.sh" >"$WORK/uninstall.log" 2>&1
 check "uninstall: current and retired rules are both removed" 'none_unsafe && ! allowed "Bash(teamctl *)" && ! allowed "Bash(bd *)"'
 check "uninstall: your own rules stay" 'allowed "Bash(npm test *)" && jq -e ".permissions.deny == [\"Bash(rm -rf *)\"]" "$SETTINGS"'
+
+echo "== uninstall --purge"
+/bin/mkdir -p "$HOME/.wolfmux/worktrees/shop-abc123/teams/review/backend-20260920-101010" "$HOME/.wolfmux/state/shop-abc123"
+"$REPO/uninstall.sh" --purge >"$WORK/uninstall-purge-1.log" 2>&1
+check "uninstall --purge: a worktree of a named team keeps ~/.wolfmux, and says so" '[ -d "$HOME/.wolfmux/worktrees/shop-abc123/teams/review/backend-20260920-101010" ] && grep -q "KEPT" "$WORK/uninstall-purge-1.log"'
+/bin/rmdir "$HOME/.wolfmux/worktrees/shop-abc123/teams/review/backend-20260920-101010" "$HOME/.wolfmux/worktrees/shop-abc123/teams/review"
+"$REPO/uninstall.sh" --purge >"$WORK/uninstall-purge-2.log" 2>&1
+check "uninstall --purge: the empty teams/ folder a named team leaves behind is not a worktree" '[ ! -e "$HOME/.wolfmux" ]'
+/bin/mkdir -p "$HOME/.wolfmux/state/shop-abc123" # state, but no worktrees/ folder at all
+"$REPO/uninstall.sh" --purge >"$WORK/uninstall-purge-3.log" 2>&1
+PURGE_STATUS=$?
+check "uninstall --purge: without a worktrees/ folder it still finishes, and removes ~/.wolfmux" '[ "$PURGE_STATUS" -eq 0 ] && [ ! -e "$HOME/.wolfmux" ] && grep -q "removed: ~/.wolfmux" "$WORK/uninstall-purge-3.log"'
 
 echo
 echo "result: $passed passed, $failed failed"

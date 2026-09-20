@@ -415,7 +415,7 @@ write_agent_settings() {
   # Everyone: notifications are teamctl's job inside a team (lib/notify.sh).
   # Lead mode only: permission requests go to the lead.
   "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" \
-    --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$((APPROVAL_TIMEOUT + 30))" \
+    --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$(($(approval_timeout) + 30))" \
     --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" '
     (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
     * {env: {ECC_DISABLED_HOOKS: $silence}}

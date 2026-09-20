@@ -15,7 +15,18 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 BIN_DIR="$HOME/bin"
 CONF_DIR="$HOME/.config/wolfmux"
 PURGE=0
-[ "${1:-}" = "--purge" ] && PURGE=1
+case "${1:-}" in
+  "") ;;
+  --purge) PURGE=1 ;;
+  -h | --help)
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    exit 0
+    ;;
+  *)
+    echo "uninstall.sh: unknown option: $1" >&2
+    exit 64
+    ;;
+esac
 
 note() { printf '  %s\n' "$*"; }
 backup() {
@@ -109,7 +120,13 @@ fi
 
 echo "== ~/.wolfmux (worktrees + state)"
 if [ "$PURGE" -eq 1 ] && [ -d "$HOME/.wolfmux" ]; then
-  if [ -n "$(find "$HOME/.wolfmux/worktrees" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)" ]; then
+  # A worktree is <project>/<role>-<stamp>, or <project>/teams/<team>/<role>-<stamp> in a named
+  # team. The teams/ folder itself stays behind when a named team is deleted: it is not one.
+  # No pipe into head, and `|| true`: as a plain assignment the status would reach `set -e`,
+  # and find fails when there is no worktrees/ folder at all.
+  held="$(find "$HOME/.wolfmux/worktrees" -mindepth 2 -maxdepth 2 -type d ! -name teams -print -quit 2>/dev/null || true)"
+  [ -n "$held" ] || held="$(find "$HOME/.wolfmux/worktrees" -mindepth 4 -maxdepth 4 -type d -path '*/teams/*' -print -quit 2>/dev/null || true)"
+  if [ -n "$held" ]; then
     note "KEPT: worktrees still exist under ~/.wolfmux/worktrees (they may hold uncommitted work)"
   else
     /bin/rm -rf "$HOME/.wolfmux"
