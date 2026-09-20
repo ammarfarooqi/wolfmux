@@ -93,6 +93,14 @@ at their own terminal; no agent may switch it on.
 - a metered provider, once switched on, bills per request with no local cap; the
   switch is the owner's, in the config file, and an agent that tries anyway is
   refused
+- the metered gate reads the owner's real config file, found through the passwd
+  database, so neither `WOLFMUX_METERED` in the environment nor a redirected `HOME`
+  or `WOLFMUX_HOME` opens it. It is a guard against accident and casual override, not
+  a sandbox: every agent runs as the macOS user, and a process that edits
+  `~/.config/wolfmux/config` or a launcher can open it (the same class of wording as
+  the worktree guard, [ADR-0016](0016-worktree-guard.md)). Workers are kept from that
+  file by the worktree guard; a lead is not. `teamctl restart` of a metered agent is
+  gated in the launcher, not in teamctl
 
 ## The table (researched 2026-09-20)
 

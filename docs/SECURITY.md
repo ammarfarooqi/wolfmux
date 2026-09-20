@@ -125,6 +125,18 @@ reminders rather than pretending:
 Wording used throughout: *"Configured for subscription authentication; verify
 account status in the CLI."*
 
+## The metered gate
+
+The gate reads the owner's real config file, found through the system's passwd database:
+neither `WOLFMUX_METERED` exported into the environment, nor a redirected `HOME` or
+`WOLFMUX_HOME`, opens it. Like the worktree guard ([ADR-0016](adr/0016-worktree-guard.md))
+it is a guard against accident and casual override, not a sandbox: every agent runs as
+your macOS user, so a process that edits `~/.config/wolfmux/config` or a launcher can
+open it. Workers are kept away from that file by the worktree guard; a lead is not.
+Two details worth knowing: a pane that refuses at the launcher (exit 78) shows the reason
+in its own pane, and `teamctl restart` of a metered agent is gated in the launcher, not
+in teamctl.
+
 ## Permission modes are a policy, not a sandbox
 
 The default policy runs the lead and the workers in their CLI's bypass mode, because
