@@ -72,6 +72,7 @@ teamctl destroy --worktrees          # later: drops clean worktrees and fully me
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
 | `teamctl spawn <role> <glm53\|flash\|fable\|astra> [--base <ref>] [--no-kickoff]` | new worker: branch + worktree + pane |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
+| `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |
 | `teamctl nudge <role>\|--all [--id <bead>]` | re-send the one-line notification |
 | `teamctl status [--json]` (alias `workers`) | role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files |
@@ -117,6 +118,16 @@ Comments (`bd comment`) notify nobody; send a message when someone must act.
 | `🐺 lead · <model>` and an amber pane border | the manager. Teammates are `🐶 <role> · <model>` with grey borders (blue when focused) |
 | `🐺 WOLFMUX` in the status line, `🐺 <session>` as the tab title | this terminal tab is a Wolfmux team |
 | a desktop notification `🐺 lead: …` or `🐶 backend: …` | that agent finished a turn. Click it: if the team is open in a tab, that tab comes to the front; if it is on no screen, a new terminal window opens attached to it (the notification then comes from **Wolfmux**, with the wolf as its icon). The first time, macOS asks to allow Wolfmux notifications and to let Wolfmux control your terminal: allow both. Scope: `WOLFMUX_NOTIFY=all` (default), `lead`, or `off`; terminal: `WOLFMUX_TERMINAL=iterm\|terminal` |
+
+**Clearing up.** `teamctl destroy` ends the team and keeps every worktree. `teamctl destroy
+--worktrees` also removes the workers that hold nothing: clean worktree, branch fully merged.
+A worker that still holds work is kept and named, with the two ways out: `git merge <branch>`
+to keep it, `teamctl remove <role> --force` to discard it.
+
+**Staying in lane.** Each teammate works in its own worktree on its own branch, and a guard
+refuses tool calls that reach outside (changing the lead's checkout, reading a teammate's
+worktree, switching or deleting branches, pushing to main, tmux). The refusal tells the
+worker to ask the lead. `teamctl policy worker-isolation off` turns it off for a project.
 
 **Closing and coming back.** Quitting an agent's CLI leaves its pane on screen (so you can
 read its last output); quitting all of them leaves a window of finished panes. `teamctl start

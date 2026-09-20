@@ -196,6 +196,21 @@ Found on the way: a lead had spawned `Riley-pr-reviewer`. Role names are lowerca
 contract, but `[a-z]` follows the locale's collation and matches capitals under
 `en_AU.UTF-8`. Alphabets are now spelled out. `tests/smoke.sh`: 85 → 92.
 
+## 17. Clearing up, and staying in lane (v1.6)
+
+Two more reports. `teamctl destroy` "did not work": it had worked as designed (it keeps
+worktrees), but there was no way to discard a worker that still held work, and the one
+line that said so was easy to miss. Now there is `teamctl remove <role> [--force]`, and
+`destroy` names what it kept, why, and the command for either way out.
+
+And the question whether a teammate is really tied to its worktree. Honest answer until
+then: by instruction only. Now a `PreToolUse` guard refuses tool calls that leave the
+lane ([ADR-0016](adr/0016-worktree-guard.md)). Writing it surfaced two traps worth
+keeping: a path has several spellings (`/var/…` and `/private/var/…`, doubled slashes), so
+the shell check replaces every spelling with a token before matching; and bash 3.2
+misreads escaped quotes inside `"$( … )"`, which split a jq program at its commas
+(brace expansion) in the tests. `tests/smoke.sh`: 92 → 108.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

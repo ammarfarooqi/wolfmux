@@ -135,11 +135,20 @@ Every agent runs as your macOS user. That has consequences worth stating plainly
 - Any agent can run `security find-generic-password -s zai-coding-plan -w`. The
   Keychain protects the key from files, history and other users, not from
   processes you launch yourself. The key's blast radius is the Coding Plan quota.
-- `teamctl nudge` validates the role (`[a-z0-9-]`, ≤32) and bead id
-  (`[A-Za-z0-9._-]`, ≤64) and types only a fixed template, so bead content cannot
-  inject keystrokes through it. A worker could still call `tmux send-keys` itself;
-  what stops that is its CLI's permission prompt, because only read-only tmux
-  commands are allow-listed.
+- `teamctl nudge` validates the role and bead id (letters, digits, `-`, and `._` for
+  ids; alphabets spelled out, because `[a-z]` follows the locale) and types only a fixed
+  template, so bead content cannot inject keystrokes through it.
+- **Teammates are kept apart by a guard, not by a wall.** Each worker has its own
+  worktree and branch, and a `PreToolUse` hook (`teamctl _guard`,
+  [ADR-0016](adr/0016-worktree-guard.md)) refuses tool calls that change files outside
+  that worktree, read a teammate's worktree or teamctl's state, write into the lead's
+  checkout, switch, move or delete branches, touch `git worktree`, push to main, or run
+  `tmux`. File tools are checked exactly; shell commands by pattern, so a script or a
+  path built at run time can get past it. It stops mistakes and drift, not an agent
+  that sets out to break it. `teamctl policy worker-isolation off` removes it.
+- Teams of different projects share nothing but your user account: separate tmux
+  sessions, separate state and worktree directories (keyed by the repository's path),
+  separate Beads databases inside each project.
 - The Beads hook passes values as separate arguments, never through `eval` or
   `sh -c`. The one `eval` in the code base interpolates one of four literals.
 - `rm -rf` is only ever applied to lock and guard directories under

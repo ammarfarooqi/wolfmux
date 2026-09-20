@@ -171,6 +171,13 @@ The lead is the only manager. Three mechanisms keep it that way:
    and types `[wolfmux] Team change: <spawner> spawned teammate <role> (<model>)` into
    the lead's pane. Policy changes made from outside are announced the same way.
 
+4. **Lanes.** A worker's generated settings carry a `PreToolUse` hook, `teamctl _guard`
+   (`lib/guard.sh`). It knows the worker's worktree and branch from the environment
+   `_run-agent` exports (`WOLFMUX_WORKTREE`, `WOLFMUX_BRANCH`, `WOLFMUX_ROOT`) and
+   answers `deny` with a reason for tool calls that leave the lane. File tools are
+   resolved to real paths; shell commands are matched after every spelling of the known
+   directories has been replaced by a token. See [ADR-0016](adr/0016-worktree-guard.md).
+
 ### Permission modes
 
 | Mode | Claude Code | Codex |

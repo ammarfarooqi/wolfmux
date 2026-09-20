@@ -20,3 +20,4 @@ build; superseded decisions will link to their replacement.
 | [0013](0013-one-manager-policy.md) | One manager — policy for permissions and spawning, native agent teams off in workers | accepted | 2026-09-20 |
 | [0014](0014-rename-to-wolfmux.md) | Rename to Wolfmux, with a migration instead of a reinstall | accepted | 2026-09-20 |
 | [0015](0015-notifications-through-the-attached-terminal.md) | Notifications lead back to the team: through the attached terminal, else through Wolfmux.app | accepted | 2026-09-20 |
+| [0016](0016-worktree-guard.md) | A guard that keeps each teammate in its own worktree and on its own branch | accepted | 2026-09-20 |
