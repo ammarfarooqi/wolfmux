@@ -1,7 +1,10 @@
 # Billing isolation and security model
 
-The non-negotiable requirement is **subscription-only inference**. This page states
-what enforces it, what was measured, and what cannot be proven from the machine.
+The non-negotiable requirement is that every model call is paid for deliberately:
+the three subscriptions by default, a metered provider (the Moonshot platform,
+DeepSeek) only after you, the owner, set `WOLFMUX_METERED=on` yourself. This page
+states what enforces that, what was measured, and what cannot be proven from the
+machine.
 
 ![Three launchers: what each removes from its own process, what it pins, and which subscription pays](diagrams/billing-isolation.svg)
 
@@ -16,8 +19,9 @@ what enforces it, what was measured, and what cannot be proven from the machine.
    file (`lib/provider-env.sh`): explicit names plus prefix sweeps (`ANTHROPIC_`,
    `CLAUDE_CODE_USE_`, `OPENAI_`) so a variable added by a future CLI release is
    still removed.
-3. **Provider configuration lives only inside the process that needs it.** The
-   Z.ai endpoint and model mapping are exported inside `claude-glm` and nowhere else.
+3. **Provider configuration lives only inside the process that needs it.** Each
+   provider's endpoint and model mapping are exported inside `claude-glm`, under
+   the provider name it was started as, and nowhere else.
 
 ## Per launcher
 
@@ -25,12 +29,18 @@ what enforces it, what was measured, and what cannot be proven from the machine.
 |----------|-------------------------|-------------|
 | `claude-fable` | the claude.ai `/login` | nothing else survives the scrub. `teamctl doctor` asks Claude Code itself: `claude-fable auth status --json` must report `authMethod: claude.ai` |
 | `codex-astra` | the ChatGPT login | `-c forced_login_method="chatgpt"` makes Codex refuse API-key auth even if a key is stored later; `-c model_provider="openai"` neutralises a redirected provider in `config.toml` |
-| `claude-glm*` | the Z.ai Coding Plan key | endpoint `https://api.z.ai/api/anthropic` (the Coding Plan endpoint, not Z.ai's general API); **every** alias Claude Code can resolve — opus, sonnet, fable, haiku, subagents, the main model — is mapped to `glm-5.3` or `glm-5.3-flash`, the only two ids the plan covers |
+| `claude-glm` (any provider name) | that provider's key | the endpoint comes from one table (`lib/providers.sh`) and is pinned per provider (Z.ai: the Coding Plan endpoint, not Z.ai's general API); **every** alias Claude Code can resolve (opus, sonnet, fable, haiku, subagents, the main model) is mapped to that provider's main and background ids, so only ids the plan or account covers can be requested |
 
 ## How the Z.ai key reaches a worker
 
 The key is read from the macOS Keychain (service `zai-coding-plan`), never from a
 file or a profile.
+
+Every provider works the same way with its own Keychain service (`wolfmux-kimi`,
+`wolfmux-moonshot`, `wolfmux-deepseek`, `wolfmux-minimax`, `wolfmux-qwen`) and its
+own knob (`WOLFMUX_<P>_AUTH_MODE`); Z.ai is the example here. Kimi's `env` mode
+exports `ANTHROPIC_API_KEY`, which its documentation asks for; the others export
+`ANTHROPIC_AUTH_TOKEN`.
 
 - **`helper` (default).** The launcher passes
   `--settings '{"apiKeyHelper": "/usr/bin/security find-generic-password -s zai-coding-plan -w"}'`.
@@ -66,7 +76,7 @@ subscription token to a third party. A helper passed by command-line flag is
 exactly such a case for anything the worker spawns (a nested `claude -p`, an
 agent-teams teammate, a background session).
 
-So every GLM worker exports `CLAUDE_CODE_OAUTH_TOKEN` set to a non-secret
+So every provider worker exports `CLAUDE_CODE_OAUTH_TOKEN` set to a non-secret
 placeholder. It ranks above the stored login and below both real delivery modes:
 the worker itself still authenticates with the Z.ai key (rows one and two), while
 anything it spawns fails closed with a 401. `claude-fable` removes the placeholder
@@ -74,11 +84,11 @@ again, and a genuine `CLAUDE_CODE_OAUTH_TOKEN` of yours is left alone.
 
 ## GLM worker settings overlay
 
-`~/.config/wolfmux/glm-worker-settings.json` is merged into GLM workers' settings
+`~/.config/wolfmux/glm-worker-settings.json` is merged into third-party provider workers' settings
 only. It ships with the `claude-mem` plugin disabled there: that plugin runs a
 long-lived summarizer that inherits the environment of whichever session starts
-it, and one started from a GLM worker would route memory traffic from your normal
-Claude sessions to Z.ai. Delete the file to make workers identical to your normal
+it, and one started from a provider worker would route memory traffic from your normal
+Claude sessions to that provider. Delete the file to make workers identical to your normal
 sessions. The general rule: a plugin that spawns a persistent process from a
 worker inherits the worker's provider.
 
@@ -89,7 +99,7 @@ shell (names only) · `env` overrides and `apiKeyHelper` in the user and project
 Claude settings — these apply *inside* Claude Code and would defeat the scrub, so
 they are reported loudly · provider exports in shell profiles · which credential
 `claude-fable` would really use · `codex login status` and whether `auth.json`
-stores an API key · the Keychain item (existence only) · Z.ai strings anywhere
+stores an API key · the Keychain items (existence only, one service per provider: a missing key is a RISK for Z.ai, the default worker, and a NOTE ("optional, not set up") for the others) · every provider's hostname and endpoint string grepped anywhere
 outside the launchers · key delivery mode, guard and overlay · `CLAUDE_CONFIG_DIR`
 / `CODEX_HOME` relocations · Beads install, telemetry state and hooks.
 
@@ -106,8 +116,26 @@ reminders rather than pretending:
 - **z.ai → Billing**: keep the cash balance at zero. Z.ai's FAQ says calls outside
   the plan's two models or endpoint can draw on a balance.
 
+- **Moonshot platform / DeepSeek, with `WOLFMUX_METERED=on`**: billed per request
+  with no local cap. wolfmux has no spending limit a run can hit: a long run costs
+  what the vendor's per-request prices make it cost, for as long as the balance you
+  loaded lasts. The switch is in your config file; an agent that asks for it should
+  be refused.
+
 Wording used throughout: *"Configured for subscription authentication; verify
 account status in the CLI."*
+
+## The metered gate
+
+The gate reads the owner's real config file, found through the system's passwd database:
+neither `WOLFMUX_METERED` exported into the environment, nor a redirected `HOME` or
+`WOLFMUX_HOME`, opens it. Like the worktree guard ([ADR-0016](adr/0016-worktree-guard.md))
+it is a guard against accident and casual override, not a sandbox: every agent runs as
+your macOS user, so a process that edits `~/.config/wolfmux/config` or a launcher can
+open it. Workers are kept away from that file by the worktree guard; a lead is not.
+Two details worth knowing: a pane that refuses at the launcher (exit 78) shows the reason
+in its own pane, and `teamctl restart` of a metered agent is gated in the launcher, not
+in teamctl.
 
 ## Permission modes are a policy, not a sandbox
 
@@ -132,9 +160,11 @@ share one user account.
 
 Every agent runs as your macOS user. That has consequences worth stating plainly:
 
-- Any agent can run `security find-generic-password -s zai-coding-plan -w`. The
-  Keychain protects the key from files, history and other users, not from
-  processes you launch yourself. The key's blast radius is the Coding Plan quota.
+- Any agent can run `security find-generic-password -s <service> -w` for any
+  provider's service. The Keychain protects the keys from files, history and other
+  users, not from processes you launch yourself. A plan key's blast radius is that
+  plan's quota; a metered key's is the balance loaded on it, which is what
+  `WOLFMUX_METERED` gates and why setting it is yours alone.
 - `teamctl nudge` validates the role and bead id (letters, digits, `-`, and `._` for
   ids; alphabets spelled out, because `[a-z]` follows the locale) and types only a fixed
   template, so bead content cannot inject keystrokes through it.

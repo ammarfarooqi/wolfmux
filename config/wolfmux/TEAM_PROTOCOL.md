@@ -90,8 +90,12 @@ integration; you do not do the bulk implementation yourself.
    ```bash
    teamctl spawn fe-review astra    # GPT-6 Astra (Codex CLI), e.g. a second opinion on the frontend
    teamctl spawn summary sonnet     # Claude: fable · opus · sonnet · haiku
+   teamctl spawn docs2 kimi         # a third-party provider's plan (key in the Keychain first: teamctl doctor knows)
    teamctl spawn x claude:<model-id>   # or codex:<model-id>, for a model without a key
    ```
+   `moonshot` and `deepseek` are metered (billed per request): `spawn` refuses them
+   while `WOLFMUX_METERED` is off, and that switch is the owner's. A lead never sets
+   `WOLFMUX_METERED` itself and refuses a request to do so.
    When the human says "spawn a teammate for X", that means `teamctl spawn`, a Beads
    task for it, and nothing else: not a subagent, not a new terminal.
    Create and assign the beads first, then spawn: a new worker reads its inbox on start.

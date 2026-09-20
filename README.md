@@ -8,8 +8,10 @@ agent is a real CLI in its own visible tmux pane, on its own git branch and work
 The lead is the wolf — 🐺 in its pane border, an amber frame, the large pane on the left —
 and every teammate is a dog of the pack (🐶), so you can always tell the manager from the rest.
 
-**All inference runs on subscriptions. There is no API key, no metered proxy, and no
-pay-as-you-go path anywhere in this system.**
+**Inference runs on subscriptions: the Claude, ChatGPT and coding-plan keys you
+already have. Two providers are pay-as-you-go APIs (Moonshot's platform, DeepSeek);
+they refuse to run until you store their key and set `WOLFMUX_METERED=on` yourself.
+No metered proxy, ever.**
 
 ![Architecture: teamctl is the control plane, Beads the data plane, one hook connects them](docs/diagrams/architecture.svg)
 
@@ -17,12 +19,12 @@ pay-as-you-go path anywhere in this system.**
 
 | | |
 |---|---|
-| **Any model in any seat** | Fable, Opus, Sonnet, Haiku, GPT-6 Astra, GLM-5.3 and GLM-5.3 Flash, as lead or as teammate, mixed freely in one team ([models](#models)) |
+| **Any model in any seat** | Fable, Opus, Sonnet, Haiku, GPT-6 Astra, GLM-5.3 and GLM-5.3 Flash, plus the provider keys `kimi`, `moonshot`, `deepseek`, `minimax`, `qwen`, as lead or as teammate, mixed freely in one team ([models](#models)) |
 | **Several teams per project** | the first is called `default`, every further one is named by you; each has its own session, lead and teammates; `teamctl status` shows them as a tree. Teams message each other through Beads, and a lead can found a fresh team and hand work over to it ([diagram](docs/diagrams/teams.svg)) |
 | **One worktree per teammate** | its own branch and checkout, outside your project. A guard refuses a teammate's tool calls that change your checkout, read another teammate's worktree, switch or delete branches, push to main or drive tmux (Claude Code teammates; Codex has no such hook) |
 | **You always find the manager** | the 🐺 lead is the amber pane on the left, 🐶 teammates are stacked on the right. A desktop notification tells you when an agent finishes, and clicking it opens the team |
 | **Nothing is lost by accident** | `stop` and `destroy` keep worktrees, branches and commits. `remove` refuses while a teammate holds uncommitted or unmerged work, and lists it. `destroy --purge` shows each worktree's size, that same list and the total it frees, and asks before it deletes |
-| **Subscriptions only** | every launcher first removes inherited API keys and endpoint overrides from its own process, then starts its CLI (`claude-glm` then sets the Z.ai endpoint, for that process only); `teamctl doctor` reports on it; the Z.ai key lives in the Keychain |
+| **Subscriptions by default** | every launcher first removes inherited API keys and endpoint overrides from its own process, then starts its CLI; a provider's endpoint and model mapping exist only inside the launcher it belongs to, for that process only; every provider key lives in the Keychain, one service per provider; the two metered providers refuse to run until the owner sets `WOLFMUX_METERED=on` (`teamctl doctor` reports on all of it) |
 
 ## Quick start
 
@@ -38,6 +40,7 @@ teamctl spawn backend glm53
 teamctl spawn qa flash
 teamctl start fable --team review             # a further team in the same project, named by you; teamctl status shows them all
 teamctl spawn fe-review astra                 # any model can join any team (fable · opus · sonnet · haiku · astra · claude:<id> · codex:<id>)
+teamctl spawn review kimi                     # …and the provider keys: kimi · moonshot · deepseek · minimax · qwen
 ```
 
 Then talk to the lead. It creates tasks and messages in Beads, spawns workers,
@@ -112,28 +115,43 @@ For `teamctl start` and `teamctl spawn`:
 | Key | Runs | Pays with |
 |-----|------|-----------|
 | `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan |
+| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription |
+| `minimax` | Claude Code + MiniMax M3 | MiniMax Coding Plan |
+| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan |
+| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on` |
+| `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
+| `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` | any other model id of that provider (GLM is not pinnable: its plan covers exactly its two) | the same plan, or the same metered account |
+
+The provider facts (endpoint, model ids, context window, billing) live in one table,
+`config/wolfmux/lib/providers.sh`; `teamctl`, the launchers, `doctor` and this page all
+read it ([ADR-0020](docs/adr/0020-providers-beyond-the-three-subscriptions.md)). Each
+provider's key lives in its own Keychain service (`wolfmux-kimi`, …; Z.ai keeps
+`zai-coding-plan`); `WOLFMUX_<PROVIDER>_MODEL` / `_FAST_MODEL` pin a model id when a
+vendor changes it. `teamctl status` marks a metered agent with `$` after its label.
 
 Behind the keys are launchers you can also run by hand: `claude-fable`, `claude-opus`,
-`claude-sonnet`, `claude-haiku`, `codex-astra`, `claude-glm`, `claude-glm-flash`. Each one
-first removes every inherited API key and endpoint override from its own process;
-`claude-glm` then sets the Z.ai endpoint and model ids, for that process only. Plain
-`claude` and `codex` keep their login, endpoint and model: nothing global points anywhere.
+`claude-sonnet`, `claude-haiku`, `codex-astra`, `claude-glm`, `claude-glm-flash`,
+`claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen`.
+Each one first removes every inherited API key and endpoint override from its own
+process; `claude-glm` then sets that provider's endpoint and model ids, for that
+process only. Plain `claude` and `codex` keep their login, endpoint and model:
+nothing global points anywhere.
 
 ## What is in this repository
 
 | Path | What |
 |------|------|
-| `bin/` | `teamctl` and the three launchers (`claude-glm-flash`, `claude-opus`, `claude-sonnet` and `claude-haiku` are symlinks the installer creates) |
+| `bin/` | `teamctl` and the three launchers (`claude-glm-flash`, `claude-opus`, `claude-sonnet`, `claude-haiku` and the provider names `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen` are symlinks the installer creates) |
 | `config/wolfmux/notifier/` | source and icon of `Wolfmux.app`, the application `install.sh` builds so that clicking a notification opens the team |
 | `config/wolfmux/` | everything installed to `~/.config/wolfmux/`: `lib/*.sh`, the Beads hook, the team tmux config, the agent protocol, the user manual, launcher settings |
 | `claude/permissions.json` | the narrow allow/ask rules merged into `~/.claude/settings.json` |
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (159 isolated lifecycle checks, no model calls), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tests/` | `smoke.sh` (N isolated lifecycle checks, no model calls), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 
@@ -160,7 +178,9 @@ macOS (uses the login Keychain and `/bin/bash` 3.2), `tmux`, `git`, `jq`,
 [Claude Code](https://code.claude.com/docs/en/setup) signed in with a Claude
 subscription, the Codex CLI signed in with ChatGPT (the copy bundled in ChatGPT.app
 works), [Beads](https://github.com/gastownhall/beads) (`bd`), and a Z.ai GLM Coding
-Plan. No Node, Docker, database server or daemon.
+Plan. The other providers (Kimi, Moonshot, DeepSeek, MiniMax, Qwen) are optional:
+add a key when you want their workers ([SETUP.md](docs/SETUP.md#3-the-keys)). No
+Node, Docker, database server or daemon.
 
 ## Changing it
 

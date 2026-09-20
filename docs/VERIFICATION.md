@@ -6,9 +6,10 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 2 to 4 minutes, 159 checks, isolated from any running team
-tests/docs.sh                  # ~2 seconds, 28 checks, starts nothing
-tests/migration.sh             # ~30 seconds, 21 checks, in a throwaway HOME
+tests/smoke.sh                 # 2 to 4 minutes, N checks, isolated from any running team
+tests/providers.sh             # the provider table, N checks
+tests/docs.sh                  # ~2 seconds, N checks, starts nothing
+tests/migration.sh             # ~30 seconds, N checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
@@ -19,7 +20,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh — 159 of 159 pass (2026-09-20)
+## smoke.sh: N of N pass (v1.10)
 
 | Area | Checks |
 |------|--------|
@@ -124,7 +125,7 @@ the added permission rules removed · uninstall refused while a team was running
 Not covered: a rule of yours that is spelled exactly like a retired one cannot be told apart
 from ours and is taken out as well; the installer names it and the backup holds it.
 
-## migration.sh — 21 of 21 pass (2026-09-20)
+## migration.sh: N of N pass (v1.10)
 
 A throwaway `HOME` gets v1.1 installed from git history, a team started with it (lead +
 one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
@@ -162,7 +163,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
-## docs.sh — 28 of 28 pass
+## docs.sh: N of N pass (v1.10)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.

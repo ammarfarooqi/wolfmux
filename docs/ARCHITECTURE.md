@@ -27,8 +27,8 @@ diagnostics can never drift apart.
 | `claude-fable` | Claude Code | Claude subscription (`/login`) | `--model claude-fable-5-1[1m]`; no key, no endpoint |
 | `claude-opus` · `claude-sonnet` · `claude-haiku` | symlinks to `claude-fable` | same | the model named by the link (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-…`) |
 | `codex-astra` | Codex CLI | ChatGPT / Codex subscription | `forced_login_method="chatgpt"`, `model_provider="openai"`, `model="gpt-6-astra"`. Starts Codex by its **real path**: Codex looks for its helper programs next to the path it was started as |
-| `claude-glm` | Claude Code | Z.ai GLM Coding Plan | endpoint `https://api.z.ai/api/anthropic`, every model alias → `glm-5.3` (background tier → `glm-5.3-flash`), a declared 200k context window (or `[1m]`) so Claude Code prints no unknown-model notice |
-| `claude-glm-flash` | symlink to `claude-glm` | same | every alias → `glm-5.3-flash` |
+| `claude-glm` | Claude Code | the provider named by the link: a plan (Z.ai, Kimi, MiniMax, Qwen) or a metered API (Moonshot platform, DeepSeek: refused until `WOLFMUX_METERED=on`) | endpoint, key, model ids and context window from one table (`lib/providers.sh`); every model alias → that provider's main id, background tier → its fast id; a declared window so Claude Code prints no unknown-model notice |
+| `claude-glm-flash`, `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen` | symlinks to `claude-glm` | same | the link name picks the provider; `-flash` picks GLM's fast tier |
 
 Scrubbed in every Claude launcher: all `ANTHROPIC_*` and `CLAUDE_CODE_USE_*`
 variables (explicit list plus a prefix sweep for future ones), model and subagent
@@ -51,7 +51,8 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 
 | Module | Responsibility |
 |--------|----------------|
-| `provider-env.sh` | the scrub lists, binary resolution, the GLM login guard, config parsing |
+| `provider-env.sh` | the scrub lists, binary resolution, the login guard (every provider), config parsing |
+| `providers.sh` | the provider table: vendor, label, endpoint, Keychain service, billing, default model ids, context window, auth variable, key URL per provider |
 | `common.sh` | output, validation, tool lookup, **the model table**, project resolution |
 | `registry.sh` | the only module that touches state files; project lock; nudge debounce |
 | `tmuxctl.sh` | every tmux call |
@@ -67,6 +68,12 @@ The **model table** in `common.sh` is the single place that knows which launcher
 serves which model key (`fable`, `astra`, `glm53`, `flash`) and which CLI family it
 belongs to. Nothing else in the code is model-specific, which is what makes the
 two leads interchangeable.
+
+Beside it, the **provider table** in `lib/providers.sh` is the single place that knows a
+provider: vendor, endpoint, Keychain service, billing (`plan` or `metered`), default model
+ids, context window, auth variable, key URL. The model table, `teamctl`, `doctor`, the
+dry run and this documentation read it instead of carrying their own copies, which is
+what keeps a vendor change a one-row fix.
 
 ### tmux
 
@@ -123,7 +130,7 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 
 ### Spawning a worker
 
-1. validate role and model key; take the project lock (`mkdir`, released on exit)
+1. validate role and model key (a metered model is refused while `WOLFMUX_METERED` is off); take the project lock (`mkdir`, released on exit)
 2. `git worktree add -b ai/<role>-<stamp> <path> <base>`
 3. write the registry record (role, model, launcher, worktree, branch, base)
 4. split a pane that runs `teamctl _run-agent <root> <role>`; tag it with `@ai_role`
@@ -291,7 +298,9 @@ One pixel drawing (`tools/wolf-art.py`) produces the terminal art in `lib/brand.
 ~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/
 ~/.wolfmux/worktrees/<project>/ one directory per worker
 <project>/.beads/               tasks and messages (Beads)
-macOS Keychain                  service "zai-coding-plan"
+macOS Keychain                  one service per provider: "zai-coding-plan" (Z.ai),
+                                "wolfmux-kimi", "wolfmux-moonshot", "wolfmux-deepseek",
+                                "wolfmux-minimax", "wolfmux-qwen"
 ```
 
 `<project>` is `<directory-name>-<6 hex of the path hash>`. Nothing of `teamctl`'s
