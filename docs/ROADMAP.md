@@ -32,7 +32,7 @@ real problems, in the order they are likely to matter:
 3. **A reviewer role preset** — `teamctl spawn reviewer astra` already works; a
    protocol section and a task template for "second opinion" reviews would make it
    routine.
-4. **Per-role settings overlays** — the provider overlay mechanism generalised to any
+4. **Per-role settings overlays**: the provider overlay mechanism generalised to any
    role (for example a QA worker with a narrower tool allow-list).
 5. **Linux support** — a secret-service backend instead of the macOS Keychain.
 6. **Finer Codex rules** — allow read-only `teamctl` subcommands silently, prompt
