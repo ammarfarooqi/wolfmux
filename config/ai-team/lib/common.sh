@@ -2,7 +2,7 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-AI_TEAM_VERSION="1.0.0"
+AI_TEAM_VERSION="1.1.0"
 AI_TEAM_HOME="${AI_TEAM_HOME:-$HOME/.config/ai-team}"
 AI_TEAM_DATA="${AI_TEAM_DATA:-$HOME/.ai-team}"
 AI_TEAM_TMUX_SOCKET="${AI_TEAM_TMUX_SOCKET:-ai-team}"

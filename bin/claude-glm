@@ -23,6 +23,7 @@
 #   AI_TEAM_GLM_CONTEXT    1m -> request the 1M-token window (uses quota faster)
 #   AI_TEAM_CLAUDE_BIN     explicit path to the claude binary
 #   AI_TEAM_DRY_RUN=1      print what would run (no secrets) and exit
+#   AI_TEAM_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
 # ~/.config/ai-team/glm-worker-settings.json, when present, is a Claude Code
 # settings overlay for GLM workers only (default: turns off claude-mem there).
 set -euo pipefail
@@ -88,24 +89,13 @@ export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
 export CLAUDE_CODE_OAUTH_TOKEN="$AI_TEAM_GLM_GUARD_TOKEN"
 
 KEY_CMD="/usr/bin/security find-generic-password -s ${AI_TEAM_ZAI_KEYCHAIN_SERVICE} -w"
-JQ_BIN="$(command -v jq 2>/dev/null || true)"
-[ -n "$JQ_BIN" ] || JQ_BIN="/usr/bin/jq"
 OVERLAY="$AI_TEAM_HOME/glm-worker-settings.json"
 
-# One --settings value: the optional overlay file, plus the key helper in helper mode.
-SETTINGS_JSON="{}"
-if [ -r "$OVERLAY" ]; then
-  SETTINGS_JSON="$("$JQ_BIN" -c . "$OVERLAY" 2>/dev/null)" || {
-    echo "$SELF: $OVERLAY is not valid JSON — fix or delete it" >&2
-    exit 78
-  }
-fi
-if [ "$AUTH_MODE" = "helper" ]; then
-  SETTINGS_JSON="$(printf '%s' "$SETTINGS_JSON" | "$JQ_BIN" -c --arg helper "$KEY_CMD" '. + {apiKeyHelper: $helper}')" || {
-    echo "$SELF: jq is required for helper mode (looked for $JQ_BIN)" >&2
-    exit 78
-  }
-fi
+# One --settings value: the GLM overlay, then the per-agent settings teamctl
+# generated for this pane (they win), plus the key helper in helper mode.
+HELPER=""
+if [ "$AUTH_MODE" = "helper" ]; then HELPER="$KEY_CMD"; fi
+SETTINGS_JSON="$(ai_team_merge_settings "$HELPER" "$OVERLAY" "${AI_TEAM_EXTRA_SETTINGS:-}")" || exit 78
 
 CMD=("$CLAUDE_BIN")
 if [ "$SETTINGS_JSON" != "{}" ]; then
@@ -125,6 +115,7 @@ if [ "${AI_TEAM_DRY_RUN:-}" = "1" ]; then
   if ai_team_zai_key_exists; then echo "keychain item:   present"; else echo "keychain item:   MISSING"; fi
   echo "login guard:     on (children can never present your claude.ai login to Z.ai)"
   if [ -r "$OVERLAY" ]; then echo "overlay:         $OVERLAY"; else echo "overlay:         none"; fi
+  echo "agent settings:  ${AI_TEAM_EXTRA_SETTINGS:-none (not started by teamctl)}"
   echo "scrubbed vars:   ${SCRUBBED:-(none were set)}"
   printf 'would exec:     '
   printf ' %q' "${CMD[@]}"

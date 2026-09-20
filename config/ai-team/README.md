@@ -67,6 +67,39 @@ Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
 (lead top-left). A worker reads its Beads inbox as soon as it boots, so assign
 work first, then spawn. Options: `--base <ref>`, `--no-kickoff`.
 
+## One manager, permissions, spawning
+
+The lead is the only manager. `start`, `stop`, `restart`, `destroy`, `policy`,
+`approve` and `deny` work for the lead and for you at your own terminal; a worker
+that tries them is refused (exit 77).
+
+```bash
+teamctl policy                                  # show this project's policy
+teamctl policy worker-spawn on|off              # may workers run `teamctl spawn`?  default off
+teamctl policy worker-permissions skip|lead|ask # default skip
+teamctl policy lead-permissions skip|ask        # default skip
+teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
+```
+
+| Permission mode | Meaning |
+|-----------------|---------|
+| `skip` | the CLI's bypass mode (`--dangerously-skip-permissions`, Codex: `--dangerously-bypass-approvals-and-sandbox`). Nothing is asked. Deny rules and explicit ask rules (`teamctl destroy`) still apply. |
+| `lead` | workers only. Every request a worker would have shown is sent to the lead: `teamctl approvals`, then `teamctl approve A7` or `teamctl deny A7 "reason"`. No answer in 10 minutes → the prompt appears in the worker's pane. |
+| `ask` | the normal prompt in that agent's own pane. |
+
+Permission changes apply when an agent is started or restarted
+(`teamctl restart <role> --continue` keeps its conversation). `worker-spawn` applies at
+once. Defaults for new projects live in `~/.config/ai-team/config`.
+
+When worker spawning is on and a worker spawns someone, the new agent is a normal team
+member (own pane, branch, worktree), reports to the lead, shows up in `teamctl status`
+under SPAWNED BY, and the lead's pane gets `[ai-team] Team change: …`.
+
+Inside workers, Claude Code's own agent-teams feature is switched off. With it on, any
+subagent a worker names becomes a teammate that treats the *worker* as its team lead and
+asks *it* for permission — a second manager outside the team's view. Your own sessions
+and the lead keep the feature exactly as you configured it.
+
 ## Messaging (Beads)
 
 ```bash
@@ -96,7 +129,7 @@ blocked · completed = closed · failed = closed + label `failed`.
 ## Monitoring
 
 ```bash
-teamctl status [--json]     # role, model, running/exited(N)/stopped, pane, branch, commits ahead, dirty
+teamctl status [--json]     # policy, pending approvals; per role: model, state, pane, permission mode, spawned by, branch, commits ahead, dirty
 teamctl panes               # what tmux reports: command, pid, cwd
 teamctl capture backend     # last 80 lines of a pane   (-n 200 | --all;  teamctl log backend)
 teamctl focus backend       # jump to a pane            teamctl nudge backend   # re-notify
@@ -239,6 +272,13 @@ ls ~/.ai-team/state ~/.ai-team/worktrees    # per-project state and worktrees
 ```
 
 ## Limits worth knowing
+
+- A worker's banner reads `API Usage Billing`. That is Claude Code's label for any
+  session authenticated with a key instead of a claude.ai login. For a GLM worker the
+  key is your Z.ai Coding Plan key and the endpoint is Z.ai's; nothing is billed by
+  Anthropic. `/status` in the pane shows the base URL.
+- The manager check is cooperative: every agent is your macOS user, so it stops
+  mistakes and role confusion, not a deliberately hostile process.
 
 - Notifications are typed into a pane. If an agent is mid-turn its CLI queues the line;
   if a CLI is showing a modal dialog (first-run folder trust), answer the dialog first.

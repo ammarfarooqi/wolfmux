@@ -38,31 +38,44 @@ agent_state() {
   esac
 }
 
-# new_record <role> <kind> <model-key> <workdir> <branch> <base-ref> <base-commit> <kickoff>
+# new_record <role> <kind> <model-key> <workdir> <branch> <base-ref> <base-commit> <kickoff> <spawned-by>
 new_record() {
-  local launcher
+  local launcher permissions
   # model_info must run in THIS shell: launcher_path runs in a substitution
   # subshell, so the MODEL_* variables it sets there never reach us.
   model_info "$3" || die "unknown model '$3' (known: $AI_TEAM_MODEL_KEYS)"
   launcher="$(launcher_path "$3")"
   [ -x "$launcher" ] || die "launcher missing or not executable: $launcher  (run: teamctl doctor)"
+  permissions="$(effective_permissions "$2" "$MODEL_FAMILY")"
   "$JQ_BIN" -n --arg role "$1" --arg kind "$2" --arg model "$3" --arg label "$MODEL_LABEL" \
     --arg family "$MODEL_FAMILY" --arg launcher "$launcher" --arg workdir "$4" --arg branch "$5" \
     --arg base_ref "$6" --arg base_commit "$7" --arg kickoff "$8" --arg now "$(now_iso)" \
+    --arg spawned_by "${9:-operator}" --arg permissions "$permissions" \
     '{role: $role, kind: $kind, model: $model, label: $label, family: $family, launcher: $launcher,
       workdir: $workdir, branch: $branch, base_ref: $base_ref, base_commit: $base_commit,
-      kickoff: $kickoff, pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
+      kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions,
+      pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
     reg_put "$1"
 }
 
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
-  local model="" attach=1 beads="ask" pane branch
+  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-attach | -d) attach=0 ;;
       --init-beads) beads="yes" ;;
       --skip-beads) beads="skip" ;;
+      --lead-permissions | --worker-permissions | --worker-spawn)
+        [ "$#" -ge 2 ] || die_usage "$1 needs a value: $(policy_choices "${1#--}")"
+        policy_valid "${1#--}" "$2" || die_usage "$1 must be one of: $(policy_choices "${1#--}")"
+        case "$1" in
+          --lead-permissions) opt_lead="$2" ;;
+          --worker-permissions) opt_worker="$2" ;;
+          --worker-spawn) opt_spawn="$2" ;;
+        esac
+        shift
+        ;;
       -*) die_usage "unknown option for start: $1" ;;
       *) model="$1" ;;
     esac
@@ -70,14 +83,18 @@ cmd_start() {
   done
   case "$model" in
     fable | astra) ;;
-    *) die_usage "usage: teamctl start <fable|astra> [--no-attach] [--init-beads|--skip-beads]" ;;
+    *) die_usage "usage: teamctl start <fable|astra> [--no-attach] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]" ;;
   esac
   require_tools
   load_project
+  require_manager start
   wt_require_commit
   ensure_state_dirs
   beads_ensure "$beads"
   lock_acquire
+  if [ -n "$opt_lead" ]; then policy_set lead-permissions "$opt_lead"; fi
+  if [ -n "$opt_worker" ]; then policy_set worker-permissions "$opt_worker"; fi
+  if [ -n "$opt_spawn" ]; then policy_set worker-spawn "$opt_spawn"; fi
 
   SESSION="$(session_name_for_project)"
   if tm_session_exists "$SESSION"; then
@@ -88,7 +105,7 @@ cmd_start() {
   fi
 
   branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
-  new_record "$AI_TEAM_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0
+  new_record "$AI_TEAM_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
   pane="$(tm_new_session "$SESSION" "$ROOT" "$TEAMCTL_SELF" _run-agent "$ROOT" "$AI_TEAM_LEAD_ROLE")" || {
     reg_delete "$AI_TEAM_LEAD_ROLE"
     die "could not create tmux session '$SESSION'"
@@ -106,6 +123,7 @@ cmd_start() {
 
   say "team session:  $SESSION   (tmux socket: $AI_TEAM_TMUX_SOCKET)"
   say "lead:          $MODEL_LABEL via $MODEL_LAUNCHER in $(short_path "$ROOT")"
+  say "policy:        $(policy_summary)   (teamctl policy)"
   say "next:          teamctl spawn backend glm53 · teamctl status · teamctl attach"
   if [ "$attach" -eq 1 ] && [ -t 0 ] && [ -t 1 ]; then
     cmd_attach
@@ -114,7 +132,7 @@ cmd_start() {
 
 # --- teamctl spawn <role> <model> -----------------------------------------------
 cmd_spawn() {
-  local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane
+  local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
   if [ "${AI_TEAM_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -137,6 +155,10 @@ cmd_spawn() {
   load_project
   ensure_state_dirs
   require_session
+  spawner="$(caller_role)"
+  if ! is_manager && [ "$(policy_get worker-spawn)" != "on" ]; then
+    die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: bd create \"Need a helper: <for what>\" -t message -a lead -d \"<why, which model>\"" 77
+  fi
   lock_acquire
 
   if reg_exists "$role"; then
@@ -152,7 +174,7 @@ cmd_spawn() {
   stamp="$(now_stamp)"
   branch="ai/$role-$stamp"
   path="$(wt_create "$role" "$stamp" "$base_commit")"
-  new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff"
+  new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}"
 
   target="$(tm_split_target "$SESSION")" || target=""
   pane=""
@@ -166,10 +188,14 @@ cmd_spawn() {
   fi
   tm_tag "$pane" "$role" "$MODEL_LABEL"
   reg_set "$role" pane_id "$pane" state running
-  event_log spawn "$role" "$model $branch"
+  event_log spawn "$role" "$model $branch by ${spawner:-operator}"
   lock_release
+  # The manager always knows who is on the team, whoever did the spawning.
+  if [ -n "$spawner" ] && [ "$spawner" != "$AI_TEAM_LEAD_ROLE" ]; then
+    notify_lead spawn "$spawner" "$role" "$MODEL_LABEL" || true
+  fi
 
-  say "spawned:   $role  ($MODEL_LABEL via $MODEL_LAUNCHER)"
+  say "spawned:   $role  ($MODEL_LABEL via $MODEL_LAUNCHER)  permissions: $(reg_field "$role" permissions)"
   say "pane:      $pane"
   say "branch:    $branch  (base: $base_ref @ $(printf '%s' "$base_commit" | cut -c1-12))"
   say "worktree:  $(short_path "$path")"
@@ -195,7 +221,19 @@ build_role_prompt() {
     printf -- '- Your private worktree (work ONLY here): %s\n' "$workdir"
     printf -- '- Your branch: %s   (base: %s @ %s)\n' "$(reg_field "$role" branch)" "$(reg_field "$role" base_ref)" "$(reg_field "$role" base_commit | cut -c1-12)"
   fi
-  printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported)\n\n' "$role"
+  printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported)\n' "$role"
+  printf -- '- The manager of this team is the agent with TEAM_ROLE=lead. Nobody else manages, approves or assigns.\n'
+  if [ "$kind" = "worker" ]; then
+    printf -- '- You were spawned by: %s. You report to the lead regardless.\n' "$(reg_field "$role" spawned_by)"
+    if [ "$(policy_get worker-spawn)" = "on" ]; then
+      printf -- '- Worker spawning is ON: you may run `teamctl spawn <role> <glm53|flash>` when the work needs it; the lead is told automatically.\n'
+    else
+      printf -- '- Worker spawning is OFF: you cannot add teammates. If you need one, message the lead.\n'
+    fi
+  else
+    printf -- '- Team policy: %s. Change it with `teamctl policy`.\n' "$(policy_summary)"
+  fi
+  printf -- '- Your permission mode: %s\n\n' "$(reg_field "$role" permissions)"
   printf 'The %s section of the protocol below is binding for you.\n\n---\n\n' "$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')"
   if [ -r "$AI_TEAM_HOME/TEAM_PROTOCOL.md" ]; then
     /bin/cat "$AI_TEAM_HOME/TEAM_PROTOCOL.md"
@@ -208,8 +246,25 @@ kickoff_text() {
   printf 'You are the %s worker of an ai-team session. Check your Beads inbox now: run `bd list --assignee %s --status open --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$1"
 }
 
+# write_agent_settings <role> — Claude Code settings for one WORKER pane; prints the
+# file path. Workers never run Claude Code's own agent-teams feature: with it on,
+# any subagent a session names becomes a teammate whose "team lead" — and permission
+# approver — is that worker. The lead's settings are left exactly as you have them.
+write_agent_settings() {
+  local role="$1" path="$STATE_DIR/settings/$1.json" hook_command
+  /bin/mkdir -p "$STATE_DIR/settings"
+  hook_command="\"$TEAMCTL_SELF\" _permission-hook"
+  "$JQ_BIN" -n --arg mode "$(reg_field "$role" permissions)" --arg command "$hook_command" \
+    --argjson timeout "$((APPROVAL_TIMEOUT + 30))" '
+    {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"}
+    + (if $mode == "lead"
+       then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $command, timeout: $timeout}]}]}}
+       else {} end)' >"$path"
+  printf '%s\n' "$path"
+}
+
 cmd_run_agent() {
-  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args
+  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions
   [ -n "$root" ] && [ -n "$role" ] || die_usage "internal use: _run-agent <root> <role> [--continue]"
   if [ "${3:-}" = "--continue" ]; then resume=1; fi
   export AI_TEAM_ROOT="$root"
@@ -231,9 +286,15 @@ cmd_run_agent() {
   export PATH
   cd "$workdir" || die "cannot enter $workdir"
 
+  permissions="$(reg_field "$role" permissions)"
+  if [ "$(reg_field "$role" kind)" = "worker" ] && [ "$family" != "codex" ]; then
+    AI_TEAM_EXTRA_SETTINGS="$(write_agent_settings "$role")"
+    export AI_TEAM_EXTRA_SETTINGS
+  fi
+
   prompt="$(build_role_prompt "$role")"
-  printf '[ai-team] role=%s  model=%s  launcher=%s\n[ai-team] cwd=%s\n' \
-    "$role" "$(reg_field "$role" label)" "$(basename "$launcher")" "$workdir"
+  printf '[ai-team] role=%s  model=%s  launcher=%s  permissions=%s\n[ai-team] cwd=%s\n' \
+    "$role" "$(reg_field "$role" label)" "$(basename "$launcher")" "${permissions:-ask}" "$workdir"
 
   case "$family" in
     codex)
@@ -242,6 +303,7 @@ cmd_run_agent() {
       args=(-c "developer_instructions='''
 $prompt
 '''")
+      if [ "$permissions" = "skip" ]; then args+=(--dangerously-bypass-approvals-and-sandbox); fi
       if [ "$resume" -eq 1 ]; then
         args+=(resume --last)
       elif [ "$(reg_field "$role" kickoff)" = "1" ]; then
@@ -250,6 +312,7 @@ $prompt
       ;;
     *)
       args=(--append-system-prompt "$prompt" --name "team/$role")
+      if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
       if [ "$resume" -eq 1 ]; then
         args+=(--continue)
       elif [ "$(reg_field "$role" kickoff)" = "1" ]; then
@@ -267,6 +330,7 @@ cmd_stop() {
   require_tools
   load_project
   reg_exists "$role" || die "no such agent: $role  (see: teamctl status)"
+  require_manager stop
   lock_acquire
   SESSION="$(session_name_for_project)"
   pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
@@ -298,7 +362,10 @@ cmd_restart() {
   [ -d "$workdir" ] || die "cannot restart '$role': its working directory is gone ($workdir)"
   SESSION="$(session_name_for_project)"
   tm_session_exists "$SESSION" || die "no team session. Start one first: teamctl start $(reg_field "$AI_TEAM_LEAD_ROLE" model 2>/dev/null || printf '<fable|astra>')"
+  require_manager restart
   lock_acquire
+  # A restart picks up the current policy.
+  reg_set "$role" permissions "$(effective_permissions "$(reg_field "$role" kind)" "$(reg_field "$role" family)")"
 
   cmd=("$TEAMCTL_SELF" _run-agent "$ROOT" "$role")
   if [ "$resume" -eq 1 ]; then cmd+=(--continue); fi
@@ -358,6 +425,7 @@ cmd_destroy() {
   done
   require_tools
   load_project
+  require_manager destroy
   SESSION="$(session_name_for_project)"
   say "About to stop every agent of this project's team ($SESSION)."
   say "Kept in all cases: your source files, every commit, unmerged branches, credentials, Beads data."
@@ -389,6 +457,39 @@ cmd_destroy() {
   reg_delete "$AI_TEAM_LEAD_ROLE"
   event_log destroy "" "worktrees=$remove_worktrees"
   lock_release
+}
+
+# notify_lead <spawn|approval|policy> <args...> — a fixed one-line notice in the lead's
+# pane. Every interpolated value is a validated role, a model label from the model
+# table, an approval id or a policy word; nothing free-form is ever typed.
+notify_lead() {
+  local kind="$1" pane text tries=0
+  pane="$(tm_pane_for_role "$SESSION" "$AI_TEAM_LEAD_ROLE")"
+  [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
+  case "$kind" in
+    spawn)
+      valid_role "$2" && valid_role "$3" || return 1
+      text="[ai-team] Team change: $2 spawned teammate $3 ($4). Run: teamctl status"
+      ;;
+    approval)
+      valid_approval_id "$2" && valid_role "$3" || return 1
+      text="[ai-team] Permission request $2 from $3. Run: teamctl approvals"
+      ;;
+    policy)
+      policy_valid "$2" "$3" || return 1
+      text="[ai-team] Policy changed: $2 = $3. Run: teamctl policy"
+      ;;
+    *) return 1 ;;
+  esac
+  # Serialize with other notices for the lead so two lines never interleave.
+  until nudge_begin "$AI_TEAM_LEAD_ROLE"; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 30 ] || break
+    sleep 0.2
+  done
+  tm_type_line "$pane" "$text"
+  nudge_mark "$AI_TEAM_LEAD_ROLE"
+  nudge_end "$AI_TEAM_LEAD_ROLE"
 }
 
 # --- teamctl nudge <role>|--all [--id <bead>] [--quiet] ------------------------------------------

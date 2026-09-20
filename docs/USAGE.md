@@ -67,7 +67,9 @@ teamctl destroy --worktrees          # later: drops clean worktrees and fully me
 
 | Command | Does |
 |---------|------|
-| `teamctl start <fable\|astra> [--no-attach] [--init-beads\|--skip-beads]` | create the session and the lead pane; attach |
+| `teamctl start <fable\|astra> [--no-attach] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach |
+| `teamctl policy [<key> <value>]` | show or change `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off) |
+| `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
 | `teamctl spawn <role> <glm53\|flash\|fable\|astra> [--base <ref>] [--no-kickoff]` | new worker: branch + worktree + pane |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
 | `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |
@@ -82,6 +84,8 @@ teamctl destroy --worktrees          # later: drops clean worktrees and fully me
 | `teamctl doctor` | launcher, credential, settings and login checks |
 
 Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.
+`start`, `stop`, `restart`, `destroy`, `policy`, `approve` and `deny` are reserved for
+the lead and for you; `spawn` too unless `worker-spawn` is on. A worker gets exit 77.
 `teamctl send|inbox|broadcast|task` print the `bd` equivalents.
 
 ## Beads cheat sheet

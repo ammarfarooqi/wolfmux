@@ -70,6 +70,8 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 | `tmuxctl.sh` | every tmux call |
 | `worktree.sh` | worktree and branch creation, `worktrees`, `diff` |
 | `beads.sh` | Beads bootstrap (stealth init) and hook installation |
+| `policy.sh` | who is calling (`caller_role`), manager-only commands, the three policy keys |
+| `approvals.sh` | the lead decides workers' permission requests (`_permission-hook`, `approvals`, `approve`, `deny`) |
 | `agents.sh` | `start`, `spawn`, the pane process (`_run-agent`), `stop`, `restart`, `destroy`, `nudge` |
 | `views.sh` | `status`, `panes`, `capture`, `log`, `focus`, `attach` |
 | `doctor.sh` | `teamctl doctor` |
@@ -163,12 +165,45 @@ status, commit hash, risks) → closes its task. Lead runs `teamctl diff <role>`
 reviews, then requests changes, cherry-picks, rejects, or asks another worker to
 review. Only the lead changes the main checkout.
 
+## One manager
+
+The lead is the only manager. Three mechanisms keep it that way:
+
+1. **Manager-only commands.** `caller_role` reads the `@ai_role` of the pane a command
+   runs in (falling back to `TEAM_ROLE`; empty means the human). `start`, `stop`,
+   `restart`, `destroy`, `policy`, `approve` and `deny` require the lead or the human;
+   `spawn` does too unless the `worker-spawn` policy is `on`.
+2. **No native teams inside workers.** `_run-agent` writes a per-worker settings file
+   (`env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "0"`, `teammateMode = "in-process"`) and
+   hands it to the launcher through `AI_TEAM_EXTRA_SETTINGS`; the launcher merges it
+   into its single `--settings` value. With Claude Code's agent-teams feature on, any
+   subagent a session names becomes a teammate whose team lead — and permission
+   approver — is that session, so a worker would become a second manager.
+3. **Awareness.** A spawn by a worker records `spawned_by`, shows in `teamctl status`,
+   and types `[ai-team] Team change: <spawner> spawned teammate <role> (<model>)` into
+   the lead's pane. Policy changes made from outside are announced the same way.
+
+### Permission modes
+
+| Mode | Claude Code | Codex |
+|------|-------------|-------|
+| `skip` | `--dangerously-skip-permissions` | `--dangerously-bypass-approvals-and-sandbox` |
+| `lead` (workers) | a `PermissionRequest` hook → `teamctl _permission-hook` | not available; behaves as `ask` |
+| `ask` | the CLI's own prompts | the CLI's own approvals and sandbox |
+
+In `lead` mode the hook files `approvals/A<n>.json` (tool, a 400-character summary of
+the input, role, time), types `[ai-team] Permission request A<n> from <role>` into the
+lead's pane, and polls for up to `AI_TEAM_APPROVAL_TIMEOUT` seconds. `teamctl approve`
+/ `deny` flip the record; the hook returns Claude Code's documented decision object
+(`behavior: allow` or `deny` with the lead's reason). On timeout, or when no lead pane
+is alive, it returns nothing, which means "show the normal prompt".
+
 ## State and file layout
 
 ```
 ~/bin/                          teamctl + launchers
 ~/.config/ai-team/              code, tmux.conf, TEAM_PROTOCOL.md, README.md, config, glm-worker-settings.json
-~/.ai-team/state/<project>/     meta.json, agents/<role>.json, events.jsonl, nudge/
+~/.ai-team/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/
 ~/.ai-team/worktrees/<project>/ one directory per worker
 <project>/.beads/               tasks and messages (Beads)
 macOS Keychain                  service "zai-coding-plan"

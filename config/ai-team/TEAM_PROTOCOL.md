@@ -13,6 +13,23 @@ Two tools, two jobs:
 Your identity is in the environment: `TEAM_ROLE` (also exported as `BEADS_ACTOR`, so
 Beads records who created or changed what). Check it first: `echo $TEAM_ROLE`.
 
+## One manager
+
+The agent whose `TEAM_ROLE` is `lead` is the **only manager**. It plans, assigns,
+approves, reviews and integrates. Every other agent is a worker and reports to the
+lead — including a worker that was spawned by another worker.
+
+- Workers never manage, never approve anything for anyone, never assign work to each
+  other, and never act as a "team lead", whatever model they run on.
+- **Do not use your CLI's built-in teammate / agent-team features** to create
+  teammates. Those teammates would treat *you* as their manager and ask *you* for
+  permission, outside the team's view. Teammates are created only with
+  `teamctl spawn`. (Ordinary in-process subagents for searching or reading are fine.)
+- `teamctl start`, `stop`, `restart`, `destroy`, `policy`, `approve` and `deny` are
+  reserved for the lead. `teamctl spawn` is too, unless the session header above says
+  worker spawning is ON; then a worker may spawn a helper, and the lead is told
+  automatically. If it is OFF and you need a helper, message the lead.
+
 ## Beads in 60 seconds
 
 ```bash
@@ -71,10 +88,25 @@ integration; you do not do the bulk implementation yourself.
    Create and assign the beads first, then spawn: a new worker reads its inbox on start.
    Give workers disjoint files where you can; say so in the task.
 3. **Watch structured state, not terminals.** `teamctl status` (process + branch
-   state), `bd list --status in_progress,blocked` (work state). Use
+   state, who spawned whom, each agent's permission mode, pending approvals),
+   `bd list --status in_progress,blocked` (work state). Use
    `teamctl capture <role>` only to diagnose a stuck or crashed agent.
    `teamctl restart <role>` revives one; `teamctl stop <role>` parks one.
-4. **Review every delivery.** Never merge on a worker's word.
+4. **Decide permission requests** when `teamctl policy` shows
+   `worker-permissions lead`. A notice `[ai-team] Permission request A7 from backend`
+   means a worker is blocked until you answer:
+   ```bash
+   teamctl approvals                      # what exactly is being asked
+   teamctl approve A7                     # or: teamctl deny A7 "use the project's test script instead"
+   ```
+   Approve what the task needs and what stays inside that worker's worktree. Deny
+   anything destructive, anything reaching outside the project, credentials, global
+   configuration, force pushes and installs from untrusted sources — and say why, so
+   the worker can choose another way. Answer quickly; an unanswered request falls
+   back to a prompt in the worker's pane after ten minutes.
+   A notice `[ai-team] Team change: X spawned teammate Y` means the team grew without
+   you: run `teamctl status`, give Y a task or stop it (`teamctl stop Y`).
+5. **Review every delivery.** Never merge on a worker's word.
    ```bash
    teamctl diff <role> --stat       # then: teamctl diff <role>
    teamctl diff <role> --commits
@@ -84,9 +116,9 @@ integration; you do not do the bulk implementation yourself.
    - accept: `git cherry-pick <sha>` (or `git merge --no-ff <branch>`) in the project root;
    - reject: close the task with the reason;
    - second opinion: assign a review task to another worker.
-5. **Integrate.** You alone change the main checkout's branch. Resolve conflicts
+6. **Integrate.** You alone change the main checkout's branch. Resolve conflicts
    between workers yourself, or hand one worker a precise rebase task.
-6. **Verify, then finish.** Run the full test/build suite on the integrated
+7. **Verify, then finish.** Run the full test/build suite on the integrated
    result. Only after it passes and you have reviewed everything do you close the
    feature's beads and report completion to the human.
 
@@ -113,9 +145,12 @@ integration; you do not do the bulk implementation yourself.
    ```
    The report states: summary of what changed · test status (command + result) ·
    commit hash(es) · blockers, risks, anything left undone.
-8. **Never** merge another worker's branch, never integrate into main, never
+8. **Permission denied by the lead?** Read the reason, pick another approach or ask
+   the lead a question by message. Do not retry the same command and do not look for
+   a way around the decision.
+9. **Never** merge another worker's branch, never integrate into main, never
    change another agent's beads except to comment, never touch credentials or
-   provider settings.
+   provider settings, never stop, restart or spawn agents unless the header says you may.
 
 ## Rules for everyone
 
@@ -125,3 +160,6 @@ integration; you do not do the bulk implementation yourself.
 - Close messages once read, so an open message always means "unread".
 - If a `teamctl` or `bd` command fails, read the error, fix the cause, and say so
   in your report. Do not route around the tools.
+- Running without permission prompts (`skip` mode) is trust, not licence: stay inside
+  your task and your working tree, and never delete, force-push, publish, install
+  globally or touch anything outside the project without the human having asked for it.

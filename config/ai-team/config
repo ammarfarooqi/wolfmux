@@ -13,6 +13,18 @@
 # 1m = request GLM's 1M-token context window (uses plan quota faster). Default: standard window.
 #AI_TEAM_GLM_CONTEXT=1m
 
+# --- team policy defaults (per project: `teamctl policy`, or flags on `teamctl start`) ---
+# How agents treat permission prompts.
+#   skip  the CLI's bypass mode (--dangerously-skip-permissions / Codex equivalent): nothing is asked
+#   lead  workers only: every request goes to the lead, who runs `teamctl approve|deny`
+#   ask   the normal prompt in the agent's own pane
+#AI_TEAM_LEAD_PERMISSIONS=skip
+#AI_TEAM_WORKER_PERMISSIONS=skip
+# May a worker add teammates with `teamctl spawn`? The lead is told every time one does.
+#AI_TEAM_WORKER_SPAWN=off
+# Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
+#AI_TEAM_APPROVAL_TIMEOUT=600
+
 # Model pins.
 #AI_TEAM_FABLE_MODEL=claude-fable-5-1[1m]
 #AI_TEAM_ASTRA_MODEL=gpt-6-astra

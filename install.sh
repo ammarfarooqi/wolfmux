@@ -42,13 +42,21 @@ backup() { # <file> — timestamped copy next to the original
   note "backup: $1.backup-$STAMP"
 }
 
-# install_file <src> <dst> <mode> — replace only when the content differs
+# install_file <src> <dst> <mode> — replace only when the content differs. The
+# previous version of one of OUR files goes to ~/.ai-team/backups/<stamp>/, never
+# next to the original: an executable copy in ~/bin would sit on your PATH.
 install_file() {
-  local src="$1" dst="$2" mode="$3"
+  local src="$1" dst="$2" mode="$3" keep
   if [ -f "$dst" ] && /usr/bin/cmp -s "$src" "$dst"; then
     return 0
   fi
-  if [ -e "$dst" ]; then backup "$dst"; fi
+  if [ -e "$dst" ]; then
+    keep="$HOME/.ai-team/backups/$STAMP/${dst#"$HOME"/}"
+    /bin/mkdir -p "$(dirname "$keep")"
+    /bin/cp -p "$dst" "$keep"
+    /bin/chmod 600 "$keep"
+    note "previous version kept: $keep"
+  fi
   /usr/bin/install -m "$mode" "$src" "$dst"
   note "installed: $dst"
 }
@@ -93,6 +101,9 @@ for name in tmux.conf TEAM_PROTOCOL.md README.md; do
   install_file "$REPO/config/ai-team/$name" "$CONF_DIR/$name" 644
 done
 install_once "$REPO/config/ai-team/config" "$CONF_DIR/config" 644
+if ! /usr/bin/cmp -s "$REPO/config/ai-team/config" "$CONF_DIR/config"; then
+  note "new settings may exist: compare with $REPO/config/ai-team/config"
+fi
 install_once "$REPO/config/ai-team/glm-worker-settings.json" "$CONF_DIR/glm-worker-settings.json" 644
 
 say "== symlinks"

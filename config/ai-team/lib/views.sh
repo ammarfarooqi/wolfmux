@@ -27,7 +27,10 @@ _status_rows() { # emits one JSON object per agent
     "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$(reg_field "$role" model)" \
       --arg label "$(reg_field "$role" label)" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" \
+      --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
       '{role: $role, kind: $kind, model: $model, label: $label, state: $state, pane: $pane,
+        permissions: (if $permissions == "" then "ask" else $permissions end),
+        spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
         branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir}'
   done
 }
@@ -44,21 +47,27 @@ cmd_status() {
   rows="$(_status_rows)"
   if [ "$json" -eq 1 ]; then
     printf '%s\n' "$rows" | "$JQ_BIN" -s --arg root "$ROOT" --arg session "$SESSION" \
-      --arg running "${SESSION_LIVE:-0}" '{root: $root, session: $session, session_running: ($running == "1"), agents: .}'
+      --arg running "${SESSION_LIVE:-0}" --arg lp "$(policy_get lead-permissions)" \
+      --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" \
+      --arg pending "$(approvals_pending_count)" \
+      '{root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
+        policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws},
+        approvals_pending: ($pending | tonumber), agents: .}'
     return 0
   fi
   say "project   $(short_path "$ROOT")"
   if [ -n "$SESSION_LIVE" ]; then say "session   $SESSION  (running)"; else say "session   $SESSION  (not running)"; fi
+  say "policy    manager: lead · $(policy_summary) · approvals pending: $(approvals_pending_count)"
   say ""
   if [ -z "$rows" ]; then
     say "no agents registered. Start a team: teamctl start <fable|astra>"
     return 0
   fi
-  printf '%-14s %-14s %-11s %-5s %-30s %-6s %-6s %s\n' ROLE MODEL STATE PANE BRANCH AHEAD DIRTY WORKDIR
+  printf '%-14s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY WORKDIR
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.role, .label, .state, (if .pane == "" then "-" else .pane end), .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
-    while IFS='|' read -r role label state pane branch ahead dirty workdir; do
-      printf '%-14s %-14s %-11s %-5s %-30s %-6s %-6s %s\n' "$role" "$label" "$state" "$pane" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.role, .label, .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
+    while IFS='|' read -r role label state pane permissions spawned_by branch ahead dirty workdir; do
+      printf '%-14s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$role" "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
     done
   say ""
   say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open --include-infra"

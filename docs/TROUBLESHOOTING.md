@@ -4,6 +4,10 @@ Start with `teamctl doctor`, then `teamctl status`, then `teamctl capture <role>
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
+| teammates appear in extra terminal panes and ask a *worker* for approval ("Waiting for team lead approval") | the worker used Claude Code's own agent-teams feature (your settings enable it), which makes the spawning session a team lead | fixed since 1.1: teamctl switches that feature off inside workers. Restart workers started with an older version: `teamctl restart <role>` |
+| a worker's banner says `API Usage Billing` | Claude Code's label for any key-based login | expected for GLM workers: the key is the Z.ai Coding Plan key, the endpoint is Z.ai's. Check `/status` in the pane |
+| a worker stalls on a permission prompt | it runs in `ask` mode, or a lead-mode request timed out | `teamctl status` shows its PERM column. `teamctl policy worker-permissions skip` (or `lead`), then `teamctl restart <role> --continue` |
+| `'teamctl …' is reserved for the lead` (exit 77) | a worker tried a manager command, or tried to spawn while `worker-spawn` is off | intended. The worker should message the lead; you can allow spawning with `teamctl policy worker-spawn on` |
 | `teamctl: command not found` | the `~/bin` PATH block is not loaded yet | open a new terminal; check for the `>>> ai-team >>>` block in `~/.zshrc` |
 | worker pane says `no Keychain item for service 'zai-coding-plan'`, state `exited(78)` | the Z.ai key was never stored | run the `security add-generic-password …` command the pane shows, then `teamctl restart <role>` |
 | GLM worker answers with 401 / authentication errors | the endpoint rejected helper-mode headers, or the key is wrong | set `AI_TEAM_GLM_AUTH_MODE=env` in `~/.config/ai-team/config`, `teamctl restart <role>`; if it persists, re-store the key (the same command, `-U` overwrites) |

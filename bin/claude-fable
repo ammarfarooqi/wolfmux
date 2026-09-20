@@ -9,6 +9,7 @@
 #   AI_TEAM_FABLE_MODEL   model to pin (default: claude-fable-5-1[1m])
 #   AI_TEAM_CLAUDE_BIN    explicit path to the claude binary
 #   AI_TEAM_DRY_RUN=1     print what would run (no secrets) and exit
+#   AI_TEAM_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
 set -euo pipefail
 
 LIB="${AI_TEAM_HOME:-$HOME/.config/ai-team}/lib/provider-env.sh"
@@ -30,11 +31,20 @@ CLAUDE_BIN="$(ai_team_resolve_claude)" || {
 
 MODEL="${AI_TEAM_FABLE_MODEL:-claude-fable-5-1[1m]}"
 
-if ai_team_is_claude_subcommand "${1:-}" || ai_team_args_have_model "$@"; then
-  CMD=("$CLAUDE_BIN" "$@")
-else
-  CMD=("$CLAUDE_BIN" --model "$MODEL" "$@")
+if ai_team_is_claude_subcommand "${1:-}"; then
+  exec "$CLAUDE_BIN" "$@"
 fi
+
+CMD=("$CLAUDE_BIN")
+# Per-agent settings that teamctl generated for this pane (none for a lead).
+SETTINGS_JSON="$(ai_team_merge_settings "" "${AI_TEAM_EXTRA_SETTINGS:-}")" || exit 78
+if [ "$SETTINGS_JSON" != "{}" ]; then
+  CMD+=(--settings "$SETTINGS_JSON")
+fi
+if ! ai_team_args_have_model "$@"; then
+  CMD+=(--model "$MODEL")
+fi
+CMD+=("$@")
 
 if [ "${AI_TEAM_DRY_RUN:-}" = "1" ]; then
   echo "launcher:        claude-fable"

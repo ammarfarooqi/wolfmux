@@ -94,6 +94,23 @@ overlay that keeps `claude-mem`'s daemon from starting under a Z.ai environment.
 This repository: sources, `install.sh` / `uninstall.sh` (tested in a fake `HOME`),
 `tests/smoke.sh` (31 checks), `tests/credential-routing.sh`, and this documentation.
 
+## 12. First real use — three problems, one root cause (v1.1)
+
+The owner ran a real team and reported: teammates were asking a GLM session for approval
+and treating it as the manager; agents stalled on permission prompts; and a worker had
+been able to create teammates on its own.
+
+Root cause of the first and third: the owner's Claude Code settings enable the
+experimental agent-teams feature (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
+`teammateMode: iterm2`), which workers inherited. With it on, any subagent a session
+names becomes a teammate whose team lead and permission approver is that session
+(documented behaviour). Fix and additions are in
+[ADR-0013](adr/0013-one-manager-policy.md): manager-only commands, a per-project policy
+(`lead-permissions`, `worker-permissions`, `worker-spawn`), agent teams switched off
+inside workers, a `PermissionRequest` hook that lets the lead approve or deny, and lead
+notices for spawns and policy changes. The smoke suite grew from 31 to 48 checks, and the
+override was confirmed against the real CLI.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/ai-team/`, `~/.ai-team/`, `~/.local/bin/bd`, `~/.codex/rules/ai-team.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

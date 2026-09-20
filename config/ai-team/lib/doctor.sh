@@ -204,6 +204,20 @@ _doc_team() {
   if [ -n "$sessions" ]; then _ok "running sessions: $sessions"; else _note "no team session running"; fi
 }
 
+_doc_policy() {
+  local settings="$CLAUDE_DIR/settings.json" teams
+  _head "Team policy (defaults from $(short_path "$AI_TEAM_HOME/config"); per project: teamctl policy)"
+  _ok "manager: the lead only — workers cannot stop, restart, destroy, approve or change policy"
+  _note "lead-permissions=$(policy_default lead-permissions)  worker-permissions=$(policy_default worker-permissions)  worker-spawn=$(policy_default worker-spawn)"
+  case "$(policy_default lead-permissions)$(policy_default worker-permissions)" in
+    *skip*) _note "skip = the CLI's bypass mode: that agent runs any command as you, without asking. Deny rules and explicit ask rules (teamctl destroy) still apply." ;;
+  esac
+  teams="$("$JQ_BIN" -r '.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS // ""' "$settings" 2>/dev/null || true)"
+  if [ "$teams" = "1" ]; then
+    _ok "Claude Code agent teams are on in your settings; teamctl turns them off inside workers, so a worker can never become a second manager"
+  fi
+}
+
 cmd_doctor() {
   [ -n "$JQ_BIN" ] || die "jq is required for doctor"
   ROOT="$(resolve_root 2>/dev/null || true)"
@@ -218,6 +232,7 @@ cmd_doctor() {
   _doc_profiles
   _doc_beads
   _doc_team
+  _doc_policy
   _head "Account-side settings no local tool can see — check them once"
   _note "claude.ai  > Settings > Usage: keep 'extra usage' OFF, or overage beyond the plan is metered."
   _note "chatgpt.com > Settings > Codex usage: do not buy or auto-refill credits if you want plan-only usage."

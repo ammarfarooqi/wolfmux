@@ -18,7 +18,8 @@ AI_TEAM_ZAI_KEYCHAIN_SERVICE="zai-coding-plan"
 AI_TEAM_GLM_GUARD_TOKEN="ai-team-glm-worker-no-anthropic-credential"
 
 # Settings a launcher may take from ~/.config/ai-team/config (KEY=value lines).
-AI_TEAM_CONFIG_KEYS="AI_TEAM_GLM_AUTH_MODE AI_TEAM_GLM_CONTEXT AI_TEAM_FABLE_MODEL AI_TEAM_ASTRA_MODEL"
+AI_TEAM_CONFIG_KEYS="AI_TEAM_GLM_AUTH_MODE AI_TEAM_GLM_CONTEXT AI_TEAM_FABLE_MODEL AI_TEAM_ASTRA_MODEL
+AI_TEAM_LEAD_PERMISSIONS AI_TEAM_WORKER_PERMISSIONS AI_TEAM_WORKER_SPAWN AI_TEAM_APPROVAL_TIMEOUT"
 
 # Credential, endpoint, provider and model overrides understood by Claude Code.
 # Any of these, inherited by accident, can move traffic off the Claude subscription.
@@ -161,6 +162,28 @@ ai_team_scrub_codex_env() {
   for name in $(ai_team_list_set_vars "$AI_TEAM_CODEX_PROVIDER_VARS" "$AI_TEAM_CODEX_PROVIDER_PREFIXES"); do
     unset "$name"
   done
+}
+
+# ai_team_merge_settings <helper-command-or-empty> <json-file>... — one JSON value
+# for Claude Code's --settings flag. Later files win; missing files are skipped.
+# Used for: the GLM worker overlay, the per-agent settings teamctl generates
+# ($AI_TEAM_EXTRA_SETTINGS), and the Keychain key helper.
+ai_team_merge_settings() {
+  local helper="$1" jq_bin merged="{}" file
+  shift
+  jq_bin="$(command -v jq 2>/dev/null || true)"
+  [ -n "$jq_bin" ] || jq_bin="/usr/bin/jq"
+  for file in "$@"; do
+    [ -n "$file" ] && [ -r "$file" ] || continue
+    merged="$("$jq_bin" -c -n --argjson a "$merged" --slurpfile b "$file" '$a * $b[0]')" || {
+      echo "ai-team: $file is not valid JSON — fix or delete it" >&2
+      return 1
+    }
+  done
+  if [ -n "$helper" ]; then
+    merged="$(printf '%s' "$merged" | "$jq_bin" -c --arg helper "$helper" '. + {apiKeyHelper: $helper}')" || return 1
+  fi
+  printf '%s\n' "$merged"
 }
 
 # Resolve the real Claude Code binary. Never resolves to one of our launchers,

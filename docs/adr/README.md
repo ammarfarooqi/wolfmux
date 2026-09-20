@@ -17,3 +17,4 @@ superseded decisions will link to their replacement.
 | [0010](0010-reuse-bundled-codex-cli.md) | Reuse the Codex CLI bundled with ChatGPT.app | accepted | 2026-09-20 |
 | [0011](0011-glm-worker-settings-overlay.md) | A settings overlay for GLM workers, with claude-mem off | accepted | 2026-09-20 |
 | [0012](0012-bash-modules-and-a-swappable-registry.md) | Bash 3.2 modules and a registry behind one interface | accepted | 2026-09-20 |
+| [0013](0013-one-manager-policy.md) | One manager — policy for permissions and spawning, native agent teams off in workers | accepted | 2026-09-20 |

@@ -107,6 +107,25 @@ reminders rather than pretending:
 Wording used throughout: *"Configured for subscription authentication; verify
 account status in the CLI."*
 
+## Permission modes are a policy, not a sandbox
+
+The default policy runs the lead and the workers in their CLI's bypass mode, because
+that is what the owner asked for: no agent stalls on a prompt. In that mode an agent can
+run any command as the macOS user. What still applies: Claude Code `deny` rules in every
+mode, explicit `ask` rules (the installer adds one for `teamctl destroy`), `teamctl`'s
+own confirmation before `destroy`, and the protocol's conduct rules. What limits the
+blast radius in practice: each worker sits in its own worktree on its own branch, and
+only the lead integrates.
+
+For a stricter team without losing flow: `teamctl policy worker-permissions lead` routes
+every worker request to the lead; `ask` hands them back to a human. Both are per
+project and take effect on the next (re)start of an agent.
+
+The manager check (`caller_role`) is cooperative. It reads the pane a command runs in,
+so a confused agent cannot stop, approve or spawn by accident; an agent that deliberately
+unset its environment or called `tmux` directly could get around it, because all agents
+share one user account.
+
 ## Trust model
 
 Every agent runs as your macOS user. That has consequences worth stating plainly:

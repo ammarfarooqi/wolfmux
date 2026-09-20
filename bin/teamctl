@@ -10,7 +10,7 @@ set -euo pipefail
 AI_TEAM_HOME="${AI_TEAM_HOME:-$HOME/.config/ai-team}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree beads agents views doctor; do
+for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor; do
   if [ ! -r "$AI_TEAM_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $AI_TEAM_HOME/lib/$module.sh" >&2
     exit 78
@@ -18,18 +18,24 @@ for module in provider-env common registry tmuxctl worktree beads agents views d
   # shellcheck source=/dev/null
   . "$AI_TEAM_HOME/lib/$module.sh"
 done
+ai_team_load_config # ~/.config/ai-team/config supplies defaults; the environment wins
 
 usage() {
   /bin/cat <<'EOF'
 teamctl — tmux panes, models, worktrees and lifecycle for your AI team
 
-  Lead
+  Lead  (the only manager; start/stop/restart/destroy/policy/approve are reserved for it and for you)
     teamctl start <fable|astra> [--no-attach] [--init-beads|--skip-beads]
+                  [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
   Workers
     teamctl spawn <role> <glm53|flash|fable|astra> [--base <ref>] [--no-kickoff]
     teamctl stop <role>
     teamctl restart <role> [--continue]
     teamctl nudge <role>|--all [--id <bead-id>]     one fixed notification line in a pane
+  Policy and permissions
+    teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · worker-spawn
+    teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
+    teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
     teamctl status [--json]        (alias: workers)   process + worktree state per role
     teamctl panes                                     what tmux reports per pane
@@ -81,6 +87,11 @@ main() {
     restart) cmd_restart "$@" ;;
     destroy) cmd_destroy "$@" ;;
     nudge) cmd_nudge "$@" ;;
+    policy) cmd_policy "$@" ;;
+    approvals) cmd_approvals "$@" ;;
+    approve) cmd_approve "$@" ;;
+    deny) cmd_deny "$@" ;;
+    _permission-hook) cmd_permission_hook "$@" ;;
     status | workers) cmd_status "$@" ;;
     panes) cmd_panes "$@" ;;
     capture) cmd_capture "$@" ;;
