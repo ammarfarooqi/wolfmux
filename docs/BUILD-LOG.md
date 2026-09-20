@@ -209,7 +209,7 @@ lane ([ADR-0016](adr/0016-worktree-guard.md)). Writing it surfaced two traps wor
 keeping: a path has several spellings (`/var/…` and `/private/var/…`, doubled slashes), so
 the shell check replaces every spelling with a token before matching; and bash 3.2
 misreads escaped quotes inside `"$( … )"`, which split a jq program at its commas
-(brace expansion) in the tests. `tests/smoke.sh`: 92 → 108.
+(brace expansion) in the tests. `tests/smoke.sh`: 92 → 109.
 
 ## Footprint on the machine
 

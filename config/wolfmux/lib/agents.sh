@@ -466,6 +466,15 @@ cmd_restart() {
 }
 
 # --- teamctl destroy [--worktrees] [--yes] --------------------------------------------------
+# _inside_worktrees <path> — really inside this project's worktree directory (symlinks resolved)
+_inside_worktrees() {
+  local real base
+  real="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  base="$(cd "$WORKTREES_DIR" 2>/dev/null && pwd -P)" || return 1
+  case "$real/" in "$base"/?*/) return 0 ;; esac
+  return 1
+}
+
 # cmd_remove <role>... [--force] [--yes] — take a stopped worker off the books: worktree,
 # branch and record. Work is never discarded silently: without --force a worker with
 # uncommitted files or commits that are not in your current branch is refused, and the
@@ -523,10 +532,26 @@ cmd_remove() {
         confirm "Discard all of that and remove '$role'?" || { lock_release; die "aborted; nothing was removed (pass --yes to skip this question)"; }
       fi
     fi
-    if [ -d "$path" ]; then gitr worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"; fi
+    # A record is a file anyone can edit. Whatever it says, only a directory inside this
+    # project's worktrees is ever deleted, and only an ai/* branch that is not checked out
+    # in your own checkout.
+    if [ -d "$path" ]; then
+      if _inside_worktrees "$path"; then
+        gitr worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"
+      else
+        warn "$role: its record points outside $(short_path "$WORKTREES_DIR") ($(short_path "$path")); that directory was left alone"
+      fi
+    fi
     gitr worktree prune
     # -D only here: the refusal above, or your yes, is what makes discarding it deliberate.
-    if wt_branch_exists "$branch"; then gitr branch -D "$branch" >/dev/null 2>&1 || warn "could not delete branch $branch"; fi
+    case "$branch" in
+      ai/*)
+        if wt_branch_exists "$branch" && [ "$branch" != "$(gitr symbolic-ref --short -q HEAD || true)" ]; then
+          gitr branch -D "$branch" >/dev/null 2>&1 || warn "could not delete branch $branch"
+        fi
+        ;;
+      *) [ -z "$branch" ] || warn "$role: branch '$branch' is not an ai/* branch; left alone" ;;
+    esac
     pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
     if [ -n "$pane" ]; then tmx kill-pane -t "$pane" 2>/dev/null || true; fi
     /bin/rm -f "$STATE_DIR/settings/$role.json"

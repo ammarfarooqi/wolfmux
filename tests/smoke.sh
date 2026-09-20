@@ -267,6 +267,11 @@ check "remove: a worker cannot remove anyone (exit 77)" 'TEAM_ROLE=qa teamctl re
 check "remove: --force needs a yes when nobody can be asked" '! teamctl remove backend --force </dev/null && [ -d "$BACKEND_DIR" ]'
 BACKEND_BRANCH="$(git -C "$BACKEND_DIR" branch --show-current)"
 check "remove --force --yes: worktree, branch and record are gone; the main checkout is untouched" 'teamctl remove backend --force --yes && [ ! -d "$BACKEND_DIR" ] && ! git rev-parse -q --verify "refs/heads/$BACKEND_BRANCH" && ! teamctl status --json | jq -e ".agents[] | select(.role == \"backend\")" && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && ! git worktree list | grep -q backend'
+PRECIOUS="$WORK/precious"
+/bin/mkdir -p "$PRECIOUS" && echo keep >"$PRECIOUS/file.txt"
+AGENTS_DIR="$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)"
+jq -n --arg dir "$PRECIOUS" '{role: "rogue", kind: "worker", model: "glm53", label: "GLM-5.3", family: "claude", launcher: "/bin/true", workdir: $dir, branch: "main", base_ref: "main", base_commit: "", kickoff: "0", spawned_by: "operator", permissions: "skip", pane_id: "", state: "stopped"}' >"$AGENTS_DIR/rogue.json"
+check "remove: a damaged record can never delete a directory outside the worktrees, nor a branch that is not ai/*" 'teamctl remove rogue --force --yes; [ -f "$PRECIOUS/file.txt" ] && git rev-parse -q --verify refs/heads/main >/dev/null && ! teamctl status --json | jq -e ".agents[] | select(.role == \"rogue\")"'
 check "remove: an unknown role is an error, not a silent success" 'teamctl remove nobody --force --yes; [ $? -eq 1 ]'
 check "destroy: tmux session gone" '! tmux -L "$WOLFMUX_TMUX_SOCKET" has-session 2>/dev/null'
 
