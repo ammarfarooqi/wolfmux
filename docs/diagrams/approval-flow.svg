@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 748" width="1280" height="748" role="img" aria-labelledby="title desc">
+<title id="title">Wolfmux: The lead decides a worker's permission request</title>
+<desc id="desc">Sequence: a worker's Claude Code wants to run a command and fires its PermissionRequest hook, teamctl _permission-hook. The hook files request A7 atomically and tells the lead's pane. The lead runs teamctl approve A7 or teamctl deny A7 with a reason. The hook, which has been polling, returns the decision to the worker's CLI as JSON. If nobody answers before the timeout, the hook stays silent and the worker's normal prompt appears.</desc>
+<style>
+  .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  .text { fill: #e6edf7; } .muted { fill: #8fa3c2; } .faint { fill: #5d7196; }
+</style>
+<defs>
+  <marker id="head-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f5b942"/></marker>
+  <marker id="head-ice" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#7cc4ff"/></marker>
+  <marker id="head-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#6ee7a8"/></marker>
+  <marker id="head-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#b69cff"/></marker>
+  <marker id="head-coral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#ff7a90"/></marker>
+  <marker id="head-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#8fa3c2"/></marker>
+</defs>
+<rect width="1280" height="748" rx="24" fill="#0b1020"/>
+<text class="sans" x="48" y="58" font-size="13" font-weight="700" letter-spacing="3" fill="#f5b942">WOLFMUX · ONE MANAGER</text>
+<text class="sans text" x="48" y="94" font-size="28" font-weight="700">The lead decides a worker's permission request</text>
+<text class="sans muted" x="48" y="122" font-size="15">Only with teamctl policy worker-permissions lead. The default is skip: agents run in their CLI's bypass mode and nothing is asked.</text>
+<line x1="152" y1="200" x2="152" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="48" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="48" y="150" width="208" height="5" rx="2.5" fill="#b69cff"/>
+<text class="sans" x="152" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#b69cff">qa</text>
+<text class="mono faint" x="152" y="192" text-anchor="middle" font-size="11">worker · Claude Code</text>
+<line x1="477" y1="200" x2="477" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="373" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="373" y="150" width="208" height="5" rx="2.5" fill="#7cc4ff"/>
+<text class="sans" x="477" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#7cc4ff">teamctl</text>
+<text class="mono faint" x="477" y="192" text-anchor="middle" font-size="11">_permission-hook</text>
+<line x1="803" y1="200" x2="803" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="699" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="699" y="150" width="208" height="5" rx="2.5" fill="#8fa3c2"/>
+<text class="sans" x="803" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#8fa3c2">approvals</text>
+<text class="mono faint" x="803" y="192" text-anchor="middle" font-size="11">~/.wolfmux/state/&lt;project&gt;</text>
+<line x1="1128" y1="200" x2="1128" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="1024" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="1024" y="150" width="208" height="5" rx="2.5" fill="#f5b942"/>
+<text class="sans" x="1128" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#f5b942">🐺 lead</text>
+<text class="mono faint" x="1128" y="192" text-anchor="middle" font-size="11">the only manager</text>
+<path d="M166 262 H473" fill="none" stroke="#b69cff" stroke-width="2" marker-end="url(#head-violet)"/>
+<rect x="134" y="235" width="361" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="315" y="249" text-anchor="middle" font-size="12">PermissionRequest · Bash · npm install left-pad</text>
+<circle cx="152" cy="262" r="10" fill="#b69cff"/><text class="sans" x="152" y="266" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">1</text>
+<path d="M491 324 H799" fill="none" stroke="#7cc4ff" stroke-width="2" marker-end="url(#head-ice)"/>
+<rect x="572" y="297" width="136" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="640" y="311" text-anchor="middle" font-size="12">files request A7</text>
+<rect x="508" y="330" width="263" height="17" rx="4" fill="#0b1020"/>
+<text class="sans faint" x="640" y="343" text-anchor="middle" font-size="11.5">created atomically · ids never collide</text>
+<circle cx="477" cy="324" r="10" fill="#7cc4ff"/><text class="sans" x="477" y="328" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">2</text>
+<path d="M491 386 H1124" fill="none" stroke="#7cc4ff" stroke-width="2" marker-end="url(#head-ice)"/>
+<rect x="651" y="359" width="303" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="803" y="373" text-anchor="middle" font-size="12">[wolfmux] Permission request A7 from qa</text>
+<rect x="707" y="392" width="192" height="17" rx="4" fill="#0b1020"/>
+<text class="sans faint" x="803" y="405" text-anchor="middle" font-size="11.5">one line in the lead's pane</text>
+<circle cx="477" cy="386" r="10" fill="#7cc4ff"/><text class="sans" x="477" y="390" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">3</text>
+<path d="M1114 448 H807" fill="none" stroke="#f5b942" stroke-width="2" marker-end="url(#head-amber)"/>
+<rect x="738" y="421" width="455" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="965" y="435" text-anchor="middle" font-size="12">teamctl approve A7      or      teamctl deny A7 "use npm ci"</text>
+<circle cx="1128" cy="448" r="10" fill="#f5b942"/><text class="sans" x="1128" y="452" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">4</text>
+<path d="M789 510 H481" fill="none" stroke="#8fa3c2" stroke-width="2" marker-end="url(#head-muted)"/>
+<rect x="579" y="483" width="122" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="640" y="497" text-anchor="middle" font-size="12">decision found</text>
+<rect x="453" y="516" width="374" height="17" rx="4" fill="#0b1020"/>
+<text class="sans faint" x="640" y="529" text-anchor="middle" font-size="11.5">the hook polls · up to 600 s (WOLFMUX_APPROVAL_TIMEOUT)</text>
+<circle cx="803" cy="510" r="10" fill="#8fa3c2"/><text class="sans" x="803" y="514" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">5</text>
+<path d="M463 572 H156" fill="none" stroke="#7cc4ff" stroke-width="2" marker-end="url(#head-ice)"/>
+<rect x="87" y="545" width="455" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="315" y="559" text-anchor="middle" font-size="12">{"decision": {"behavior": "allow"}}   or   deny + the reason</text>
+<circle cx="477" cy="572" r="10" fill="#7cc4ff"/><text class="sans" x="477" y="576" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">6</text>
+<rect x="48" y="617" width="440" height="32" rx="16" fill="#16213a" stroke="#b69cff" stroke-width="1.5"/>
+<circle cx="66" cy="633" r="9" fill="#b69cff"/><text class="sans" x="66" y="637" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">7</text>
+<text class="sans text" x="84" y="637" font-size="12.5">the CLI runs the command, or tells the model why it may not</text>
+<text class="sans muted" x="48" y="708" font-size="13">No answer in time: the hook prints nothing, so the worker's own prompt appears. A worker cannot approve, deny, stop, restart, destroy or change policy (exit 77).</text>
+</svg>

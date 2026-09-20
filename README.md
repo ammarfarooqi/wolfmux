@@ -1,27 +1,17 @@
 # Wolfmux
 
+![Wolfmux: the wolf, and a terminal with one lead and three workers in tiled tmux panes](docs/diagrams/hero.svg)
+
 A local, multi-model AI development team on one Mac. One **lead** agent plans,
 delegates and reviews; any number of **worker** agents implement in parallel. Every
 agent is a real CLI in its own visible tmux pane, on its own git branch and worktree.
+The lead is the wolf: 🐺 in its pane border, an amber frame, and its name in every
+notification, so you can always tell the manager from the pack.
 
 **All inference runs on subscriptions. There is no API key, no metered proxy, and no
 pay-as-you-go path anywhere in this system.**
 
-```
-                     LEAD  (pick one per session)
-          claude-fable            codex-astra
-          Claude Code             Codex CLI
-          Fable 5.1               GPT-6 Astra
-          Claude subscription     ChatGPT / Codex subscription
-                 └──────────┬──────────┘
-        teamctl  = tmux panes · models · worktrees · lifecycle
-        bd       = tasks · dependencies · messages          (Beads)
-                            │
-      ┌─────────────────────┼─────────────────────┐
-  claude-glm           claude-glm           claude-glm-flash
-  backend · GLM-5.3    frontend · GLM-5.3   qa · GLM-5.3 Flash
-      └──────────── Z.ai GLM Coding Plan ─────────┘
-```
+![Architecture: teamctl is the control plane, Beads the data plane, one hook connects them](docs/diagrams/architecture.svg)
 
 ## Quick start
 
@@ -50,8 +40,9 @@ reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (55 isolated lifecycle checks, no model calls), `migration.sh` (the move from v1.1, rehearsed in a throwaway `HOME`), `credential-routing.sh` (evidence for the billing/credential design) |
-| `docs/` | the documentation below |
+| `tests/` | `smoke.sh` (71 isolated lifecycle checks, no model calls), `migration.sh` (the move from v1.1, rehearsed in a throwaway `HOME`), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
+| `docs/` | the documentation below, and `docs/diagrams/` |
 
 ## Documentation
 
@@ -59,6 +50,7 @@ reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 |-----------|----------|
 | [docs/GOALS.md](docs/GOALS.md) | what this is for, the hard constraints, the non-goals |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, process and environment model, data flows, file layout |
+| [docs/diagrams/](docs/diagrams/README.md) | every diagram on one page: architecture, billing isolation, how work travels, approvals, notifications |
 | [docs/SETUP.md](docs/SETUP.md) | installing on a machine, what gets touched, updating, uninstalling |
 | [docs/USAGE.md](docs/USAGE.md) | a full working session, command reference, the Beads cheat sheet |
 | [docs/SECURITY.md](docs/SECURITY.md) | how subscription-only billing and credential isolation are enforced, with evidence |

@@ -108,6 +108,18 @@ Status map: pending = open without assignee · assigned = open with assignee ·
 in_progress · blocked · completed = closed · failed = closed + label `failed`.
 Comments (`bd comment`) notify nobody; send a message when someone must act.
 
+## Finding the manager, and being told when someone finishes
+
+| You see | Meaning |
+|---------|---------|
+| a popup with the wolf when you open the team | `teamctl start` / `attach` worked. Any key closes it (or 3 seconds). Off: `WOLFMUX_SPLASH=off` in `~/.config/wolfmux/config` |
+| `🐺 lead · <model>` and an amber pane border | the manager. Workers have grey borders (blue when focused) and no wolf |
+| `🐺 WOLFMUX` in the status line, `🐺 <session>` as the tab title | this terminal tab is a Wolfmux team |
+| a desktop notification `🐺 lead: …` or `backend: …` | that agent finished a turn. Click it: the tab with the team comes to the front. Scope: `WOLFMUX_NOTIFY=all` (default), `lead`, or `off` |
+
+Notifications and the lead's `🐺 team/lead` session name reach an agent when it starts:
+after an update, `teamctl restart <role> --continue`.
+
 ## tmux, in the team session only
 
 Mouse: click to focus, drag a border to resize, wheel to scroll. `Ctrl-b` then

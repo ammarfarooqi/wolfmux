@@ -6,7 +6,7 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # ~2 minutes, 55 checks, isolated from any running team
+tests/smoke.sh                 # ~3 minutes, 71 checks, isolated from any running team
 tests/migration.sh             # ~30 seconds, 21 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
@@ -17,7 +17,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh — 55 of 55 pass (2026-09-20)
+## smoke.sh — 71 of 71 pass (2026-09-20)
 
 | Area | Checks |
 |------|--------|
@@ -29,6 +29,8 @@ real team was live on the same machine; the real team was unaffected.
 | notifications | fixed line typed into the pane · debounced inside the window · hostile bead id (`x;rm -rf ~`) dropped, never typed |
 | Beads | a message to a role notifies its pane · body stored intact (`"quotes"`, `$HOME`, backticks) and never typed into the pane · a worker reads the shared database from its external worktree |
 | git | `diff` commits / stat / patch · uncommitted leftovers visible · main checkout untouched by worker commits · `worktrees` lists everyone |
+| the wolf | the session has the `client-attached` popup hook · the splash draws wolf, wordmark and team line · no colour codes outside a terminal · it works outside any project · only the manager pane has the mark and the amber border · the manager pane opens with the wolf · status line and tab title carry it · `WOLFMUX_SPLASH=off` removes the popup and the default restores it · a Claude lead is named `🐺 team/lead`, workers are not |
+| desktop notifications | every Claude agent gets the `Stop` hook, the plugin notifier is silenced and the user's own disabled hook is kept · OSC 9 to the attached terminal with the first line, markdown dropped · the lead is marked · **an OSC 52 and a clear-screen sequence inside a message never reach the terminal** (exactly two control bytes come out: ours) · long messages are cut · no terminal attached → `osascript` with the text as an argument, never a failure · `WOLFMUX_NOTIFY=lead` keeps workers quiet |
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
 
@@ -47,6 +49,25 @@ real team was live on the same machine; the real team was unaffected.
 | fresh login shell | no `ANTHROPIC_*`, `OPENAI_*`, `CODEX_API_KEY`, `ZAI*` or `CLAUDE_CODE_USE_*` variable; plain `claude` still resolves to the original binary |
 | secrets scan of every created file | no matches |
 | Codex rules | `codex execpolicy check`: `teamctl …` → allow, `bd …` → allow, `teamctl destroy` → prompt, unrelated commands → no match |
+
+## What a person sees on attach (captured through an outer tmux, 150×44)
+
+```
+── 🐺 lead · GPT-6 Astra ──────────────────────────┬── backend · GLM-5.3 ─────────
+[wolfmux] role=lead  model=GPT-6 Astra  launcher╭──────────────────────────────────────────────────╮
+                                                │          █▄                          ▄█          │
+                                                │         ████████████████████████████████         │
+                                                │       ▄██████▀▀▀▀▀█▀██▀██▀██▀█▀▀▀▀▀██████▄       │
+                                                │                  W O L F M U X                   │
+                                                │             a pack of agents in tmux             │
+                                                │     team-demo · lead GPT-6 Astra · 2 workers     │
+                                                ╰──────────────────────────────────────────────────╯
+ 🐺 WOLFMUX  0:team*                                                          team-demo · 15:08
+```
+
+(abridged). The border line of the lead was emitted in colour 214 (amber), the workers'
+in 244 (grey); the terminal title was set to `🐺 team-demo`. On an 80×24 terminal tmux
+shrinks the popup and the splash drops lines to fit instead of scrolling.
 
 ## Probes of the real Claude Code CLI (no prompt sent, endpoint = localhost mock)
 

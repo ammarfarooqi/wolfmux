@@ -1,0 +1,259 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="title desc">
+<title id="title">Wolfmux: one lead and three workers in a tiled tmux window</title>
+<desc id="desc">On the left the Wolfmux wolf, wordmark and four properties. On the right a terminal with four tmux panes: the lead, marked with a wolf and an amber border, plus a backend, a frontend and a QA worker, each working on a Beads task.</desc>
+<style>
+  .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12.5px; }
+  .text { fill: #e6edf7; } .muted { fill: #8fa3c2; } .faint { fill: #5d7196; }
+  .amber { fill: #f5b942; } .ice { fill: #7cc4ff; } .green { fill: #6ee7a8; } .violet { fill: #b69cff; } .coral { fill: #ff7a90; }
+  .chip { fill: #111a2e; stroke: #26365a; stroke-width: 1.5; }
+  .pane { fill: #0d1526; }
+  .rule { stroke: #33456b; stroke-width: 1.5; }
+  .rule-lead { stroke: #f5b942; stroke-width: 1.5; }
+</style>
+<defs>
+  <radialGradient id="moon" cx="18%" cy="30%" r="60%">
+    <stop offset="0" stop-color="#1b2a4d"/>
+    <stop offset="1" stop-color="#0b1020"/>
+  </radialGradient>
+  <clipPath id="screen"><rect x="452" y="56" width="772" height="528" rx="14"/></clipPath>
+</defs>
+
+<rect width="1280" height="640" rx="24" fill="url(#moon)"/>
+
+<!-- left: the mark -->
+<!-- wolf:begin cell=8 x=76 y=72 -->
+<g shape-rendering="crispEdges">
+<rect x="100" y="72" width="8" height="8" fill="#46505f"/>
+<rect x="332" y="72" width="8" height="8" fill="#46505f"/>
+<rect x="100" y="80" width="16" height="8" fill="#46505f"/>
+<rect x="324" y="80" width="16" height="8" fill="#46505f"/>
+<rect x="92" y="88" width="32" height="8" fill="#46505f"/>
+<rect x="316" y="88" width="32" height="8" fill="#46505f"/>
+<rect x="92" y="96" width="16" height="8" fill="#46505f"/>
+<rect x="108" y="96" width="8" height="8" fill="#8a94a6"/>
+<rect x="116" y="96" width="16" height="8" fill="#46505f"/>
+<rect x="308" y="96" width="16" height="8" fill="#46505f"/>
+<rect x="324" y="96" width="8" height="8" fill="#8a94a6"/>
+<rect x="332" y="96" width="16" height="8" fill="#46505f"/>
+<rect x="92" y="104" width="8" height="8" fill="#46505f"/>
+<rect x="100" y="104" width="24" height="8" fill="#8a94a6"/>
+<rect x="124" y="104" width="16" height="8" fill="#46505f"/>
+<rect x="300" y="104" width="16" height="8" fill="#46505f"/>
+<rect x="316" y="104" width="24" height="8" fill="#8a94a6"/>
+<rect x="340" y="104" width="8" height="8" fill="#46505f"/>
+<rect x="92" y="112" width="8" height="8" fill="#46505f"/>
+<rect x="100" y="112" width="32" height="8" fill="#8a94a6"/>
+<rect x="132" y="112" width="16" height="8" fill="#46505f"/>
+<rect x="292" y="112" width="16" height="8" fill="#46505f"/>
+<rect x="308" y="112" width="32" height="8" fill="#8a94a6"/>
+<rect x="340" y="112" width="8" height="8" fill="#46505f"/>
+<rect x="92" y="120" width="16" height="8" fill="#46505f"/>
+<rect x="108" y="120" width="24" height="8" fill="#8a94a6"/>
+<rect x="132" y="120" width="24" height="8" fill="#46505f"/>
+<rect x="188" y="120" width="64" height="8" fill="#46505f"/>
+<rect x="284" y="120" width="24" height="8" fill="#46505f"/>
+<rect x="308" y="120" width="24" height="8" fill="#8a94a6"/>
+<rect x="332" y="120" width="16" height="8" fill="#46505f"/>
+<rect x="92" y="128" width="24" height="8" fill="#46505f"/>
+<rect x="116" y="128" width="16" height="8" fill="#8a94a6"/>
+<rect x="132" y="128" width="32" height="8" fill="#46505f"/>
+<rect x="172" y="128" width="96" height="8" fill="#46505f"/>
+<rect x="276" y="128" width="32" height="8" fill="#46505f"/>
+<rect x="308" y="128" width="16" height="8" fill="#8a94a6"/>
+<rect x="324" y="128" width="24" height="8" fill="#46505f"/>
+<rect x="92" y="136" width="256" height="8" fill="#46505f"/>
+<rect x="92" y="144" width="256" height="8" fill="#46505f"/>
+<rect x="84" y="152" width="272" height="8" fill="#46505f"/>
+<rect x="84" y="160" width="272" height="8" fill="#46505f"/>
+<rect x="84" y="168" width="104" height="8" fill="#46505f"/>
+<rect x="188" y="168" width="16" height="8" fill="#8a94a6"/>
+<rect x="204" y="168" width="32" height="8" fill="#46505f"/>
+<rect x="236" y="168" width="16" height="8" fill="#8a94a6"/>
+<rect x="252" y="168" width="104" height="8" fill="#46505f"/>
+<rect x="76" y="176" width="56" height="8" fill="#46505f"/>
+<rect x="132" y="176" width="8" height="8" fill="#8a94a6"/>
+<rect x="140" y="176" width="32" height="8" fill="#f5b942"/>
+<rect x="172" y="176" width="8" height="8" fill="#46505f"/>
+<rect x="180" y="176" width="32" height="8" fill="#8a94a6"/>
+<rect x="212" y="176" width="16" height="8" fill="#46505f"/>
+<rect x="228" y="176" width="32" height="8" fill="#8a94a6"/>
+<rect x="260" y="176" width="8" height="8" fill="#46505f"/>
+<rect x="268" y="176" width="32" height="8" fill="#f5b942"/>
+<rect x="300" y="176" width="8" height="8" fill="#8a94a6"/>
+<rect x="308" y="176" width="56" height="8" fill="#46505f"/>
+<rect x="84" y="184" width="40" height="8" fill="#46505f"/>
+<rect x="124" y="184" width="24" height="8" fill="#8a94a6"/>
+<rect x="148" y="184" width="32" height="8" fill="#f5b942"/>
+<rect x="180" y="184" width="80" height="8" fill="#8a94a6"/>
+<rect x="260" y="184" width="32" height="8" fill="#f5b942"/>
+<rect x="292" y="184" width="24" height="8" fill="#8a94a6"/>
+<rect x="316" y="184" width="40" height="8" fill="#46505f"/>
+<rect x="76" y="192" width="40" height="8" fill="#46505f"/>
+<rect x="116" y="192" width="208" height="8" fill="#8a94a6"/>
+<rect x="324" y="192" width="40" height="8" fill="#46505f"/>
+<rect x="84" y="200" width="32" height="8" fill="#46505f"/>
+<rect x="116" y="200" width="64" height="8" fill="#8a94a6"/>
+<rect x="180" y="200" width="32" height="8" fill="#d3d9e4"/>
+<rect x="212" y="200" width="16" height="8" fill="#8a94a6"/>
+<rect x="228" y="200" width="32" height="8" fill="#d3d9e4"/>
+<rect x="260" y="200" width="64" height="8" fill="#8a94a6"/>
+<rect x="324" y="200" width="32" height="8" fill="#46505f"/>
+<rect x="76" y="208" width="32" height="8" fill="#46505f"/>
+<rect x="108" y="208" width="64" height="8" fill="#8a94a6"/>
+<rect x="172" y="208" width="96" height="8" fill="#d3d9e4"/>
+<rect x="268" y="208" width="64" height="8" fill="#8a94a6"/>
+<rect x="332" y="208" width="32" height="8" fill="#46505f"/>
+<rect x="92" y="216" width="24" height="8" fill="#46505f"/>
+<rect x="116" y="216" width="48" height="8" fill="#8a94a6"/>
+<rect x="164" y="216" width="112" height="8" fill="#d3d9e4"/>
+<rect x="276" y="216" width="48" height="8" fill="#8a94a6"/>
+<rect x="324" y="216" width="24" height="8" fill="#46505f"/>
+<rect x="84" y="224" width="32" height="8" fill="#46505f"/>
+<rect x="116" y="224" width="40" height="8" fill="#8a94a6"/>
+<rect x="156" y="224" width="128" height="8" fill="#d3d9e4"/>
+<rect x="284" y="224" width="40" height="8" fill="#8a94a6"/>
+<rect x="324" y="224" width="32" height="8" fill="#46505f"/>
+<rect x="100" y="232" width="24" height="8" fill="#46505f"/>
+<rect x="124" y="232" width="32" height="8" fill="#8a94a6"/>
+<rect x="156" y="232" width="128" height="8" fill="#d3d9e4"/>
+<rect x="284" y="232" width="32" height="8" fill="#8a94a6"/>
+<rect x="316" y="232" width="24" height="8" fill="#46505f"/>
+<rect x="92" y="240" width="32" height="8" fill="#46505f"/>
+<rect x="124" y="240" width="24" height="8" fill="#8a94a6"/>
+<rect x="148" y="240" width="144" height="8" fill="#d3d9e4"/>
+<rect x="292" y="240" width="24" height="8" fill="#8a94a6"/>
+<rect x="316" y="240" width="32" height="8" fill="#46505f"/>
+<rect x="108" y="248" width="24" height="8" fill="#46505f"/>
+<rect x="132" y="248" width="16" height="8" fill="#8a94a6"/>
+<rect x="148" y="248" width="144" height="8" fill="#d3d9e4"/>
+<rect x="292" y="248" width="16" height="8" fill="#8a94a6"/>
+<rect x="308" y="248" width="24" height="8" fill="#46505f"/>
+<rect x="116" y="256" width="16" height="8" fill="#46505f"/>
+<rect x="132" y="256" width="16" height="8" fill="#8a94a6"/>
+<rect x="148" y="256" width="144" height="8" fill="#d3d9e4"/>
+<rect x="292" y="256" width="16" height="8" fill="#8a94a6"/>
+<rect x="308" y="256" width="16" height="8" fill="#46505f"/>
+<rect x="124" y="264" width="16" height="8" fill="#46505f"/>
+<rect x="140" y="264" width="16" height="8" fill="#8a94a6"/>
+<rect x="156" y="264" width="128" height="8" fill="#d3d9e4"/>
+<rect x="284" y="264" width="16" height="8" fill="#8a94a6"/>
+<rect x="300" y="264" width="16" height="8" fill="#46505f"/>
+<rect x="140" y="272" width="8" height="8" fill="#46505f"/>
+<rect x="148" y="272" width="16" height="8" fill="#8a94a6"/>
+<rect x="164" y="272" width="112" height="8" fill="#d3d9e4"/>
+<rect x="276" y="272" width="16" height="8" fill="#8a94a6"/>
+<rect x="292" y="272" width="8" height="8" fill="#46505f"/>
+<rect x="148" y="280" width="8" height="8" fill="#46505f"/>
+<rect x="156" y="280" width="16" height="8" fill="#8a94a6"/>
+<rect x="172" y="280" width="32" height="8" fill="#d3d9e4"/>
+<rect x="204" y="280" width="32" height="8" fill="#161b26"/>
+<rect x="236" y="280" width="32" height="8" fill="#d3d9e4"/>
+<rect x="268" y="280" width="16" height="8" fill="#8a94a6"/>
+<rect x="284" y="280" width="8" height="8" fill="#46505f"/>
+<rect x="156" y="288" width="8" height="8" fill="#46505f"/>
+<rect x="164" y="288" width="16" height="8" fill="#8a94a6"/>
+<rect x="180" y="288" width="16" height="8" fill="#d3d9e4"/>
+<rect x="196" y="288" width="48" height="8" fill="#161b26"/>
+<rect x="244" y="288" width="16" height="8" fill="#d3d9e4"/>
+<rect x="260" y="288" width="16" height="8" fill="#8a94a6"/>
+<rect x="276" y="288" width="8" height="8" fill="#46505f"/>
+<rect x="164" y="296" width="8" height="8" fill="#46505f"/>
+<rect x="172" y="296" width="16" height="8" fill="#8a94a6"/>
+<rect x="188" y="296" width="16" height="8" fill="#d3d9e4"/>
+<rect x="204" y="296" width="32" height="8" fill="#161b26"/>
+<rect x="236" y="296" width="16" height="8" fill="#d3d9e4"/>
+<rect x="252" y="296" width="16" height="8" fill="#8a94a6"/>
+<rect x="268" y="296" width="8" height="8" fill="#46505f"/>
+<rect x="172" y="304" width="8" height="8" fill="#46505f"/>
+<rect x="180" y="304" width="16" height="8" fill="#8a94a6"/>
+<rect x="196" y="304" width="48" height="8" fill="#d3d9e4"/>
+<rect x="244" y="304" width="16" height="8" fill="#8a94a6"/>
+<rect x="260" y="304" width="8" height="8" fill="#46505f"/>
+<rect x="188" y="312" width="8" height="8" fill="#46505f"/>
+<rect x="196" y="312" width="16" height="8" fill="#8a94a6"/>
+<rect x="212" y="312" width="16" height="8" fill="#d3d9e4"/>
+<rect x="228" y="312" width="16" height="8" fill="#8a94a6"/>
+<rect x="244" y="312" width="8" height="8" fill="#46505f"/>
+<rect x="204" y="320" width="8" height="8" fill="#46505f"/>
+<rect x="212" y="320" width="16" height="8" fill="#8a94a6"/>
+<rect x="228" y="320" width="8" height="8" fill="#46505f"/>
+</g>
+<!-- wolf:end -->
+<text class="sans text" x="220" y="392" text-anchor="middle" font-size="40" font-weight="700" letter-spacing="10">WOLFMUX</text>
+<text class="sans muted" x="220" y="424" text-anchor="middle" font-size="17">a pack of agents in tmux</text>
+
+<g class="sans" font-size="13">
+  <rect class="chip" x="64" y="456" width="146" height="30" rx="15"/><text class="amber" x="137" y="476" text-anchor="middle">one manager</text>
+  <rect class="chip" x="222" y="456" width="154" height="30" rx="15"/><text class="green" x="299" y="476" text-anchor="middle">subscriptions only</text>
+  <rect class="chip" x="64" y="498" width="172" height="30" rx="15"/><text class="ice" x="150" y="518" text-anchor="middle">a worktree per agent</text>
+  <rect class="chip" x="248" y="498" width="128" height="30" rx="15"/><text class="violet" x="312" y="518" text-anchor="middle">Beads inbox</text>
+</g>
+<text class="sans faint" x="220" y="566" text-anchor="middle" font-size="12.5">Fable or Astra leads · GLM-5.3 works · no API keys</text>
+
+<!-- right: the terminal -->
+<rect x="452" y="56" width="772" height="528" rx="14" fill="#0d1526" stroke="#26365a" stroke-width="1.5"/>
+<g clip-path="url(#screen)">
+  <rect x="452" y="56" width="772" height="36" fill="#16213a"/>
+  <circle cx="476" cy="74" r="6" fill="#ff7a90"/><circle cx="496" cy="74" r="6" fill="#f5b942"/><circle cx="516" cy="74" r="6" fill="#6ee7a8"/>
+  <text class="sans muted" x="838" y="79" text-anchor="middle" font-size="13">🐺 team-shop</text>
+
+  <!-- status line -->
+  <rect x="452" y="556" width="772" height="28" fill="#16213a"/>
+  <rect x="452" y="556" width="118" height="28" fill="#f5b942"/>
+  <text class="mono" x="464" y="575" fill="#16213a" font-weight="700">🐺 WOLFMUX</text>
+  <text class="mono amber" x="584" y="575" font-weight="700">0:team*</text>
+  <text class="mono muted" x="1212" y="575" text-anchor="end">team-shop · 14:02</text>
+</g>
+
+<!-- pane borders: the lead's are amber, focused or not -->
+<line class="rule" x1="838" y1="92" x2="838" y2="556"/>
+<line class="rule" x1="838" y1="104" x2="1224" y2="104"/>
+<line class="rule" x1="452" y1="330" x2="1224" y2="330"/>
+<line class="rule-lead" x1="452" y1="104" x2="838" y2="104"/>
+<line class="rule-lead" x1="838" y1="104" x2="838" y2="330"/>
+
+<g class="mono">
+  <!-- pane titles sit on the border, as tmux draws them -->
+  <rect x="470" y="95" width="156" height="18" fill="#0d1526"/><text class="amber" x="476" y="109" font-weight="700">🐺 lead · Fable 5.1</text>
+  <rect x="856" y="95" width="142" height="18" fill="#0d1526"/><text class="muted" x="862" y="109">backend · GLM-5.3</text>
+  <rect x="470" y="321" width="150" height="18" fill="#0d1526"/><text class="muted" x="476" y="335">frontend · GLM-5.3</text>
+  <rect x="856" y="321" width="148" height="18" fill="#0d1526"/><text class="muted" x="862" y="335">qa · GLM-5.3 Flash</text>
+
+  <!-- lead -->
+  <text class="text" x="470" y="140">› Ship the cart API. Split it across the pack.</text>
+  <text x="470" y="164"><tspan class="amber">⏺</tspan><tspan class="ice"> bd create "API: cart" -a backend</tspan></text>
+  <text x="470" y="184"><tspan class="amber">⏺</tspan><tspan class="ice"> bd create "Cart UI" -a frontend --deps shop-12</tspan></text>
+  <text x="470" y="204"><tspan class="amber">⏺</tspan><tspan class="ice"> teamctl spawn qa flash</tspan></text>
+  <text class="faint" x="486" y="224">⎿ qa · GLM-5.3 Flash · ai/qa-0920-1402</text>
+  <text x="470" y="248"><tspan class="amber">⏺</tspan><tspan class="ice"> teamctl diff backend --stat</tspan></text>
+  <text class="faint" x="486" y="268">⎿ 6 files changed, 212 insertions(+)</text>
+  <text class="green" x="470" y="296">✓ merged ai/backend-0920-1356 into main</text>
+
+  <!-- backend -->
+  <text class="violet" x="856" y="140">[wolfmux] Beads update for backend (shop-12)</text>
+  <text x="856" y="164"><tspan class="violet">⏺</tspan><tspan class="text"> bd show shop-12 · bd update shop-12 --claim</tspan></text>
+  <text x="856" y="184"><tspan class="violet">⏺</tspan><tspan class="text"> edit src/cart/routes.ts</tspan></text>
+  <text x="856" y="204"><tspan class="violet">⏺</tspan><tspan class="text"> npm test</tspan></text>
+  <text class="faint" x="872" y="224">⎿ 48 passed</text>
+  <text x="856" y="248"><tspan class="violet">⏺</tspan><tspan class="text"> bd close shop-12 -r "commit 3f9c1e2"</tspan></text>
+  <text class="green" x="856" y="296">✓ done · the lead was told</text>
+
+  <!-- frontend -->
+  <text class="violet" x="470" y="366">[wolfmux] Beads update for frontend (shop-13)</text>
+  <text x="470" y="390"><tspan class="violet">⏺</tspan><tspan class="text"> bd show shop-13</tspan></text>
+  <text class="faint" x="486" y="410">⎿ blocked by shop-12 · waiting</text>
+  <text x="470" y="434"><tspan class="violet">⏺</tspan><tspan class="text"> bd ready</tspan></text>
+  <text class="faint" x="486" y="454">⎿ shop-13 Cart UI</text>
+  <text x="470" y="478"><tspan class="violet">⏺</tspan><tspan class="text"> edit app/cart/CartDrawer.tsx</tspan></text>
+  <text class="muted" x="470" y="526">✳ Working… (42s)</text>
+
+  <!-- qa -->
+  <text class="violet" x="856" y="366">[wolfmux] Beads update for qa (shop-14)</text>
+  <text x="856" y="390"><tspan class="violet">⏺</tspan><tspan class="text"> npx playwright test cart.spec.ts</tspan></text>
+  <text class="faint" x="872" y="410">⎿ 12 passed · 1 flaky</text>
+  <text x="856" y="434"><tspan class="violet">⏺</tspan><tspan class="text"> bd create "Flaky: coupon rounding" \</tspan></text>
+  <text class="text" x="894" y="454">-t message -a lead</text>
+  <text class="green" x="856" y="502">✓ reported to the lead</text>
+</g>
+</svg>

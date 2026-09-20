@@ -26,6 +26,9 @@ a generated per-agent settings file. In `lead` mode a `PermissionRequest` hook r
 request to the lead (`teamctl approvals|approve|deny`). A spawn by a worker records
 `spawned_by` and is announced in the lead's pane.
 
+Since [ADR-0015](0015-notifications-through-the-attached-terminal.md) the lead has a generated
+settings file too; it carries only the notification hook, nothing about teams or permissions.
+
 ## Alternatives Considered
 
 ### Alternative 1: Keep native agent teams inside workers, only set bypass mode

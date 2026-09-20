@@ -9,7 +9,7 @@
 | Comments are silent | Beads fires no hook for `bd comment`. When someone must act, send a message. |
 | Same-user trust | Agents are not sandboxed from each other or from the account ([SECURITY.md](SECURITY.md#trust-model)). |
 | Workers share `~/.claude` | Plugins, hooks, skills and permissions are common to every Claude-based agent. Deliberate, but a plugin that starts a persistent process from a worker inherits the worker's provider — the reason `claude-mem` is switched off in GLM workers. |
-| Z.ai live path unverified at build time | No request was sent to Z.ai during the build ([VERIFICATION.md](VERIFICATION.md#not-verified)). |
+| Codex agents do not send desktop notifications | Claude-based agents notify through a `Stop` hook ([ADR-0015](adr/0015-notifications-through-the-attached-terminal.md)). Codex has a `notify` program setting that could call `teamctl _notify`; it has not been tried against the real CLI. |
 | Interactive background model ids unobserved | Alias mapping covers them by configuration; only `-p` traffic was observed. |
 | Codex lead permissions are coarse | The rule file allows every `teamctl` and `bd` invocation outside the sandbox (with a prompt on `destroy`). |
 | macOS only | Keychain, `/bin/bash` 3.2 paths, `security`, `shasum`. |

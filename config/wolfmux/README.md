@@ -137,6 +137,20 @@ teamctl focus backend       # jump to a pane            teamctl nudge backend   
 
 Process state comes from tmux, work state from Beads; terminal text is never parsed.
 
+## The wolf, and notifications
+
+- Opening a team (`teamctl start`, `teamctl attach`) shows the wolf in a popup. Any key
+  closes it, or 3 seconds. `WOLFMUX_SPLASH=off` in `~/.config/wolfmux/config` removes it.
+- The manager is the wolf: `🐺 lead · <model>` in its pane border, an amber border
+  whether focused or not, `🐺 team/lead` inside Claude Code. Workers have neither.
+  The status line starts with `🐺 WOLFMUX`; the terminal tab is titled `🐺 <session>`.
+- When an agent finishes a turn you get a desktop notification (`🐺 lead: …`,
+  `backend: …`). It is sent through the terminal attached to the team, so clicking it
+  brings that tab to the front (iTerm2, kitty, Ghostty, WezTerm). With the team
+  detached it falls back to a plain notification that says `teamctl attach`.
+  `WOLFMUX_NOTIFY=all` (default) · `lead` · `off`.
+- Both reach an agent when it starts: after an update run `teamctl restart <role> --continue`.
+
 ## Git
 
 ```bash

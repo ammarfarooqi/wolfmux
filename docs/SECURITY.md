@@ -3,6 +3,8 @@
 The non-negotiable requirement is **subscription-only inference**. This page states
 what enforces it, what was measured, and what cannot be proven from the machine.
 
+![Three launchers: what each removes from its own process, what it pins, and which subscription pays](diagrams/billing-isolation.svg)
+
 ## The three rules
 
 1. **Nothing global.** No provider variable in a shell profile, no provider entry in

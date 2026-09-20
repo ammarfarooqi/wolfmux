@@ -138,6 +138,27 @@ project with stored state never consults it).
 from git history, runs a team with it, migrates, and ends with `uninstall.sh` (21 checks).
 `tests/smoke.sh` grew from 48 to 55 checks. Only then was the real machine migrated.
 
+## 14. The wolf, diagrams, and a notification that opened the wrong app (v1.3)
+
+Asked for: a wolf when a team is opened, a wolf that always marks the manager, and
+presentable diagrams. One pixel drawing (`tools/wolf-art.py`) became the terminal art,
+the logo and the wolf in the README image. The splash is a tmux popup on
+`client-attached`; checking it needed a trick, because `capture-pane` cannot see popups
+and a logged pty shows tmux drawing text cell by cell: the team client was attached
+*inside an outer tmux server*, whose `capture-pane` then shows exactly what a person
+sees. The manager's mark is a conditional in `pane-border-format` and
+`pane-border-style`, plus the Claude session name.
+
+The diagrams are SVG on their own dark ground, so GitHub's two themes cannot break them.
+Three are hand-written; the three sequence diagrams come from one renderer
+(`tools/flow-diagrams.py`) so they cannot drift apart. Each was rendered with a headless
+Chromium and looked at before it was committed.
+
+While this was being built the owner reported that clicking a "task complete"
+notification opened Script Editor. Cause: the ECC plugin's notifier falls back to
+`osascript` inside tmux. Fix: [ADR-0015](adr/0015-notifications-through-the-attached-terminal.md).
+`tests/smoke.sh` grew from 55 to 71 checks.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

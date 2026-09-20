@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 760" width="1280" height="760" role="img" aria-labelledby="title desc">
+<title id="title">Wolfmux billing isolation: every model call rides a subscription</title>
+<desc id="desc">Three launchers, one row each. claude-fable removes every Anthropic provider variable from its own process, pins the Fable model and uses the claude.ai login. codex-astra removes OpenAI and Codex key variables and forces the ChatGPT login. claude-glm removes the same Anthropic variables, points Claude Code at the Z.ai Coding Plan endpoint, maps every model alias to GLM-5.3, and receives the key from the macOS Keychain through apiKeyHelper. A guard value keeps anything a GLM worker starts from falling back to the claude.ai login.</desc>
+<style>
+  .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  .text { fill: #e6edf7; } .muted { fill: #8fa3c2; } .faint { fill: #5d7196; }
+  .amber { fill: #f5b942; } .ice { fill: #7cc4ff; } .green { fill: #6ee7a8; } .violet { fill: #b69cff; } .coral { fill: #ff7a90; }
+  .card { fill: #111a2e; stroke: #26365a; stroke-width: 1.5; }
+  .flow { fill: none; stroke: #8fa3c2; stroke-width: 2; }
+  .head { font-size: 11.5px; font-weight: 700; letter-spacing: 2.5px; }
+</style>
+<defs>
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#8fa3c2"/></marker>
+</defs>
+
+<rect width="1280" height="760" rx="24" fill="#0b1020"/>
+
+<text class="sans amber" x="48" y="58" font-size="13" font-weight="700" letter-spacing="3">WOLFMUX · BILLING ISOLATION</text>
+<text class="sans text" x="48" y="94" font-size="28" font-weight="700">Every model call rides a subscription</text>
+<text class="sans muted" x="48" y="122" font-size="15">Provider settings exist only inside a launcher's own process. Your shell and your normal <tspan class="mono" font-size="14">claude</tspan> never see them.</text>
+
+<!-- column heads -->
+<g class="sans muted head">
+  <text x="48" y="166">LAUNCHER</text>
+  <text x="320" y="166">REMOVES FROM ITS OWN PROCESS</text>
+  <text x="652" y="166">PINS</text>
+  <text x="984" y="166">TALKS TO · PAYS WITH</text>
+</g>
+
+<!-- row 1: fable -->
+<rect class="card" x="48" y="180" width="1184" height="112" rx="14"/>
+<rect x="48" y="180" width="6" height="112" rx="3" fill="#f5b942"/>
+<text class="mono amber" x="72" y="216" font-size="17" font-weight="700">claude-fable</text>
+<text class="sans muted" x="72" y="240" font-size="13">Claude Code · the lead</text>
+<g class="mono text" font-size="12">
+  <text x="320" y="212">ANTHROPIC_*  ·  CLAUDE_CODE_USE_*</text>
+  <text x="320" y="234">model and subagent overrides</text>
+  <text x="320" y="256">child-session variables</text>
+  <text class="faint" x="320" y="278">+ the GLM guard, if it leaked in</text>
+  <text x="652" y="212">--model claude-fable-5-1[1m]</text>
+  <text class="faint" x="652" y="234">no key · no endpoint · nothing else</text>
+</g>
+<text class="sans text" x="984" y="214" font-size="14">Anthropic, with your claude.ai login</text>
+<text class="sans green" x="984" y="238" font-size="13" font-weight="700">Claude subscription</text>
+<text class="sans faint" x="984" y="262" font-size="12">doctor requires authMethod = claude.ai</text>
+<path class="flow" d="M286 236 H312" marker-end="url(#arrow)"/><path class="flow" d="M618 236 H644" marker-end="url(#arrow)"/><path class="flow" d="M950 236 H976" marker-end="url(#arrow)"/>
+
+<!-- row 2: astra -->
+<rect class="card" x="48" y="304" width="1184" height="112" rx="14"/>
+<rect x="48" y="304" width="6" height="112" rx="3" fill="#7cc4ff"/>
+<text class="mono ice" x="72" y="340" font-size="17" font-weight="700">codex-astra</text>
+<text class="sans muted" x="72" y="364" font-size="13">Codex CLI · the lead, alternatively</text>
+<g class="mono text" font-size="12">
+  <text x="320" y="336">OPENAI_*</text>
+  <text x="320" y="358">CODEX_API_KEY</text>
+  <text x="320" y="380">CODEX_ACCESS_TOKEN</text>
+  <text x="652" y="336">forced_login_method = "chatgpt"</text>
+  <text x="652" y="358">model_provider = "openai"</text>
+  <text x="652" y="380">model = "gpt-6-astra"</text>
+</g>
+<text class="sans text" x="984" y="338" font-size="14">OpenAI, with your ChatGPT login</text>
+<text class="sans green" x="984" y="362" font-size="13" font-weight="700">ChatGPT / Codex subscription</text>
+<text class="sans faint" x="984" y="386" font-size="12">an API-key login is refused by the pin</text>
+<path class="flow" d="M286 360 H312" marker-end="url(#arrow)"/><path class="flow" d="M618 360 H644" marker-end="url(#arrow)"/><path class="flow" d="M950 360 H976" marker-end="url(#arrow)"/>
+
+<!-- row 3: glm -->
+<rect class="card" x="48" y="428" width="1184" height="134" rx="14"/>
+<rect x="48" y="428" width="6" height="134" rx="3" fill="#b69cff"/>
+<text class="mono violet" x="72" y="464" font-size="17" font-weight="700">claude-glm</text>
+<text class="mono violet" x="72" y="488" font-size="13">claude-glm-flash</text>
+<text class="sans muted" x="72" y="512" font-size="13">Claude Code · every worker</text>
+<g class="mono text" font-size="12">
+  <text x="320" y="460">ANTHROPIC_*  ·  CLAUDE_CODE_USE_*</text>
+  <text x="320" y="482">model and subagent overrides</text>
+  <text x="320" y="504">child-session variables</text>
+  <text x="652" y="460">base URL = api.z.ai/api/anthropic</text>
+  <text x="652" y="482">every model alias → glm-5.3(-flash)</text>
+  <text x="652" y="504">key: Keychain → apiKeyHelper (not env)</text>
+  <text class="green" x="652" y="526">guard: inert CLAUDE_CODE_OAUTH_TOKEN</text>
+  <text class="faint" x="652" y="548">agent teams off · claude-mem off</text>
+</g>
+<text class="sans text" x="984" y="462" font-size="14">Z.ai, with your Coding Plan key</text>
+<text class="sans green" x="984" y="486" font-size="13" font-weight="700">GLM Coding Plan</text>
+<text class="sans faint" x="984" y="510" font-size="12">the plan covers only these two model ids,</text>
+<text class="sans faint" x="984" y="528" font-size="12">so no other id can ever be requested</text>
+<path class="flow" d="M286 495 H312" marker-end="url(#arrow)"/><path class="flow" d="M618 495 H644" marker-end="url(#arrow)"/><path class="flow" d="M950 495 H976" marker-end="url(#arrow)"/>
+
+<!-- bottom: hazard, guard, never -->
+<rect class="card" x="48" y="586" width="384" height="126" rx="14"/>
+<text class="sans coral head" x="72" y="616">THE HAZARD WE MEASURED</text>
+<text class="sans text" x="72" y="644" font-size="13.5">A process that inherits only a custom</text>
+<text class="sans text" x="72" y="664" font-size="13.5"><tspan class="mono" font-size="12.5">ANTHROPIC_BASE_URL</tspan> sends your real</text>
+<text class="sans text" x="72" y="684" font-size="13.5">claude.ai login to that endpoint.</text>
+
+<rect class="card" x="448" y="586" width="384" height="126" rx="14"/>
+<text class="sans green head" x="472" y="616">THE GUARD</text>
+<text class="sans text" x="472" y="644" font-size="13.5">A GLM worker carries a placeholder login.</text>
+<text class="sans text" x="472" y="664" font-size="13.5">Whatever it starts fails closed instead of</text>
+<text class="sans text" x="472" y="684" font-size="13.5">borrowing yours. Fable and tmux drop it.</text>
+
+<rect class="card" x="848" y="586" width="384" height="126" rx="14"/>
+<text class="sans coral head" x="872" y="616">NEVER CONFIGURED</text>
+<g class="sans muted" font-size="13.5">
+  <text x="872" y="644">Anthropic API billing · OpenAI API billing</text>
+  <text x="872" y="664">Z.ai pay-as-you-go · OpenRouter · LiteLLM</text>
+  <text x="872" y="684">any metered inference proxy</text>
+</g>
+<text class="sans faint" x="48" y="738" font-size="12.5">Evidence: tests/credential-routing.sh replays all of this against a localhost mock and records which credential each process would have sent.</text>
+</svg>

@@ -11,21 +11,7 @@ The only glue between them is a three-line Beads event hook that calls
 `teamctl nudge <role>`. Beads does not know tmux exists; `teamctl` never reads or
 writes a bead.
 
-```mermaid
-flowchart TB
-  human([You]) -->|teamctl start fable / astra| T[teamctl]
-  T -->|dedicated server: tmux -L wolfmux| S[(tmux session)]
-  S --> L[lead pane<br/>claude-fable or codex-astra]
-  S --> W1[worker pane<br/>claude-glm]
-  S --> W2[worker pane<br/>claude-glm-flash]
-  L -->|teamctl spawn / status / diff| T
-  T -->|git worktree add| G[(~/.wolfmux/worktrees)]
-  L -->|bd create -a backend| B[(Beads .beads/)]
-  W1 -->|bd create -a lead| B
-  B -->|on_create / on_update / on_close hook| N[beads-nudge]
-  N -->|teamctl nudge role| T
-  T -->|one fixed line via send-keys| W1
-```
+![Two tools, two planes: teamctl, the tmux server with lead and workers, Beads, and the hook between them](diagrams/architecture.svg)
 
 ## Components
 
@@ -145,6 +131,8 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 
 ### A message from lead to worker
 
+![Sequence: a task goes out through Beads, a fixed line reaches the worker's pane, the result comes back the same way](diagrams/message-flow.svg)
+
 1. lead: `bd create "Subject" -t message -a backend -d "…"` — durable, atomic, in Beads
 2. Beads fires `.beads/hooks/on_create` with the bead as JSON on stdin
 3. `beads-nudge` sees an assignee that is not the actor and calls
@@ -173,9 +161,9 @@ The lead is the only manager. Three mechanisms keep it that way:
    runs in (falling back to `TEAM_ROLE`; empty means the human). `start`, `stop`,
    `restart`, `destroy`, `policy`, `approve` and `deny` require the lead or the human;
    `spawn` does too unless the `worker-spawn` policy is `on`.
-2. **No native teams inside workers.** `_run-agent` writes a per-worker settings file
-   (`env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "0"`, `teammateMode = "in-process"`) and
-   hands it to the launcher through `WOLFMUX_EXTRA_SETTINGS`; the launcher merges it
+2. **No native teams inside workers.** `_run-agent` writes a per-agent settings file; for a worker it holds
+   `env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "0"` and `teammateMode = "in-process"`. teamctl
+   hands the file to the launcher through `WOLFMUX_EXTRA_SETTINGS`; the launcher merges it
    into its single `--settings` value. With Claude Code's agent-teams feature on, any
    subagent a session names becomes a teammate whose team lead — and permission
    approver — is that session, so a worker would become a second manager.
@@ -197,6 +185,39 @@ lead's pane, and polls for up to `WOLFMUX_APPROVAL_TIMEOUT` seconds. `teamctl ap
 / `deny` flip the record; the hook returns Claude Code's documented decision object
 (`behavior: allow` or `deny` with the lead's reason). On timeout, or when no lead pane
 is alive, it returns nothing, which means "show the normal prompt".
+
+![Sequence: a worker's permission request is filed, the lead approves or denies, the decision returns to the worker's CLI](diagrams/approval-flow.svg)
+
+## Notifications
+
+Every Claude-based agent gets a `Stop` hook, `teamctl _notify`, through its generated
+settings file. It takes the first line of the agent's last message, strips control
+characters, and writes an OSC 9 notification to the tty of each terminal attached to
+the team (`tmux list-clients`, terminals known to support it: iTerm2, kitty, Ghostty,
+WezTerm). The notification therefore belongs to the terminal, and clicking it brings
+the tab with the team to the front. The usual notifiers cannot do that from inside
+tmux: they fall back to `osascript`, whose notifications macOS files under Script
+Editor. With nothing attached, `teamctl` falls back to `osascript` too and says how to
+open the team. The ECC plugin's own notifier is switched off inside team agents
+(`ECC_DISABLED_HOOKS`, merged with whatever you already disable) so you get one
+notification, not two. `WOLFMUX_NOTIFY=all|lead|off`. See
+[ADR-0015](adr/0015-notifications-through-the-attached-terminal.md).
+
+![Sequence: Stop hook, teamctl asks tmux for attached terminals, OSC 9 to that terminal, click returns to the team](diagrams/notification-flow.svg)
+
+## The wolf
+
+Cosmetic, and built so it can never fail a command (`lib/brand.sh`):
+
+| Where | What |
+|-------|------|
+| opening a team (`teamctl start`, `teamctl attach`, plain `tmux attach`) | a popup with the wolf, the wordmark and a line about the team; a `client-attached` hook set per session. Any key closes it, or 3 seconds. `WOLFMUX_SPLASH=off` removes it |
+| the manager's pane | `🐺 lead · <model>` in the border title and an amber border, focused or not; the pane opens with the wolf; a Claude lead is named `🐺 team/lead` inside Claude Code |
+| status line and terminal tab | `🐺 WOLFMUX` on the left of the status line; the tab title is `🐺 <session>` |
+| `teamctl status` | `manager: 🐺 lead` |
+
+One pixel drawing (`tools/wolf-art.py`) produces the terminal art in `lib/brand.sh`,
+`docs/diagrams/wolf.svg` and the wolf inside the hero image.
 
 ## State and file layout
 

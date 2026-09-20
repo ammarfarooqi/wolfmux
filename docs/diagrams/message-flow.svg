@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 872" width="1280" height="872" role="img" aria-labelledby="title desc">
+<title id="title">Wolfmux: A task goes out, a result comes back</title>
+<desc id="desc">Sequence: the lead creates a Beads task for the backend worker. Beads fires its on_create hook, beads-nudge works out that the backend role needs to know and calls teamctl nudge, which types one fixed line into the backend pane. The worker reads and claims the task with bd, works in its own worktree, and closes the task. The same path tells the lead, who reviews the diff and merges.</desc>
+<style>
+  .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  .text { fill: #e6edf7; } .muted { fill: #8fa3c2; } .faint { fill: #5d7196; }
+</style>
+<defs>
+  <marker id="head-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f5b942"/></marker>
+  <marker id="head-ice" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#7cc4ff"/></marker>
+  <marker id="head-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#6ee7a8"/></marker>
+  <marker id="head-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#b69cff"/></marker>
+  <marker id="head-coral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#ff7a90"/></marker>
+  <marker id="head-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#8fa3c2"/></marker>
+</defs>
+<rect width="1280" height="872" rx="24" fill="#0b1020"/>
+<text class="sans" x="48" y="58" font-size="13" font-weight="700" letter-spacing="3" fill="#f5b942">WOLFMUX · HOW WORK TRAVELS</text>
+<text class="sans text" x="48" y="94" font-size="28" font-weight="700">A task goes out, a result comes back</text>
+<text class="sans muted" x="48" y="122" font-size="15">The text of a task never passes through tmux. Beads stores it; the pane only hears that something is waiting.</text>
+<line x1="152" y1="200" x2="152" y2="798" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="48" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="48" y="150" width="208" height="5" rx="2.5" fill="#f5b942"/>
+<text class="sans" x="152" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#f5b942">🐺 lead</text>
+<text class="mono faint" x="152" y="192" text-anchor="middle" font-size="11">pane · your checkout</text>
+<line x1="396" y1="200" x2="396" y2="798" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="292" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="292" y="150" width="208" height="5" rx="2.5" fill="#6ee7a8"/>
+<text class="sans" x="396" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#6ee7a8">Beads</text>
+<text class="mono faint" x="396" y="192" text-anchor="middle" font-size="11">bd · &lt;project&gt;/.beads</text>
+<line x1="640" y1="200" x2="640" y2="798" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="536" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="536" y="150" width="208" height="5" rx="2.5" fill="#8fa3c2"/>
+<text class="sans" x="640" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#8fa3c2">beads-nudge</text>
+<text class="mono faint" x="640" y="192" text-anchor="middle" font-size="11">event hook</text>
+<line x1="884" y1="200" x2="884" y2="798" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="780" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="780" y="150" width="208" height="5" rx="2.5" fill="#7cc4ff"/>
+<text class="sans" x="884" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#7cc4ff">teamctl</text>
+<text class="mono faint" x="884" y="192" text-anchor="middle" font-size="11">nudge</text>
+<line x1="1128" y1="200" x2="1128" y2="798" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="1024" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="1024" y="150" width="208" height="5" rx="2.5" fill="#b69cff"/>
+<text class="sans" x="1128" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#b69cff">backend</text>
+<text class="mono faint" x="1128" y="192" text-anchor="middle" font-size="11">pane · own worktree</text>
+<path d="M166 262 H392" fill="none" stroke="#f5b942" stroke-width="2" marker-end="url(#head-amber)"/>
+<rect x="94" y="235" width="361" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="274" y="249" text-anchor="middle" font-size="12">bd create "API: cart" -t task -a backend -d "…"</text>
+<circle cx="152" cy="262" r="10" fill="#f5b942"/><text class="sans" x="152" y="266" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">1</text>
+<path d="M410 324 H636" fill="none" stroke="#6ee7a8" stroke-width="2" marker-end="url(#head-green)"/>
+<rect x="374" y="297" width="288" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="518" y="311" text-anchor="middle" font-size="12">on_create · the bead as JSON on stdin</text>
+<circle cx="396" cy="324" r="10" fill="#6ee7a8"/><text class="sans" x="396" y="328" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">2</text>
+<path d="M654 386 H880" fill="none" stroke="#8fa3c2" stroke-width="2" marker-end="url(#head-muted)"/>
+<rect x="629" y="359" width="266" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="762" y="373" text-anchor="middle" font-size="12">teamctl nudge backend --id shop-12</text>
+<circle cx="640" cy="386" r="10" fill="#8fa3c2"/><text class="sans" x="640" y="390" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">3</text>
+<path d="M898 448 H1124" fill="none" stroke="#7cc4ff" stroke-width="2" marker-end="url(#head-ice)"/>
+<rect x="836" y="421" width="339" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="1006" y="435" text-anchor="middle" font-size="12">[wolfmux] Beads update for backend (shop-12)</text>
+<rect x="842" y="454" width="328" height="17" rx="4" fill="#0b1020"/>
+<text class="sans faint" x="1006" y="467" text-anchor="middle" font-size="11.5">one fixed line · the id is validated · debounced</text>
+<circle cx="884" cy="448" r="10" fill="#7cc4ff"/><text class="sans" x="884" y="452" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">4</text>
+<path d="M1114 510 H400" fill="none" stroke="#b69cff" stroke-width="2" marker-end="url(#head-violet)"/>
+<rect x="596" y="483" width="332" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="762" y="497" text-anchor="middle" font-size="12">bd show shop-12 · bd update shop-12 --claim</text>
+<circle cx="1128" cy="510" r="10" fill="#b69cff"/><text class="sans" x="1128" y="514" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">5</text>
+<rect x="832" y="555" width="400" height="32" rx="16" fill="#16213a" stroke="#b69cff" stroke-width="1.5"/>
+<circle cx="850" cy="571" r="9" fill="#b69cff"/><text class="sans" x="850" y="575" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">6</text>
+<text class="sans text" x="868" y="575" font-size="12.5">works and commits on ai/backend-… in its own worktree</text>
+<path d="M1114 634 H400" fill="none" stroke="#b69cff" stroke-width="2" marker-end="url(#head-violet)"/>
+<rect x="578" y="607" width="368" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="762" y="621" text-anchor="middle" font-size="12">bd close shop-12 -r "commit 3f9c1e2; tests pass"</text>
+<circle cx="1128" cy="634" r="10" fill="#b69cff"/><text class="sans" x="1128" y="638" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">7</text>
+<path d="M382 696 H156" fill="none" stroke="#6ee7a8" stroke-width="2" marker-end="url(#head-green)"/>
+<rect x="108" y="669" width="332" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="274" y="683" text-anchor="middle" font-size="12">on_close → beads-nudge → teamctl nudge lead</text>
+<rect x="146" y="702" width="256" height="17" rx="4" fill="#0b1020"/>
+<text class="sans faint" x="274" y="715" text-anchor="middle" font-size="11.5">the same path, in the other direction</text>
+<circle cx="396" cy="696" r="10" fill="#6ee7a8"/><text class="sans" x="396" y="700" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">8</text>
+<rect x="48" y="741" width="407" height="32" rx="16" fill="#16213a" stroke="#f5b942" stroke-width="1.5"/>
+<circle cx="66" cy="757" r="9" fill="#f5b942"/><text class="sans" x="66" y="761" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">9</text>
+<text class="sans text" x="84" y="761" font-size="12.5">teamctl diff backend · review · merge what it approves</text>
+<text class="sans muted" x="48" y="832" font-size="13">Messages work the same way: bd create "Subject" -t message -a &lt;role&gt;. Worker to worker is allowed; every message is in Beads' history.</text>
+</svg>

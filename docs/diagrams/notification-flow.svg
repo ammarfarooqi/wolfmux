@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 770" width="1280" height="770" role="img" aria-labelledby="title desc">
+<title id="title">Wolfmux: A notification that leads back to the team</title>
+<desc id="desc">Sequence: an agent finishes a turn and Claude Code fires its Stop hook, teamctl _notify. teamctl takes the first line of the agent's last message, removes control characters, asks tmux which terminals are attached to the team, and writes an OSC 9 notification to the tty of each capable terminal. The terminal posts the notification, so clicking it brings the tab with the team to the front. With no terminal attached, the fallback is osascript with a hint to run teamctl attach.</desc>
+<style>
+  .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  .text { fill: #e6edf7; } .muted { fill: #8fa3c2; } .faint { fill: #5d7196; }
+</style>
+<defs>
+  <marker id="head-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#f5b942"/></marker>
+  <marker id="head-ice" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#7cc4ff"/></marker>
+  <marker id="head-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#6ee7a8"/></marker>
+  <marker id="head-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#b69cff"/></marker>
+  <marker id="head-coral" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#ff7a90"/></marker>
+  <marker id="head-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" fill="#8fa3c2"/></marker>
+</defs>
+<rect width="1280" height="770" rx="24" fill="#0b1020"/>
+<text class="sans" x="48" y="58" font-size="13" font-weight="700" letter-spacing="3" fill="#f5b942">WOLFMUX · NOTIFICATIONS</text>
+<text class="sans text" x="48" y="94" font-size="28" font-weight="700">A notification that leads back to the team</text>
+<text class="sans muted" x="48" y="122" font-size="15">Inside tmux the usual notifiers fall back to osascript, and macOS files those under Script Editor. teamctl sends its own.</text>
+<line x1="152" y1="200" x2="152" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="48" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="48" y="150" width="208" height="5" rx="2.5" fill="#b69cff"/>
+<text class="sans" x="152" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#b69cff">agent</text>
+<text class="mono faint" x="152" y="192" text-anchor="middle" font-size="11">Claude Code in a pane</text>
+<line x1="396" y1="200" x2="396" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="292" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="292" y="150" width="208" height="5" rx="2.5" fill="#7cc4ff"/>
+<text class="sans" x="396" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#7cc4ff">teamctl</text>
+<text class="mono faint" x="396" y="192" text-anchor="middle" font-size="11">_notify · Stop hook</text>
+<line x1="640" y1="200" x2="640" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="536" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="536" y="150" width="208" height="5" rx="2.5" fill="#8fa3c2"/>
+<text class="sans" x="640" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#8fa3c2">tmux</text>
+<text class="mono faint" x="640" y="192" text-anchor="middle" font-size="11">list-clients</text>
+<line x1="884" y1="200" x2="884" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="780" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="780" y="150" width="208" height="5" rx="2.5" fill="#6ee7a8"/>
+<text class="sans" x="884" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#6ee7a8">iTerm2</text>
+<text class="mono faint" x="884" y="192" text-anchor="middle" font-size="11">kitty · Ghostty · WezTerm</text>
+<line x1="1128" y1="200" x2="1128" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
+<rect x="1024" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
+<rect x="1024" y="150" width="208" height="5" rx="2.5" fill="#f5b942"/>
+<text class="sans" x="1128" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#f5b942">you</text>
+<text class="mono faint" x="1128" y="192" text-anchor="middle" font-size="11">macOS notification</text>
+<path d="M166 262 H392" fill="none" stroke="#b69cff" stroke-width="2" marker-end="url(#head-violet)"/>
+<rect x="126" y="235" width="296" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="274" y="249" text-anchor="middle" font-size="12">Stop · last_assistant_message on stdin</text>
+<circle cx="152" cy="262" r="10" fill="#b69cff"/><text class="sans" x="152" y="266" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">1</text>
+<rect x="160" y="307" width="472" height="32" rx="16" fill="#16213a" stroke="#7cc4ff" stroke-width="1.5"/>
+<circle cx="178" cy="323" r="9" fill="#7cc4ff"/><text class="sans" x="178" y="327" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">2</text>
+<text class="sans text" x="196" y="327" font-size="12.5">first line · control characters removed · 100 characters at most</text>
+<path d="M410 386 H636" fill="none" stroke="#7cc4ff" stroke-width="2" marker-end="url(#head-ice)"/>
+<rect x="356" y="359" width="324" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="518" y="373" text-anchor="middle" font-size="12">which terminals are attached to this team?</text>
+<circle cx="396" cy="386" r="10" fill="#7cc4ff"/><text class="sans" x="396" y="390" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">3</text>
+<path d="M626 448 H400" fill="none" stroke="#8fa3c2" stroke-width="2" marker-end="url(#head-muted)"/>
+<rect x="410" y="421" width="216" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="518" y="435" text-anchor="middle" font-size="12">/dev/ttys009 · iTerm2 3.7.2</text>
+<circle cx="640" cy="448" r="10" fill="#8fa3c2"/><text class="sans" x="640" y="452" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">4</text>
+<path d="M410 510 H880" fill="none" stroke="#7cc4ff" stroke-width="2" marker-end="url(#head-ice)"/>
+<rect x="481" y="483" width="317" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="640" y="497" text-anchor="middle" font-size="12">ESC ] 9 ; 🐺 lead: merged the cart API BEL</text>
+<rect x="476" y="516" width="328" height="17" rx="4" fill="#0b1020"/>
+<text class="sans faint" x="640" y="529" text-anchor="middle" font-size="11.5">written to that terminal's tty · one short write</text>
+<circle cx="396" cy="510" r="10" fill="#7cc4ff"/><text class="sans" x="396" y="514" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">5</text>
+<path d="M898 572 H1124" fill="none" stroke="#6ee7a8" stroke-width="2" marker-end="url(#head-green)"/>
+<rect x="873" y="545" width="266" height="19" rx="4" fill="#0b1020"/>
+<text class="mono text" x="1006" y="559" text-anchor="middle" font-size="12">notification owned by the terminal</text>
+<circle cx="884" cy="572" r="10" fill="#6ee7a8"/><text class="sans" x="884" y="576" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">6</text>
+<path d="M1114 634 H888" fill="none" stroke="#f5b942" stroke-width="2" marker-end="url(#head-amber)"/>
+<rect x="840" y="607" width="332" height="19" rx="4" fill="#0b1020"/>
+<text class="sans text" x="1006" y="621" text-anchor="middle" font-size="12.5">click → the tab with the team comes to the front</text>
+<circle cx="1128" cy="634" r="10" fill="#f5b942"/><text class="sans" x="1128" y="638" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">7</text>
+<text class="sans muted" x="48" y="708" font-size="13">Nothing attached (detached team, or a terminal without OSC 9): osascript, with "open it with: teamctl attach". The ECC plugin's own notifier is switched off inside team agents.</text>
+<text class="sans muted" x="48" y="730" font-size="13">WOLFMUX_NOTIFY = all (default) · lead · off</text>
+</svg>

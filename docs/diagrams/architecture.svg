@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 800" width="1280" height="800" role="img" aria-labelledby="title desc">
+<title id="title">Wolfmux architecture: two tools, two planes</title>
+<desc id="desc">teamctl is the control plane: it owns tmux panes, models, git worktrees and lifecycle. Beads is the data plane: tasks, messages and history. Agents run as panes of a dedicated tmux server, one lead and any number of workers. A Beads event hook calls teamctl nudge, which types one fixed line into the pane of the agent that needs to know. Each launcher is bound to one subscription; there are no API keys.</desc>
+<style>
+  .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  .text { fill: #e6edf7; } .muted { fill: #8fa3c2; } .faint { fill: #5d7196; }
+  .amber { fill: #f5b942; } .ice { fill: #7cc4ff; } .green { fill: #6ee7a8; } .violet { fill: #b69cff; } .coral { fill: #ff7a90; }
+  .card { fill: #111a2e; stroke: #26365a; stroke-width: 1.5; }
+  .inner { fill: #16213a; stroke-width: 1.5; }
+  .flow { fill: none; stroke-width: 2; }
+</style>
+<defs>
+  <marker id="a-ice" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#7cc4ff"/></marker>
+  <marker id="a-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#6ee7a8"/></marker>
+  <marker id="a-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#8fa3c2"/></marker>
+</defs>
+
+<rect width="1280" height="800" rx="24" fill="#0b1020"/>
+
+<!-- header -->
+<text class="sans amber" x="48" y="58" font-size="13" font-weight="700" letter-spacing="3">WOLFMUX · ARCHITECTURE</text>
+<text class="sans text" x="48" y="94" font-size="28" font-weight="700">Two tools, two planes</text>
+<text class="sans muted" x="48" y="122" font-size="15">teamctl runs the processes. Beads carries the work. One three-line hook is all that connects them.</text>
+
+<!-- you -->
+<rect class="card" x="520" y="146" width="240" height="34" rx="17"/>
+<text class="sans text" x="640" y="168" text-anchor="middle" font-size="14">you  ·  <tspan class="mono ice" font-size="13">teamctl start fable</tspan></text>
+<path class="flow" d="M640 180 V210" stroke="#8fa3c2" marker-end="url(#a-muted)"/>
+
+<!-- control plane -->
+<rect class="card" x="48" y="214" width="300" height="346" rx="16"/>
+<rect x="48" y="214" width="300" height="6" rx="3" fill="#7cc4ff"/>
+<text class="sans ice" x="72" y="254" font-size="12" font-weight="700" letter-spacing="2.5">CONTROL PLANE</text>
+<text class="mono text" x="72" y="286" font-size="22" font-weight="700">teamctl</text>
+<g class="sans text" font-size="14">
+  <text x="72" y="326">tmux panes and processes</text>
+  <text x="72" y="354">which model runs in which pane</text>
+  <text x="72" y="382">git worktrees and branches</text>
+  <text x="72" y="410">start · spawn · stop · restart · destroy</text>
+  <text x="72" y="438">policy · approvals · doctor</text>
+</g>
+<line x1="72" y1="462" x2="324" y2="462" stroke="#26365a" stroke-width="1.5"/>
+<text class="sans muted" x="72" y="490" font-size="12.5">never reads or writes a task or a message</text>
+<text class="sans faint" x="72" y="516" font-size="12.5">state and worktrees live in</text>
+<text class="mono faint" x="72" y="536" font-size="11.5">~/.wolfmux/ (outside your repository)</text>
+
+<!-- tmux server -->
+<rect class="card" x="388" y="214" width="504" height="346" rx="16"/>
+<text class="mono text" x="408" y="246" font-size="15" font-weight="700">tmux -L wolfmux</text>
+<text class="sans muted" x="552" y="246" font-size="13">dedicated server · your ~/.tmux.conf is untouched</text>
+
+<rect class="inner" x="408" y="262" width="464" height="92" rx="12" stroke="#f5b942"/>
+<text class="sans amber" x="428" y="292" font-size="17" font-weight="700">🐺 lead</text>
+<text class="sans muted" x="512" y="292" font-size="13">the only manager · works in your checkout</text>
+<text class="mono text" x="428" y="318" font-size="12.5">claude-fable  <tspan class="faint">Fable 5.1</tspan>     or     codex-astra  <tspan class="faint">GPT-6 Astra</tspan></text>
+<text class="sans muted" x="428" y="340" font-size="12.5">plans · delegates · reviews diffs · merges what it approves</text>
+
+<g>
+  <rect class="inner" x="408" y="370" width="144" height="170" rx="12" stroke="#b69cff"/>
+  <rect class="inner" x="568" y="370" width="144" height="170" rx="12" stroke="#b69cff"/>
+  <rect class="inner" x="728" y="370" width="144" height="170" rx="12" stroke="#b69cff"/>
+  <g class="sans violet" font-size="15" font-weight="700">
+    <text x="424" y="398">backend</text><text x="584" y="398">frontend</text><text x="744" y="398">qa</text>
+  </g>
+  <g class="mono text" font-size="11.5">
+    <text x="424" y="422">claude-glm</text><text x="584" y="422">claude-glm</text><text x="744" y="422">claude-glm-flash</text>
+  </g>
+  <g class="sans muted" font-size="12">
+    <text x="424" y="444">GLM-5.3</text><text x="584" y="444">GLM-5.3</text><text x="744" y="444">GLM-5.3 Flash</text>
+  </g>
+  <g class="mono faint" font-size="11">
+    <text x="424" y="478">ai/backend-…</text><text x="584" y="478">ai/frontend-…</text><text x="744" y="478">ai/qa-…</text>
+  </g>
+  <g class="sans faint" font-size="12">
+    <text x="424" y="500">own branch</text><text x="584" y="500">own branch</text><text x="744" y="500">own branch</text>
+    <text x="424" y="520">own worktree</text><text x="584" y="520">own worktree</text><text x="744" y="520">own worktree</text>
+  </g>
+</g>
+
+<!-- data plane -->
+<rect class="card" x="932" y="214" width="300" height="346" rx="16"/>
+<rect x="932" y="214" width="300" height="6" rx="3" fill="#6ee7a8"/>
+<text class="sans green" x="956" y="254" font-size="12" font-weight="700" letter-spacing="2.5">DATA PLANE</text>
+<text class="sans text" x="956" y="286" font-size="22" font-weight="700">Beads <tspan class="mono muted" font-size="16" font-weight="400">bd</tspan></text>
+<g class="sans text" font-size="14">
+  <text x="956" y="326">tasks and their dependencies</text>
+  <text x="956" y="354">messages · one inbox per role</text>
+  <text x="956" y="382">claim · block · close, atomically</text>
+  <text x="956" y="410">history: who did what, and when</text>
+  <text x="956" y="438">embedded database · no daemon</text>
+</g>
+<line x1="956" y1="462" x2="1208" y2="462" stroke="#26365a" stroke-width="1.5"/>
+<text class="sans muted" x="956" y="490" font-size="12.5">never touches a process, pane or worktree</text>
+<text class="sans faint" x="956" y="516" font-size="12.5">the store lives in</text>
+<text class="mono faint" x="956" y="536" font-size="12">&lt;project&gt;/.beads/  (git-excluded)</text>
+
+<!-- plane to server -->
+<path class="flow" d="M348 308 H384" stroke="#7cc4ff" marker-end="url(#a-ice)"/>
+<path class="flow" d="M892 455 H928" stroke="#6ee7a8" marker-end="url(#a-green)" marker-start="url(#a-green)"/>
+
+<!-- the glue -->
+<text class="sans muted" x="640" y="596" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="2.5">THE ONLY GLUE</text>
+<rect class="card" x="932" y="610" width="300" height="46" rx="12"/>
+<text class="sans text" x="1082" y="630" text-anchor="middle" font-size="13">Beads event hook</text>
+<text class="mono faint" x="1082" y="647" text-anchor="middle" font-size="11">on_create · on_update · on_close</text>
+<rect class="card" x="500" y="610" width="280" height="46" rx="12"/>
+<text class="mono text" x="640" y="630" text-anchor="middle" font-size="13">beads-nudge</text>
+<text class="sans faint" x="640" y="647" text-anchor="middle" font-size="11.5">works out which role needs to know</text>
+<rect class="card" x="48" y="610" width="300" height="46" rx="12"/>
+<text class="mono text" x="198" y="630" text-anchor="middle" font-size="13">teamctl nudge &lt;role&gt;</text>
+<text class="sans faint" x="198" y="647" text-anchor="middle" font-size="11.5">types one fixed line into that pane</text>
+<path class="flow" d="M1082 560 V606" stroke="#6ee7a8" marker-end="url(#a-green)"/>
+<path class="flow" d="M932 633 H784" stroke="#8fa3c2" marker-end="url(#a-muted)"/>
+<path class="flow" d="M500 633 H352" stroke="#8fa3c2" marker-end="url(#a-muted)"/>
+<path class="flow" d="M198 610 V564" stroke="#7cc4ff" marker-end="url(#a-ice)"/>
+
+<!-- subscriptions -->
+<line x1="48" y1="688" x2="1232" y2="688" stroke="#1d2a47" stroke-width="1.5"/>
+<text class="sans muted" x="48" y="722" font-size="12" font-weight="700" letter-spacing="2.5">INFERENCE</text>
+<g class="sans" font-size="13">
+  <rect class="card" x="150" y="702" width="256" height="32" rx="16"/>
+  <text class="text" x="278" y="723" text-anchor="middle">Claude subscription → <tspan class="mono amber" font-size="12">claude-fable</tspan></text>
+  <rect class="card" x="418" y="702" width="262" height="32" rx="16"/>
+  <text class="text" x="549" y="723" text-anchor="middle">ChatGPT / Codex plan → <tspan class="mono amber" font-size="12">codex-astra</tspan></text>
+  <rect class="card" x="692" y="702" width="290" height="32" rx="16"/>
+  <text class="text" x="837" y="723" text-anchor="middle">Z.ai GLM Coding Plan → <tspan class="mono violet" font-size="12">claude-glm</tspan></text>
+  <text class="coral" x="1232" y="723" text-anchor="end" font-weight="700">no API keys · no metered proxy</text>
+</g>
+<text class="sans faint" x="48" y="766" font-size="12.5">Each launcher cleans its own process environment and then starts the real CLI. Your shell, your normal claude and your ~/.claude settings are never changed.</text>
+</svg>
