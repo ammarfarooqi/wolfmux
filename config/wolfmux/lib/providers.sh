@@ -209,6 +209,9 @@ wolfmux_owner_config() {
   name="$(/usr/bin/id -un 2>/dev/null)" || return 1
   case "$name" in
     "" | *[!A-Za-z0-9._-]*) return 1 ;; # nothing that could carry shell syntax
+    -*) return 1 ;;                     # ~- and ~-N are the directory stack, not a user
+    *[!0-9]*) ;;                        # a non-digit somewhere: a login name
+    *) return 1 ;;                      # all digits: ~N is the directory stack too
   esac
   eval "home=~$name" 2>/dev/null || return 1
   case "$home" in
@@ -216,6 +219,23 @@ wolfmux_owner_config() {
     *) return 1 ;; # no such user: bash left the tilde unexpanded
   esac
   printf '%s\n' "$home/.config/wolfmux/config"
+}
+
+# wolfmux_owner_config_label — the same file, for a sentence addressed to a human: shortened
+# when short_path is loaded, and the literal ~/.config/wolfmux/config when the lookup failed.
+# It decides nothing; a message that names $WOLFMUX_HOME instead would send the owner to edit
+# a file the gate does not read.
+wolfmux_owner_config_label() {
+  local file
+  file="$(wolfmux_owner_config)" || {
+    printf '~/.config/wolfmux/config\n'
+    return 0
+  }
+  if command -v short_path >/dev/null 2>&1; then
+    short_path "$file"
+  else
+    printf '%s\n' "$file"
+  fi
 }
 
 # _wolfmux_metered_in_file <file> — the parser, and nothing else: true when this file

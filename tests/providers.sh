@@ -198,10 +198,33 @@ check "_wolfmux_metered_in_file fails closed on a missing, empty or unnamed file
   '! _wolfmux_metered_in_file "$WORK/no-such-file" &&
    ! _wolfmux_metered_in_file "" &&
    : >"$WORK/last-wins/config" && ! _wolfmux_metered_in_file "$WORK/last-wins/config"'
+# _fake_id <name> <command...> — run <command> with the account name the gate reads answering
+# <name>, as review round 2 did: bash expands ~0, ~-0 and ~- from the directory stack and not
+# from the password database, so a name like that must be refused before the expansion.
+eval '/usr/bin/id() {
+  if [ -n "${WM_FAKE_ID_NAME+set}" ]; then printf "%s\n" "$WM_FAKE_ID_NAME"; else command /usr/bin/id "$@"; fi
+}'
+_fake_id() { ( WM_FAKE_ID_NAME="$1"; shift; "$@" ); }
+
 check "wolfmux_owner_config names the owner's own file, absolute, never \$HOME or \$WOLFMUX_HOME" \
   'C="$(wolfmux_owner_config)" && case "$C" in /*/.config/wolfmux/config) ;; *) exit 1 ;; esac
    case "$C" in "$HOME"/*) exit 1 ;; esac # $HOME is the throwaway one here
    [ "$C" = "$(HOME=/nowhere WOLFMUX_HOME=/nowhere-else wolfmux_owner_config)" ]'
+check "wolfmux_owner_config refuses the directory-stack tilde forms: ~0, ~-0, ~- are not accounts" \
+  '/bin/mkdir -p "$FAKE_HOME/.config/wolfmux" &&
+   printf "%s\n" "WOLFMUX_METERED=on" >"$FAKE_HOME/.config/wolfmux/config" || exit 1
+   for n in 0 00 1 - -0 -1 +1 ""; do
+     ( cd "$FAKE_HOME" && ! _fake_id "$n" wolfmux_owner_config && ! _fake_id "$n" wolfmux_metered_on ) || exit 1
+   done
+   [ "$(wolfmux_owner_config)" = "$(cd / && wolfmux_owner_config)" ]'
+
+check "the metered refusal names the file the gate reads, never \$WOLFMUX_HOME/config" \
+  'L="$(WOLFMUX_HOME="$FAKE_HOME" wolfmux_owner_config_label)" &&
+   [ "$L" = "$(wolfmux_owner_config_label)" ] &&
+   case "$L" in *"$FAKE_HOME"*) exit 1 ;; *.config/wolfmux/config) ;; *) exit 1 ;; esac
+   ! LC_ALL=C /usr/bin/grep -q "WOLFMUX_METERED=on in \$(short_path" "$REPO/config/wolfmux/lib/common.sh" &&
+   [ "$(LC_ALL=C /usr/bin/grep -c "wolfmux_owner_config_label" "$REPO/config/wolfmux/lib/doctor.sh")" -eq 2 ]'
+
 check "wolfmux_metered_on takes no argument and no override: redirection cannot answer for it" \
   '[ "$OWNER_METERED" = 1 ] ||
    { ! WOLFMUX_HOME="$FAKE_HOME" wolfmux_metered_on &&

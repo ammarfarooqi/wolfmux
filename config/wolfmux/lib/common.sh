@@ -210,7 +210,7 @@ unset _wm_provider
 require_metered_ok() {
   [ "$MODEL_BILLING" = "metered" ] || return 0
   wolfmux_metered_on && return 0
-  die "'$MODEL_KEY' is metered: every token is billed to a prepaid balance, not to a plan or a subscription, so it is off. Only the owner switches it on (an agent does not decide that): put WOLFMUX_METERED=on in $(short_path "$WOLFMUX_HOME/config"). An environment variable does not count." 77
+  die "'$MODEL_KEY' is metered: every token is billed to a prepaid balance, not to a plan or a subscription, so it is off. Only the owner switches it on (an agent does not decide that): put WOLFMUX_METERED=on in $(wolfmux_owner_config_label). An environment variable does not count." 77
 }
 
 # launcher_path <key> — WOLFMUX_LAUNCHER_<KEY> overrides the default (used by tests).
