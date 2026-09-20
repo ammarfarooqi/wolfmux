@@ -1,4 +1,4 @@
-# wolfmux — a local multi-model AI development team in tmux
+# Wolfmux — a local multi-model AI development team in tmux
 
 One lead (Fable **or** Astra) plus any number of GLM workers, every agent visible in
 its own tmux pane, all inference on subscriptions — no API keys, no metered proxy.
@@ -180,7 +180,7 @@ WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec —
 | Worktrees | `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/` |
 | teamctl state (role ↔ model ↔ worktree, event log) | `~/.wolfmux/state/<project>-<hash>/` — nothing is written into your repository |
 | Tasks + messages | the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode) |
-| tmux | dedicated server: `tmux -L wolfmux`; your default tmux and `~/.tmux.conf` are untouched |
+| tmux | dedicated server: `tmux -L wolfmux`; your default tmux and `~/.tmux.conf` are untouched. A team started before the rename from "ai-team" stays on `tmux -L ai-team` until it ends; `teamctl` follows it |
 | Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, read-only git/tmux; ask on `teamctl destroy`), `~/.codex/rules/wolfmux.rules` |
 
 ## How subscription separation works

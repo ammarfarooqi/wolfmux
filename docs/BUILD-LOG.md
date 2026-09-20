@@ -92,7 +92,7 @@ overlay that keeps `claude-mem`'s daemon from starting under a Z.ai environment.
 ## 11. Packaging
 
 This repository: sources, `install.sh` / `uninstall.sh` (tested in a fake `HOME`),
-`tests/smoke.sh` (31 checks), `tests/credential-routing.sh`, and this documentation.
+`tests/smoke.sh` (31 checks at the time), `tests/credential-routing.sh`, and this documentation.
 
 ## 12. First real use — three problems, one root cause (v1.1)
 
@@ -110,6 +110,33 @@ names becomes a teammate whose team lead and permission approver is that session
 inside workers, a `PermissionRequest` hook that lets the lead approve or deny, and lead
 notices for spawns and policy changes. The smoke suite grew from 31 to 48 checks, and the
 override was confirmed against the real CLI.
+
+## 13. The rename (v1.2)
+
+The owner called "ai-team" a bad name. "Wolfpack" was picked, then dropped when a search
+found 1,137 GitHub repositories with that name; **Wolfmux** had none (and was free on
+npm, PyPI and Homebrew). Candidate names were checked with `gh api search/repositories`
+before they were offered again.
+
+The rename itself was mechanical (`AI_TEAM_` → `WOLFMUX_`, `ai-team` → `wolfmux`, two
+`git mv`). The work was in not breaking the machine it ran on: a lead was live on the old
+tmux socket and a stopped worker had a worktree under `~/.ai-team`. See
+[ADR-0014](adr/0014-rename-to-wolfmux.md). What was added:
+
+- `teamctl` follows a team on the old socket until its last session ends;
+- Beads hooks carrying the old marker count as ours and are rewritten;
+- `migrate-from-ai-team.sh` (with `--dry-run`) moves state and worktrees, rewrites the one
+  stored path, runs `git worktree repair`, renames the marked `~/.zshrc` block and the
+  two tmux permission rules in place, and parks the old config in backups;
+- `install.sh` refuses to install next to an unmigrated v1.1.
+
+Two ideas were written and then removed as unneeded: accepting the old login-guard value
+(no v1.1 GLM worker was alive to carry it) and reading the old tmux session option (a
+project with stored state never consults it).
+
+`tests/migration.sh` rehearses the whole move in a throwaway `HOME`: it installs v1.1
+from git history, runs a team with it, migrates, and ends with `uninstall.sh` (21 checks).
+`tests/smoke.sh` grew from 48 to 55 checks. Only then was the real machine migrated.
 
 ## Footprint on the machine
 

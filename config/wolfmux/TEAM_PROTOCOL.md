@@ -1,4 +1,4 @@
-# wolfmux protocol
+# Wolfmux protocol
 
 One **lead** and any number of **workers** share one repository. Every agent runs in
 its own tmux pane. The protocol is the same whichever model plays which role.

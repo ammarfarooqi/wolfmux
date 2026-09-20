@@ -5,6 +5,7 @@ Start with `teamctl doctor`, then `teamctl status`, then `teamctl capture <role>
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | teammates appear in extra terminal panes and ask a *worker* for approval ("Waiting for team lead approval") | the worker used Claude Code's own agent-teams feature (your settings enable it), which makes the spawning session a team lead | fixed since 1.1: teamctl switches that feature off inside workers. Restart workers started with an older version: `teamctl restart <role>` |
+| a GLM worker starts with `Both CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set · auth may not work as expected` | that variable is the login guard: an inert value that keeps a GLM worker (and anything it starts) from ever falling back to your claude.ai login | expected and harmless: `apiKeyHelper` takes precedence, so the Z.ai key is what gets sent. Do not unset either ([why](SECURITY.md)) |
 | a worker's banner says `API Usage Billing` | Claude Code's label for any key-based login | expected for GLM workers: the key is the Z.ai Coding Plan key, the endpoint is Z.ai's. Check `/status` in the pane |
 | a worker stalls on a permission prompt | it runs in `ask` mode, or a lead-mode request timed out | `teamctl status` shows its PERM column. `teamctl policy worker-permissions skip` (or `lead`), then `teamctl restart <role> --continue` |
 | `'teamctl …' is reserved for the lead` (exit 77) | a worker tried a manager command, or tried to spawn while `worker-spawn` is off | intended. The worker should message the lead; you can allow spawning with `teamctl policy worker-spawn on` |
@@ -25,6 +26,8 @@ Start with `teamctl doctor`, then `teamctl status`, then `teamctl capture <role>
 | `teamctl doctor` warns about `env` or `apiKeyHelper` in a settings file | that file would redirect **every** Claude session, including the Fable lead | remove the entry; provider configuration belongs only inside the launchers |
 | Codex asks for approval on every `teamctl` / `bd` command | the rule file is missing | `./install.sh` (or copy `codex/wolfmux.rules.template` to `~/.codex/rules/wolfmux.rules` with `__HOME__` replaced), restart Codex |
 | `uninstall.sh` refuses to run | a team is still up | `teamctl destroy` in that project first |
+| `install.sh` says an installation under the old name is present | v1.1 or earlier ("ai-team") is installed | `./migrate-from-ai-team.sh` — it moves state and worktrees, then installs ([details](SETUP.md#coming-from-ai-team-v11-and-earlier)) |
+| `teamctl doctor` shows `socket: ai-team` | a team started before the rename is still running | nothing to do: teamctl follows it; the next team after it ends uses `wolfmux` |
 | stale `wolfmux-test-*` sockets in `/tmp/tmux-<uid>/` | tmux leaves socket files behind | harmless; `smoke.sh` removes its own |
 
 ## Useful one-liners

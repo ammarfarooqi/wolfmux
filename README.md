@@ -1,4 +1,4 @@
-# wolfmux
+# Wolfmux
 
 A local, multi-model AI development team on one Mac. One **lead** agent plans,
 delegates and reviews; any number of **worker** agents implement in parallel. Every
@@ -49,7 +49,8 @@ reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 | `claude/permissions.json` | the narrow allow/ask rules merged into `~/.claude/settings.json` |
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
-| `tests/` | `smoke.sh` (31 isolated lifecycle checks, no model calls), `credential-routing.sh` (evidence for the billing/credential design) |
+| `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
+| `tests/` | `smoke.sh` (55 isolated lifecycle checks, no model calls), `migration.sh` (the move from v1.1, rehearsed in a throwaway `HOME`), `credential-routing.sh` (evidence for the billing/credential design) |
 | `docs/` | the documentation below |
 
 ## Documentation

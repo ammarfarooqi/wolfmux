@@ -6,17 +6,18 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # ~2 minutes, 48 checks, isolated from any running team
+tests/smoke.sh                 # ~2 minutes, 55 checks, isolated from any running team
+tests/migration.sh             # ~30 seconds, 21 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```
 
 `smoke.sh` tests the checkout it lives in. It uses its own tmux server
-(`wolfmux-test-<pid>`), its own state directory, a throwaway repository whose path
+(`wolfmux-test-<pid>`, `wolfmux-test-old-<pid>`), its own state directory, a throwaway repository whose path
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh — 48 of 48 pass (2026-09-20)
+## smoke.sh — 55 of 55 pass (2026-09-20)
 
 | Area | Checks |
 |------|--------|
@@ -28,6 +29,7 @@ real team was live on the same machine; the real team was unaffected.
 | notifications | fixed line typed into the pane · debounced inside the window · hostile bead id (`x;rm -rf ~`) dropped, never typed |
 | Beads | a message to a role notifies its pane · body stored intact (`"quotes"`, `$HOME`, backticks) and never typed into the pane · a worker reads the shared database from its external worktree |
 | git | `diff` commits / stat / patch · uncommitted leftovers visible · main checkout untouched by worker commits · `worktrees` lists everyone |
+| rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
 
 ## Live checks with the real CLIs
@@ -72,12 +74,32 @@ Second install run changed nothing · existing `allow` entries not duplicated an
 `deny` preserved · install then uninstall left `~/.zshrc` byte-identical · exactly
 the added permission rules removed · uninstall refused while a team was running.
 
+## migration.sh — 21 of 21 pass (2026-09-20)
+
+A throwaway `HOME` gets v1.1 installed from git history, a team started with it (lead +
+one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
+
+| Area | Checks |
+|------|--------|
+| refusals | new `install.sh` will not install next to v1.1 · migration refuses while a worker runs inside `~/.ai-team` and changes nothing · `--dry-run` changes nothing |
+| state | old directories gone, old config parked in backups · a user setting arrives under its new key · program files are the new version · no stored record points into `~/.ai-team` · a second run finds nothing to do |
+| the live team | **the running lead is not restarted** (same pid, pane alive) · new `teamctl` sees lead running and the worker stopped with its worktree |
+| git | git lists the worktree at its new path, nothing prunable · uncommitted work in it survived · the worker restarts in the moved worktree |
+| edited files | `~/.zshrc`: one block, only its two marker lines changed · `settings.json`: tmux rules renamed, every other rule and key kept · Codex rules: new file in place, old one parked · Beads hooks point at the new location |
+| round trip | `uninstall.sh` refuses while the pre-rename team is up · after destroy, uninstall leaves `~/.zshrc` byte-identical to the original and `settings.json` equal in content |
+
+## Observed in the owner's real team (2026-09-20, after the migration)
+
+| Observation | Meaning |
+|-------------|---------|
+| the lead (Fable, started under v1.1) kept its pid through the migration; `teamctl status` from 1.2.0 shows it running on socket `ai-team` | adoption of the old socket works on a real team |
+| two seconds after the move the lead ran `teamctl restart research`; the GLM-5.3 worker came up in `~/.wolfmux/worktrees/…`, read its Beads inbox and answered | **first real Z.ai request: helper mode (`apiKeyHelper` + login guard) authenticates against the Coding Plan endpoint**; registry rewrite and `git worktree repair` hold under real use |
+| the worker's first screen warns `Both CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set` | expected: that variable is the inert login guard ([ADR-0007](adr/0007-zai-key-delivery-and-login-guard.md)); `apiKeyHelper` wins and the request succeeded |
+
 ## Not verified
 
-- **A real request to Z.ai.** No key was available during the build and inference
-  was avoided on purpose. Helper mode sends the key as both `x-api-key` and
-  `Authorization`; if Z.ai rejects that, `WOLFMUX_GLM_AUTH_MODE=env` is the
-  documented path.
+- `WOLFMUX_GLM_AUTH_MODE=env` against the real endpoint (helper mode worked, so the
+  fallback was never needed).
 - Model ids sent by background features of an *interactive* session (titles,
   suggestions). The `-p` runs showed only `glm-5.3`; the alias mapping covers the
   rest by configuration, not by observation.

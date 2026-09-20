@@ -69,7 +69,7 @@ Open a new terminal (for the `PATH` change), then:
 ```bash
 teamctl doctor                  # expect no "!! WARNING !!" and no FAIL lines
 WOLFMUX_DRY_RUN=1 claude-glm    # shows endpoint, model, auth mode; starts nothing
-~/Documents/wolfmux/tests/smoke.sh   # 31 checks, isolated, no model calls (~1 minute)
+~/Documents/wolfmux/tests/smoke.sh   # 55 checks, isolated, no model calls (~2 minutes)
 ```
 
 Account-side switches no local tool can see — check them once:
@@ -89,6 +89,32 @@ teamctl start fable           # offers the stealth Beads init on first use
 If GLM workers report an authentication error, set `WOLFMUX_GLM_AUTH_MODE=env` in
 `~/.config/wolfmux/config` and `teamctl restart <role>`
 ([why](SECURITY.md#how-the-zai-key-reaches-a-worker)).
+
+## Coming from "ai-team" (v1.1 and earlier)
+
+This tool's first name was "ai-team". `install.sh` refuses to run next to that
+installation; move it instead:
+
+```bash
+cd ~/Documents/wolfmux
+./migrate-from-ai-team.sh --dry-run    # prints every step, changes nothing
+./migrate-from-ai-team.sh              # under a minute
+```
+
+| Moves | To |
+|-------|----|
+| `~/.ai-team` (state, worktrees, backups) | `~/.wolfmux`; stored paths rewritten, `git worktree repair` run in each project |
+| `~/.config/ai-team/config`, `glm-worker-settings.json` | `~/.config/wolfmux/`, settings keys renamed `AI_TEAM_*` → `WOLFMUX_*` |
+| the marked block in `~/.zshrc`, two tmux rules in `~/.claude/settings.json` | renamed in place, each file backed up first |
+| `~/.codex/rules/ai-team.rules`, the rest of `~/.config/ai-team` | parked in `~/.wolfmux/backups/<stamp>/` |
+| each project's `.beads/hooks/on_*` | rewritten to call the new hook |
+
+A team that is running is **not** restarted: it stays on its tmux socket (`ai-team`) and
+`teamctl` follows it there until its last session ends. The only refusal is a live worker
+inside `~/.ai-team` — `teamctl stop <role>` first (worktree and branch are kept). A lead
+that was already running keeps the old names in its instructions until
+`teamctl restart lead --continue`. Unchanged: the `teamctl` command, `ai/<role>`
+branches, the Keychain item. Shell variables you export yourself need the new prefix.
 
 ## Updating
 
