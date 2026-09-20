@@ -70,7 +70,7 @@ teamctl destroy --worktrees          # later: drops clean worktrees and fully me
 | `teamctl start <fable\|astra> [--no-attach] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach |
 | `teamctl policy [<key> <value>]` | show or change `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
-| `teamctl spawn <role> <glm53\|flash\|fable\|astra> [--base <ref>] [--no-kickoff]` | new worker: branch + worktree + pane |
+| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]` | new worker: branch + worktree + pane. Any model, whoever leads (table below) |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |
@@ -88,6 +88,21 @@ Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.
 `start`, `stop`, `restart`, `destroy`, `policy`, `approve` and `deny` are reserved for
 the lead and for you; `spawn` too unless `worker-spawn` is on. A worker gets exit 77.
 `teamctl send|inbox|broadcast|task` print the `bd` equivalents.
+
+### Models
+
+| Model key | Runs | Pays with |
+|-----------|------|-----------|
+| `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan — the default for workers |
+| `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
+| `astra` | Codex CLI + GPT-6 Astra | ChatGPT / Codex subscription |
+| `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
+
+A Fable team can take on an Astra teammate for one review (`teamctl spawn fe-review astra`),
+an Astra team a Sonnet one (`teamctl spawn summary sonnet`); tell the lead, or run it
+yourself. Every teammate gets its own worktree and branch and the same Beads inbox. What
+differs by CLI: Claude-based teammates have the worktree guard and the lead-approval mode;
+Codex-based ones have neither (Codex has no such hooks) but do send notifications.
 
 ## Beads cheat sheet
 

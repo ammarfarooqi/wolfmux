@@ -16,6 +16,13 @@ standalone CLI share `~/.codex`, whose state databases are versioned.
 binary. The installer links `~/bin/codex` to the bundled binary only when no `codex`
 exists. `~/bin` is last in PATH, so a future official install takes over by itself.
 
+**Amended 2026-09-20 (v1.7).** The link in `~/bin` was a symlink. Codex looks for its helper
+programs (`codex-code-mode-host`, its command runner) next to the path it was *started as*,
+so through the symlink it looked in `~/bin`, found nothing, and an Astra lead could not run
+a single command ("Code Mode is unavailable"). `~/bin/codex` is now a two-line wrapper that
+execs the real file, and `codex-astra` resolves symlinks itself before it execs. Verified
+with one real turn: the command ran, and no warning.
+
 ## Alternatives Considered
 
 ### Alternative 1: Install the standalone CLI

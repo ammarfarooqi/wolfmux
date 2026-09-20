@@ -6,7 +6,7 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # ~3 minutes, 109 checks, isolated from any running team
+tests/smoke.sh                 # ~3 minutes, 120 checks, isolated from any running team
 tests/migration.sh             # ~30 seconds, 21 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
@@ -17,16 +17,17 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh — 109 of 109 pass (2026-09-20)
+## smoke.sh — 120 of 120 pass (2026-09-20)
 
 | Area | Checks |
 |------|--------|
-| launchers | `claude-glm` declares a 200k context window · `1m` uses the suffix instead, a number is declared, nonsense falls back with a warning · a context value from outside is scrubbed, never inherited |
+| launchers | `codex-astra` starts Codex by its real path, never through a symlink · `claude-opus`, `-sonnet`, `-haiku` are the subscription launcher pinned to their model, each pin configurable · `claude-glm` declares a 200k context window · `1m` uses the suffix instead, a number is declared, nonsense falls back with a warning · a context value from outside is scrubbed, never inherited |
 | start | session running and lead registered · repository left clean by the stealth Beads init (no commit, no tracked file) |
 | spawn | two workers running · own branch each · worktrees outside the repository · `--base` recorded · `TEAM_ROLE` / `BEADS_ACTOR` / model set inside the pane · no provider or agent-session variable leaks into a pane · kickoff prompt present by default and absent with `--no-kickoff` · lead is pane 0 · pane titles are `<role> · <model>` |
 | validation | duplicate role refused · `lead` and malformed roles refused · a capital letter is refused under `C`, `en_AU.UTF-8` and `en_US.UTF-8` alike · a role an older version let through can still be listed and stopped · a role name can never leave the registry directory · flag without a value reports usage with exit 64 |
-| lanes | every worker has the guard, the lead does not · a worker may change files in its own worktree (absolute, relative, new) and in temporary directories · not the lead's checkout, a teammate's worktree, `~/.zshrc`, or anything reached with `..` · it may read the lead's checkout, never a teammate's worktree or teamctl's state · ordinary shell work passes (tests, commits, `git checkout -- file`, `git push -u origin HEAD`, copying `.env` from the lead's checkout, `teamctl`, `bd`, rebase) · reaching into another worktree or writing into the lead's checkout is refused, in either spelling of the path · switching, creating or deleting branches, `git worktree`, `tmux`, pushes to main are refused · the lead is not guarded and an agent the guard cannot place is allowed · `worker-isolation off` removes it at the next start |
-| clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · an unknown role is an error |
+| any model | a Codex teammate in a team led by another model · a Claude-subscription teammate (sonnet) beside GLM workers, with the guard · `claude:<id>` and `codex:<id>` reach the CLI · a Codex teammate gets the notify program · nonsense (`gpt`, `claude:`, `claude:bad;id`, `glm:glm-9`, `codex:a b`) is refused before anything is created |
+| lanes | words are not commands: prose in quotes and heredocs never triggers the guard, a quoted path still does · MCP tools are held to the same lanes · every worker has the guard, the lead does not · a worker may change files in its own worktree (absolute, relative, new) and in temporary directories · not the lead's checkout, a teammate's worktree, `~/.zshrc`, or anything reached with `..` · it may read the lead's checkout, never a teammate's worktree or teamctl's state · ordinary shell work passes (tests, commits, `git checkout -- file`, `git push -u origin HEAD`, copying `.env` from the lead's checkout, `teamctl`, `bd`, rebase) · reaching into another worktree or writing into the lead's checkout is refused, in either spelling of the path · switching, creating or deleting branches, `git worktree`, `tmux`, pushes to main are refused · the lead is not guarded and an agent the guard cannot place is allowed · `worker-isolation off` removes it at the next start |
+| clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error |
 | one manager | default policy is skip / skip / spawning off / isolation on · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |
 | approvals | lead mode starts a worker without bypass and with the hook · a request is filed and the lead is told · status shows it pending · a worker cannot approve its own request · approve → the CLI receives `allow` · deny → the CLI receives `deny` with the reason · no answer → no decision, so the normal prompt appears · ask mode has neither flag nor hook |
 | notifications | fixed line typed into the pane · debounced inside the window · hostile bead id (`x;rm -rf ~`) dropped, never typed |
@@ -123,6 +124,14 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | the lead (Fable, started under v1.1) kept its pid through the migration; `teamctl status` from 1.2.0 shows it running on socket `ai-team` | adoption of the old socket works on a real team |
 | two seconds after the move the lead ran `teamctl restart research`; the GLM-5.3 worker came up in `~/.wolfmux/worktrees/…`, read its Beads inbox and answered | **first real Z.ai request: helper mode (`apiKeyHelper` + login guard) authenticates against the Coding Plan endpoint**; registry rewrite and `git worktree repair` hold under real use |
 | the worker's first screen warns `Both CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set` | expected: that variable is the inert login guard ([ADR-0007](adr/0007-zai-key-delivery-and-login-guard.md)); `apiKeyHelper` wins and the request succeeded |
+
+## One real Codex turn (2026-09-20, ChatGPT login, `codex-astra exec`)
+
+| Question | Observation |
+|----------|-------------|
+| does Codex find its command runner when started by `codex-astra`? | yes: no "Code Mode is unavailable" warning (it appeared on every turn while `~/bin/codex` was a symlink) |
+| can it run a command? | `/bin/zsh -lc 'echo wolfmux-ok'` succeeded |
+| does Codex's `notify` program reach `teamctl _notify --codex`? | yes: `ESC ] 9 ; 🐺 lead: wolfmux-ok BEL` was written to the test tty |
 
 ## Wolfmux.app on the owner's machine (2026-09-20)
 

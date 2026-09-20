@@ -211,6 +211,27 @@ the shell check replaces every spelling with a token before matching; and bash 3
 misreads escaped quotes inside `"$( … )"`, which split a jq program at its commas
 (brace expansion) in the tests. `tests/smoke.sh`: 92 → 109.
 
+## 18. Astra could not run a command; any model for any teammate (v1.7)
+
+The owner started an Astra-led team and asked it to spawn a teammate. Codex answered
+"Code Mode is unavailable … codex-code-mode-host: host executable was not found", tried to
+drive Terminal through computer use, was refused, and gave up. Cause: `~/bin/codex` was a
+symlink into ChatGPT.app, and Codex looks for its helper programs next to the path it was
+*started as*. It had never been caught because the build only took the Codex TUI as far as
+its first screen. Fix: a wrapper instead of the symlink, and `codex-astra` resolves
+symlinks before it execs. This time it was checked with one real turn on the ChatGPT
+login: the command ran, no warning, and Codex's `notify` program delivered
+`🐺 lead: wolfmux-ok` — so Codex agents notify now as well.
+
+Same report: staff any team with any model ([ADR-0017](adr/0017-any-model-for-any-agent.md)).
+
+The security review of the guard and of `remove` arrived in between. Its critical finding
+(a hand-edited record could make `remove` delete any directory) had been found and fixed an
+hour earlier; its others were new and right: prose in commit messages and Beads texts
+tripped the shell patterns, a destructive verb anywhere in a command that merely mentioned
+the lead's checkout was refused, MCP tools were not matched at all, and `remove a b` was
+not all-or-nothing. All fixed, each with a check. `tests/smoke.sh`: 109 → 120.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

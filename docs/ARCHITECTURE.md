@@ -25,7 +25,8 @@ diagnostics can never drift apart.
 | Launcher | CLI | Billing | What it pins |
 |----------|-----|---------|--------------|
 | `claude-fable` | Claude Code | Claude subscription (`/login`) | `--model claude-fable-5-1[1m]`; no key, no endpoint |
-| `codex-astra` | Codex CLI | ChatGPT / Codex subscription | `forced_login_method="chatgpt"`, `model_provider="openai"`, `model="gpt-6-astra"` |
+| `claude-opus` · `claude-sonnet` · `claude-haiku` | symlinks to `claude-fable` | same | the model named by the link (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-…`) |
+| `codex-astra` | Codex CLI | ChatGPT / Codex subscription | `forced_login_method="chatgpt"`, `model_provider="openai"`, `model="gpt-6-astra"`. Starts Codex by its **real path**: Codex looks for its helper programs next to the path it was started as |
 | `claude-glm` | Claude Code | Z.ai GLM Coding Plan | endpoint `https://api.z.ai/api/anthropic`, every model alias → `glm-5.3` (background tier → `glm-5.3-flash`), a declared 200k context window (or `[1m]`) so Claude Code prints no unknown-model notice |
 | `claude-glm-flash` | symlink to `claude-glm` | same | every alias → `glm-5.3-flash` |
 

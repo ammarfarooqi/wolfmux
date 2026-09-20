@@ -27,6 +27,13 @@ A refusal returns `permissionDecision: deny` with a reason that says what to do 
 (message the lead). The lead is not guarded. Policy `worker-isolation on|off`, default on.
 The guard fails open.
 
+**Amended after the security review (v1.7).** Words are not commands: heredoc bodies and
+quoted text are dropped before the shell patterns run, unless the quoted text looks like a
+path, so a commit message or a Beads description may mention `tmux`, `git checkout main`
+or the lead's checkout. A destructive verb counts only when the lead's checkout follows it
+in the same simple command. MCP tools (`mcp__*`) are matched too: every absolute path in
+their input is held to the same lanes. Reads get the same `..` check as writes.
+
 ## Alternatives Considered
 
 ### Alternative 1: Claude Code `permissions.deny` rules per worker
