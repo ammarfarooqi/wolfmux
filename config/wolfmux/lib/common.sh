@@ -79,14 +79,36 @@ require_tools() {
 
 # --- validation --------------------------------------------------------------
 # Role names end up in branch names, file names and tmux targets.
+# Alphabets are spelled out: a range such as [a-z] follows the locale's collation, and
+# under en_AU.UTF-8 it matches capitals (a lead once spawned "Riley-pr-reviewer").
+_WM_LOWER="abcdefghijklmnopqrstuvwxyz"
+_WM_UPPER="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_WM_DIGITS="0123456789"
+
+# valid_role — a NEW role: lowercase letters, digits, hyphens, at most 32
 valid_role() {
   case "$1" in
-    "" | *[!a-z0-9-]* | -* | *-) return 1 ;;
+    "" | *[!${_WM_LOWER}${_WM_DIGITS}-]* | -* | *-) return 1 ;;
   esac
   [ "${#1}" -le 32 ]
 }
 
+# known_role_name — may name an agent that already exists. Capitals are tolerated here
+# (older versions let them through); anything that could leave the registry directory
+# or disturb a line typed into a pane is not.
+known_role_name() {
+  case "$1" in
+    "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}-]* | -* | *-) return 1 ;;
+  esac
+  [ "${#1}" -le 64 ]
+}
+
 require_role_arg() {
+  [ -n "${1:-}" ] || die_usage "missing <role>"
+  known_role_name "$1" || die_usage "invalid role '$1' (letters, digits and '-')"
+}
+
+require_new_role_arg() {
   [ -n "${1:-}" ] || die_usage "missing <role>"
   valid_role "$1" || die_usage "invalid role '$1' (use lowercase letters, digits and '-', max 32 chars)"
 }
@@ -94,7 +116,7 @@ require_role_arg() {
 # Bead ids are echoed into a pane, so keep them to a harmless alphabet.
 valid_bead_id() {
   case "$1" in
-    "" | *[!A-Za-z0-9._-]*) return 1 ;;
+    "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}._-]*) return 1 ;;
   esac
   [ "${#1}" -le 64 ]
 }
@@ -158,7 +180,7 @@ resolve_root() {
 }
 
 sanitize_name() {
-  printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '-' | sed -e 's/--*/-/g' -e 's/^-//' -e 's/-$//'
+  printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9_-' '-' | sed -e 's/--*/-/g' -e 's/^-//' -e 's/-$//'
 }
 
 project_key() {

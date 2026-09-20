@@ -198,7 +198,7 @@ cmd_spawn() {
     shift
   done
   [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <glm53|flash|fable|astra> [--base <ref>] [--no-kickoff]"
-  require_role_arg "$role"
+  require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
   require_tools
@@ -532,11 +532,11 @@ notify_lead() {
   [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
   case "$kind" in
     spawn)
-      valid_role "$2" && valid_role "$3" || return 1
+      known_role_name "$2" && known_role_name "$3" || return 1
       text="[wolfmux] Team change: $2 spawned teammate $3 ($4). Run: teamctl status"
       ;;
     approval)
-      valid_approval_id "$2" && valid_role "$3" || return 1
+      valid_approval_id "$2" && known_role_name "$3" || return 1
       text="[wolfmux] Permission request $2 from $3. Run: teamctl approvals"
       ;;
     policy)
@@ -620,7 +620,7 @@ cmd_nudge() {
     return 0
   fi
   if [ "$quiet" -eq 1 ]; then
-    valid_role "$role" || return 0
+    known_role_name "$role" || return 0
     reg_exists "$role" || return 0
   else
     require_role_arg "$role"

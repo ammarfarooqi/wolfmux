@@ -50,7 +50,7 @@ _doc_profiles() {
   for file in "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.zshenv" "$HOME/.profile" "$HOME/.bash_profile" "$HOME/.bashrc"; do
     [ -f "$file" ] || continue
     # grep exits 1 on "no match"; under pipefail that must not abort the report.
-    hits="$(grep -nE '^[[:space:]]*(export[[:space:]]+)?(ANTHROPIC_[A-Z_]+|OPENAI_API_KEY|OPENAI_BASE_URL|CODEX_API_KEY|ZAI_[A-Z_]+)=' "$file" 2>/dev/null | sed -E 's/=.*$//' | tr '\n' ' ' || true)"
+    hits="$(LC_ALL=C grep -nE '^[[:space:]]*(export[[:space:]]+)?(ANTHROPIC_[A-Z_]+|OPENAI_API_KEY|OPENAI_BASE_URL|CODEX_API_KEY|ZAI_[A-Z_]+)=' "$file" 2>/dev/null | sed -E 's/=.*$//' | tr '\n' ' ' || true)"
     if [ -n "$hits" ]; then
       found=1
       _risk "$(short_path "$file") exports provider variables (line:name): $hits"
@@ -110,7 +110,7 @@ _doc_astra() {
   _doc_launcher codex-astra
   if bin="$(wolfmux_resolve_codex)"; then
     _ok "codex     $bin  ($("$bin" --version 2>/dev/null | head -1))"
-    status="$("$bin" login status 2>&1 | head -1 | sed -E 's/sk-[A-Za-z0-9_*.-]+/<redacted>/g' || true)"
+    status="$("$bin" login status 2>&1 | head -1 | LC_ALL=C sed -E 's/sk-[A-Za-z0-9_*.-]+/<redacted>/g' || true)"
     case "$status" in
       *ChatGPT*) _ok "codex login status: $status" ;;
       *[Aa][Pp][Ii]*) _risk "codex login status: $status — API-key login means metered API billing. Run: codex logout && codex login" ;;

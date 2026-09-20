@@ -22,7 +22,7 @@ beads_prefix() {
   name="$(sanitize_name "$(basename "$ROOT")" | tr '[:upper:]' '[:lower:]' | tr '_' '-' | cut -c1-24)"
   name="${name%-}"
   case "$name" in
-    [a-z]*) ;;
+    [${_WM_LOWER}]*) ;;
     *) name="p-$name" ;;
   esac
   printf '%s\n' "${name%-}"

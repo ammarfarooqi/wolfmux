@@ -87,6 +87,12 @@ check "spawn: the lead is the first pane" '[ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" l
 check "spawn: pane titles are roles" 'tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_title}" | grep -q "^backend · GLM-5.3$"'
 check "validation: duplicate role refused" '! teamctl spawn backend glm53'
 check "validation: reserved and malformed roles refused" '! teamctl spawn lead glm53 && ! teamctl spawn "Bad Role" glm53'
+check "validation: a capital letter is refused whatever the locale says about [a-z]" 'for l in C en_AU.UTF-8 en_US.UTF-8; do LC_ALL=$l LANG=$l teamctl spawn Riley-reviewer glm53; [ $? -eq 64 ] || exit 1; done; [ -z "$(git branch --list "ai/Riley*")" ]'
+LEGACY_RECORD="$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/Old-Reviewer.json"
+jq '.role = "Old-Reviewer" | .pane_id = "" | .state = "stopped"' "$(dirname "$LEGACY_RECORD")/backend.json" >"$LEGACY_RECORD"
+check "validation: a role an older version let through (capitals) can still be listed and stopped" 'teamctl status | grep -q "^Old-Reviewer  *GLM-5.3" && teamctl stop Old-Reviewer && teamctl status --json | jq -e ".agents[] | select(.role == \"Old-Reviewer\") | .state == \"stopped\""'
+check "validation: a role name can never leave the registry directory" 'teamctl stop "../backend"; [ $? -eq 64 ] && teamctl capture "a/b"; [ $? -eq 64 ]'
+/bin/rm -f "$LEGACY_RECORD"
 check "validation: flag without value reports usage (exit 64)" 'teamctl spawn x glm53 --base; [ $? -eq 64 ]'
 
 echo "== the wolf (cosmetic: it may never break a command)"

@@ -36,8 +36,17 @@ _status_rows() { # emits one JSON object per agent
 }
 
 # teamctl status [--json]   (alias: workers)
+# role_column_width — 14, or as wide as the longest role
+role_column_width() {
+  local role width=14
+  for role in $(reg_list); do
+    if [ "${#role}" -gt "$width" ]; then width="${#role}"; fi
+  done
+  printf '%s\n' "$width"
+}
+
 cmd_status() {
-  local json=0 rows
+  local json=0 rows width
   if [ "${1:-}" = "--json" ]; then json=1; fi
   require_tools
   load_project
@@ -69,11 +78,12 @@ cmd_status() {
     say "no agents registered. Start a team: teamctl start <fable|astra>"
     return 0
   fi
-  printf '%-14s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY WORKDIR
+  width="$(role_column_width)"
+  printf '%-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$width" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY WORKDIR
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
   printf '%s\n' "$rows" | "$JQ_BIN" -r '[.role, .label, .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
     while IFS='|' read -r role label state pane permissions spawned_by branch ahead dirty workdir; do
-      printf '%-14s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$role" "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
+      printf '%-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$width" "$role" "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
     done
   say ""
   say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open --include-infra"
@@ -84,16 +94,17 @@ cmd_panes() {
   require_tools
   load_project
   require_session
-  printf '%-14s %-6s %-16s %-8s %-7s %s\n' ROLE PANE COMMAND PID STATE CWD
+  width="$(role_column_width)"
+  printf '%-*s %-6s %-16s %-8s %-7s %s\n' "$width" ROLE PANE COMMAND PID STATE CWD
   tmx list-panes -s -t "=$SESSION" \
     -F '#{?#{@ai_role},#{@ai_role},(untagged)}|#{pane_id}|#{pane_current_command}|#{pane_pid}|#{?pane_dead,exited(#{pane_dead_status}),running}|#{pane_current_path}' |
     while IFS='|' read -r role pane command pid state cwd; do
-      printf '%-14s %-6s %-16s %-8s %-7s %s\n' "$role" "$pane" "$command" "$pid" "$state" "$(short_path "$cwd")"
+      printf '%-*s %-6s %-16s %-8s %-7s %s\n' "$width" "$role" "$pane" "$command" "$pid" "$state" "$(short_path "$cwd")"
     done
 }
 
 _pane_or_die() { # <role> — prints the pane id
-  local pane
+  local pane width
   reg_exists "$1" || die "no such agent: $1  (see: teamctl status)"
   pane="$(tm_pane_for_role "$SESSION" "$1")"
   [ -n "$pane" ] || die "'$1' has no pane (stopped). Bring it back with: teamctl restart $1"
