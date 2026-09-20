@@ -231,6 +231,9 @@ DOCS_PANE="$(role_pane docs)"
 end_agent "$(role_pane lead)"
 sleep 1
 check "start again: a lead that exited comes back in place, workers are not touched" 'follow status --json | jq -e "[.agents[] | select(.role == \"lead\")][0].state | startswith(\"exited\")" && follow start fable --no-attach --skip-beads && sleep 1 && follow status --json | jq -e --arg pane "$DOCS_PANE" "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and ([.agents[] | select(.role == \"docs\")][0] | .state == \"running\" and .pane == \$pane)" && lead_left'
+end_agent "$(role_pane lead)"
+sleep 1
+check "start again: asking for the other lead model brings the lead back as that model" 'follow start astra --no-attach --skip-beads && sleep 1 && follow status --json | jq -e "[.agents[] | select(.role == \"lead\")][0] | .state == \"running\" and .model == \"astra\"" && follow status --json | jq -e ".agents | map(select(.role == \"docs\"))[0].state == \"running\""'
 for pane in $(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F '#{pane_id}'); do end_agent "$pane"; done
 sleep 1
 check "start again: status says the session has ended when every agent has exited" 'follow status | grep -q "ended: every agent has exited"'

@@ -179,7 +179,7 @@ against the localhost mock. Declaring the window Claude Code already assumes
 (`CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000`) removes it without changing behaviour, so that is
 what `claude-glm` does. The variable stays on the scrub list — a Fable child must never
 inherit a GLM window — so a different number goes through `WOLFMUX_GLM_CONTEXT`.
-`tests/smoke.sh` 71 → 84.
+`tests/smoke.sh` 71 → 85.
 
 ## Footprint on the machine
 

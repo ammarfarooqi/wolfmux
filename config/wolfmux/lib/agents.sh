@@ -60,7 +60,7 @@ new_record() {
 
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
-  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role run stopped=""
+  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role run stopped="" previous previous_model=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-attach | -d) attach=0 ;;
@@ -109,11 +109,25 @@ cmd_start() {
       # Something is still running in that session (workers, or a shell of yours); only the
       # manager is gone. Bring it back where it was and leave the rest alone.
       info "the lead of '$SESSION' had exited; other panes are still running. Bringing the lead back."
-      branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
-      new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
-      meta_put lead_model "$model"
+      # The record is only rewritten when another model was asked for, and it is put back
+      # if the restart fails: status must never describe a lead that does not exist.
+      previous=""
+      if [ "$(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || true)" != "$model" ]; then
+        previous="$(reg_get "$WOLFMUX_LEAD_ROLE" 2>/dev/null || true)"
+        previous_model="$(meta_get lead_model 2>/dev/null || true)"
+        branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
+        new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
+        meta_put lead_model "$model"
+      fi
       lock_release
-      if [ "$resume" -eq 1 ]; then cmd_restart "$WOLFMUX_LEAD_ROLE" --continue; else cmd_restart "$WOLFMUX_LEAD_ROLE"; fi
+      # In a subshell: a `die` in there ends only the attempt, not this command.
+      if ! (if [ "$resume" -eq 1 ]; then cmd_restart "$WOLFMUX_LEAD_ROLE" --continue; else cmd_restart "$WOLFMUX_LEAD_ROLE"; fi); then
+        if [ -n "$previous" ]; then
+          printf '%s\n' "$previous" | reg_put "$WOLFMUX_LEAD_ROLE"
+          meta_put lead_model "$previous_model"
+        fi
+        die "the lead could not be restarted; its record is as it was. Try: teamctl restart $WOLFMUX_LEAD_ROLE"
+      fi
       tm_set_splash "$SESSION"
       if [ "$attach" -eq 1 ] && [ -t 0 ] && [ -t 1 ]; then cmd_attach; fi
       return 0
