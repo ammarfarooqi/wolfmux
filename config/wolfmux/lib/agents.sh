@@ -67,13 +67,54 @@ new_record() {
     reg_put "$1"
 }
 
+# start_permitted — who is starting this team? You: always ("operator"). An agent: only a
+# lead, and only its own team or a team that does not exist yet (policy lead-teams of ITS
+# team, default on). Never a worker, never somebody else's existing team. Prints the
+# founder's Beads name; exit status 1 means refused.
+start_permitted() {
+  local role own exists allowed keep_team="$TEAM"
+  role="$(caller_role)"
+  if [ -z "$role" ]; then
+    printf 'operator\n'
+    return 0
+  fi
+  own="$(caller_team)"
+  own="${own:-$WOLFMUX_DEFAULT_TEAM}"
+  if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
+    warn "'teamctl start' is for you and for leads. You are '$(team_identity "$own" "$role")': ask your lead."
+    return 1
+  fi
+  if [ "$TEAM" != "$own" ]; then
+    exists=""
+    if [ -n "$(reg_list 2>/dev/null)" ] || tm_session_exists "$(session_name_for_project)" 2>/dev/null; then exists=1; fi
+    team_paths "$own"
+    allowed="$(policy_get lead-teams)"
+    team_paths "$keep_team"
+    if [ -n "$exists" ]; then
+      warn "team '$TEAM' already exists and has its own lead ($(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")). Message it; you do not manage it."
+      return 1
+    fi
+    if [ "$allowed" != "on" ]; then
+      warn "founding teams is switched off for your team (teamctl policy lead-teams). Ask the human."
+      return 1
+    fi
+  fi
+  team_identity "$own" "$role"
+}
+
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
-  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model=""
+  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" handover="" founder="operator"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-attach | -d) attach=0 ;;
       --continue) resume=1 ;;
+      --handover)
+        [ "$#" -ge 2 ] || die_usage "--handover needs the id of the bead that holds the handover"
+        valid_bead_id "$2" || die_usage "--handover: '$2' is not a bead id"
+        handover="$2"
+        shift
+        ;;
       --init-beads) beads="yes" ;;
       --skip-beads) beads="skip" ;;
       --lead-permissions | --worker-permissions | --worker-spawn)
@@ -97,7 +138,7 @@ cmd_start() {
   # start never guesses between teams: the one you name, else the first one.
   WOLFMUX_TEAM_ARG="${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
   load_project
-  require_manager start
+  founder="$(start_permitted)" || exit 77
   wt_require_commit
   ensure_state_dirs
   beads_ensure "$beads"
@@ -164,7 +205,8 @@ cmd_start() {
   fi
 
   branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
-  new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
+  new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 "$founder"
+  if [ -n "$handover" ]; then reg_set "$WOLFMUX_LEAD_ROLE" handover "$handover"; fi
   if [ "$resume" -eq 1 ]; then agent_command "$WOLFMUX_LEAD_ROLE" --continue; else agent_command "$WOLFMUX_LEAD_ROLE"; fi
   pane="$(tm_new_session "$SESSION" "$ROOT" "${AGENT_CMD[@]}")" || {
     reg_delete "$WOLFMUX_LEAD_ROLE"
@@ -182,6 +224,10 @@ cmd_start() {
   lock_release
   tm_set_splash "$SESSION"
   layout_apply
+  # A team that an agent founded is news for you.
+  if [ "$founder" != "operator" ]; then
+    (WOLFMUX_TEAM="$TEAM" notify_deliver "$WOLFMUX_LEAD_MARK $founder started team '$TEAM' ($MODEL_LABEL). Open it: teamctl attach --team $TEAM" >/dev/null 2>&1) || true
+  fi
 
   brand_banner
   say "team:          $TEAM   (session $SESSION, tmux socket $WOLFMUX_TMUX_SOCKET)"
@@ -310,6 +356,10 @@ build_role_prompt() {
   else
     printf -- '- Team policy: %s. Change it with `teamctl policy`.\n' "$(policy_summary)"
   fi
+  printf -- '- Other teams of this project share this Beads database (list them: `teamctl teams`). Reach another team through its lead: -a <team>.lead (the first team'"'"'s lead is plain "lead"). Their tasks are theirs; hand work across with a message.\n'
+  if [ "$kind" = "lead" ] && [ "$(policy_get lead-teams)" = "on" ]; then
+    printf -- '- You may found a further team and hand work over to it: write the handover as a Beads message or task first, then `teamctl start <model> --team <new-name> --no-attach --handover <bead-id>`. The human is told. You do not manage that team afterwards; its lead does.\n'
+  fi
   printf -- '- Your permission mode: %s\n\n' "$(reg_field "$role" permissions)"
   printf 'The %s section of the protocol below is binding for you.\n\n---\n\n' "$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')"
   if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ] && [ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ]; then
@@ -326,6 +376,16 @@ build_role_prompt() {
 
 kickoff_text() {
   printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `git log --oneline -5` in your worktree and continue it, do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$(team_identity "$TEAM" "$1")"
+}
+
+# handover_text — what the lead of a team founded by another lead is started with
+handover_text() {
+  local me bead founder
+  me="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
+  bead="$(reg_field "$WOLFMUX_LEAD_ROLE" handover)"
+  founder="$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by)"
+  printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `bd show %s`. Then check your inbox: `bd list --assignee %s --status open,in_progress,blocked --include-infra`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s through Beads (-a %s) when the handover asks for it.' \
+    "$TEAM" "$founder" "$bead" "$me" "$founder" "$founder"
 }
 
 # cmd_prompt <role> — internal (`teamctl _prompt`): the session context an agent is started with
@@ -442,6 +502,11 @@ $prompt
       fi
       ;;
   esac
+  # The lead of a team that another lead founded starts with its handover (both CLIs take
+  # the first prompt as the last argument). Not on --continue: that conversation has it.
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && [ "$resume" -eq 0 ] && [ -n "$(reg_field "$role" handover)" ]; then
+    args+=("$(handover_text)")
+  fi
   exec "$launcher" "${args[@]}"
 }
 
@@ -645,20 +710,152 @@ _destroy_worker_artifacts() {
   fi
 }
 
+# human_size <kilobytes>
+human_size() {
+  awk -v kb="${1:-0}" 'BEGIN { if (kb >= 1048576) printf "%.1f GB\n", kb / 1048576; else if (kb >= 1024) printf "%.0f MB\n", kb / 1024; else printf "%d KB\n", kb }'
+}
+
+# disk_kb <path>... — kilobytes on disk, 0 for what is not there
+disk_kb() {
+  local total=0 path size
+  for path in "$@"; do
+    [ -e "$path" ] || continue
+    size="$(du -sk "$path" 2>/dev/null | awk '{ print $1 }')"
+    total=$((total + ${size:-0}))
+  done
+  printf '%s\n' "$total"
+}
+
+# transcripts_dir <worktree> — where Claude Code keeps the conversations of an agent that ran
+# there: a folder named after the path, every other character turned into "-"
+transcripts_dir() {
+  local base="${WOLFMUX_CLAUDE_PROJECTS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" real
+  real="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "$base" "$(printf '%s' "$real" | LC_ALL=C sed 's|[^A-Za-z0-9]|-|g')"
+}
+
+# _purge_report — what deleting this team means, worker by worker. Sets PURGE_AT_RISK (roles
+# that hold work which exists nowhere else) and PURGE_KB.
+_purge_report() {
+  local role path branch dirty unmerged kb notes tdir alive
+  PURGE_AT_RISK=""
+  PURGE_KB=0
+  alive=0
+  if tm_session_exists "$SESSION"; then alive="$(tm_alive_count "$SESSION")"; fi
+  say "team '$TEAM' of $(short_path "$ROOT")   ·   session $SESSION ($alive running)"
+  say ""
+  for role in $(reg_list); do
+    [ "$(reg_field "$role" kind)" = "worker" ] || continue
+    path="$(reg_field "$role" workdir)"
+    branch="$(reg_field "$role" branch)"
+    dirty="$(wt_dirty_count "$path")"
+    unmerged=0
+    if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
+    kb="$(disk_kb "$path")"
+    tdir="$(transcripts_dir "$path" 2>/dev/null || true)"
+    if [ "$PURGE_TRANSCRIPTS" -eq 1 ] && [ -n "$tdir" ]; then kb=$((kb + $(disk_kb "$tdir"))); fi
+    PURGE_KB=$((PURGE_KB + kb))
+    notes="nothing to lose"
+    if [ "$dirty" != "0" ] || [ "$unmerged" != "0" ]; then
+      PURGE_AT_RISK="$PURGE_AT_RISK $role"
+      notes="HOLDS WORK THAT EXISTS NOWHERE ELSE"
+    fi
+    printf '  %s %-18s %9s   %s\n' "$WOLFMUX_WORKER_MARK" "$role" "$(human_size "$kb")" "$notes"
+    printf '        %s   (branch %s)\n' "$(short_path "$path")" "$branch"
+    if [ "$unmerged" != "0" ]; then
+      printf '        %s commit%s that your current branch does not have:\n' "$unmerged" "$([ "$unmerged" = "1" ] || printf s)"
+      gitr log --format='          %h %s' "HEAD..$branch" | head -10
+    fi
+    if [ "$dirty" != "0" ]; then
+      printf '        %s uncommitted file%s:\n' "$dirty" "$([ "$dirty" = "1" ] || printf s)"
+      "$GIT_BIN" -C "$path" status --short | head -15 | sed 's/^/          /'
+    fi
+  done
+  kb="$(disk_kb "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json")"
+  PURGE_KB=$((PURGE_KB + kb))
+  printf '  %-21s %9s   records, approvals, event log\n' "teamctl's state" "$(human_size "$kb")"
+  say ""
+  printf '  %-21s %9s   is what this frees%s\n' "total" "$(human_size "$PURGE_KB")" "$([ "$PURGE_TRANSCRIPTS" -eq 1 ] && printf ' (worktrees, and the agents'"'"' Claude Code transcripts)' || printf ' (transcripts are kept)')"
+  say "  Not touched: your checkout and its branch, every branch that is not ai/…, Beads, other teams."
+}
+
+# _purge_team — the deleting itself. Every path comes from a record, so every path is checked.
+_purge_team() {
+  local role path branch tdir
+  if tm_session_exists "$SESSION"; then
+    tmx kill-session -t "=$SESSION" 2>/dev/null || true
+    say "tmux session $SESSION terminated."
+  fi
+  for role in $(reg_list); do
+    if [ "$(reg_field "$role" kind)" = "worker" ]; then
+      path="$(reg_field "$role" workdir)"
+      branch="$(reg_field "$role" branch)"
+      if [ -d "$path" ]; then
+        if _inside_worktrees "$path"; then
+          tdir="$(transcripts_dir "$path" 2>/dev/null || true)"
+          gitr worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"
+          if [ "$PURGE_TRANSCRIPTS" -eq 1 ] && [ -n "$tdir" ] && [ -d "$tdir" ]; then /bin/rm -rf "$tdir"; fi
+        else
+          warn "$role: its record points outside $(short_path "$WORKTREES_DIR") ($(short_path "$path")); that directory was left alone"
+        fi
+      fi
+      case "$branch" in
+        ai/*)
+          if wt_branch_exists "$branch" && [ "$branch" != "$(gitr symbolic-ref --short -q HEAD || true)" ]; then
+            gitr branch -D "$branch" >/dev/null 2>&1 || warn "could not delete branch $branch"
+          fi
+          ;;
+      esac
+    fi
+    reg_delete "$role"
+  done
+  gitr worktree prune
+  # The first team's directory is also the parent of the named teams: take its files, never teams/.
+  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge"
+  /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json"
+  /bin/rmdir "$WORKTREES_DIR" 2>/dev/null || true
+}
+
 cmd_destroy() {
-  local remove_worktrees=0 assume_yes=0 role
+  local remove_worktrees=0 assume_yes=0 purge=0 force=0 role
+  PURGE_TRANSCRIPTS=1
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --worktrees) remove_worktrees=1 ;;
+      --purge) purge=1 ;;
+      --force) force=1 ;;
+      --keep-transcripts) PURGE_TRANSCRIPTS=0 ;;
       --yes | -y) assume_yes=1 ;;
-      *) die_usage "usage: teamctl destroy [--worktrees] [--yes]" ;;
+      *) die_usage "usage: teamctl destroy [--worktrees | --purge [--force] [--keep-transcripts]] [--yes]" ;;
     esac
     shift
   done
+  [ "$force" -eq 0 ] || [ "$purge" -eq 1 ] || die_usage "--force belongs to --purge (destroy alone never discards work)"
   require_tools
   load_project
   require_manager destroy
   SESSION="$(session_name_for_project)"
+  if [ "$purge" -eq 1 ]; then
+    # Look first, ask, and only then touch anything: a refusal leaves the team running.
+    say "DELETE a whole team: its session, every worker's worktree and ai/ branch, its records."
+    _purge_report
+    if [ -n "$PURGE_AT_RISK" ] && [ "$force" -ne 1 ]; then
+      say ""
+      say "Keep that work first: commit in the worktree, then git merge <branch>.  Or delete it anyway: add --force"
+      confirm "Delete team '$TEAM' INCLUDING the uncommitted and unmerged work of:$PURGE_AT_RISK ?" ||
+        die "nothing was deleted; team '$TEAM' is untouched."
+    elif [ "$force" -ne 1 ] && [ "$assume_yes" -ne 1 ]; then
+      confirm "Delete team '$TEAM'?" || die "nothing was deleted (pass --yes to skip this question)"
+    fi
+    ensure_state_dirs
+    lock_acquire
+    _purge_team
+    lock_release
+    if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then /bin/rmdir "$STATE_DIR" 2>/dev/null || true; fi # only when empty
+    say "team '$TEAM' is gone. Freed about $(human_size "$PURGE_KB")."
+    say "(commits of the deleted ai/ branches leave .git when git next collects garbage; now: git gc --prune=now)"
+    return 0
+  fi
   say "About to stop every agent of this project's team ($SESSION)."
   say "Kept in all cases: your source files, every commit, unmerged branches, credentials, Beads data."
   if [ "$remove_worktrees" -eq 1 ]; then

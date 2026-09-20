@@ -151,6 +151,18 @@ With one team you never type `--team`. `teamctl start <model>` while the first t
 under another model does not open that team; it shows you both commands. All teams share
 the project's Beads; agents of a named team are `<team>.<role>` there.
 
+## Deleting a team
+
+```bash
+teamctl teams                              # DISK shows what each team takes
+teamctl destroy --team review --purge      # shows what would be lost, asks, then deletes the whole team
+teamctl destroy --team review --purge --force    # …even with uncommitted or unmerged work
+```
+
+A worker costs a checkout of your tracked files plus whatever it installs or builds; the
+lead costs nothing. Purge removes the session, every worktree, the team's `ai/…` branches,
+records and transcripts; never your checkout, other branches, Beads or other teams.
+
 ## The wolf, and notifications
 
 - Arrangement: the lead is the large pane on the left, teammates are stacked on the right,

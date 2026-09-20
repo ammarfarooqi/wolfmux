@@ -28,6 +28,9 @@
 # Keep every worker inside its own worktree and on its own branch: tool calls that reach
 # outside are refused with a reason (a guard against mistakes, not a sandbox).
 #WOLFMUX_WORKER_ISOLATION=on
+# May a lead found further teams (teamctl start <model> --team <new> --handover <bead>)?
+# You are notified every time one does.
+#WOLFMUX_LEAD_TEAMS=on
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
 

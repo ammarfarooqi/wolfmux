@@ -52,10 +52,10 @@ _status_team_json() {
   if tm_session_exists "$SESSION"; then SESSION_LIVE=1; fi
   _status_rows | "$JQ_BIN" -s --arg team "$TEAM" --arg root "$ROOT" --arg session "$SESSION" \
     --arg running "${SESSION_LIVE:-0}" --arg lp "$(policy_get lead-permissions)" \
-    --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" \
+    --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
-      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi},
+      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt},
       approvals_pending: ($pending | tonumber), agents: .}'
 }
 
@@ -128,10 +128,10 @@ cmd_status() {
 
 # teamctl teams — the short list
 cmd_teams() {
-  local team lead state count
+  local team lead state count role kb
   require_tools
   load_project any
-  printf '%-16s %-12s %-16s %-7s %s\n' TEAM STATE LEAD AGENTS SESSION
+  printf '%-16s %-12s %-16s %-7s %-8s %s\n' TEAM STATE LEAD AGENTS DISK SESSION
   for team in $(team_list); do
     team_paths "$team"
     SESSION="$(session_name_for_project)"
@@ -144,7 +144,12 @@ cmd_teams() {
     fi
     lead="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
     count="$(reg_list | wc -l | tr -d ' ')"
-    printf '%-16s %-12s %-16s %-7s %s\n' "$team" "$state" "${lead:--}" "$count" "$SESSION"
+    # worktrees of this team's workers (the lead works in your own checkout and adds nothing)
+    kb=0
+    for role in $(reg_list); do
+      if [ "$(reg_field "$role" kind)" = "worker" ]; then kb=$((kb + $(disk_kb "$(reg_field "$role" workdir)"))); fi
+    done
+    printf '%-16s %-12s %-16s %-7s %-8s %s\n' "$team" "$state" "${lead:--}" "$count" "$(human_size "$kb")" "$SESSION"
   done
 }
 

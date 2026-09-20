@@ -192,7 +192,7 @@ cmd_open_team() {
 
 # cmd_notify — internal (`teamctl _notify`): Stop hook, JSON on stdin
 cmd_notify() {
-  local input role who body tty sent=0 osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}"
+  local input role who body
   if [ "${1:-}" = "--codex" ]; then
     # Codex: `notify` program, JSON as the last argument, "last-assistant-message"
     input="$(printf '%s' "${2:-}" | "$JQ_BIN" -c '{last_assistant_message: (.["last-assistant-message"] // "")}' 2>/dev/null || true)"
@@ -207,6 +207,13 @@ cmd_notify() {
   body="$who: $(notify_text "$input")"
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then body="$WOLFMUX_LEAD_MARK $body"; else body="$WOLFMUX_WORKER_MARK $body"; fi
 
+  notify_deliver "$body"
+  return 0
+}
+
+# notify_deliver <body> — the attached terminal, else Wolfmux.app, else osascript
+notify_deliver() {
+  local body="$1" tty sent=0 osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}"
   notify_remember_project
   while IFS= read -r tty; do
     # One short write, so it cannot land inside one of tmux's own sequences.

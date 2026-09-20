@@ -84,6 +84,45 @@ teamctl destroy --team review --worktrees
 | Beads | all teams share the project's Beads. The first team's agents are `lead`, `backend`, …; a named team's are `review.lead`, `review.backend`. Hand work across teams with `-a review.lead` |
 | management | a lead manages its own team only; you manage all |
 
+## Deleting a team, and what a team costs
+
+| What | Disk |
+|------|------|
+| each worker | a checkout of your tracked files, plus whatever it installs or builds inside (`node_modules`, `.venv`, build output). `.git` is shared, never copied |
+| the lead | nothing: it works in your own checkout |
+| teamctl's records | a few KB per team |
+| the agents' Claude Code transcripts | some MB, under `~/.claude/projects/` |
+| tmux | memory only (scrollback) |
+
+`teamctl teams` shows DISK per team.
+
+```bash
+teamctl destroy --team review --purge      # look, ask, then delete the whole team
+```
+
+It prints every worker with its size, its uncommitted files and the commits your branch
+does not have, and the total it frees, and has touched nothing at that point. If work
+would be lost you are asked with that list in front of you; `--force` deletes anyway; with
+nobody to ask and no `--force` it refuses and the team keeps running. Gone afterwards:
+the session, every worktree, the team's `ai/…` branches, its records, the transcripts
+(`--keep-transcripts` keeps those). Never touched: your checkout, other branches, Beads,
+other teams.
+
+## Teams working together
+
+All teams of a project share its Beads, so they can talk: `-a review.lead` reaches the lead
+of team review, a plain `-a lead` the first team's. A lead can also found a team and hand
+work over, without you relaying anything:
+
+```bash
+bd create "Handover: payments" -t message -a next.lead --body-file handover.md    # → id shop-41
+teamctl start fable --team next --no-attach --handover shop-41
+```
+
+The new lead starts by reading that bead, you get a notification, and the founder does not
+manage the new team. `teamctl policy lead-teams off` keeps founding teams to yourself. A
+lead can never take over a team that already has a lead; a worker can never found one.
+
 ## teamctl
 
 | Command | Does |

@@ -22,6 +22,7 @@ export WOLFMUX_LAUNCHER_GLM53="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_FLASH="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_OPUS="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_SONNET="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_HAIKU="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_CLAUDE="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_CODEX="$REPO/tests/stub-agent" # for claude:<id> / codex:<id>
+export WOLFMUX_CLAUDE_PROJECTS="$WORK/claude-projects" # where a purge looks for the agents' transcripts
 export ECC_DISABLED_HOOKS="post:example" # a hook the user already disables; teamctl must keep it
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
 teamctl() { "$REPO/bin/teamctl" "$@"; }
@@ -229,7 +230,7 @@ teamctl restart qa >/dev/null 2>&1
 sleep 2
 
 echo "== one manager, permissions, spawning"
-check "policy: defaults are skip / skip / worker spawning off / worker isolation on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\"}"'
+check "policy: defaults are skip / skip / worker spawning off / worker isolation on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", lead_teams: \"on\"}"'
 check "permissions: lead and workers start in their CLI's bypass mode" 'teamctl capture lead -n 8 | grep -q "flags=--dangerously-bypass-approvals-and-sandbox" && teamctl capture backend -n 8 | grep -q "flags=--dangerously-skip-permissions"'
 check "hierarchy: the CLI's own agent-teams feature is switched off inside workers" 'teamctl capture backend -n 8 | grep -q "settings={\"teams\":\"0\",\"mode\":\"in-process\",\"hook\":false}"'
 check "hierarchy: the lead's own settings are left alone" 'teamctl capture lead -n 8 | grep -q "settings=none"'
@@ -377,9 +378,46 @@ if [ "$HAVE_BD" -eq 1 ]; then
   BEADS_ACTOR=review.backend TEAM_ROLE=backend WOLFMUX_TEAM=review bd create "Review ready" -t message -a review.lead -d "see branch" --silent >/dev/null 2>&1
   sleep 3
   check "teams: Beads messages reach the lead of the right team" 'teamctl capture lead --team review -n 12 | grep -q "Beads update for review.lead" && ! teamctl capture lead --team default -n 12 | grep -q "review.lead"'
+  sleep 4
+  BEADS_ACTOR=lead TEAM_ROLE=lead WOLFMUX_TEAM=default bd create "Need a second opinion" -t message -a review.lead -d "from the first team" --silent >/dev/null 2>&1
+  sleep 4
+  BEADS_ACTOR=review.lead TEAM_ROLE=lead WOLFMUX_TEAM=review bd create "Opinion attached" -t message -a lead -d "from team review" --silent >/dev/null 2>&1
+  sleep 3
+  check "teams: teams talk to each other through Beads, in both directions" '[ "$(teamctl capture lead --team review --all | grep -c "Beads update for review.lead")" -ge 2 ] && teamctl capture lead --team default --all | grep -q "Beads update for lead "'
 fi
+check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "-a <team>.lead"'
+as_lead() { TEAM_ROLE=lead WOLFMUX_TEAM=default WOLFMUX_NOTIFY_TTY="$WORK/tty-newteam" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" "$@"; }
+check "teams: a lead can found a fresh team and hand work over to it" 'as_lead start fable --team fresh --no-attach --skip-beads --handover abc-77 && sleep 2 && teamctl status --json --team fresh | jq -e ".session_running and .agents[0].spawned_by == \"lead\"" && teamctl capture lead --team fresh --all | grep -q "STUB lastarg=.*abc-77"'
+check "teams: you are told when an agent founds a team" 'grep -q "started team .fresh." "$WORK/tty-newteam"'
+check "teams: a lead cannot take over a team that already has a lead, and a worker cannot found one (exit 77)" 'as_lead start fable --team review --no-attach --skip-beads; [ $? -eq 77 ] && { TEAM_ROLE=backend WOLFMUX_TEAM=default "$REPO/bin/teamctl" start fable --team sneaky --no-attach --skip-beads; [ $? -eq 77 ]; } && ! teamctl teams | grep -q "^sneaky "'
+teamctl policy lead-teams off --team default >/dev/null 2>&1
+check "teams: teamctl policy lead-teams off keeps founding teams to you" 'as_lead start fable --team another --no-attach --skip-beads; [ $? -eq 77 ] && ! teamctl teams | grep -q "^another "'
+teamctl policy lead-teams on --team default >/dev/null 2>&1
+teamctl destroy --team fresh --purge --yes >/dev/null 2>&1
+echo "== deleting a whole team (destroy --purge)"
+teamctl start fable --team scrap --no-attach --skip-beads >/dev/null 2>&1
+teamctl spawn tidy flash --team scrap --no-kickoff >/dev/null 2>&1
+teamctl spawn busy glm53 --team scrap --no-kickoff >/dev/null 2>&1
+sleep 2
+BUSY_TREE="$(teamctl status --json --team scrap | jq -r '.agents[] | select(.role == "busy") | .workdir')"
+TIDY_TREE="$(teamctl status --json --team scrap | jq -r '.agents[] | select(.role == "tidy") | .workdir')"
+echo "half done" >"$BUSY_TREE/draft.txt"
+echo "committed" >"$BUSY_TREE/kept.txt"
+(cd "$BUSY_TREE" && git add kept.txt && git -c user.name=busy -c user.email=b@example.invalid commit -qm "feat: only on this branch")
+transcripts_of() { printf '%s/%s\n' "$WOLFMUX_CLAUDE_PROJECTS" "$(cd "$1" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"; }
+/bin/mkdir -p "$(transcripts_of "$BUSY_TREE")" "$(transcripts_of "$TIDY_TREE")" "$WOLFMUX_CLAUDE_PROJECTS/-somebody-elses-project"
+echo '{"turn":1}' >"$(transcripts_of "$BUSY_TREE")/session.jsonl"
+SCRAP_STATE="$(ls -d "$WOLFMUX_DATA"/state/*/teams/scrap)"
+BUSY_TRANSCRIPTS="$(transcripts_of "$BUSY_TREE")"
+check "purge: a worker may not delete a team (exit 77)" 'TEAM_ROLE=busy WOLFMUX_TEAM=scrap teamctl destroy --purge --force; [ $? -eq 77 ] && [ -d "$BUSY_TREE" ]'
+check "purge: work that exists nowhere else is listed, and without an answer nothing at all is touched" 'out="$(teamctl destroy --team scrap --purge 2>&1 </dev/null)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "draft.txt" && printf "%s" "$out" | grep -q "feat: only on this branch" && printf "%s" "$out" | grep -q -- "--force" && [ -d "$BUSY_TREE" ] && tmux -L "$WOLFMUX_TMUX_SOCKET" has-session -t "=$FIRST_SESSION-scrap" && teamctl status --json --team scrap | jq -e "[.agents[] | select(.state == \"running\")] | length == 3"'
+check "purge: it says how much space the team takes" 'teamctl destroy --team scrap --purge 2>&1 </dev/null | grep -Eq "total +[0-9.]+ ?(KB|MB|GB)"'
+check "purge --force: session, worktrees, ai/ branches, records and transcripts of that team are gone" 'teamctl destroy --team scrap --purge --force && ! tmux -L "$WOLFMUX_TMUX_SOCKET" has-session -t "=$FIRST_SESSION-scrap" 2>/dev/null && [ ! -e "$BUSY_TREE" ] && [ ! -e "$TIDY_TREE" ] && [ -z "$(git branch --list "ai/scrap/*")" ] && [ ! -e "$SCRAP_STATE" ] && [ ! -e "$BUSY_TRANSCRIPTS" ] && [ -d "$WOLFMUX_CLAUDE_PROJECTS" ] && ! git worktree list | grep -q "/scrap/"'
+check "purge: nothing else is touched — other teams, their branches, your checkout, other transcripts" 'teamctl status --json --team review | jq -e ".session_running" && teamctl status --json --team default | jq -e ".session_running" && [ -n "$(git branch --list "ai/review/*")" ] && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && [ -d "$WOLFMUX_CLAUDE_PROJECTS/-somebody-elses-project" ] && ! teamctl teams | grep -q "^scrap "'
+check "purge: with nothing at risk it still wants a yes when nobody can be asked" 'teamctl start fable --team scrap2 --no-attach --skip-beads && ! teamctl destroy --team scrap2 --purge </dev/null && teamctl destroy --team scrap2 --purge --yes && ! teamctl teams | grep -q "^scrap2 "'
+check "teams: the short list shows what each team takes on disk" 'teamctl teams | head -1 | grep -q "DISK" && teamctl teams | grep -Eq "^review .*[0-9] ?(KB|MB|GB)"'
 check "teams: destroy ends one team and leaves the other alone" 'teamctl destroy --team review --worktrees --yes && [ "$(sessions)" = "$FIRST_SESSION " ] && teamctl status --json | jq -e ".team == \"default\" and .session_running"'
-teamctl destroy --worktrees --yes >/dev/null 2>&1
+check "purge: deleting the first team leaves the named teams' state alone" 'teamctl start fable --team keeper --no-attach --skip-beads && teamctl destroy --team default --purge --force && [ -d "$(ls -d "$WOLFMUX_DATA"/state/*/teams/keeper)" ] && teamctl status --json --team keeper | jq -e ".session_running" && teamctl destroy --team keeper --purge --yes'
 /bin/mkdir -p "$PROJECT/.beads/hooks"
 printf '#!/bin/bash\n# ai-team-hook v1 — written before the rename\nexit 0\n' >"$PROJECT/.beads/hooks/on_create"
 printf '#!/bin/bash\n# somebody else wrote this\nexit 0\n' >"$PROJECT/.beads/hooks/on_close"

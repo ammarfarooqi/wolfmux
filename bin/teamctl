@@ -28,6 +28,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Teams  a project can have several: add --team <name> to any command (before or after it).
          With one team you never need it. teamctl status shows them all; teamctl teams is the short list.
     teamctl start fable --team review               a second team, named by you, with its own session
+    teamctl start fable --team next --handover <bead-id>    (a lead may do this too) the new lead starts by reading that bead
   Lead  (the only manager of its team; start/stop/restart/destroy/policy/approve are reserved for it and for you)
     teamctl start <fable|astra|any model> [--no-attach] [--continue] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
@@ -56,7 +57,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl diff <role> [--stat|--names|--commits|--working]
   Housekeeping
     teamctl doctor                                    provider / billing isolation report
-    teamctl destroy [--worktrees] [--yes]
+    teamctl destroy [--worktrees] [--yes]             end the team; --worktrees also removes workers that hold nothing
+    teamctl destroy --purge [--force] [--yes]         DELETE the team: session, every worktree, ai/ branches, records,
+                                                      transcripts. Lists uncommitted and unmerged work and asks first;
+                                                      --force deletes it anyway. teamctl teams shows what a team takes on disk
     teamctl version | help
 
   Tasks and messages are Beads, not teamctl:

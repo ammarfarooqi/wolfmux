@@ -249,6 +249,24 @@ on `main` before merging and installed only from `main`.
 
 `tests/smoke.sh`: 120 → 139 (15 for teams, 4 from the other session's audit fixes, merged here).
 
+## 20. Deleting a team; teams that talk and found teams
+
+Asked: what does a team cost on disk, and can one command give it back? Measured on the
+owner's project first (a worker = one 99 MB checkout, more only if it installs or builds;
+the lead nothing; records KBs; transcripts 17 MB), then built `destroy --purge`
+([ADR-0019](adr/0019-deleting-a-team-and-founding-one.md)): report, ask, delete. A test
+bug worth remembering: the check computed the transcript folder from the worktree's path
+*after* the purge had deleted the worktree, got the parent folder, and "failed" on a
+directory that was rightly still there.
+
+Asked in the same breath: do teams talk, and can a lead found a team and hand over? The
+first already worked through the shared Beads (now tested in both directions, and every
+agent is told how). The second did not: `start` was reserved for the human. A lead may now
+found a team that does not exist yet, with `--handover <bead-id>` as the new lead's first
+words; you are notified; `lead-teams off` switches it off.
+
+`tests/smoke.sh` gained 14 checks for this.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
