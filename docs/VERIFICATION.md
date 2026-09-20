@@ -7,7 +7,7 @@ their first screen; everything else used stub agents or a localhost mock.
 
 ```bash
 tests/smoke.sh                 # 2 to 4 minutes, 177 checks, isolated from any running team
-tests/providers.sh             # the provider table, 114 checks
+tests/providers.sh             # the provider table, 116 checks
 tests/docs.sh                  # ~2 seconds, 28 checks, starts nothing
 tests/migration.sh             # ~30 seconds, 24 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME

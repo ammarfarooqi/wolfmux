@@ -61,12 +61,19 @@ CLAUDE_CODE_EXTRA_BODY
 CLAUDE_CODE_MAX_CONTEXT_TOKENS
 CLAUDE_CODE_AUTO_COMPACT_WINDOW
 CLAUDE_CODE_API_KEY_HELPER_TTL_MS
-CLAUDE_CODE_EFFORT_LEVEL
 "
 
 # Prefixes swept after the explicit list, so a variable added by a future CLI
 # release is still removed.
 WOLFMUX_CLAUDE_PROVIDER_PREFIXES="ANTHROPIC_ CLAUDE_CODE_USE_"
+
+# Settings of the Claude subscription that mean nothing at a third-party endpoint and
+# would be sent to it as if they did. Only the third-party launcher scrubs them:
+# claude-fable runs the owner's own subscription, where the owner's effort level is
+# the owner's to set, so it is not on the list above.
+WOLFMUX_CLAUDE_THIRD_PARTY_VARS="
+CLAUDE_CODE_EFFORT_LEVEL
+"
 
 # Set by Claude Code inside the subprocesses it spawns. A launcher started from an
 # agent's shell (or from a tmux server that an agent started) must not inherit
@@ -155,9 +162,11 @@ wolfmux_list_set_vars() {
   } | sort -u
 }
 
+# wolfmux_scrub_claude_env [<extra newline list>] — the extra list is scrubbed on top of
+# the shared one (the third-party launcher passes WOLFMUX_CLAUDE_THIRD_PARTY_VARS).
 wolfmux_scrub_claude_env() {
-  local name
-  for name in $(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES"); do
+  local name extra="${1:-}"
+  for name in $(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS $extra" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES"); do
     unset "$name"
   done
   for name in $WOLFMUX_CLAUDE_SESSION_VARS; do

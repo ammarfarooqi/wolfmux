@@ -132,7 +132,8 @@ neither `WOLFMUX_METERED` exported into the environment, nor a redirected `HOME`
 `WOLFMUX_HOME`, opens it. Like the worktree guard ([ADR-0016](adr/0016-worktree-guard.md))
 it is a guard against accident and casual override, not a sandbox: every agent runs as
 your macOS user, so a process that edits `~/.config/wolfmux/config` or a launcher can
-open it. Workers are kept away from that file by the worktree guard; a lead is not.
+open it. The worktree guard refuses a worker's `Edit` and `Write` on that file, but not a shell
+command the worker runs, and a lead is not guarded at all.
 Two details worth knowing: a pane that refuses at the launcher (exit 78) shows the reason
 in its own pane, and `teamctl restart` of a metered agent is gated in the launcher, not
 in teamctl.

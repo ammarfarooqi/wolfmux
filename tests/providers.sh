@@ -234,8 +234,14 @@ check "wolfmux_metered_on takes no argument and no override: redirection cannot 
 check "the launcher asks wolfmux_metered_on, and parses no config file of its own" \
   '[ "$(LC_ALL=C /usr/bin/grep -c "wolfmux_metered_on" "$REPO/bin/claude-glm")" -ge 1 ] &&
    ! LC_ALL=C /usr/bin/grep -q "WOLFMUX_METERED:-" "$REPO/bin/claude-glm"'
-check "CLAUDE_CODE_EFFORT_LEVEL is scrubbed, so a Claude-subscription child never inherits it" \
-  'case "$WOLFMUX_CLAUDE_PROVIDER_VARS" in *CLAUDE_CODE_EFFORT_LEVEL*) ;; *) exit 1 ;; esac'
+check "CLAUDE_CODE_EFFORT_LEVEL is the subscription's own: scrubbed for a third party, kept for claude-fable" \
+  'case "$WOLFMUX_CLAUDE_THIRD_PARTY_VARS" in *CLAUDE_CODE_EFFORT_LEVEL*) ;; *) exit 1 ;; esac
+   case "$WOLFMUX_CLAUDE_PROVIDER_VARS" in *CLAUDE_CODE_EFFORT_LEVEL*) exit 1 ;; esac
+   F="$(env "${CLEAN[@]}" WOLFMUX_DRY_RUN=1 CLAUDE_CODE_EFFORT_LEVEL=owners-effort "$REPO/bin/claude-fable" 2>&1)"
+   case "$F" in *CLAUDE_CODE_EFFORT_LEVEL*) exit 1 ;; esac
+   case "$F" in *"scrubbed vars:"*) ;; *) exit 1 ;; esac
+   K="$(dry claude-kimi CLAUDE_CODE_EFFORT_LEVEL=owners-effort)"
+   case "$K" in *"scrubbed vars:"*CLAUDE_CODE_EFFORT_LEVEL*) ;; *) exit 1 ;; esac'
 
 echo
 echo "== the launcher, for every provider in the table"

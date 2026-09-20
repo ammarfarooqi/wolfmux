@@ -98,8 +98,9 @@ at their own terminal; no agent may switch it on.
   or `WOLFMUX_HOME` opens it. It is a guard against accident and casual override, not
   a sandbox: every agent runs as the macOS user, and a process that edits
   `~/.config/wolfmux/config` or a launcher can open it (the same class of wording as
-  the worktree guard, [ADR-0016](0016-worktree-guard.md)). Workers are kept from that
-  file by the worktree guard; a lead is not. `teamctl restart` of a metered agent is
+  the worktree guard, [ADR-0016](0016-worktree-guard.md)). The worktree guard refuses a worker's `Edit`
+  and `Write` on that file, but not a shell command the worker runs, and a lead is
+  not guarded at all; the metered refusal therefore names no line for an agent to add. `teamctl restart` of a metered agent is
   gated in the launcher, not in teamctl
 
 ## The table (researched 2026-09-20)

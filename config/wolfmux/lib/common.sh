@@ -210,6 +210,10 @@ unset _wm_provider
 require_metered_ok() {
   [ "$MODEL_BILLING" = "metered" ] || return 0
   wolfmux_metered_on && return 0
+  # An agent gets no recipe. The worktree guard refuses a worker's Edit and Write on the
+  # owner's config, but not a shell command it runs, and printing the exact line to put
+  # there is the nudge that turns a guard into a suggestion.
+  [ -z "${TEAM_ROLE:-}" ] || die "'$MODEL_KEY' is metered: every token is billed to a prepaid balance, not to a plan or a subscription, so it is off. Only the machine's owner switches it on, in the owner's own config file; an agent does not decide that. Ask the owner." 77
   die "'$MODEL_KEY' is metered: every token is billed to a prepaid balance, not to a plan or a subscription, so it is off. Only the owner switches it on (an agent does not decide that): put WOLFMUX_METERED=on in $(wolfmux_owner_config_label). An environment variable does not count." 77
 }
 

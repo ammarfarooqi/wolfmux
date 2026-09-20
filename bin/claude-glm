@@ -72,8 +72,8 @@ wolfmux_provider_info "$PROVIDER" || {
 }
 UP="$(printf '%s' "$PROVIDER" | tr '[:lower:]' '[:upper:]')"
 
-SCRUBBED="$(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
-wolfmux_scrub_claude_env
+SCRUBBED="$(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS $WOLFMUX_CLAUDE_THIRD_PARTY_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
+wolfmux_scrub_claude_env "$WOLFMUX_CLAUDE_THIRD_PARTY_VARS"
 
 CLAUDE_BIN="$(wolfmux_resolve_claude)" || {
   echo "$SELF: Claude Code CLI not found. Install: https://code.claude.com/docs/en/setup" >&2
