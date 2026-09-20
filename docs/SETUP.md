@@ -38,14 +38,17 @@ What it does, and nothing else:
 
 | Action | Detail |
 |--------|--------|
-| copies files | `bin/*` → `~/bin/`, `config/wolfmux/*` → `~/.config/wolfmux/` (a differing existing file is backed up first; `config` and `glm-worker-settings.json` are never overwritten) |
-| two symlinks | `~/bin/claude-glm-flash` → `claude-glm`; `~/bin/codex` → ChatGPT.app's CLI, only when no `codex` is on PATH |
+| copies files | `bin/*` → `~/bin/` (`teamctl`, `claude-fable`, `codex-astra`, `claude-glm`), `config/wolfmux/*` → `~/.config/wolfmux/` (a differing existing file is backed up first; `glm-worker-settings.json` is never overwritten; `config` is left alone once it holds one active line, and while it is still all comments it is replaced by the current template, so new settings show up in it) |
+| four symlinks | `~/bin/claude-glm-flash` → `claude-glm`; `~/bin/claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable`, which picks the model from the name it was started as |
+| `~/bin/codex` | only when no `codex` is on PATH: a small `sh` wrapper (one `exec` line) that starts ChatGPT.app's bundled CLI by its real path. Not a symlink: Codex looks for its helper programs next to the path it was started as, and through a symlink it could not run commands ("Code Mode is unavailable"). A symlink left by an earlier version is replaced |
+| builds `Wolfmux.app` | `~/.config/wolfmux/Wolfmux.app`, compiled with `osacompile` from `config/wolfmux/notifier/`, given the wolf icon and signed ad hoc. It owns the notifications of a team that is not open in a terminal which can show them itself (iTerm2, kitty, Ghostty, WezTerm), so that clicking one opens the team instead of Script Editor. Rebuilt only when its source changes. No network, no login item, nothing in `/Applications` |
 | `~/.zshrc` | appends one marked block that adds `~/bin` to the **end** of `PATH`, so nothing in it can shadow an existing tool |
 | `~/.claude/settings.json` | merges the rules in `claude/permissions.json`: allow `teamctl`, `bd`, `git status` and `git worktree list`; **ask** before `teamctl destroy`. Rules under `retired` (`git diff/log/show *`, tmux on the team server) are taken out again: a rule is a prefix match, and those also allowed `git log --output=<file>` and `tmux … \; run-shell …` in every Claude Code session |
 | `~/.codex/rules/wolfmux.rules` | a separate execpolicy file: `teamctl` and `bd` may run outside the Codex sandbox, `teamctl destroy` prompts. `default.rules` is not touched |
 
 Every edited file gets `<file>.backup-YYYYMMDD-HHMMSS`. Running it again changes
-nothing. Skip parts with `--no-path`, `--no-claude-permissions`, `--no-codex-rules`.
+nothing. Skip parts with `--no-path`, `--no-claude-permissions`, `--no-codex-rules`,
+`--no-notifier-app`.
 It never creates `~/.tmux.conf`, never edits CLAUDE.md or AGENTS.md, and never
 reads, asks for or writes a credential.
 
@@ -69,8 +72,13 @@ Open a new terminal (for the `PATH` change), then:
 ```bash
 teamctl doctor                  # expect no "!! WARNING !!" and no FAIL lines
 WOLFMUX_DRY_RUN=1 claude-glm    # shows endpoint, model, auth mode; starts nothing
-~/Documents/wolfmux/tests/smoke.sh   # 55 checks, isolated, no model calls (~2 minutes)
+~/Documents/wolfmux/tests/smoke.sh   # the whole lifecycle with stub agents: isolated, no model calls, 2 to 4 minutes
 ```
+
+macOS asks two things, once each: to allow notifications from **Wolfmux**, the first time
+an agent finishes while its team is not open in front of you; and to let Wolfmux control
+your terminal, the first time you click one (that is how a click opens the team). Allow
+both.
 
 Account-side switches no local tool can see — check them once:
 
@@ -83,7 +91,8 @@ Account-side switches no local tool can see — check them once:
 
 ```bash
 cd ~/code/your-project        # any git repository with at least one commit
-teamctl start fable           # offers the stealth Beads init on first use
+teamctl start fable           # offers the stealth Beads init on first use; any model key can lead
+teamctl spawn backend glm53   # then see the README's command list, or: teamctl help
 ```
 
 If GLM workers report an authentication error, set `WOLFMUX_GLM_AUTH_MODE=env` in

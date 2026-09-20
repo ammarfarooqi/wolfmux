@@ -13,6 +13,17 @@ pay-as-you-go path anywhere in this system.**
 
 ![Architecture: teamctl is the control plane, Beads the data plane, one hook connects them](docs/diagrams/architecture.svg)
 
+## What you get
+
+| | |
+|---|---|
+| **Any model in any seat** | Fable, Opus, Sonnet, Haiku, GPT-6 Astra, GLM-5.3 and GLM-5.3 Flash, as lead or as teammate, mixed freely in one team ([models](#models)) |
+| **Several teams per project** | the first is called `default`, every further one is named by you; each has its own session, lead and teammates; `teamctl status` shows them as a tree. Teams message each other through Beads, and a lead can found a fresh team and hand work over to it ([diagram](docs/diagrams/teams.svg)) |
+| **One worktree per teammate** | its own branch and checkout, outside your project. A guard refuses a teammate's tool calls that change your checkout, read another teammate's worktree, switch or delete branches, push to main or drive tmux (Claude Code teammates; Codex has no such hook) |
+| **You always find the manager** | the 🐺 lead is the amber pane on the left, 🐶 teammates are stacked on the right. A desktop notification tells you when an agent finishes, and clicking it opens the team |
+| **Nothing is lost by accident** | `stop` and `destroy` keep worktrees, branches and commits. `remove` refuses while a teammate holds uncommitted or unmerged work, and lists it. `destroy --purge` shows each worktree's size, that same list and the total it frees, and asks before it deletes |
+| **Subscriptions only** | every launcher first removes inherited API keys and endpoint overrides from its own process, then starts its CLI (`claude-glm` then sets the Z.ai endpoint, for that process only); `teamctl doctor` reports on it; the Z.ai key lives in the Keychain |
+
 ## Quick start
 
 ```bash
@@ -25,25 +36,104 @@ cd ~/code/your-project
 teamctl start fable                           # or: teamctl start astra
 teamctl spawn backend glm53
 teamctl spawn qa flash
-teamctl start fable --team review             # several teams per project, each named by you; teamctl status shows them all
+teamctl start fable --team review             # a further team in the same project, named by you; teamctl status shows them all
 teamctl spawn fe-review astra                 # any model can join any team (fable · opus · sonnet · haiku · astra · claude:<id> · codex:<id>)
 ```
 
 Then talk to the lead. It creates tasks and messages in Beads, spawns workers,
 reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 
+## Commands
+
+One command, `teamctl`, run inside your project. `teamctl help` prints this list;
+[docs/USAGE.md](docs/USAGE.md) walks through a full session. With several teams in one
+project, add `--team <name>` to any command (before or after it); with one team you never
+need it. Tasks and messages are not teamctl's: they are Beads
+([`bd` cheat sheet](docs/USAGE.md#beads-cheat-sheet)).
+
+**Teams**
+
+| Command | Does |
+|---------|------|
+| `teamctl start <model> [--team <name>] [--no-attach] [--continue]` | start a team with that model as its 🐺 lead, and open it. `--team` names a further team in the same project; `--continue` resumes the lead's last conversation; after the lead quit, the same command brings it back |
+| `teamctl start … [--init-beads\|--skip-beads] [--lead-permissions skip\|ask] [--worker-permissions skip\|lead\|ask] [--worker-spawn on\|off]` | `--init-beads` or `--skip-beads` answers the first start's question about Beads; the other three set the team's policy, at any start |
+| `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead. A lead may run this too; you are notified |
+| `teamctl status [--json]` (alias `workers`) | every team as a tree (one team with `--team`, or from inside a pane): 🐺 lead, 🐶 teammates, model, running or stopped, branch, commits ahead, uncommitted files |
+| `teamctl teams` | the short list: state, lead, number of agents, and the disk its teammates' worktrees take |
+| `teamctl attach` (alias `open`) | open the team in this terminal (`Ctrl-b d` leaves it running) |
+| `teamctl focus <role>` | jump to one pane |
+| `teamctl layout [lead-left\|lead-top\|tiled]` | how the panes are arranged; `lead-left` is the default |
+
+**Teammates**
+
+| Command | Does |
+|---------|------|
+| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads |
+| `teamctl stop <role>` | close its pane; worktree, branch and commits stay |
+| `teamctl restart <role> [--continue]` | start it again in the same worktree; `--continue` keeps its conversation |
+| `teamctl remove <role>… [--force] [--yes]` | take a stopped teammate off the books: worktree, branch, record. Refuses while it holds work that exists nowhere else, and lists it; `--force` discards it after one question |
+| `teamctl nudge <role>\|--all [--id <bead-id>] [--quiet]` | re-send the one-line notification into a pane. The Beads hook does this by itself |
+
+**Reviewing work**
+
+| Command | Does |
+|---------|------|
+| `teamctl diff <role> [--stat\|--names\|--commits\|--working]` | a teammate's changes since its base |
+| `teamctl worktrees` | branch, commits ahead and uncommitted files per teammate |
+| `teamctl capture <role> [-n\|--lines <count>] [--all]` | recent terminal output of a pane, for diagnosing a stuck agent |
+| `teamctl log <role>` | its full scrollback |
+| `teamctl panes` | what tmux reports per pane: command, pid, directory |
+
+**Policy and approvals**
+
+| Command | Does |
+|---------|------|
+| `teamctl policy [<key> <value>]` | show or set, per team: `lead-permissions` skip\|ask · `worker-permissions` skip\|lead\|ask · `worker-spawn` on\|off · `worker-isolation` on\|off (the worktree guard) · `lead-teams` on\|off (may the lead found teams) |
+| `teamctl approvals [--all]` | teammates' permission requests waiting for the lead (`worker-permissions lead`) |
+| `teamctl approve <id>…\|--all` | allow them |
+| `teamctl deny <id> "<reason>"` | refuse one, with the reason the teammate is shown |
+
+**Ending, deleting, checking**
+
+| Command | Does |
+|---------|------|
+| `teamctl destroy [--worktrees] [--yes]` | end the team. Every worktree is kept; `--worktrees` also removes teammates that hold nothing |
+| `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and give its disk space back: shows sizes and any uncommitted or unmerged work, asks, then removes the session, worktrees, `ai/…` branches, records and its teammates' Claude Code transcripts. `--force` deletes that work too. Never touched: your checkout, other branches, Beads, other teams, the lead's own conversations |
+| `teamctl doctor` | billing and credential isolation report: launchers, inherited keys, settings overrides, Keychain, logins |
+| `teamctl version` · `teamctl help` | |
+
+`start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
+are for you and for the team's lead; a teammate that tries them is refused (exit 77).
+
+### Models
+
+For `teamctl start` and `teamctl spawn`:
+
+| Key | Runs | Pays with |
+|-----|------|-----------|
+| `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan |
+| `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
+| `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
+| `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
+
+Behind the keys are launchers you can also run by hand: `claude-fable`, `claude-opus`,
+`claude-sonnet`, `claude-haiku`, `codex-astra`, `claude-glm`, `claude-glm-flash`. Each one
+first removes every inherited API key and endpoint override from its own process;
+`claude-glm` then sets the Z.ai endpoint and model ids, for that process only. Plain
+`claude` and `codex` keep their login, endpoint and model: nothing global points anywhere.
+
 ## What is in this repository
 
 | Path | What |
 |------|------|
-| `bin/` | `teamctl` and the three launchers (`claude-glm-flash` is a symlink the installer creates) |
+| `bin/` | `teamctl` and the three launchers (`claude-glm-flash`, `claude-opus`, `claude-sonnet` and `claude-haiku` are symlinks the installer creates) |
 | `config/wolfmux/notifier/` | source and icon of `Wolfmux.app`, the application `install.sh` builds so that clicking a notification opens the team |
 | `config/wolfmux/` | everything installed to `~/.config/wolfmux/`: `lib/*.sh`, the Beads hook, the team tmux config, the agent protocol, the user manual, launcher settings |
 | `claude/permissions.json` | the narrow allow/ask rules merged into `~/.claude/settings.json` |
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (156 isolated lifecycle checks, no model calls), `migration.sh` (the move from v1.1, rehearsed in a throwaway `HOME`), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tests/` | `smoke.sh` (159 isolated lifecycle checks, no model calls), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 
@@ -53,7 +143,7 @@ reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 |-----------|----------|
 | [docs/GOALS.md](docs/GOALS.md) | what this is for, the hard constraints, the non-goals |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | components, process and environment model, data flows, file layout |
-| [docs/diagrams/](docs/diagrams/README.md) | every diagram on one page: architecture, billing isolation, how work travels, approvals, notifications |
+| [docs/diagrams/](docs/diagrams/README.md) | every diagram on one page: architecture, several teams, billing isolation, how work travels, approvals, notifications |
 | [docs/SETUP.md](docs/SETUP.md) | installing on a machine, what gets touched, updating, uninstalling |
 | [docs/USAGE.md](docs/USAGE.md) | a full working session, command reference, the Beads cheat sheet |
 | [docs/SECURITY.md](docs/SECURITY.md) | how subscription-only billing and credential isolation are enforced, with evidence |
@@ -74,5 +164,9 @@ Plan. No Node, Docker, database server or daemon.
 
 ## Changing it
 
-The repository is the source of truth. Edit here, run `tests/smoke.sh`, then
-`./install.sh` to copy the change into place.
+The repository is the source of truth. Edit here, run `tests/smoke.sh` and
+`tests/docs.sh`, then `./install.sh` to copy the change into place. `tests/docs.sh` reads
+the code for what exists and fails, naming what is missing where, until `teamctl help`,
+this page and [docs/USAGE.md](docs/USAGE.md) show every command, alias and option, those
+three and the user manual name every policy key and model, and every setting is in the
+config template and explained.

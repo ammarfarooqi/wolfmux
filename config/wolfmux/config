@@ -16,7 +16,7 @@
 #   <number>  declare another window, in tokens
 #WOLFMUX_GLM_CONTEXT=1m
 
-# --- team policy defaults (per project: `teamctl policy`, or flags on `teamctl start`) ---
+# --- team policy defaults (per team: `teamctl policy`, or flags on `teamctl start`) ---
 # How agents treat permission prompts.
 #   skip  the CLI's bypass mode (--dangerously-skip-permissions / Codex equivalent): nothing is asked
 #   lead  workers only: every request goes to the lead, who runs `teamctl approve|deny`
@@ -34,7 +34,7 @@
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
 
-# How the panes are arranged (per project: `teamctl layout <name>`).
+# How the panes are arranged (per team: `teamctl layout <name>`).
 #   lead-left (default)  the lead large on the left, workers stacked on the right
 #   lead-top             the lead across the top, workers side by side below
 #   tiled                an even grid

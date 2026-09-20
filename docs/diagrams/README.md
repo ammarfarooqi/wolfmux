@@ -15,6 +15,16 @@ Details: [ARCHITECTURE.md](../ARCHITECTURE.md).
 
 ![Architecture](architecture.svg)
 
+## Several teams, one project
+
+Each team is its own tmux session with its own lead, teammates and worktrees; all of them
+share the project's Beads, which is how teams talk and how a lead hands work to a team it
+founded. Details: [USAGE.md](../USAGE.md#several-teams-in-one-project),
+[ADR-0018](../adr/0018-several-teams-per-project.md),
+[ADR-0019](../adr/0019-deleting-a-team-and-founding-one.md).
+
+![Several teams in one project](teams.svg)
+
 ## Billing isolation — every model call rides a subscription
 
 What each launcher removes from its own process, what it pins, and who gets paid.
@@ -51,7 +61,7 @@ Why clicking a Wolfmux notification opens your terminal and not Script Editor.
 |------|--------|------------|
 | `wolf.svg`, the wolf inside `hero.svg`, the terminal art in `config/wolfmux/lib/brand.sh` | the pixel bitmap in `tools/wolf-art.py` | `tools/wolf-art.py install` |
 | `message-flow.svg`, `approval-flow.svg`, `notification-flow.svg` | the specs at the top of `tools/flow-diagrams.py` | `tools/flow-diagrams.py` |
-| `hero.svg`, `architecture.svg`, `billing-isolation.svg` | hand-written SVG | edit the file |
+| `hero.svg`, `architecture.svg`, `teams.svg`, `billing-isolation.svg` | hand-written SVG | edit the file |
 
 Palette: night `#0b1020`, panel `#111a2e`, line `#26365a`, text `#e6edf7`, muted
 `#8fa3c2`; amber `#f5b942` is the lead, violet `#b69cff` the workers, ice `#7cc4ff`

@@ -1,7 +1,9 @@
 # Wolfmux — a local multi-model AI development team in tmux
 
-One lead (Fable **or** Astra) plus any number of GLM workers, every agent visible in
-its own tmux pane, all inference on subscriptions — no API keys, no metered proxy.
+One lead plus any number of teammates, every agent visible in its own tmux pane, all
+inference on subscriptions — no API keys, no metered proxy. The usual cast is below (Fable
+**or** Astra leads, GLM workers implement), but any model key can sit in either seat, and a
+project can have several teams.
 
 ```
                      LEAD  (pick one)
@@ -64,22 +66,35 @@ teamctl spawn x claude:<model-id>   # …or codex:<model-id>, for a model that h
 ```
 
 Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
-`~/.wolfmux/worktrees/<project>/`, its own pane titled `<role> · <model>`, and
-`TEAM_ROLE` / `BEADS_ACTOR` set to its role. Panes re-tile automatically
-(lead top-left). A worker reads its Beads inbox as soon as it boots, so assign
-work first, then spawn. Options: `--base <ref>`, `--no-kickoff`.
+`~/.wolfmux/worktrees/<project>/`, its own pane titled `🐶 <role> · <model>`, and
+`TEAM_ROLE` / `BEADS_ACTOR` set to its role (in a named team: branch
+`ai/<team>/<role>-<timestamp>`, Beads name `<team>.<role>`). The lead stays the large pane
+on the left; teammates stack on the right. A worker reads its Beads inbox as soon as it
+boots, so assign work first, then spawn. Options: `--base <ref>`, `--no-kickoff`.
+
+| Model key | Runs | Pays with |
+|-----------|------|-----------|
+| `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan |
+| `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
+| `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
+| `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
+
+The same keys work for `teamctl start <model>`: any of them can lead.
 
 ## One manager, permissions, spawning
 
-The lead is the only manager. `start`, `stop`, `restart`, `destroy`, `policy`,
-`approve` and `deny` work for the lead and for you at your own terminal; a worker
-that tries them is refused (exit 77).
+The lead is the only manager of its team. `start`, `stop`, `restart`, `remove`, `destroy`,
+`approve`, `deny` and changing the `policy` work for the lead and for you at your own
+terminal; a worker that tries them is refused (exit 77). Everybody may look: `teamctl policy`
+without arguments, `status`, `approvals`.
 
 ```bash
 teamctl policy                                  # show this project's policy
 teamctl policy worker-spawn on|off              # may workers run `teamctl spawn`?  default off
 teamctl policy worker-permissions skip|lead|ask # default skip
 teamctl policy lead-permissions skip|ask        # default skip
+teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
+teamctl policy lead-teams on|off                # may the lead found further teams?  default on
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -96,6 +111,13 @@ once. Defaults for new projects live in `~/.config/wolfmux/config`.
 When worker spawning is on and a worker spawns someone, the new agent is a normal team
 member (own pane, branch, worktree), reports to the lead, shows up in `teamctl status`
 under SPAWNED BY, and the lead's pane gets `[wolfmux] Team change: …`.
+
+**Staying in lane** (`worker-isolation`). Every teammate works in its own worktree on its
+own branch, and a guard refuses the tool calls that reach outside: changing your checkout,
+reading another teammate's worktree or teamctl's state, switching or deleting branches,
+pushing to main, driving tmux. The refusal tells the worker to ask its lead. Reading your
+checkout stays allowed. It is a guard against mistakes, not a sandbox, and it exists for
+Claude Code teammates only: Codex has no such hook.
 
 Inside workers, Claude Code's own agent-teams feature is switched off. With it on, any
 subagent a worker names becomes a teammate that treats the *worker* as its team lead and
@@ -149,7 +171,21 @@ teamctl attach --team review         # add --team <name> to any command once the
 
 With one team you never type `--team`. `teamctl start <model>` while the first team runs
 under another model does not open that team; it shows you both commands. All teams share
-the project's Beads; agents of a named team are `<team>.<role>` there.
+the project's Beads; agents of a named team are `<team>.<role>` there, so teams can message
+each other (`-a review.lead`; a plain `-a lead` is the first team's).
+
+A lead can found a fresh team and hand work over, without you relaying anything:
+
+```bash
+bd create "Handover: payments" -t message -a next.lead --body-file handover.md    # → its id
+teamctl start fable --team next --no-attach --handover <that-id>
+```
+
+The new lead starts by reading that bead and you get a notification. The founder does not
+manage the new team, can never take over a team that already has a lead, and a worker can
+never found one. `teamctl policy lead-teams off` keeps founding teams to yourself, for that
+team (`WOLFMUX_LEAD_TEAMS=off` for every team). Like all of the policy it is cooperative: a
+lead can change its own team's policy.
 
 ## Deleting a team
 
@@ -161,7 +197,8 @@ teamctl destroy --team review --purge --force    # …even with uncommitted or u
 
 A worker costs a checkout of your tracked files plus whatever it installs or builds; the
 lead costs nothing. Purge removes the session, every worktree, the team's `ai/…` branches,
-records and transcripts; never your checkout, other branches, Beads or other teams.
+records and its teammates' Claude Code transcripts; never your checkout, other branches,
+Beads, other teams, or the lead's own conversations (they live in your checkout's folder).
 
 ## The wolf, and notifications
 
@@ -232,15 +269,40 @@ WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec —
 
 | What | Where |
 |------|-------|
-| Launchers + CLI | `~/bin/` — `teamctl`, `claude-fable`, `codex-astra`, `claude-glm`, `claude-glm-flash` → `claude-glm`, `codex` → ChatGPT.app's bundled CLI |
+| Launchers + CLI | `~/bin/` — `teamctl`, `claude-fable`, `codex-astra`, `claude-glm`; symlinks `claude-glm-flash` → `claude-glm` and `claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable` (the launcher picks the model from the name it was started as); `codex`, a small `sh` wrapper (one `exec` line) that starts ChatGPT.app's bundled CLI by its real path (only when no other `codex` is installed) |
 | Code, tmux config, protocol, this file | `~/.config/wolfmux/` (`lib/*.sh`, `hooks/beads-nudge`, `tmux.conf`, `TEAM_PROTOCOL.md`, `config`, `glm-worker-settings.json`) |
+| Notifications | `~/.config/wolfmux/Wolfmux.app` (built by `install.sh`; owns the notifications of a team that is not open in a terminal which can show them itself — iTerm2, kitty, Ghostty, WezTerm — so a click opens the team) and `~/.wolfmux/notify/` (the message in transit, the last project, the script a click runs) |
 | Z.ai credential | macOS login Keychain, service `zai-coding-plan`. Nowhere else. |
 | Claude / Codex logins | wherever those CLIs keep them (`/login`, `codex login`); untouched |
-| Worktrees | `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/` |
-| teamctl state (role ↔ model ↔ worktree, event log) | `~/.wolfmux/state/<project>-<hash>/` — nothing is written into your repository |
+| Worktrees | `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/`; a named team's under `…/<project>-<hash>/teams/<team>/` |
+| teamctl state (role ↔ model ↔ worktree, policy, approvals, event log) | `~/.wolfmux/state/<project>-<hash>/`; a named team's under `…/teams/<team>/` — nothing is written into your repository |
+| Agents' conversations | Claude Code's own `~/.claude/projects/<the worktree's path, every character that is not a letter or digit turned into ->/`; `teamctl destroy --purge` removes those of the teammates it deletes. A lead's conversations are in your checkout's folder there and stay; Codex keeps its own sessions |
 | Tasks + messages | the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode) |
 | tmux | dedicated server: `tmux -L wolfmux`; your default tmux and `~/.tmux.conf` are untouched. A team started before the rename from "ai-team" stays on `tmux -L ai-team` until it ends; `teamctl` follows it |
 | Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, `git status`, `git worktree list`; ask on `teamctl destroy`), `~/.codex/rules/wolfmux.rules` |
+
+## Settings
+
+`~/.config/wolfmux/config`, plain `KEY=value` lines; every key is in the file, commented
+out, with its values. `install.sh` leaves the file alone once it holds one active line;
+while it is still all comments it is replaced by the current template, so that new settings
+show up (the old copy goes to `~/.wolfmux/backups/<stamp>/`). An environment variable of
+the same name wins for a launcher you start by hand.
+
+| Setting | Default | Means |
+|---------|---------|-------|
+| `WOLFMUX_LEAD_PERMISSIONS` · `WOLFMUX_WORKER_PERMISSIONS` | `skip` | permission mode of every team that has not set its own (`teamctl policy`) |
+| `WOLFMUX_WORKER_SPAWN` | `off` | may workers spawn teammates (same rule: a team's own policy wins) |
+| `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
+| `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
+| `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
+| `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
+| `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |
+| `WOLFMUX_NOTIFY` | `all` | whose finished turns notify you: `all`, `lead`, `off`. A team founded by a lead is announced in every case |
+| `WOLFMUX_TERMINAL` | the one you last attached from, else iTerm2 when installed, else Terminal | `iterm` or `terminal`: what a click on a notification opens |
+| `WOLFMUX_GLM_AUTH_MODE` | `helper` | `env` hands the Z.ai key over as `ANTHROPIC_AUTH_TOKEN` instead (if workers report an authentication error) |
+| `WOLFMUX_GLM_CONTEXT` | 200000 tokens | `1m`, or a number: the context window GLM workers declare |
+| `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | the current ids | which model id each key means |
 
 ## How subscription separation works
 
@@ -292,7 +354,7 @@ do not buy Codex credits, and keep the Z.ai cash balance at zero.
 
 ```bash
 claude update                 # native installer; launchers resolve `claude` at run time
-# Codex: update the ChatGPT desktop app (its bundled CLI is what ~/bin/codex points to).
+# Codex: update the ChatGPT desktop app (its bundled CLI is what ~/bin/codex starts).
 #        A standalone install (curl -fsSL https://chatgpt.com/codex/install.sh | sh) lands in
 #        ~/.local/bin, which precedes ~/bin, so it takes over automatically.
 bd export --all > beads-backup.jsonl   # then replace ~/.local/bin/bd with a verified release; see Beads upgrade guide
@@ -310,10 +372,16 @@ numbers · `d` = detach · `"` `%` `c` = new pane/window in the current director
 
 ## Uninstall (the CLIs stay untouched)
 
+From the repository, `./uninstall.sh` removes what `install.sh` created and restores what it
+edited; it keeps `~/.wolfmux` (`--purge` removes it once no worktree is left in it), the
+Keychain item and Beads. By hand:
+
 ```bash
 teamctl destroy --worktrees                      # in each project that has a team
-rm ~/bin/teamctl ~/bin/claude-fable ~/bin/codex-astra ~/bin/claude-glm ~/bin/claude-glm-flash ~/bin/codex
-rm -r ~/.config/wolfmux ~/.wolfmux
+rm ~/bin/teamctl ~/bin/claude-fable ~/bin/claude-opus ~/bin/claude-sonnet ~/bin/claude-haiku \
+   ~/bin/codex-astra ~/bin/claude-glm ~/bin/claude-glm-flash
+grep -q wolfmux-codex-wrapper ~/bin/codex && rm ~/bin/codex      # only the wrapper install.sh wrote
+rm -r ~/.config/wolfmux ~/.wolfmux               # includes Wolfmux.app
 rm ~/.codex/rules/wolfmux.rules
 security delete-generic-password -s zai-coding-plan
 # ~/.zshrc: delete the block between ">>> wolfmux >>>" and "<<< wolfmux <<<"
@@ -340,6 +408,13 @@ ls ~/.wolfmux/state ~/.wolfmux/worktrees    # per-project state and worktrees
   Anthropic. `/status` in the pane shows the base URL.
 - The manager check is cooperative: every agent is your macOS user, so it stops
   mistakes and role confusion, not a deliberately hostile process.
+- With several teams, every lead works in your checkout on the branch that is checked out
+  there. Teammates are apart in worktrees; leads are not. Let one lead integrate at a time.
+  For the same reason `--continue` on a lead resumes the most recent conversation of that
+  CLI in your checkout, which with two leads there (or a session of your own) may be
+  another one's. A teammate's `--continue` is its own: nobody else works in its worktree.
+- Codex-based agents (`astra`, `codex:<id>`) have no worktree guard and no lead-approval
+  mode: Codex offers no hook for either. They do send notifications.
 
 - Notifications are typed into a pane. If an agent is mid-turn its CLI queues the line;
   if a CLI is showing a modal dialog (first-run folder trust), answer the dialog first.

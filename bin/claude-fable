@@ -46,7 +46,7 @@ if wolfmux_is_claude_subcommand "${1:-}"; then
 fi
 
 CMD=("$CLAUDE_BIN")
-# Per-agent settings that teamctl generated for this pane (none for a lead).
+# Per-agent settings that teamctl generated for this pane (hooks, and what differs by role).
 SETTINGS_JSON="$(wolfmux_merge_settings "" "${WOLFMUX_EXTRA_SETTINGS:-}")" || exit 78
 if [ "$SETTINGS_JSON" != "{}" ]; then
   CMD+=(--settings "$SETTINGS_JSON")

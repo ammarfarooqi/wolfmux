@@ -1,7 +1,9 @@
 #!/bin/bash
 # install.sh — put wolfmux in place for the current user. Idempotent and reversible.
 #
-# It copies files, creates two symlinks, and makes three small, backed-up edits:
+# It copies files, links four launcher names, builds Wolfmux.app (the owner of the team's
+# notifications), writes ~/bin/codex when no codex is installed, and makes three small,
+# backed-up edits:
 #   ~/.zshrc                      one marked block that appends ~/bin to PATH
 #   ~/.claude/settings.json       narrow allow/ask permission rules (merged, never replaced)
 #   ~/.codex/rules/wolfmux.rules  a separate rule file (default.rules is not touched)
@@ -26,7 +28,7 @@ for arg in "$@"; do
     --no-codex-rules) DO_CODEX=0 ;;
     --no-notifier-app) DO_APP=0 ;;
     -h | --help)
-      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)

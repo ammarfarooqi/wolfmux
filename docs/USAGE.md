@@ -65,6 +65,8 @@ teamctl destroy --worktrees          # later: drops clean worktrees and fully me
 
 ## Several teams in one project
 
+![Several teams in one project: own session, lead and worktrees each; one Beads for all](diagrams/teams.svg)
+
 ```bash
 teamctl start astra                       # the first team ("default")
 teamctl start fable --team review         # a second one, named by you, in its own tmux session
@@ -83,6 +85,7 @@ teamctl destroy --team review --worktrees
 | roles | per team: two teams can each have a `backend`. Branches are `ai/<team>/<role>-…`, worktrees live under `…/teams/<team>/` |
 | Beads | all teams share the project's Beads. The first team's agents are `lead`, `backend`, …; a named team's are `review.lead`, `review.backend`. Hand work across teams with `-a review.lead` |
 | management | a lead manages its own team only; you manage all |
+| your checkout | teammates are apart in worktrees, leads are not: every lead works in your checkout, on the branch that is checked out there. Let one lead integrate at a time |
 
 ## Deleting a team, and what a team costs
 
@@ -104,9 +107,10 @@ It prints every worker with its size, its uncommitted files and the commits your
 does not have, and the total it frees, and has touched nothing at that point. If work
 would be lost you are asked with that list in front of you; `--force` deletes anyway; with
 nobody to ask and no `--force` it refuses and the team keeps running. Gone afterwards:
-the session, every worktree, the team's `ai/…` branches, its records, the transcripts
-(`--keep-transcripts` keeps those). Never touched: your checkout, other branches, Beads,
-other teams.
+the session, every worktree, the team's `ai/…` branches, its records, its teammates' Claude
+Code transcripts (`--keep-transcripts` keeps those). Never touched: your checkout, other
+branches, Beads, other teams, the lead's own conversations (they live in your checkout's
+folder under `~/.claude/projects/`), Codex's sessions.
 
 ## Teams working together
 
@@ -127,26 +131,31 @@ lead can never take over a team that already has a lead; a worker can never foun
 
 | Command | Does |
 |---------|------|
-| `teamctl start <fable\|astra> [--no-attach] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach |
-| `teamctl policy [<key> <value>]` | show or change `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off) |
+| `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's last conversation. With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
+| `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
+| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
 | `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]` | new worker: branch + worktree + pane. Any model, whoever leads (table below) |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |
-| `teamctl nudge <role>\|--all [--id <bead>]` | re-send the one-line notification |
-| `teamctl status [--json]` (alias `workers`) | role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files |
+| `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
+| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files |
+| `teamctl teams` | the short list per team: state, lead, number of agents, the disk its teammates' worktrees take, session |
 | `teamctl panes` | tmux's view: command, pid, cwd |
-| `teamctl capture <role> [-n N\|--all]`, `teamctl log <role>` | recent / full terminal output — for diagnosing a stuck agent, never for task state |
+| `teamctl capture <role> [-n\|--lines N] [--all]`, `teamctl log <role>` | recent / full terminal output — for diagnosing a stuck agent, never for task state |
 | `teamctl focus <role>`, `teamctl attach` (alias `open`) | move your terminal |
+| `teamctl layout [lead-left\|lead-top\|tiled]` | how the panes are arranged, for this team; `lead-left` is the default |
 | `teamctl worktrees` | branch, commits ahead, dirty count per worker |
 | `teamctl diff <role> [--stat\|--names\|--commits\|--working]` | the worker's changes since its base |
 | `teamctl destroy [--worktrees] [--yes]` | end the session; never deletes dirty worktrees, unmerged branches, source, credentials or Beads data |
+| `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and free its disk space: reports first, asks, then removes session, worktrees, `ai/…` branches, records and its teammates' Claude Code transcripts ([deleting a team](#deleting-a-team-and-what-a-team-costs)) |
 | `teamctl doctor` | launcher, credential, settings and login checks |
 
 Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.
-`start`, `stop`, `restart`, `destroy`, `policy`, `approve` and `deny` are reserved for
-the lead and for you; `spawn` too unless `worker-spawn` is on. A worker gets exit 77.
+`start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
+are reserved for the lead of that team and for you; `spawn` too unless `worker-spawn` is on.
+A worker gets exit 77. `--team <name>` goes with any command, before or after it.
 `teamctl send|inbox|broadcast|task` print the `bd` equivalents.
 
 ### Models
@@ -188,7 +197,7 @@ Comments (`bd comment`) notify nobody; send a message when someone must act.
 
 | You see | Meaning |
 |---------|---------|
-| the lead large on the left, teammates stacked on the right | the default arrangement. `teamctl layout lead-top` or `tiled` changes it for this project (`WOLFMUX_LAYOUT` for all); inside the team `Ctrl-b Space` cycles tmux's own arrangements and `Ctrl-b T` puts the last one back |
+| the lead large on the left, teammates stacked on the right | the default arrangement. `teamctl layout lead-top` or `tiled` changes it for this team (`WOLFMUX_LAYOUT` for all); inside the team `Ctrl-b Space` cycles tmux's own arrangements and `Ctrl-b T` puts the last one back |
 | a popup with the wolf when you open the team | `teamctl start` / `attach` worked. Any key closes it (or 3 seconds). Off: `WOLFMUX_SPLASH=off` in `~/.config/wolfmux/config` |
 | `🐺 lead · <model>` and an amber pane border | the manager. Teammates are `🐶 <role> · <model>` with grey borders (blue when focused) |
 | `🐺 WOLFMUX` in the status line, `🐺 <session>` as the tab title | this terminal tab is a Wolfmux team |

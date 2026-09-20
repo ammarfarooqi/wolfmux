@@ -304,6 +304,56 @@ the Keychain. It does (macOS resolves the user's keychain search list from `HOME
 suite now says so with a check instead of a comment; the help and the manuals address the
 inbox by `$BEADS_ACTOR` as well. `tests/smoke.sh`: 153 → 156 (three checks on top of entry 20). `tests/permissions.sh`: new, 9. `tests/migration.sh`: 21, one
 expectation changed (the retired rules are gone after a migration).
+## 22. "Why are the available commands not in the README?" (v1.9)
+
+Because every feature had been written up where it was built (USAGE.md, the manual, an ADR)
+and nothing checked the front page. The README showed five commands out of twenty-two;
+docs/SETUP.md still said "55 checks" and "two symlinks"; `teamctl help` did not know
+`lead-teams`, though the command accepted it.
+
+The fix for the symptom: a command list, a model table and a feature overview in the README,
+the reference table in USAGE.md brought up to date, settings and the worktree guard in the
+manual, what the installer really builds in SETUP.md, and a diagram for the one headline
+feature that had none (`docs/diagrams/teams.svg`). Writing that diagram surfaced a limit
+that was documented nowhere: leads of several teams all work in the same checkout.
+
+The fix for the cause: `tests/docs.sh`. It reads the code for what exists (the dispatch in
+`bin/teamctl`, the `case` labels of each command's argument loop, `POLICY_KEYS`,
+`model_info`, `WOLFMUX_CONFIG_KEYS`, the installer's links and options) and fails, naming
+what is missing where, until the README, USAGE.md, the manual and `teamctl help` say it.
+It also found two options no command reference showed (`capture --lines` appeared nowhere,
+`nudge --quiet` only in the description of the Beads hook) and one that `teamctl help` did
+not show (`destroy --keep-transcripts`). The check was
+itself checked with thirteen mutations ([VERIFICATION.md](VERIFICATION.md)).
+
+Then every sentence that had been added was checked against the code by a second reader.
+About 350 claims held, 3 were false, 26 imprecise, and behind three of them the code was
+wrong, not the sentence:
+
+- A permission request of a teammate in a **named** team was filed with the first team and
+  announced to the first team's lead: the hook built the state path without the team, the
+  one place that never went through `team_paths`. "A lead manages its own team only" was
+  not true for approvals. The suite had only ever tried lead mode in the first team.
+- `WOLFMUX_APPROVAL_TIMEOUT` in the config file had no effect. `approvals.sh` read it while
+  being sourced, and the config file is loaded after the modules. (The migration test
+  even checked that this setting is carried over, into a file where it did nothing.)
+- After any named team had existed, `uninstall.sh --purge` kept `~/.wolfmux` for ever: the
+  empty `teams/` folder counted as a worktree.
+
+Each got a failing check first (smoke on the unfixed copy: 156 passed, 3 failed). Also from that
+reading: `uninstall.sh` ignored an option it did not know (`--purg` uninstalled without
+purging; now exit 64, like its siblings), `install.sh --help` printed a line of code, and
+three comments described an older program.
+
+The security review of those fixes found one more, in the fix: the rewritten check in
+`uninstall.sh` assigned `held="$(find … | head -1)"`. As a plain assignment its status
+reaches `set -e`, and `find` fails when `~/.wolfmux/worktrees` does not exist, so
+`--purge` died without a word in exactly the tidy state it is meant for. The old form, the
+same pipeline inside `[ -n "$(…)" ]`, could not: a substitution used as a word loses its
+status. Now `-print -quit`, no pipe, `|| true`; a check covers the missing folder.
+
+`tests/smoke.sh`: 156 → 159. `tests/permissions.sh`: 9 → 13. `tests/docs.sh`: new, 28.
+v1.9.0.
 
 ## Footprint on the machine
 

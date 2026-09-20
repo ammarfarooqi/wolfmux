@@ -12,6 +12,7 @@
 | The worktree guard is pattern matching for shell commands | Exact for file tools; a script or a path built at run time gets past it ([ADR-0016](adr/0016-worktree-guard.md)). Per-worktree git hooks (`reference-transaction`) would close the branch side, at the cost of touching the repository's configuration. Codex workers have no guard. |
 | Codex-based agents have fewer guard rails | No `PreToolUse` or `PermissionRequest` hook in Codex: no worktree guard, no lead-approval mode (they fall back to their own prompts or to bypass). Notifications do work, through Codex's `notify` program. |
 | Interactive background model ids unobserved | Alias mapping covers them by configuration; only `-p` traffic was observed. |
+| Leads of several teams share your checkout | Every lead works in the project root on the branch checked out there; only teammates get worktrees. Two leads that integrate at the same moment get in each other's way. A worktree for a named team's lead would end that, at the price of a lead that no longer sees your uncommitted files. |
 | Codex lead permissions are coarse | The rule file allows every `teamctl` and `bd` invocation outside the sandbox (with a prompt on `destroy`). |
 | macOS only | Keychain, `/bin/bash` 3.2 paths, `security`, `shasum`. |
 | Rare duplicate notification | Two hooks racing over a stale debounce guard can both notify once. |

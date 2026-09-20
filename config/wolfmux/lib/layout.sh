@@ -6,7 +6,7 @@
 #   tiled       tmux's even grid; the lead is just the first tile
 #
 # The lead never moves when workers come and go, and it is always the biggest pane:
-# it is the one you talk to. Remembered per project (`teamctl layout <name>`), default
+# it is the one you talk to. Remembered per team (`teamctl layout <name>`), default
 # from WOLFMUX_LAYOUT. Inside the team `Ctrl-b Space` cycles tmux's own arrangements and
 # `Ctrl-b T` re-applies the last one.
 

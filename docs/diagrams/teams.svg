@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1002" width="1280" height="1002" role="img" aria-labelledby="title desc">
+<title id="title">Wolfmux teams: several teams in one project</title>
+<desc id="desc">One project holds three teams. Each team is its own tmux session with one lead, marked with a wolf, and teammates, marked with a dog, each teammate on its own branch and worktree. The first team is called default and is led by GPT-6 Astra; a second team called review was started by the user and is led by Fable 5.1; a third team called next was founded by the lead of team review with a handover bead. All teams share the project's Beads database, where agents of the first team are addressed by role and agents of a named team by team dot role, so teams can message each other. A terminal shows teamctl status listing every team as a tree of lead and teammates.</desc>
+<style>
+  .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  .text { fill: #e6edf7; } .muted { fill: #8fa3c2; } .faint { fill: #5d7196; }
+  .amber { fill: #f5b942; } .ice { fill: #7cc4ff; } .green { fill: #6ee7a8; } .violet { fill: #b69cff; } .coral { fill: #ff7a90; }
+  .card { fill: #111a2e; stroke: #26365a; stroke-width: 1.5; }
+  .inner { fill: #16213a; stroke-width: 1.5; }
+  .flow { fill: none; stroke-width: 2; }
+</style>
+<defs>
+  <marker id="t-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#6ee7a8"/></marker>
+  <marker id="t-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#f5b942"/></marker>
+</defs>
+
+<rect width="1280" height="1002" rx="24" fill="#0b1020"/>
+
+<!-- header -->
+<text class="sans amber" x="48" y="58" font-size="13" font-weight="700" letter-spacing="3">WOLFMUX · TEAMS</text>
+<text class="sans text" x="48" y="94" font-size="28" font-weight="700">Several teams, one project</text>
+<text class="sans muted" x="48" y="122" font-size="15">Each team is its own tmux session with its own lead and worktrees. All of them share the project's Beads, so they talk and hand work over.</text>
+
+<!-- team: default -->
+<rect class="card" x="48" y="150" width="376" height="330" rx="16"/>
+<rect x="48" y="150" width="376" height="6" rx="3" fill="#7cc4ff"/>
+<text class="sans ice" x="72" y="186" font-size="12" font-weight="700" letter-spacing="2.5">TEAM · THE FIRST ONE</text>
+<text class="mono text" x="72" y="216" font-size="22" font-weight="700">default</text>
+<text class="sans muted" x="72" y="242" font-size="12.5">tmux session  <tspan class="mono text" font-size="12">team-shop</tspan></text>
+<text class="mono faint" x="72" y="266" font-size="11.5">teamctl start astra</text>
+<rect class="inner" x="68" y="290" width="336" height="58" rx="12" stroke="#f5b942"/>
+<text class="sans amber" x="86" y="315" font-size="16" font-weight="700">🐺 lead</text>
+<text class="sans muted" x="168" y="315" font-size="12.5">GPT-6 Astra · works in your checkout</text>
+<text class="sans faint" x="86" y="336" font-size="11.5">name in Beads</text><text class="mono green" x="388" y="336" text-anchor="end" font-size="11.5">lead</text>
+<rect class="inner" x="68" y="358" width="336" height="52" rx="12" stroke="#b69cff"/>
+<text class="sans violet" x="86" y="381" font-size="14.5" font-weight="700">🐶 backend</text>
+<text class="sans muted" x="196" y="381" font-size="12.5">GLM-5.3</text><text class="mono green" x="388" y="381" text-anchor="end" font-size="11.5">backend</text>
+<text class="mono faint" x="86" y="400" font-size="11">ai/backend-20260920-141205</text>
+<rect class="inner" x="68" y="418" width="336" height="52" rx="12" stroke="#b69cff"/>
+<text class="sans violet" x="86" y="441" font-size="14.5" font-weight="700">🐶 qa</text>
+<text class="sans muted" x="196" y="441" font-size="12.5">GLM-5.3 Flash</text><text class="mono green" x="388" y="441" text-anchor="end" font-size="11.5">qa</text>
+<text class="mono faint" x="86" y="460" font-size="11">ai/qa-20260920-141530</text>
+
+<!-- team: review -->
+<rect class="card" x="452" y="150" width="376" height="330" rx="16"/>
+<rect x="452" y="150" width="376" height="6" rx="3" fill="#7cc4ff"/>
+<text class="sans ice" x="476" y="186" font-size="12" font-weight="700" letter-spacing="2.5">TEAM · NAMED BY YOU</text>
+<text class="mono text" x="476" y="216" font-size="22" font-weight="700">review</text>
+<text class="sans muted" x="476" y="242" font-size="12.5">tmux session  <tspan class="mono text" font-size="12">team-shop-review</tspan></text>
+<text class="mono faint" x="476" y="266" font-size="11.5">teamctl start fable --team review</text>
+<rect class="inner" x="472" y="290" width="336" height="58" rx="12" stroke="#f5b942"/>
+<text class="sans amber" x="490" y="315" font-size="16" font-weight="700">🐺 lead</text>
+<text class="sans muted" x="572" y="315" font-size="12.5">Fable 5.1 · works in your checkout</text>
+<text class="sans faint" x="490" y="336" font-size="11.5">name in Beads</text><text class="mono green" x="792" y="336" text-anchor="end" font-size="11.5">review.lead</text>
+<rect class="inner" x="472" y="358" width="336" height="52" rx="12" stroke="#b69cff"/>
+<text class="sans violet" x="490" y="381" font-size="14.5" font-weight="700">🐶 fe-check</text>
+<text class="sans muted" x="600" y="381" font-size="12.5">Sonnet 5</text><text class="mono green" x="792" y="381" text-anchor="end" font-size="11.5">review.fe-check</text>
+<text class="mono faint" x="490" y="400" font-size="11">ai/review/fe-check-20260920-160112</text>
+<rect class="inner" x="472" y="418" width="336" height="52" rx="12" stroke="#b69cff"/>
+<text class="sans violet" x="490" y="441" font-size="14.5" font-weight="700">🐶 api</text>
+<text class="sans muted" x="600" y="441" font-size="12.5">GPT-6 Astra</text><text class="mono green" x="792" y="441" text-anchor="end" font-size="11.5">review.api</text>
+<text class="mono faint" x="490" y="460" font-size="11">ai/review/api-20260920-160440</text>
+
+<!-- team: next, founded by a lead -->
+<rect class="card" x="856" y="150" width="376" height="330" rx="16" stroke="#f5b942" stroke-dasharray="7 6"/>
+<text class="sans amber" x="880" y="186" font-size="12" font-weight="700" letter-spacing="2.5">TEAM · FOUNDED BY A LEAD</text>
+<text class="mono text" x="880" y="216" font-size="22" font-weight="700">next</text>
+<text class="sans muted" x="880" y="242" font-size="12.5">tmux session  <tspan class="mono text" font-size="12">team-shop-next</tspan></text>
+<text class="mono faint" x="880" y="262" font-size="11">teamctl start fable --team next</text>
+<text class="mono faint" x="880" y="278" font-size="11">        --no-attach --handover shop-41</text>
+<rect class="inner" x="876" y="290" width="336" height="58" rx="12" stroke="#f5b942"/>
+<text class="sans amber" x="894" y="315" font-size="16" font-weight="700">🐺 lead</text>
+<text class="sans muted" x="976" y="315" font-size="12.5">Fable 5.1 · first words: read shop-41</text>
+<text class="sans faint" x="894" y="336" font-size="11.5">name in Beads</text><text class="mono green" x="1196" y="336" text-anchor="end" font-size="11.5">next.lead</text>
+<g class="sans muted" font-size="12.5">
+  <text x="894" y="378">staffs itself with <tspan class="mono text" font-size="12">teamctl spawn</tspan> as the work needs</text>
+  <text x="894" y="402">you get a notification when a lead founds a team</text>
+  <text x="894" y="426">the founder does not manage the new team</text>
+  <text x="894" y="450">keep it to yourself: <tspan class="mono text" font-size="12">teamctl policy lead-teams off</tspan></text>
+</g>
+
+<!-- handover: review's lead -> next's lead -->
+<path class="flow" d="M808 319 H874" stroke="#f5b942" stroke-dasharray="5 4" marker-end="url(#t-amber)"/>
+<text class="sans amber" x="842" y="308" text-anchor="middle" font-size="11" font-weight="700">handover</text>
+
+<!-- everyone talks through Beads -->
+<path class="flow" d="M236 484 V516" stroke="#6ee7a8" marker-start="url(#t-green)" marker-end="url(#t-green)"/>
+<path class="flow" d="M640 484 V516" stroke="#6ee7a8" marker-start="url(#t-green)" marker-end="url(#t-green)"/>
+<path class="flow" d="M1044 484 V516" stroke="#6ee7a8" marker-start="url(#t-green)" marker-end="url(#t-green)"/>
+
+<rect class="card" x="48" y="520" width="1184" height="108" rx="16"/>
+<rect x="48" y="520" width="1184" height="6" rx="3" fill="#6ee7a8"/>
+<text class="sans green" x="72" y="556" font-size="12" font-weight="700" letter-spacing="2.5">ONE BEADS FOR THE WHOLE PROJECT</text>
+<text class="sans muted" x="416" y="556" font-size="13">tasks, messages and history of every team · an agent's name says which team it is in</text>
+<text class="mono text" x="236" y="590" text-anchor="middle" font-size="13">-a lead  ·  -a backend</text>
+<text class="mono text" x="640" y="590" text-anchor="middle" font-size="13">-a review.lead  ·  -a review.fe-check</text>
+<text class="mono text" x="1044" y="590" text-anchor="middle" font-size="13">-a next.lead</text>
+<text class="sans faint" x="640" y="612" text-anchor="middle" font-size="12">a message across teams is an ordinary bead:  bd create "Need a second opinion" -t message -a review.lead</text>
+
+<!-- what you see -->
+<rect class="card" x="48" y="656" width="760" height="308" rx="16"/>
+<circle cx="74" cy="680" r="5" fill="#ff7a90"/><circle cx="92" cy="680" r="5" fill="#f5b942"/><circle cx="110" cy="680" r="5" fill="#6ee7a8"/>
+<text class="mono muted" x="134" y="685" font-size="12.5">teamctl status</text>
+<text class="sans faint" x="784" y="685" text-anchor="end" font-size="11.5">columns abridged</text>
+<line x1="48" y1="700" x2="808" y2="700" stroke="#26365a" stroke-width="1.5"/>
+<g class="mono" font-size="12.5">
+  <text class="faint" x="106" y="726" font-size="11">ROLE</text><text class="faint" x="250" y="726" font-size="11">MODEL</text><text class="faint" x="380" y="726" font-size="11">STATE</text><text class="faint" x="470" y="726" font-size="11">BRANCH</text><text class="faint" x="758" y="726" font-size="11">AHEAD</text>
+  <text class="ice" x="72" y="750" font-weight="700">TEAM default · team-shop · running</text>
+  <text class="amber" x="86" y="770">🐺 lead</text><text class="text" x="250" y="770">GPT-6 Astra</text><text class="green" x="380" y="770">running</text><text class="muted" x="470" y="770">main</text><text class="muted" x="770" y="770">-</text>
+  <text class="violet" x="106" y="790">🐶 backend</text><text class="text" x="250" y="790">GLM-5.3</text><text class="green" x="380" y="790">running</text><text class="muted" x="470" y="790">ai/backend-20260920-141205</text><text class="text" x="770" y="790">3</text>
+  <text class="violet" x="106" y="810">🐶 qa</text><text class="text" x="250" y="810">GLM-5.3 Flash</text><text class="muted" x="380" y="810">stopped</text><text class="muted" x="470" y="810">ai/qa-20260920-141530</text><text class="text" x="770" y="810">0</text>
+  <text class="ice" x="72" y="836" font-weight="700">TEAM review · team-shop-review · running</text>
+  <text class="amber" x="86" y="856">🐺 lead</text><text class="text" x="250" y="856">Fable 5.1</text><text class="green" x="380" y="856">running</text><text class="muted" x="470" y="856">main</text><text class="muted" x="770" y="856">-</text>
+  <text class="violet" x="106" y="876">🐶 fe-check</text><text class="text" x="250" y="876">Sonnet 5</text><text class="green" x="380" y="876">running</text><text class="muted" x="470" y="876">ai/review/fe-check-20260920-160112</text><text class="text" x="770" y="876">1</text>
+  <text class="violet" x="106" y="896">🐶 api</text><text class="text" x="250" y="896">GPT-6 Astra</text><text class="green" x="380" y="896">running</text><text class="muted" x="470" y="896">ai/review/api-20260920-160440</text><text class="text" x="770" y="896">0</text>
+  <text class="ice" x="72" y="922" font-weight="700">TEAM next · team-shop-next · running</text>
+  <text class="amber" x="86" y="942">🐺 lead</text><text class="text" x="250" y="942">Fable 5.1</text><text class="green" x="380" y="942">running</text><text class="muted" x="470" y="942">main</text><text class="muted" x="770" y="942">-</text>
+</g>
+
+<!-- the rules -->
+<rect class="card" x="836" y="656" width="396" height="308" rx="16"/>
+<text class="sans text" x="860" y="690" font-size="15" font-weight="700">What holds for every team</text>
+<g class="sans muted" font-size="12.5">
+  <text x="860" y="720">any model joins any team, whoever leads</text>
+  <text x="860" y="746">a lead manages its own team only; you manage all</text>
+  <text x="860" y="772">roles are per team: each can have a <tspan class="mono text" font-size="12">backend</tspan></text>
+  <text x="860" y="798">a named team's branches: <tspan class="mono text" font-size="12">ai/&lt;team&gt;/&lt;role&gt;-…</tspan></text>
+  <text x="860" y="824">a lead cannot take over a team that has a lead</text>
+  <text x="860" y="850">with one team you never type <tspan class="mono text" font-size="12">--team</tspan></text>
+  <text x="860" y="876">leads share your checkout: let one integrate at a time</text>
+</g>
+<line x1="860" y1="896" x2="1208" y2="896" stroke="#26365a" stroke-width="1.5"/>
+<text class="mono text" x="860" y="920" font-size="11.5">teamctl destroy --team review --purge</text>
+<text class="sans faint" x="860" y="939" font-size="12">deletes one team and gives its disk space back</text>
+</svg>

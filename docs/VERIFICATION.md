@@ -6,9 +6,10 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # ~4 minutes, 156 checks, isolated from any running team
+tests/smoke.sh                 # 2 to 4 minutes, 159 checks, isolated from any running team
+tests/docs.sh                  # ~2 seconds, 28 checks, starts nothing
 tests/migration.sh             # ~30 seconds, 21 checks, in a throwaway HOME
-tests/permissions.sh           # ~5 seconds, 9 checks, in a throwaway HOME
+tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```
@@ -18,7 +19,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh — 156 of 156 pass (2026-09-20)
+## smoke.sh — 159 of 159 pass (2026-09-20)
 
 | Area | Checks |
 |------|--------|
@@ -30,6 +31,7 @@ real team was live on the same machine; the real team was unaffected.
 | teams | asking for another lead model while a team runs never hijacks it and prints how to start a second · a named team gets its own tmux session and lead · with several teams a command must say which (exit 64, lists them) · the same role can exist in two teams; `--team` before or after the command; branches `ai/<team>/…`, the record agrees · status draws every team as a tree (TEAM, 🐺, 🐶) · `--json` lists the teams, with `--team` it keeps the single-team shape · `teamctl teams` · Beads names `<team>.<role>`, the first team keeps plain roles · an agent is told who its lead is in its own team's terms, the protocol's examples rewritten · a nudge finds the right team by name · a lead manages its own team only (exit 77) · notifications name the team and a click opens that team · bad team names refused · Beads messages reach the lead of the right team · destroy ends one team and leaves the other |
 | deleting a team | a worker may not delete a team (exit 77) · work that exists nowhere else is listed and, without an answer, nothing at all is touched: the team keeps running · the report says how much space the team takes · `--purge --force`: session, worktrees, `ai/` branches, records and transcripts are gone · nothing else is touched: other teams, their branches, the checkout, other transcripts · with nothing at risk it still wants a yes when nobody can be asked · deleting the first team leaves the named teams' state alone · `teamctl teams` shows DISK |
 | teams together | teams talk through Beads in both directions · every agent is told that other teams exist and how to reach them · a lead can found a fresh team and hand over (`--handover`), the founder is recorded, the new lead's first words name the bead · you are told when an agent founds a team · a lead cannot take over a team that has a lead, a worker cannot found one (exit 77) · `lead-teams off` keeps founding teams to you |
+| teams, approvals | a permission request in a named team is filed with, and announced to, its own lead, never the first team's · another team's lead cannot decide it (exit 77), its own lead can, and the worker's CLI receives allow · the waiting time is also read from the config file, not only from the environment |
 | lanes | words are not commands: prose in quotes and heredocs never triggers the guard, a quoted path still does · MCP tools are held to the same lanes · every worker has the guard, the lead does not · a worker may change files in its own worktree (absolute, relative, new) and in temporary directories · not the lead's checkout, a teammate's worktree, `~/.zshrc`, or anything reached with `..` · it may read the lead's checkout, never a teammate's worktree or teamctl's state · ordinary shell work passes (tests, commits, `git checkout -- file`, `git push -u origin HEAD`, copying `.env` from the lead's checkout, `teamctl`, `bd`, rebase) · reaching into another worktree or writing into the lead's checkout is refused, in either spelling of the path · switching, creating or deleting branches, `git worktree`, `tmux`, pushes to main are refused · the lead is not guarded and an agent the guard cannot place is allowed · `worker-isolation off` removes it at the next start |
 | clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error |
 | one manager | default policy is skip / skip / spawning off / isolation on · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |
@@ -107,7 +109,7 @@ Second install run changed nothing · existing `allow` entries not duplicated an
 `deny` preserved · install then uninstall left `~/.zshrc` byte-identical · exactly
 the added permission rules removed · uninstall refused while a team was running.
 
-## permissions.sh — 9 of 9 pass (2026-09-20)
+## permissions.sh — 13 of 13 pass (2026-09-20)
 
 `install.sh` and `uninstall.sh` against `~/.claude/settings.json` in a throwaway `HOME`
 (no team, no CLI, nothing of yours read). Written first: 4 of the 9 failed before the change.
@@ -116,7 +118,8 @@ the added permission rules removed · uninstall refused while a team was running
 |------|--------|
 | a fresh install | `teamctl` and `bd` allowed, `teamctl destroy` asks · no rule that can write a file or run a command through its arguments · `claude/permissions.json` names what it retired and adds none of it |
 | over a settings file an earlier version wrote | the five retired rules are taken out · the installer names each one and the backup still holds them · your own rules, `deny` and every other key untouched · a second run changes nothing |
-| uninstall | current and retired rules both removed · your own rules stay |
+| uninstall | an option it does not know is refused (exit 64) before anything is touched · current and retired rules both removed · your own rules stay |
+| uninstall `--purge` | a worktree of a named team keeps `~/.wolfmux`, and says so · the empty `teams/` folder a named team leaves behind is not a worktree (it used to keep `~/.wolfmux` for ever) · with no `worktrees/` folder at all it still finishes and removes `~/.wolfmux` |
 
 Not covered: a rule of yours that is spelled exactly like a retired one cannot be told apart
 from ours and is taken out as well; the installer names it and the backup holds it.
@@ -158,6 +161,38 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | `teamctl _notify` with no terminal attached | `pending` written, Wolfmux.app launched, message fetched within 3 s, application exited |
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
+
+## docs.sh — 28 of 28 pass
+
+`tests/docs.sh` reads the code for what exists and the documents for whether it is named.
+Nothing is started; it takes about two seconds.
+
+| Area | What is checked |
+|------|-----------------|
+| commands | every public command `bin/teamctl` dispatches (not the internal `_…` ones, the pointers to Beads, `version`, `help`), and every alias, is in `teamctl help`, README.md and docs/USAGE.md; every command is in the user manual |
+| options | every option a command's argument loop accepts stands next to that command in `teamctl help`, README.md and docs/USAGE.md (spellings on one `case` label count as one) |
+| policy keys, models | every key of `POLICY_KEYS` and of `model_info` is in all four, as a word of its own |
+| settings | every key of `WOLFMUX_CONFIG_KEYS` is in the config template, and explained in the user manual or under `docs/` |
+| launchers, installer | every launcher in `bin/` or linked by `install.sh` is in README.md, the user manual and docs/SETUP.md; every option of every top-level script (`install.sh`, `uninstall.sh`, `migrate-from-ai-team.sh`) is in docs/SETUP.md |
+| indexes, links | README.md links every `docs/*.md`; the ADR index lists every record; the diagrams page shows every SVG; every relative link leads to a file, and its `#anchor` to a heading that exists |
+
+Its first run on the tree before it (2026-09-20) failed 13 of 28: README.md named 5 of 22
+commands, neither alias and no options; `teamctl help` lacked `lead-teams`,
+`--keep-transcripts`, `--quiet` and `--lines`; the user manual lacked two policy keys and
+ten settings; docs/SETUP.md still described two symlinks and knew nothing of `Wolfmux.app`,
+the `codex` wrapper or `--no-notifier-app`.
+
+Does it notice drift? Thirteen mutations, each on a copy of the repository, each caught: a
+command dropped from the README · a new command nobody documented · a new option · an
+option renamed in the README only · a new policy key · a new setting · a link to a heading
+that does not exist · a linked document deleted · a new document the README does not link ·
+a policy key that survives only inside the flag `--worker-spawn` · a model key that
+survives only inside `codex-astra` · the one option of `uninstall.sh` dropped from SETUP.md
+· a link to a `# comment` inside a code block. The last four came out of the review of the
+check itself: its first version matched substrings, never saw `uninstall.sh --purge`
+(that script did not parse its option as a `case` label; it does now, and refuses an option
+it does not know with exit 64 instead of ignoring it), and took comments in fenced
+examples for headings.
 
 ## Not verified
 

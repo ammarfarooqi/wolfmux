@@ -217,6 +217,24 @@ The Beads hook reads the team out of the assignee's name (`review.backend`) and 
 tell out of the actor's (`review.lead`); `teamctl nudge` accepts the same names. For an agent
 of a named team the protocol's examples are rewritten at launch (`-a lead` → `-a review.lead`).
 
+![Several teams in one project](diagrams/teams.svg)
+
+Founding and deleting ([ADR-0019](adr/0019-deleting-a-team-and-founding-one.md)). `teamctl
+start` is yours and, for its own team, the lead's. One thing more: a lead may start a team
+that does not exist yet (`start_permitted`; policy `lead-teams` of the founder's team,
+default on), and `--handover <bead-id>` is stored in the new lead's record and becomes its
+first prompt. The founder is
+recorded as `spawned_by`, you are notified, and the founder does not manage the new team.
+`teamctl destroy --purge` is the reverse: `_purge_report` measures and lists first (size per
+worktree, uncommitted files, commits the checked-out branch does not have, transcripts).
+Nothing is touched until the answer is yes, `--force` was given, or `--yes` with nothing at
+risk. `_purge_team` then ends the session and removes the team's own state files; a
+worktree named in a record only when it lies inside the team's worktree directory (with
+the transcript folder derived from its path); a branch only when it is `ai/…` and not the
+one checked out in your checkout.
+
+What teams do not have apart: your checkout. Every lead works in the project root.
+
 ## Arrangement and coming back
 
 `lib/layout.sh`: `lead-left` (default: the lead is tmux's main pane at 55 % of the width,
