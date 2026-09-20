@@ -25,6 +25,14 @@
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
 
+# The wolf that greets you when you open a team (teamctl start / attach). Any key closes it.
+#WOLFMUX_SPLASH=off
+
+# Desktop notification when an agent finishes a turn. It is sent through the terminal
+# attached to the team, so clicking it brings that tab to the front.
+#   all (default) · lead = only the manager · off
+#WOLFMUX_NOTIFY=lead
+
 # Model pins.
 #WOLFMUX_FABLE_MODEL=claude-fable-5-1[1m]
 #WOLFMUX_ASTRA_MODEL=gpt-6-astra

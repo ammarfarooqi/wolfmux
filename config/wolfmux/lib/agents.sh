@@ -120,7 +120,9 @@ cmd_start() {
   meta_put root "$ROOT" session "$SESSION" lead_model "$model"
   event_log start "$WOLFMUX_LEAD_ROLE" "$model"
   lock_release
+  tm_set_splash "$SESSION"
 
+  brand_banner
   say "team session:  $SESSION   (tmux socket: $WOLFMUX_TMUX_SOCKET)"
   say "lead:          $MODEL_LABEL via $MODEL_LAUNCHER in $(short_path "$ROOT")"
   say "policy:        $(policy_summary)   (teamctl policy)"
@@ -246,25 +248,34 @@ kickoff_text() {
   printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$1"
 }
 
-# write_agent_settings <role> — Claude Code settings for one WORKER pane; prints the
-# file path. Workers never run Claude Code's own agent-teams feature: with it on,
+# write_agent_settings <role> — Claude Code settings for one Claude-based agent; prints
+# the file path. Workers never run Claude Code's own agent-teams feature: with it on,
 # any subagent a session names becomes a teammate whose "team lead" — and permission
-# approver — is that worker. The lead's settings are left exactly as you have them.
+# approver — is that worker. The lead's file holds the notification hook and nothing
+# about teams or permissions: those stay exactly as you have them.
 write_agent_settings() {
-  local role="$1" path="$STATE_DIR/settings/$1.json" hook_command
+  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command=""
   /bin/mkdir -p "$STATE_DIR/settings"
-  hook_command="\"$TEAMCTL_SELF\" _permission-hook"
-  "$JQ_BIN" -n --arg mode "$(reg_field "$role" permissions)" --arg command "$hook_command" \
-    --argjson timeout "$((APPROVAL_TIMEOUT + 30))" '
-    {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"}
-    + (if $mode == "lead"
-       then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $command, timeout: $timeout}]}]}}
+  kind="$(reg_field "$role" kind)"
+  if notify_wanted "$kind"; then notify_command="\"$TEAMCTL_SELF\" _notify"; fi
+  # Workers only: agent teams off, so a worker can never become a second manager.
+  # Everyone: notifications are teamctl's job inside a team (lib/notify.sh).
+  # Lead mode only: permission requests go to the lead.
+  "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" \
+    --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$((APPROVAL_TIMEOUT + 30))" \
+    --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" '
+    (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
+    * {env: {ECC_DISABLED_HOOKS: $silence}}
+    * (if $notify_command != ""
+       then {hooks: {Stop: [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}]}} else {} end)
+    * (if $kind == "worker" and $mode == "lead"
+       then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $permission_command, timeout: $timeout}]}]}}
        else {} end)' >"$path"
   printf '%s\n' "$path"
 }
 
 cmd_run_agent() {
-  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions
+  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name
   [ -n "$root" ] && [ -n "$role" ] || die_usage "internal use: _run-agent <root> <role> [--continue]"
   if [ "${3:-}" = "--continue" ]; then resume=1; fi
   export WOLFMUX_ROOT="$root"
@@ -287,12 +298,13 @@ cmd_run_agent() {
   cd "$workdir" || die "cannot enter $workdir"
 
   permissions="$(reg_field "$role" permissions)"
-  if [ "$(reg_field "$role" kind)" = "worker" ] && [ "$family" != "codex" ]; then
+  if [ "$family" != "codex" ]; then
     WOLFMUX_EXTRA_SETTINGS="$(write_agent_settings "$role")"
     export WOLFMUX_EXTRA_SETTINGS
   fi
 
   prompt="$(build_role_prompt "$role")"
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then brand_wolf 2; fi # the manager's pane opens with the wolf
   printf '[wolfmux] role=%s  model=%s  launcher=%s  permissions=%s\n[wolfmux] cwd=%s\n' \
     "$role" "$(reg_field "$role" label)" "$(basename "$launcher")" "${permissions:-ask}" "$workdir"
 
@@ -311,7 +323,9 @@ $prompt
       fi
       ;;
     *)
-      args=(--append-system-prompt "$prompt" --name "team/$role")
+      # The wolf marks the manager inside Claude Code's own frame as well as on the pane border.
+      if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then name="$WOLFMUX_LEAD_MARK team/$role"; else name="team/$role"; fi
+      args=(--append-system-prompt "$prompt" --name "$name")
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
       if [ "$resume" -eq 1 ]; then
         args+=(--continue)

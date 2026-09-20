@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor; do
+for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -104,6 +104,8 @@ main() {
     doctor) cmd_doctor "$@" ;;
     _run-agent) cmd_run_agent "$@" ;;
     _refresh-hooks) cmd_refresh_hooks "$@" ;;
+    _splash) cmd_splash "$@" ;;
+    _notify) cmd_notify "$@" ;;
     send | inbox | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
     version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;

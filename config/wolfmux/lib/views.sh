@@ -57,7 +57,7 @@ cmd_status() {
   fi
   say "project   $(short_path "$ROOT")"
   if [ -n "$SESSION_LIVE" ]; then say "session   $SESSION  (running)"; else say "session   $SESSION  (not running)"; fi
-  say "policy    manager: lead · $(policy_summary) · approvals pending: $(approvals_pending_count)"
+  say "policy    manager: $WOLFMUX_LEAD_MARK lead · $(policy_summary) · approvals pending: $(approvals_pending_count)"
   say ""
   if [ -z "$rows" ]; then
     say "no agents registered. Start a team: teamctl start <fable|astra>"
@@ -143,6 +143,7 @@ cmd_attach() {
   if [ -n "${TMUX:-}" ]; then
     die "you are inside another tmux server. Open a new terminal tab and run: teamctl attach"
   fi
+  tm_set_splash "$SESSION"
   [ -t 0 ] && [ -t 1 ] || die "not a terminal. In your own terminal run: teamctl attach   (or: tmux -L $WOLFMUX_TMUX_SOCKET attach -t $SESSION)"
   exec "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" attach-session -t "=$SESSION"
 }

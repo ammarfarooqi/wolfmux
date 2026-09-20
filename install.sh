@@ -107,7 +107,13 @@ install_file "$REPO/config/wolfmux/hooks/beads-nudge" "$CONF_DIR/hooks/beads-nud
 for name in tmux.conf TEAM_PROTOCOL.md README.md; do
   install_file "$REPO/config/wolfmux/$name" "$CONF_DIR/$name" 644
 done
-install_once "$REPO/config/wolfmux/config" "$CONF_DIR/config" 644
+# A config without a single active line is only an old copy of the template: refresh it,
+# so new settings show up as comments. One edit of yours and it is never touched again.
+if [ -f "$CONF_DIR/config" ] && ! grep -qvE '^[[:space:]]*(#|$)' "$CONF_DIR/config"; then
+  install_file "$REPO/config/wolfmux/config" "$CONF_DIR/config" 644
+else
+  install_once "$REPO/config/wolfmux/config" "$CONF_DIR/config" 644
+fi
 if ! /usr/bin/cmp -s "$REPO/config/wolfmux/config" "$CONF_DIR/config"; then
   note "new settings may exist: compare with $REPO/config/wolfmux/config"
 fi

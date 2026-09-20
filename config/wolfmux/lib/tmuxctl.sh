@@ -35,6 +35,30 @@ tmx_boot() {
   env "${unset_args[@]}" "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" -f "$WOLFMUX_HOME/tmux.conf" "$@"
 }
 
+# tm_version_at_least <major> <minor> — "tmux 3.7c" and "tmux next-3.8" both parse
+tm_version_at_least() {
+  local numbers major minor
+  numbers="$("$TMUX_BIN" -V 2>/dev/null | sed -E 's/^[^0-9]*([0-9]+)\.([0-9]+).*$/\1 \2/')"
+  major="${numbers%% *}"
+  minor="${numbers##* }"
+  case "$major$minor" in "" | *[!0-9]*) return 1 ;; esac
+  [ "$major" -gt "$1" ] || { [ "$major" -eq "$1" ] && [ "$minor" -ge "$2" ]; }
+}
+
+# tm_set_splash <session> — the wolf popup a client sees when it attaches. Set again on
+# every start/attach, so WOLFMUX_SPLASH=off and sessions from older versions both work.
+# The popup starts in the session's directory, which is how `teamctl _splash` finds the team.
+tm_set_splash() {
+  local session="$1" look="" self
+  tmx set-hook -u -t "=$session:" client-attached 2>/dev/null || true
+  [ "${WOLFMUX_SPLASH:-on}" != "off" ] || return 0
+  tm_version_at_least 3 2 || return 0 # display-popup arrived in tmux 3.2
+  if tm_version_at_least 3 3; then look="-b rounded -s 'bg=#0b1020,fg=#d3d9e4' -S 'fg=#f5b942,bg=#0b1020'"; fi
+  self="$(printf '%s' "$TEAMCTL_SELF" | sed "s/'/'\\\\''/g")"
+  tmx set-hook -t "=$session:" client-attached \
+    "display-popup -E $look -w $WOLFMUX_SPLASH_WIDTH -h $WOLFMUX_SPLASH_HEIGHT -d '#{session_path}' \"'$self' _splash\"" 2>/dev/null || true
+}
+
 tm_session_exists() { tmx has-session -t "=$1" 2>/dev/null; }
 
 # Session-scoped options need the trailing colon: set-option/show-options parse -t
