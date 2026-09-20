@@ -38,7 +38,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                 kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
                 minimax:<model-id> · qwen:<model-id>      any model in any team, whoever leads
-                moonshot and deepseek bill every token (metered): refused unless the owner sets WOLFMUX_METERED=on;
+                moonshot and deepseek bill every token (metered): refused unless the owner's config file says WOLFMUX_METERED=on;
                 teamctl status marks them with $
     teamctl stop <role>                               close the pane; worktree, branch and record stay
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,

@@ -204,12 +204,13 @@ done
 unset _wm_provider
 
 # require_metered_ok, after model_info: a metered model (every token is billed to a prepaid
-# balance) is refused unless the owner switched WOLFMUX_METERED on. The owner decides, not an
-# agent: the setting is in the owner's config file, and the message says so.
+# balance) is refused unless the owner's config file says WOLFMUX_METERED=on (wolfmux_metered_on).
+# The environment never counts: an agent could put a variable in front of one command, and the
+# pane a spawned agent runs in gets its environment from the tmux server, not from that command.
 require_metered_ok() {
   [ "$MODEL_BILLING" = "metered" ] || return 0
-  [ "${WOLFMUX_METERED:-}" = "on" ] && return 0
-  die "'$MODEL_KEY' is metered: every token is billed to a prepaid balance, not to a plan or a subscription, so it is off. Only the owner switches it on (an agent does not decide that): put WOLFMUX_METERED=on in $(short_path "$WOLFMUX_HOME/config"), or set it for one command." 77
+  wolfmux_metered_on && return 0
+  die "'$MODEL_KEY' is metered: every token is billed to a prepaid balance, not to a plan or a subscription, so it is off. Only the owner switches it on (an agent does not decide that): put WOLFMUX_METERED=on in $(short_path "$WOLFMUX_HOME/config"). An environment variable does not count." 77
 }
 
 # launcher_path <key> — WOLFMUX_LAUNCHER_<KEY> overrides the default (used by tests).

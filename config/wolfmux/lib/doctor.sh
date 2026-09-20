@@ -200,10 +200,10 @@ _doc_provider() {
     _ok "models    $PROVIDER_MAIN_MODEL (claude-$p), background tier $PROVIDER_FAST_MODEL; another one: WOLFMUX_${upper}_MODEL, or teamctl spawn <role> $p:<model-id>"
   fi
   if [ "$PROVIDER_BILLING" = "metered" ]; then
-    if [ "${WOLFMUX_METERED:-}" = "on" ]; then
-      _note "billing: METERED ($PROVIDER_BILLING_NOTE). WOLFMUX_METERED=on: teamctl starts metered agents, every token they use is billed"
+    if wolfmux_metered_on; then
+      _note "billing: METERED ($PROVIDER_BILLING_NOTE). WOLFMUX_METERED=on in $(short_path "$WOLFMUX_HOME/config"): teamctl starts metered agents, every token they use is billed"
     else
-      _ok "billing: METERED ($PROVIDER_BILLING_NOTE); teamctl refuses to start it because WOLFMUX_METERED is off (the owner's decision)"
+      _ok "billing: METERED ($PROVIDER_BILLING_NOTE); teamctl refuses to start it until $(short_path "$WOLFMUX_HOME/config") says WOLFMUX_METERED=on (the owner's decision; the environment does not count)"
     fi
   else
     _ok "billing: plan ($PROVIDER_BILLING_NOTE)"
