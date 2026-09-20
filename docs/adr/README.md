@@ -22,3 +22,4 @@ build; superseded decisions will link to their replacement.
 | [0015](0015-notifications-through-the-attached-terminal.md) | Notifications lead back to the team: through the attached terminal, else through Wolfmux.app | accepted | 2026-09-20 |
 | [0016](0016-worktree-guard.md) | A guard that keeps each teammate in its own worktree and on its own branch | accepted | 2026-09-20 |
 | [0017](0017-any-model-for-any-agent.md) | Any model can join any team | accepted | 2026-09-20 |
+| [0018](0018-several-teams-per-project.md) | Several named teams in one project | accepted | 2026-09-20 |

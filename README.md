@@ -25,6 +25,7 @@ cd ~/code/your-project
 teamctl start fable                           # or: teamctl start astra
 teamctl spawn backend glm53
 teamctl spawn qa flash
+teamctl start fable --team review             # several teams per project, each named by you; teamctl status shows them all
 teamctl spawn fe-review astra                 # any model can join any team (fable · opus · sonnet · haiku · astra · claude:<id> · codex:<id>)
 ```
 
@@ -42,7 +43,7 @@ reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (120 isolated lifecycle checks, no model calls), `migration.sh` (the move from v1.1, rehearsed in a throwaway `HOME`), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tests/` | `smoke.sh` (135 isolated lifecycle checks, no model calls), `migration.sh` (the move from v1.1, rehearsed in a throwaway `HOME`), `credential-routing.sh` (evidence for the billing/credential design) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 

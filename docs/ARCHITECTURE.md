@@ -196,6 +196,27 @@ is alive, it returns nothing, which means "show the normal prompt".
 
 ![Sequence: a worker's permission request is filed, the lead approves or denies, the decision returns to the worker's CLI](diagrams/approval-flow.svg)
 
+## Teams
+
+A project has one or more teams ([ADR-0018](adr/0018-several-teams-per-project.md)).
+`load_project` resolves the repository, then the team: `--team`, else the caller's own
+(`@wolfmux_team` on the tmux session, `WOLFMUX_TEAM` in the agent's environment), else the
+only one there is. Everything per team hangs off two variables it sets, `STATE_DIR` and
+`WORKTREES_DIR`, which is why policy, approvals, arrangement, guard and notifications
+needed no team logic of their own.
+
+| | first team (`default`) | named team |
+|---|---|---|
+| tmux session | `team-<project>` | `team-<project>-<team>` |
+| state | `~/.wolfmux/state/<project>/` | `…/<project>/teams/<team>/` |
+| worktrees | `~/.wolfmux/worktrees/<project>/<role>-<stamp>` | `…/<project>/teams/<team>/<role>-<stamp>` |
+| branches | `ai/<role>-<stamp>` | `ai/<team>/<role>-<stamp>` |
+| Beads name | `<role>` | `<team>.<role>` |
+
+The Beads hook reads the team out of the assignee's name (`review.backend`) and the lead to
+tell out of the actor's (`review.lead`); `teamctl nudge` accepts the same names. For an agent
+of a named team the protocol's examples are rewritten at launch (`-a lead` → `-a review.lead`).
+
 ## Arrangement and coming back
 
 `lib/layout.sh`: `lead-left` (default: the lead is tmux's main pane at 55 % of the width,

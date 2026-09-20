@@ -6,7 +6,7 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # ~3 minutes, 120 checks, isolated from any running team
+tests/smoke.sh                 # ~3 minutes, 135 checks, isolated from any running team
 tests/migration.sh             # ~30 seconds, 21 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
@@ -17,7 +17,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh — 120 of 120 pass (2026-09-20)
+## smoke.sh — 135 of 135 pass (2026-09-20)
 
 | Area | Checks |
 |------|--------|
@@ -26,6 +26,7 @@ real team was live on the same machine; the real team was unaffected.
 | spawn | two workers running · own branch each · worktrees outside the repository · `--base` recorded · `TEAM_ROLE` / `BEADS_ACTOR` / model set inside the pane · no provider or agent-session variable leaks into a pane · kickoff prompt present by default and absent with `--no-kickoff` · lead is pane 0 · pane titles are `<role> · <model>` |
 | validation | duplicate role refused · `lead` and malformed roles refused · a capital letter is refused under `C`, `en_AU.UTF-8` and `en_US.UTF-8` alike · a role an older version let through can still be listed and stopped · a role name can never leave the registry directory · flag without a value reports usage with exit 64 |
 | any model | a Codex teammate in a team led by another model · a Claude-subscription teammate (sonnet) beside GLM workers, with the guard · `claude:<id>` and `codex:<id>` reach the CLI · a Codex teammate gets the notify program · nonsense (`gpt`, `claude:`, `claude:bad;id`, `glm:glm-9`, `codex:a b`) is refused before anything is created |
+| teams | asking for another lead model while a team runs never hijacks it and prints how to start a second · a named team gets its own tmux session and lead · with several teams a command must say which (exit 64, lists them) · the same role can exist in two teams; `--team` before or after the command; branches `ai/<team>/…`, the record agrees · status draws every team as a tree (TEAM, 🐺, 🐶) · `--json` lists the teams, with `--team` it keeps the single-team shape · `teamctl teams` · Beads names `<team>.<role>`, the first team keeps plain roles · an agent is told who its lead is in its own team's terms, the protocol's examples rewritten · a nudge finds the right team by name · a lead manages its own team only (exit 77) · notifications name the team and a click opens that team · bad team names refused · Beads messages reach the lead of the right team · destroy ends one team and leaves the other |
 | lanes | words are not commands: prose in quotes and heredocs never triggers the guard, a quoted path still does · MCP tools are held to the same lanes · every worker has the guard, the lead does not · a worker may change files in its own worktree (absolute, relative, new) and in temporary directories · not the lead's checkout, a teammate's worktree, `~/.zshrc`, or anything reached with `..` · it may read the lead's checkout, never a teammate's worktree or teamctl's state · ordinary shell work passes (tests, commits, `git checkout -- file`, `git push -u origin HEAD`, copying `.env` from the lead's checkout, `teamctl`, `bd`, rebase) · reaching into another worktree or writing into the lead's checkout is refused, in either spelling of the path · switching, creating or deleting branches, `git worktree`, `tmux`, pushes to main are refused · the lead is not guarded and an agent the guard cannot place is allowed · `worker-isolation off` removes it at the next start |
 | clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error |
 | one manager | default policy is skip / skip / spawning off / isolation on · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |

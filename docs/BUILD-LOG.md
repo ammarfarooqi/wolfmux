@@ -232,6 +232,23 @@ tripped the shell patterns, a destructive verb anywhere in a command that merely
 the lead's checkout was refused, MCP tools were not matched at all, and `remove a b` was
 not all-or-nothing. All fixed, each with a check. `tests/smoke.sh`: 109 → 120.
 
+## 19. Several teams per project (v1.8)
+
+The owner had an Astra team up, ran `teamctl start fable` for a second team, and landed in
+the Astra session. A project had one team by construction. Now it has teams
+([ADR-0018](adr/0018-several-teams-per-project.md)): the first stays where it was, named
+ones live under `teams/<name>/`, each with its own session, lead and workers, and
+`teamctl status` draws them as a tree. The change stayed small because nearly everything
+already hung off `STATE_DIR` and the session name; the real work was identity, since all
+teams share one Beads database (`<team>.<role>`), and saying no: `start` with another model
+refuses instead of attaching.
+
+This was written while a second Claude session was fixing other things in the same
+repository. Both worked in their own git worktrees on their own branches; this one rebased
+on `main` before merging and installed only from `main`.
+
+`tests/smoke.sh`: 120 → 135.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
