@@ -112,12 +112,21 @@ Comments (`bd comment`) notify nobody; send a message when someone must act.
 
 | You see | Meaning |
 |---------|---------|
+| the lead large on the left, teammates stacked on the right | the default arrangement. `teamctl layout lead-top` or `tiled` changes it for this project (`WOLFMUX_LAYOUT` for all); inside the team `Ctrl-b Space` cycles tmux's own arrangements and `Ctrl-b T` puts the last one back |
 | a popup with the wolf when you open the team | `teamctl start` / `attach` worked. Any key closes it (or 3 seconds). Off: `WOLFMUX_SPLASH=off` in `~/.config/wolfmux/config` |
-| `🐺 lead · <model>` and an amber pane border | the manager. Workers have grey borders (blue when focused) and no wolf |
+| `🐺 lead · <model>` and an amber pane border | the manager. Teammates are `🐶 <role> · <model>` with grey borders (blue when focused) |
 | `🐺 WOLFMUX` in the status line, `🐺 <session>` as the tab title | this terminal tab is a Wolfmux team |
 | a desktop notification `🐺 lead: …` or `backend: …` | that agent finished a turn. Click it: the tab with the team comes to the front. Scope: `WOLFMUX_NOTIFY=all` (default), `lead`, or `off` |
 
-Notifications and the lead's `🐺 team/lead` session name reach an agent when it starts:
+**Closing and coming back.** Quitting an agent's CLI leaves its pane on screen (so you can
+read its last output); quitting all of them leaves a window of finished panes. `teamctl start
+<fable|astra>` deals with both: if only the lead had exited it comes back in its place and the
+workers are not touched; if everyone had exited, the old window is cleared and a new session
+starts. Workers from before are listed as stopped, with their worktrees — `teamctl restart
+<role> --continue` brings one back with its conversation. `teamctl start … --continue` does
+the same for the lead. To end a team on purpose: `teamctl destroy`.
+
+Notifications and the session names (`🐺 team/lead`, `🐶 team/<role>`) reach an agent when it starts:
 after an update, `teamctl restart <role> --continue`.
 
 ## tmux, in the team session only

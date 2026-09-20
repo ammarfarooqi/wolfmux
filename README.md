@@ -5,8 +5,8 @@
 A local, multi-model AI development team on one Mac. One **lead** agent plans,
 delegates and reviews; any number of **worker** agents implement in parallel. Every
 agent is a real CLI in its own visible tmux pane, on its own git branch and worktree.
-The lead is the wolf: 🐺 in its pane border, an amber frame, and its name in every
-notification, so you can always tell the manager from the pack.
+The lead is the wolf — 🐺 in its pane border, an amber frame, the large pane on the left —
+and every teammate is a dog of the pack (🐶), so you can always tell the manager from the rest.
 
 **All inference runs on subscriptions. There is no API key, no metered proxy, and no
 pay-as-you-go path anywhere in this system.**
@@ -40,7 +40,7 @@ reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (71 isolated lifecycle checks, no model calls), `migration.sh` (the move from v1.1, rehearsed in a throwaway `HOME`), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tests/` | `smoke.sh` (84 isolated lifecycle checks, no model calls), `migration.sh` (the move from v1.1, rehearsed in a throwaway `HOME`), `credential-routing.sh` (evidence for the billing/credential design) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 

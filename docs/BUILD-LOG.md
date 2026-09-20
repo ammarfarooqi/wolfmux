@@ -159,6 +159,28 @@ notification opened Script Editor. Cause: the ECC plugin's notifier falls back t
 `osascript` inside tmux. Fix: [ADR-0015](adr/0015-notifications-through-the-attached-terminal.md).
 `tests/smoke.sh` grew from 55 to 71 checks.
 
+## 15. Finished panes, arrangement, and the pack (v1.4)
+
+The owner quit every agent and ran `teamctl start fable` again: it attached to a window of
+`Pane is dead` lines. `remain-on-exit` had kept the panes (on purpose, so the last output
+stays readable), the session still existed, and `start` only asked whether a session
+existed. It now asks what is alive (see ARCHITECTURE, "Arrangement and coming back").
+Because that session was the last one on the pre-rename socket, the socket choice had to
+become re-evaluable, otherwise the fresh team would have been started under the old name.
+
+Same report: the arrangement. tmux's `tiled` gave the third pane the full width and moved
+everything whenever a worker came or went. Default is now `lead-left`; `teamctl layout`
+switches. And the teammates got their own mark, 🐶, next to the lead's 🐺 (there is only
+one wolf emoji). Tests were written first and seen failing (9 red), then made to pass.
+
+Last, the long yellow `"glm-5.3" isn't described by this version's model catalog` notice in
+every worker pane. The notice itself names three ways out; each was tried on the real CLI
+against the localhost mock. Declaring the window Claude Code already assumes
+(`CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000`) removes it without changing behaviour, so that is
+what `claude-glm` does. The variable stays on the scrub list — a Fable child must never
+inherit a GLM window — so a different number goes through `WOLFMUX_GLM_CONTEXT`.
+`tests/smoke.sh` 71 → 84.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

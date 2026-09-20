@@ -6,7 +6,7 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # ~3 minutes, 71 checks, isolated from any running team
+tests/smoke.sh                 # ~3 minutes, 84 checks, isolated from any running team
 tests/migration.sh             # ~30 seconds, 21 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
@@ -17,10 +17,11 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh — 71 of 71 pass (2026-09-20)
+## smoke.sh — 84 of 84 pass (2026-09-20)
 
 | Area | Checks |
 |------|--------|
+| launchers | `claude-glm` declares a 200k context window · `1m` uses the suffix instead, a number is declared, nonsense falls back with a warning · a context value from outside is scrubbed, never inherited |
 | start | session running and lead registered · repository left clean by the stealth Beads init (no commit, no tracked file) |
 | spawn | two workers running · own branch each · worktrees outside the repository · `--base` recorded · `TEAM_ROLE` / `BEADS_ACTOR` / model set inside the pane · no provider or agent-session variable leaks into a pane · kickoff prompt present by default and absent with `--no-kickoff` · lead is pane 0 · pane titles are `<role> · <model>` |
 | validation | duplicate role refused · `lead` and malformed roles refused · flag without a value reports usage with exit 64 |
@@ -30,6 +31,8 @@ real team was live on the same machine; the real team was unaffected.
 | Beads | a message to a role notifies its pane · body stored intact (`"quotes"`, `$HOME`, backticks) and never typed into the pane · a worker reads the shared database from its external worktree |
 | git | `diff` commits / stat / patch · uncommitted leftovers visible · main checkout untouched by worker commits · `worktrees` lists everyone |
 | the wolf | the session has the `client-attached` popup hook · the splash draws wolf, wordmark and team line · no colour codes outside a terminal · it works outside any project · only the manager pane has the mark and the amber border · the manager pane opens with the wolf · status line and tab title carry it · `WOLFMUX_SPLASH=off` removes the popup and the default restores it · a Claude lead is named `🐺 team/lead`, workers are not |
+| arrangement | by default the lead is the large pane on the left and workers share one column on the right · `lead-top` puts the lead across the top · `tiled` is available, the choice is remembered, an unknown name is refused (exit 64) · the arrangement survives a spawn and a stop |
+| closing and coming back | a lead that exited comes back in place and the worker keeps its pane · when every agent has exited, `start` opens a fresh session with one pane and marks workers stopped · `--continue` reaches the lead's CLI · a stopped worker returns with `restart` into the arrangement · **a pre-rename team whose agents have all exited is replaced by a fresh one on the new socket** |
 | desktop notifications | every Claude agent gets the `Stop` hook, the plugin notifier is silenced and the user's own disabled hook is kept · OSC 9 to the attached terminal with the first line, markdown dropped · the lead is marked · **an OSC 52 and a clear-screen sequence inside a message never reach the terminal** (exactly two control bytes come out: ours) · long messages are cut · no terminal attached → `osascript` with the text as an argument, never a failure · `WOLFMUX_NOTIFY=lead` keeps workers quiet |
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
@@ -76,6 +79,8 @@ shrinks the popup and the splash drops lines to fit instead of scrolling.
 | session with the owner's global settings (agent teams = 1) | Claude Code created `~/.claude/teams/session-<id>/`: the session is a team lead, and named subagents become its teammates |
 | same session plus the per-worker settings `teamctl` generates (`env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "0"`, `teammateMode = "in-process"`) | **no team directory created**: the override passed through `--settings` beats the global value |
 | `--dangerously-skip-permissions` through the worker environment | footer `bypass permissions on`, prompt ready, no blocking dialog |
+| `claude -p --model glm-5.3` with the environment a GLM worker had before 1.4 | prints `"glm-5.3" isn't described by this version's model catalog … auto-compact keeps this session within 200k tokens`; the same for `glm-5.3-flash` |
+| the same with `CLAUDE_CODE_MAX_CONTEXT_TOKENS=200000`, as `claude-glm` and `claude-glm-flash` now export it | **no notice**. Also silent: the `[1m]` suffix, and `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1` (not used: it changes behaviour, the declaration does not) |
 | banner of a key-authenticated session | reads `API Usage Billing` — Claude Code's label for any key-based login, here the Z.ai Coding Plan key |
 
 ## Beads evaluation (sandboxed `HOME`)

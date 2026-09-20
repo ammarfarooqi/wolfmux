@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-labelledby="title desc">
-<title id="title">Wolfmux: one lead and three workers in a tiled tmux window</title>
-<desc id="desc">On the left the Wolfmux wolf, wordmark and four properties. On the right a terminal with four tmux panes: the lead, marked with a wolf and an amber border, plus a backend, a frontend and a QA worker, each working on a Beads task.</desc>
+<title id="title">Wolfmux: the lead on the left, three teammates stacked on the right</title>
+<desc id="desc">On the left the Wolfmux wolf, wordmark and four properties. On the right a terminal with four tmux panes: the lead, marked with a wolf and an amber border, fills the left side; a backend, a frontend and a QA teammate, each marked with a dog and working on a Beads task, are stacked on the right.</desc>
 <style>
   .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 12.5px; }
@@ -206,54 +206,55 @@
   <text class="mono muted" x="1212" y="575" text-anchor="end">team-shop · 14:02</text>
 </g>
 
-<!-- pane borders: the lead's are amber, focused or not -->
-<line class="rule" x1="838" y1="92" x2="838" y2="556"/>
-<line class="rule" x1="838" y1="104" x2="1224" y2="104"/>
-<line class="rule" x1="452" y1="330" x2="1224" y2="330"/>
-<line class="rule-lead" x1="452" y1="104" x2="838" y2="104"/>
-<line class="rule-lead" x1="838" y1="104" x2="838" y2="330"/>
+<!-- pane borders: the lead's are amber, focused or not; it is the large pane on the left -->
+<line class="rule" x1="876" y1="104" x2="1224" y2="104"/>
+<line class="rule" x1="876" y1="256" x2="1224" y2="256"/>
+<line class="rule" x1="876" y1="408" x2="1224" y2="408"/>
+<line class="rule-lead" x1="452" y1="104" x2="876" y2="104"/>
+<line class="rule-lead" x1="876" y1="92" x2="876" y2="556"/>
 
 <g class="mono">
   <!-- pane titles sit on the border, as tmux draws them -->
   <rect x="470" y="95" width="156" height="18" fill="#0d1526"/><text class="amber" x="476" y="109" font-weight="700">🐺 lead · Fable 5.1</text>
-  <rect x="856" y="95" width="142" height="18" fill="#0d1526"/><text class="muted" x="862" y="109">backend · GLM-5.3</text>
-  <rect x="470" y="321" width="150" height="18" fill="#0d1526"/><text class="muted" x="476" y="335">frontend · GLM-5.3</text>
-  <rect x="856" y="321" width="148" height="18" fill="#0d1526"/><text class="muted" x="862" y="335">qa · GLM-5.3 Flash</text>
+  <rect x="894" y="95" width="166" height="18" fill="#0d1526"/><text class="muted" x="900" y="109">🐶 backend · GLM-5.3</text>
+  <rect x="894" y="247" width="174" height="18" fill="#0d1526"/><text class="muted" x="900" y="261">🐶 frontend · GLM-5.3</text>
+  <rect x="894" y="399" width="172" height="18" fill="#0d1526"/><text class="muted" x="900" y="413">🐶 qa · GLM-5.3 Flash</text>
 
   <!-- lead -->
-  <text class="text" x="470" y="140">› Ship the cart API. Split it across the pack.</text>
-  <text x="470" y="164"><tspan class="amber">⏺</tspan><tspan class="ice"> bd create "API: cart" -a backend</tspan></text>
-  <text x="470" y="184"><tspan class="amber">⏺</tspan><tspan class="ice"> bd create "Cart UI" -a frontend --deps shop-12</tspan></text>
-  <text x="470" y="204"><tspan class="amber">⏺</tspan><tspan class="ice"> teamctl spawn qa flash</tspan></text>
-  <text class="faint" x="486" y="224">⎿ qa · GLM-5.3 Flash · ai/qa-0920-1402</text>
-  <text x="470" y="248"><tspan class="amber">⏺</tspan><tspan class="ice"> teamctl diff backend --stat</tspan></text>
-  <text class="faint" x="486" y="268">⎿ 6 files changed, 212 insertions(+)</text>
-  <text class="green" x="470" y="296">✓ merged ai/backend-0920-1356 into main</text>
+  <text class="text" x="470" y="142">› Ship the cart API. Split it across the pack.</text>
+  <text x="470" y="172"><tspan class="amber">⏺</tspan><tspan class="ice"> bd create "API: cart" -a backend</tspan></text>
+  <text x="470" y="194"><tspan class="amber">⏺</tspan><tspan class="ice"> bd create "Cart UI" -a frontend --deps shop-12</tspan></text>
+  <text x="470" y="216"><tspan class="amber">⏺</tspan><tspan class="ice"> teamctl spawn qa flash</tspan></text>
+  <text class="faint" x="486" y="238">⎿ qa · GLM-5.3 Flash · ai/qa-0920-1402</text>
+  <text class="muted" x="470" y="276">[wolfmux] Beads update for lead (shop-12)</text>
+  <text x="470" y="306"><tspan class="amber">⏺</tspan><tspan class="ice"> bd show shop-12</tspan></text>
+  <text class="faint" x="486" y="328">⎿ closed by backend · commit 3f9c1e2 · tests pass</text>
+  <text x="470" y="358"><tspan class="amber">⏺</tspan><tspan class="ice"> teamctl diff backend --stat</tspan></text>
+  <text class="faint" x="486" y="380">⎿ 6 files changed, 212 insertions(+)</text>
+  <text x="470" y="410"><tspan class="amber">⏺</tspan><tspan class="ice"> git merge --no-ff ai/backend-0920-1356</tspan></text>
+  <text class="green" x="470" y="448">✓ cart API merged into main</text>
+  <text class="green" x="470" y="470">✓ frontend unblocked · qa reported one flaky test</text>
+  <text class="muted" x="470" y="526">⏵⏵ bypass permissions on</text>
 
   <!-- backend -->
-  <text class="violet" x="856" y="140">[wolfmux] Beads update for backend (shop-12)</text>
-  <text x="856" y="164"><tspan class="violet">⏺</tspan><tspan class="text"> bd show shop-12 · bd update shop-12 --claim</tspan></text>
-  <text x="856" y="184"><tspan class="violet">⏺</tspan><tspan class="text"> edit src/cart/routes.ts</tspan></text>
-  <text x="856" y="204"><tspan class="violet">⏺</tspan><tspan class="text"> npm test</tspan></text>
-  <text class="faint" x="872" y="224">⎿ 48 passed</text>
-  <text x="856" y="248"><tspan class="violet">⏺</tspan><tspan class="text"> bd close shop-12 -r "commit 3f9c1e2"</tspan></text>
-  <text class="green" x="856" y="296">✓ done · the lead was told</text>
+  <text class="violet" x="894" y="140">[wolfmux] Beads update for backend</text>
+  <text x="894" y="162"><tspan class="violet">⏺</tspan><tspan class="text"> bd update shop-12 --claim</tspan></text>
+  <text x="894" y="184"><tspan class="violet">⏺</tspan><tspan class="text"> edit src/cart/routes.ts</tspan></text>
+  <text x="894" y="206"><tspan class="violet">⏺</tspan><tspan class="text"> npm test</tspan><tspan class="faint">  ⎿ 48 passed</tspan></text>
+  <text class="green" x="894" y="234">✓ bd close shop-12 · the lead was told</text>
 
   <!-- frontend -->
-  <text class="violet" x="470" y="366">[wolfmux] Beads update for frontend (shop-13)</text>
-  <text x="470" y="390"><tspan class="violet">⏺</tspan><tspan class="text"> bd show shop-13</tspan></text>
-  <text class="faint" x="486" y="410">⎿ blocked by shop-12 · waiting</text>
-  <text x="470" y="434"><tspan class="violet">⏺</tspan><tspan class="text"> bd ready</tspan></text>
-  <text class="faint" x="486" y="454">⎿ shop-13 Cart UI</text>
-  <text x="470" y="478"><tspan class="violet">⏺</tspan><tspan class="text"> edit app/cart/CartDrawer.tsx</tspan></text>
-  <text class="muted" x="470" y="526">✳ Working… (42s)</text>
+  <text class="violet" x="894" y="292">[wolfmux] Beads update for frontend</text>
+  <text x="894" y="314"><tspan class="violet">⏺</tspan><tspan class="text"> bd show shop-13</tspan></text>
+  <text class="faint" x="910" y="336">⎿ blocked by shop-12 · waiting</text>
+  <text x="894" y="358"><tspan class="violet">⏺</tspan><tspan class="text"> edit app/cart/CartDrawer.tsx</tspan></text>
+  <text class="muted" x="894" y="386">✳ Working… (42s)</text>
 
   <!-- qa -->
-  <text class="violet" x="856" y="366">[wolfmux] Beads update for qa (shop-14)</text>
-  <text x="856" y="390"><tspan class="violet">⏺</tspan><tspan class="text"> npx playwright test cart.spec.ts</tspan></text>
-  <text class="faint" x="872" y="410">⎿ 12 passed · 1 flaky</text>
-  <text x="856" y="434"><tspan class="violet">⏺</tspan><tspan class="text"> bd create "Flaky: coupon rounding" \</tspan></text>
-  <text class="text" x="894" y="454">-t message -a lead</text>
-  <text class="green" x="856" y="502">✓ reported to the lead</text>
+  <text class="violet" x="894" y="444">[wolfmux] Beads update for qa</text>
+  <text x="894" y="466"><tspan class="violet">⏺</tspan><tspan class="text"> npx playwright test cart.spec.ts</tspan></text>
+  <text class="faint" x="910" y="488">⎿ 12 passed · 1 flaky</text>
+  <text x="894" y="510"><tspan class="violet">⏺</tspan><tspan class="text"> bd create "Flaky: coupon" -a lead</tspan></text>
+  <text class="green" x="894" y="538">✓ reported to the lead</text>
 </g>
 </svg>

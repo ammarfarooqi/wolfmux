@@ -21,8 +21,8 @@
 <line x1="152" y1="200" x2="152" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
 <rect x="48" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
 <rect x="48" y="150" width="208" height="5" rx="2.5" fill="#b69cff"/>
-<text class="sans" x="152" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#b69cff">qa</text>
-<text class="mono faint" x="152" y="192" text-anchor="middle" font-size="11">worker · Claude Code</text>
+<text class="sans" x="152" y="175" text-anchor="middle" font-size="15" font-weight="700" fill="#b69cff">🐶 qa</text>
+<text class="mono faint" x="152" y="192" text-anchor="middle" font-size="11">teammate · Claude Code</text>
 <line x1="477" y1="200" x2="477" y2="674" stroke="#26365a" stroke-width="1.5" stroke-dasharray="4 6"/>
 <rect x="373" y="150" width="208" height="50" rx="12" fill="#111a2e" stroke="#26365a" stroke-width="1.5"/>
 <rect x="373" y="150" width="208" height="5" rx="2.5" fill="#7cc4ff"/>

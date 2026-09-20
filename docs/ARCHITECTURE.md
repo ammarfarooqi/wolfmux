@@ -26,7 +26,7 @@ diagnostics can never drift apart.
 |----------|-----|---------|--------------|
 | `claude-fable` | Claude Code | Claude subscription (`/login`) | `--model claude-fable-5-1[1m]`; no key, no endpoint |
 | `codex-astra` | Codex CLI | ChatGPT / Codex subscription | `forced_login_method="chatgpt"`, `model_provider="openai"`, `model="gpt-6-astra"` |
-| `claude-glm` | Claude Code | Z.ai GLM Coding Plan | endpoint `https://api.z.ai/api/anthropic`, every model alias → `glm-5.3` (background tier → `glm-5.3-flash`) |
+| `claude-glm` | Claude Code | Z.ai GLM Coding Plan | endpoint `https://api.z.ai/api/anthropic`, every model alias → `glm-5.3` (background tier → `glm-5.3-flash`), a declared 200k context window (or `[1m]`) so Claude Code prints no unknown-model notice |
 | `claude-glm-flash` | symlink to `claude-glm` | same | every alias → `glm-5.3-flash` |
 
 Scrubbed in every Claude launcher: all `ANTHROPIC_*` and `CLAUDE_CODE_USE_*`
@@ -188,6 +188,19 @@ is alive, it returns nothing, which means "show the normal prompt".
 
 ![Sequence: a worker's permission request is filed, the lead approves or denies, the decision returns to the worker's CLI](diagrams/approval-flow.svg)
 
+## Arrangement and coming back
+
+`lib/layout.sh`: `lead-left` (default: the lead is tmux's main pane at 55 % of the width,
+workers stacked on the right), `lead-top`, `tiled`. Applied after every start, spawn, stop
+and restart; the lead is first moved to the first pane, because a re-created lead pane
+would otherwise not be tmux's "main" one. Stored per project in `meta.json`.
+
+`remain-on-exit` keeps a finished agent's pane, so a session can outlive every process in
+it. `teamctl start` therefore looks at what is alive: lead alive → attach; lead gone but a
+worker alive → the lead is restarted in place; nothing alive → the session is killed,
+worker records become `stopped` (worktrees and branches stay), and a new session starts —
+on the new socket if that was the last session of a pre-rename server.
+
 ## Notifications
 
 Every Claude-based agent gets a `Stop` hook, `teamctl _notify`, through its generated
@@ -213,6 +226,7 @@ Cosmetic, and built so it can never fail a command (`lib/brand.sh`):
 |-------|------|
 | opening a team (`teamctl start`, `teamctl attach`, plain `tmux attach`) | a popup with the wolf, the wordmark and a line about the team; a `client-attached` hook set per session. Any key closes it, or 3 seconds. `WOLFMUX_SPLASH=off` removes it |
 | the manager's pane | `🐺 lead · <model>` in the border title and an amber border, focused or not; the pane opens with the wolf; a Claude lead is named `🐺 team/lead` inside Claude Code |
+| every teammate's pane | `🐶 <role> · <model>` in the border title, `🐶 team/<role>` inside Claude Code, `🐶 <role>: …` in notifications |
 | status line and terminal tab | `🐺 WOLFMUX` on the left of the status line; the tab title is `🐺 <session>` |
 | `teamctl status` | `manager: 🐺 lead` |
 

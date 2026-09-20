@@ -61,7 +61,7 @@
   <rect class="inner" x="568" y="370" width="144" height="170" rx="12" stroke="#b69cff"/>
   <rect class="inner" x="728" y="370" width="144" height="170" rx="12" stroke="#b69cff"/>
   <g class="sans violet" font-size="15" font-weight="700">
-    <text x="424" y="398">backend</text><text x="584" y="398">frontend</text><text x="744" y="398">qa</text>
+    <text x="424" y="398">🐶 backend</text><text x="584" y="398">🐶 frontend</text><text x="744" y="398">🐶 qa</text>
   </g>
   <g class="mono text" font-size="11.5">
     <text x="424" y="422">claude-glm</text><text x="584" y="422">claude-glm</text><text x="744" y="422">claude-glm-flash</text>

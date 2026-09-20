@@ -66,7 +66,7 @@ FLOWS = (
             Lane("Beads", "bd · <project>/.beads", "green"),
             Lane("beads-nudge", "event hook", "muted"),
             Lane("teamctl", "nudge", "ice"),
-            Lane("backend", "pane · own worktree", "violet"),
+            Lane("🐶 backend", "pane · own worktree", "violet"),
         ),
         steps=(
             Step(0, 1, 'bd create "API: cart" -t task -a backend -d "…"'),
@@ -90,7 +90,7 @@ FLOWS = (
         subtitle="Only with teamctl policy worker-permissions lead. The default is skip: agents run in their CLI's bypass mode and nothing is asked.",
         description="Sequence: a worker's Claude Code wants to run a command and fires its PermissionRequest hook, teamctl _permission-hook. The hook files request A7 atomically and tells the lead's pane. The lead runs teamctl approve A7 or teamctl deny A7 with a reason. The hook, which has been polling, returns the decision to the worker's CLI as JSON. If nobody answers before the timeout, the hook stays silent and the worker's normal prompt appears.",
         lanes=(
-            Lane("qa", "worker · Claude Code", "violet"),
+            Lane("🐶 qa", "teammate · Claude Code", "violet"),
             Lane("teamctl", "_permission-hook", "ice"),
             Lane("approvals", "~/.wolfmux/state/<project>", "muted"),
             Lane("🐺 lead", "the only manager", "amber"),
@@ -115,7 +115,7 @@ FLOWS = (
         subtitle="Inside tmux the usual notifiers fall back to osascript, and macOS files those under Script Editor. teamctl sends its own.",
         description="Sequence: an agent finishes a turn and Claude Code fires its Stop hook, teamctl _notify. teamctl takes the first line of the agent's last message, removes control characters, asks tmux which terminals are attached to the team, and writes an OSC 9 notification to the tty of each capable terminal. The terminal posts the notification, so clicking it brings the tab with the team to the front. With no terminal attached, the fallback is osascript with a hint to run teamctl attach.",
         lanes=(
-            Lane("agent", "Claude Code in a pane", "violet"),
+            Lane("🐺 or 🐶", "an agent · Claude Code", "violet"),
             Lane("teamctl", "_notify · Stop hook", "ice"),
             Lane("tmux", "list-clients", "muted"),
             Lane("iTerm2", "kitty · Ghostty · WezTerm", "green"),
