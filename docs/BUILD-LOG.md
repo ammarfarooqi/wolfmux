@@ -355,6 +355,33 @@ status. Now `-print -quit`, no pipe, `|| true`; a check covers the missing folde
 `tests/smoke.sh`: 156 → 159. `tests/permissions.sh`: 9 → 13. `tests/docs.sh`: new, 28.
 v1.9.0.
 
+## 23. "Add Kimi, DeepSeek and the others" (v1.10)
+
+The owner asked on 2026-09-20, and every vendor involved sells an Anthropic-compatible
+endpoint, so the GLM launcher's isolation was the pattern to extend
+([ADR-0020](adr/0020-providers-beyond-the-three-subscriptions.md)). One table
+(`config/wolfmux/lib/providers.sh`) now knows every provider: vendor, endpoint, Keychain
+service, billing, model ids, context window, auth variable. One launcher serves them all:
+`claude-glm` reads the provider from the name it is started under (`claude-kimi`,
+`claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen`; symlinks, the
+pattern of `claude-opus`). The scrub, the per-process endpoint, the login guard, the
+settings overlay and the dry run apply to every provider unchanged; the User-Agent is
+never touched.
+
+New is billing. Kimi, MiniMax and Qwen are plans like Z.ai's; the Moonshot platform and
+DeepSeek bill per request. A metered provider starts only when its key is stored AND the
+owner has set `WOLFMUX_METERED=on` in the config file: `teamctl spawn` and `start` refuse
+with exit 77, the launcher with exit 78, and `teamctl status` marks a metered agent with
+`$`. The switch is deliberately out of every agent's reach.
+
+Deliberately out entirely: the metered aggregators (OpenRouter, LiteLLM, Fireworks,
+Novita, SiliconFlow, forbidden by [GOALS.md](GOALS.md)), a third CLI family (Gemini CLI,
+Grok Build, Mistral Vibe), a base-URL setting, and the China-region endpoints. The first
+group stays forbidden; each of the others is one more table row later.
+
+`tests/providers.sh`: new, N checks. `tests/smoke.sh`: 159 → N. `tests/docs.sh`: 28 → N.
+`tests/migration.sh`: 21 → N. v1.10.0.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
