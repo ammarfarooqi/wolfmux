@@ -132,6 +132,10 @@ EOF
   printf '%s' "$out"
 }
 
+# ignored <file> — a file git is told to ignore (.gitignore, .git/info/exclude) is not part of
+# the documentation: a private note, an audit in progress. Outside a git checkout nothing is.
+ignored() { git -C "$REPO" check-ignore -q "$1" 2>/dev/null; }
+
 # anchors_of <file> — the anchors GitHub gives its headings: lowercase, punctuation dropped,
 # spaces to hyphens ("## The Z.ai key" -> the-zai-key)
 anchors_of() {
@@ -184,7 +188,9 @@ SETTINGS="$(/usr/bin/awk '/^WOLFMUX_CONFIG_KEYS="/ { inside = 1 } inside { print
 # shellcheck disable=SC2086
 report "the config template shows every setting it accepts" "$(missing_words "$(/bin/cat "$REPO/config/wolfmux/config")" $SETTINGS)"
 # shellcheck disable=SC2086
-report "every setting is explained in the user manual or under docs/" "$(missing_words "$MANUAL $(/bin/cat "$REPO"/docs/*.md)" $SETTINGS)"
+DOCS_TEXT="$(for file in "$REPO"/docs/*.md; do [ -e "$file" ] && ! ignored "$file" && /bin/cat "$file"; done)"
+# shellcheck disable=SC2086
+report "every setting is explained in the user manual or under docs/" "$(missing_words "$MANUAL $DOCS_TEXT" $SETTINGS)"
 LAUNCHERS="$( (cd "$REPO/bin" && /bin/ls) | /usr/bin/grep -v '^teamctl$'
   LC_ALL=C /usr/bin/grep -o 'BIN_DIR/claude-[a-z-]*' "$REPO/install.sh" | /usr/bin/sed 's|.*/||'
   /usr/bin/sed -n 's/^for name in \(claude-[a-z -]*\); do$/\1/p' "$REPO/install.sh" | /usr/bin/tr ' ' '\n')"
@@ -211,24 +217,25 @@ report "docs/SETUP.md says what the installer builds and links" "$(missing_words
 echo "== indexes and links"
 out=""
 for file in "$REPO"/docs/*.md; do
-  [ -e "$file" ] || continue
+  [ -e "$file" ] && ! ignored "$file" || continue
   has "$README" "\\(docs/$(basename "$file")\\)" || out="$out docs/$(basename "$file")"
 done
 report "README.md links every document under docs/" "$out"
 out=""
 for file in "$REPO"/docs/adr/0*.md; do
-  [ -e "$file" ] || continue
+  [ -e "$file" ] && ! ignored "$file" || continue
   LC_ALL=C /usr/bin/grep -Fq "($(basename "$file"))" "$REPO/docs/adr/README.md" || out="$out $(basename "$file")"
 done
 report "docs/adr/README.md lists every decision record" "$out"
 out=""
 for file in "$REPO"/docs/diagrams/*.svg; do
-  [ -e "$file" ] || continue
+  [ -e "$file" ] && ! ignored "$file" || continue
   LC_ALL=C /usr/bin/grep -Fq "$(basename "$file")" "$REPO/docs/diagrams/README.md" || out="$out $(basename "$file")"
 done
 report "docs/diagrams/README.md shows every diagram" "$out"
 out=""
 for file in "$REPO"/README.md "$REPO"/docs/*.md "$REPO"/docs/adr/*.md "$REPO"/docs/diagrams/README.md "$REPO"/config/wolfmux/*.md; do
+  [ -e "$file" ] && ! ignored "$file" || continue
   while IFS= read -r target; do
     case "$target" in "" | http://* | https://* | mailto:*) continue ;; esac
     anchor=""

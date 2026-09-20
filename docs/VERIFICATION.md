@@ -176,6 +176,11 @@ Nothing is started; it takes about two seconds.
 | launchers, installer | every launcher in `bin/` or linked by `install.sh` is in README.md, the user manual and docs/SETUP.md; every option of every top-level script (`install.sh`, `uninstall.sh`, `migrate-from-ai-team.sh`) is in docs/SETUP.md |
 | indexes, links | README.md links every `docs/*.md`; the ADR index lists every record; the diagrams page shows every SVG; every relative link leads to a file, and its `#anchor` to a heading that exists |
 
+A file that git ignores (`.gitignore`, `.git/info/exclude`) is not part of the
+documentation and is left alone: the check's first run in the owner's checkout failed on
+a private audit note that lives there unversioned, which the worktree it was written in
+did not have.
+
 Its first run on the tree before it (2026-09-20) failed 13 of 28: README.md named 5 of 22
 commands, neither alias and no options; `teamctl help` lacked `lead-teams`,
 `--keep-transcripts`, `--quiet` and `--lines`; the user manual lacked two policy keys and
