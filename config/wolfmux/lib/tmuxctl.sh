@@ -8,6 +8,17 @@
 
 tmx() { "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
 
+# tm_adopt_legacy_server — zero-downtime rename: while the new server has no session
+# and the pre-rename server still has one, keep talking to that one. Off when the
+# socket was chosen explicitly, unless WOLFMUX_ADOPT_LEGACY=1 says otherwise (tests).
+tm_adopt_legacy_server() {
+  [ "${WOLFMUX_ADOPT_LEGACY:-0}" = "1" ] && [ -n "$TMUX_BIN" ] || return 0
+  if ! "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" has-session 2>/dev/null &&
+    "$TMUX_BIN" -L "$WOLFMUX_LEGACY_SOCKET" has-session 2>/dev/null; then
+    WOLFMUX_TMUX_SOCKET="$WOLFMUX_LEGACY_SOCKET"
+  fi
+}
+
 # tmx_boot — like tmx, for the one call that may have to START the server. The
 # server keeps the environment of whoever starts it and hands it to every pane,
 # so agent-session and provider variables are removed first.

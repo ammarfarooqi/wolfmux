@@ -26,10 +26,12 @@ backup() {
 SOCKET="${WOLFMUX_TMUX_SOCKET:-wolfmux}"
 
 echo "== team tmux server"
-if command -v tmux >/dev/null 2>&1 && tmux -L "$SOCKET" ls >/dev/null 2>&1; then
-  echo "uninstall.sh: a team is still running (tmux -L $SOCKET ls). Run 'teamctl destroy' in its project first." >&2
-  exit 1
-fi
+for socket in "$SOCKET" "${WOLFMUX_LEGACY_SOCKET:-ai-team}"; do # the second: a team started before the rename
+  if command -v tmux >/dev/null 2>&1 && tmux -L "$socket" ls >/dev/null 2>&1; then
+    echo "uninstall.sh: a team is still running (tmux -L $socket ls). Run 'teamctl destroy' in its project first." >&2
+    exit 1
+  fi
+done
 note "no team running"
 
 echo "== launchers and CLI"

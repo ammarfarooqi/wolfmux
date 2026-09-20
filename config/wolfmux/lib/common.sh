@@ -2,10 +2,17 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-WOLFMUX_VERSION="1.1.0"
+WOLFMUX_VERSION="1.2.0"
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
-WOLFMUX_TMUX_SOCKET="${WOLFMUX_TMUX_SOCKET:-wolfmux}"
+# This project was first called "ai-team". A team started under that name keeps
+# running on a tmux server with the old socket name until its last session ends;
+# teamctl follows it there (tm_adopt_legacy_server) unless a socket was chosen explicitly.
+if [ -z "${WOLFMUX_TMUX_SOCKET:-}" ]; then
+  WOLFMUX_TMUX_SOCKET="wolfmux"
+  WOLFMUX_ADOPT_LEGACY="${WOLFMUX_ADOPT_LEGACY:-1}"
+fi
+WOLFMUX_LEGACY_SOCKET="${WOLFMUX_LEGACY_SOCKET:-ai-team}"
 WOLFMUX_BIN_DIR="${WOLFMUX_BIN_DIR:-$HOME/bin}"
 WOLFMUX_WINDOW="team"
 WOLFMUX_LEAD_ROLE="lead"

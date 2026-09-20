@@ -202,6 +202,12 @@ _doc_team() {
   if [ -r "$WOLFMUX_HOME/tmux.conf" ]; then _ok "config    $(short_path "$WOLFMUX_HOME/tmux.conf") (team server only; ~/.tmux.conf is not touched)"; else _fail "team tmux config missing: $WOLFMUX_HOME/tmux.conf"; fi
   sessions="$(tmx list-sessions -F '#{session_name} (#{session_windows} window, attached: #{session_attached})' 2>/dev/null | tr '\n' ';' || true)"
   if [ -n "$sessions" ]; then _ok "running sessions: $sessions"; else _note "no team session running"; fi
+  if [ "$WOLFMUX_TMUX_SOCKET" = "$WOLFMUX_LEGACY_SOCKET" ]; then
+    _note "this server was started before the rename to Wolfmux; teamctl follows it until its last session ends, then uses the new socket"
+  fi
+  if [ -e "$HOME/.ai-team" ] || [ -e "$HOME/.config/ai-team" ]; then
+    _note "files from this tool's old name (ai-team) are still in place: run migrate-from-ai-team.sh from the repository to carry state and worktrees over"
+  fi
 }
 
 _doc_policy() {

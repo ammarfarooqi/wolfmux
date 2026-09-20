@@ -1,8 +1,8 @@
 #!/bin/bash
 # smoke.sh — end-to-end lifecycle test of THIS checkout. No model is called.
 #
-# Fully isolated from any team you have running: its own tmux server (socket
-# wolfmux-test-<pid>), its own state directory, a throwaway git repository, and
+# Fully isolated from any team you have running: its own tmux servers (sockets
+# wolfmux-test-<pid> and wolfmux-test-old-<pid>), its own state directory, a throwaway git repository, and
 # stub agents instead of real CLIs. Needs tmux, git, jq; Beads checks run when
 # `bd` is installed.
 #
@@ -35,9 +35,13 @@ check() { # <description> <command string>
   fi
 }
 
+OLD_NAME_SOCKET="wolfmux-test-old-$$" # stands in for the socket of a team started before the rename
 cleanup() {
-  tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
-  /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$WOLFMUX_TMUX_SOCKET" # tmux leaves the socket file behind
+  local socket
+  for socket in "$WOLFMUX_TMUX_SOCKET" "$OLD_NAME_SOCKET"; do
+    tmux -L "$socket" kill-server >/dev/null 2>&1
+    /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$socket" # tmux leaves the socket file behind
+  done
   /bin/rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -153,6 +157,25 @@ check "destroy: runs with --yes" 'teamctl destroy --worktrees --yes'
 check "destroy: dirty worktree with an unmerged commit is kept" '[ -d "$BACKEND_DIR" ] && git rev-parse -q --verify "refs/heads/$(git -C "$BACKEND_DIR" branch --show-current)"'
 check "destroy: clean worktree removed, merged branch deleted" '[ -z "$(git branch --list "ai/qa-*")" ]'
 check "destroy: tmux session gone" '! tmux -L "$WOLFMUX_TMUX_SOCKET" has-session 2>/dev/null'
+
+echo "== a team started before the rename to Wolfmux"
+# teamctl with the default socket follows a server that still runs under the old
+# socket name. Here both names are test sockets, so the switch is set by hand.
+follow() { WOLFMUX_ADOPT_LEGACY=1 WOLFMUX_LEGACY_SOCKET="$OLD_NAME_SOCKET" "$REPO/bin/teamctl" "$@"; }
+WOLFMUX_TMUX_SOCKET="$OLD_NAME_SOCKET" teamctl start astra --no-attach --skip-beads >/dev/null 2>&1
+sleep 1
+check "rename: an explicitly chosen socket is never redirected" 'teamctl status --json | jq -e ".session_running | not"'
+check "rename: teamctl follows the team on the old socket" 'follow status --json | jq -e ".session_running and (.agents[0].state == \"running\")"'
+check "rename: new panes join that team" 'follow spawn docs flash --no-kickoff && sleep 1 && tmux -L "$OLD_NAME_SOCKET" list-panes -a -F "#{@ai_role}" | grep -qx docs'
+check "rename: destroy ends it" 'follow destroy --worktrees --yes && ! tmux -L "$OLD_NAME_SOCKET" has-session 2>/dev/null'
+check "rename: the next team starts on the new socket" 'follow start astra --no-attach --skip-beads && tmux -L "$WOLFMUX_TMUX_SOCKET" has-session && ! tmux -L "$OLD_NAME_SOCKET" has-session 2>/dev/null'
+teamctl destroy --worktrees --yes >/dev/null 2>&1
+/bin/mkdir -p "$PROJECT/.beads/hooks"
+printf '#!/bin/bash\n# ai-team-hook v1 — written before the rename\nexit 0\n' >"$PROJECT/.beads/hooks/on_create"
+printf '#!/bin/bash\n# somebody else wrote this\nexit 0\n' >"$PROJECT/.beads/hooks/on_close"
+teamctl _refresh-hooks >/dev/null 2>&1
+check "rename: a Beads hook written under the old name is replaced" 'grep -q "wolfmux-hook v1" "$PROJECT/.beads/hooks/on_create" && grep -q "/.config/wolfmux}/hooks/beads-nudge" "$PROJECT/.beads/hooks/on_create"'
+check "rename: a hook that is not ours is still left alone" 'grep -q "somebody else wrote this" "$PROJECT/.beads/hooks/on_close"'
 
 echo
 echo "result: $passed passed, $failed failed"

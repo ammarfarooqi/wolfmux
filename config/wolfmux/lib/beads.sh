@@ -7,6 +7,7 @@
 # notification through `teamctl nudge`.
 
 WOLFMUX_HOOK_MARKER="wolfmux-hook v1"
+WOLFMUX_LEGACY_HOOK_MARKER="ai-team-hook" # written before the rename; safe to replace
 WOLFMUX_BEADS_HOOKS="on_create on_update on_close"
 
 # The least intrusive documented init: no git commit, no tracked files (uses
@@ -66,13 +67,32 @@ exec "\$hook" "\$@"
 EOF
 }
 
+# cmd_refresh_hooks — internal (`teamctl _refresh-hooks`): rewrite this project's hooks,
+# e.g. after the rename, when the old ones point at a directory that no longer exists
+cmd_refresh_hooks() {
+  local dir
+  require_tools
+  load_project
+  if ! dir="$(beads_dir)"; then
+    # bd missing or unwilling: the default location is still ours to fix
+    if [ -d "$ROOT/.beads/hooks" ]; then
+      dir="$ROOT/.beads"
+    else
+      info "no Beads workspace in $(short_path "$ROOT"); nothing to refresh"
+      return 0
+    fi
+  fi
+  beads_install_hooks "$dir"
+  say "Beads hooks: $(beads_hooks_status "$dir")  ($(short_path "$dir")/hooks)"
+}
+
 # beads_install_hooks <beads-dir> — never overwrites a hook it did not write
 beads_install_hooks() {
   local dir="$1/hooks" name path
   /bin/mkdir -p "$dir"
   for name in $WOLFMUX_BEADS_HOOKS; do
     path="$dir/$name"
-    if [ -e "$path" ] && ! grep -q "$WOLFMUX_HOOK_MARKER" "$path" 2>/dev/null; then
+    if [ -e "$path" ] && ! grep -qE "$WOLFMUX_HOOK_MARKER|$WOLFMUX_LEGACY_HOOK_MARKER" "$path" 2>/dev/null; then
       warn "$(short_path "$path") exists and is not ours; left untouched. Pane notifications for '$name' are off until it calls: ~/.config/wolfmux/hooks/beads-nudge \"\$@\""
       continue
     fi

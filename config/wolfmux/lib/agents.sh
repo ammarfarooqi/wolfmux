@@ -213,8 +213,8 @@ build_role_prompt() {
   local role="$1" kind workdir
   kind="$(reg_field "$role" kind)"
   workdir="$(reg_field "$role" workdir)"
-  printf '# wolfmux session context\n\n'
-  printf 'You are an agent in an wolfmux tmux session. These facts are yours:\n\n'
+  printf '# Wolfmux session context\n\n'
+  printf 'You are an agent in a Wolfmux tmux session. These facts are yours:\n\n'
   printf -- '- TEAM_ROLE: %s   (kind: %s, model: %s)\n' "$role" "$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')" "$(reg_field "$role" label)"
   printf -- '- Project root (the lead works here): %s\n' "$ROOT"
   if [ "$kind" = "worker" ]; then
@@ -243,7 +243,7 @@ build_role_prompt() {
 }
 
 kickoff_text() {
-  printf 'You are the %s worker of an wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$1"
+  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$1"
 }
 
 # write_agent_settings <role> — Claude Code settings for one WORKER pane; prints the
@@ -299,7 +299,7 @@ cmd_run_agent() {
   case "$family" in
     codex)
       # TOML multi-line literal string; it cannot contain three single quotes.
-      case "$prompt" in *"'''"*) prompt="You are TEAM_ROLE=$role in an wolfmux session. Read and follow $WOLFMUX_HOME/TEAM_PROTOCOL.md before anything else." ;; esac
+      case "$prompt" in *"'''"*) prompt="You are TEAM_ROLE=$role in a Wolfmux session. Read and follow $WOLFMUX_HOME/TEAM_PROTOCOL.md before anything else." ;; esac
       args=(-c "developer_instructions='''
 $prompt
 '''")

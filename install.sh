@@ -37,6 +37,13 @@ done
 say() { printf '%s\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 
+# v1.1 and earlier were called "ai-team". Installing next to it would strand its state and worktrees.
+if [ -z "${WOLFMUX_MIGRATING:-}" ] && { [ -e "$HOME/.ai-team" ] || [ -e "$HOME/.config/ai-team" ]; }; then
+  echo "install.sh: an installation under this tool's old name (ai-team) is present." >&2
+  echo "Run ./migrate-from-ai-team.sh instead: it carries state and worktrees over, then calls install.sh." >&2
+  exit 1
+fi
+
 backup() { # <file> — timestamped copy next to the original
   /bin/cp -p "$1" "$1.backup-$STAMP"
   note "backup: $1.backup-$STAMP"
@@ -114,7 +121,9 @@ fi
 BUNDLED_CODEX="/Applications/ChatGPT.app/Contents/Resources/codex"
 if command -v codex >/dev/null 2>&1; then
   note "codex already on PATH: $(command -v codex)"
-elif [ -x "$BUNDLED_CODEX" ] && [ ! -e "$BIN_DIR/codex" ]; then
+elif [ -e "$BIN_DIR/codex" ]; then
+  note "codex already present: $BIN_DIR/codex"
+elif [ -x "$BUNDLED_CODEX" ]; then
   /bin/ln -s "$BUNDLED_CODEX" "$BIN_DIR/codex"
   note "linked: $BIN_DIR/codex -> ChatGPT.app's bundled Codex CLI"
 else

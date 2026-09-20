@@ -19,6 +19,7 @@ for module in provider-env common registry tmuxctl worktree beads policy approva
   . "$WOLFMUX_HOME/lib/$module.sh"
 done
 wolfmux_load_config # ~/.config/wolfmux/config supplies defaults; the environment wins
+tm_adopt_legacy_server
 
 usage() {
   /bin/cat <<'EOF'
@@ -102,6 +103,7 @@ main() {
     diff) cmd_diff "$@" ;;
     doctor) cmd_doctor "$@" ;;
     _run-agent) cmd_run_agent "$@" ;;
+    _refresh-hooks) cmd_refresh_hooks "$@" ;;
     send | inbox | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
     version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;
