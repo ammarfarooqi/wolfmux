@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout; do
+for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout guard; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -30,11 +30,13 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
   Workers
     teamctl spawn <role> <glm53|flash|fable|astra> [--base <ref>] [--no-kickoff]
-    teamctl stop <role>
+    teamctl stop <role>                               close the pane; worktree, branch and record stay
+    teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
+                                                      record); --force discards work that is nowhere else
     teamctl restart <role> [--continue]
     teamctl nudge <role>|--all [--id <bead-id>]     one fixed notification line in a pane
   Policy and permissions
-    teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · worker-spawn
+    teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · worker-spawn · worker-isolation
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
@@ -86,6 +88,7 @@ main() {
     start) cmd_start "$@" ;;
     spawn) cmd_spawn "$@" ;;
     stop) cmd_stop "$@" ;;
+    remove) cmd_remove "$@" ;;
     restart) cmd_restart "$@" ;;
     destroy) cmd_destroy "$@" ;;
     nudge) cmd_nudge "$@" ;;
@@ -110,6 +113,7 @@ main() {
     _notify) cmd_notify "$@" ;;
     _notify-pending) cmd_notify_pending "$@" ;;
     _open-team) cmd_open_team "$@" ;;
+    _guard) cmd_guard "$@" ;;
     send | inbox | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
     version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;

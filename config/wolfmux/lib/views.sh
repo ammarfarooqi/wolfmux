@@ -57,10 +57,10 @@ cmd_status() {
   if [ "$json" -eq 1 ]; then
     printf '%s\n' "$rows" | "$JQ_BIN" -s --arg root "$ROOT" --arg session "$SESSION" \
       --arg running "${SESSION_LIVE:-0}" --arg lp "$(policy_get lead-permissions)" \
-      --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" \
+      --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" \
       --arg pending "$(approvals_pending_count)" \
       '{root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
-        policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws},
+        policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi},
         approvals_pending: ($pending | tonumber), agents: .}'
     return 0
   fi

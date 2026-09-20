@@ -126,7 +126,9 @@ integration; you do not do the bulk implementation yourself.
 
 1. **Orient.** `echo $TEAM_ROLE`, `pwd`, `git status`. You work ONLY in your own
    worktree, on your own branch. Never edit the project root, never `cd` into
-   another agent's worktree.
+   another agent's worktree. A guard enforces this: a tool call that reaches outside
+   is refused with a reason. Do not look for a way around it; if something outside
+   your worktree has to change, that is a message to the lead.
 2. **Read your inbox**, claim your task (`bd update <id> --claim`), read the
    project's specs and instruction files (CLAUDE.md / AGENTS.md) before coding.
 3. **Coordinate contracts directly.** If your work touches another worker's

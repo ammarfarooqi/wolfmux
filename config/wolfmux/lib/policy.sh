@@ -9,16 +9,19 @@
 #   worker-permissions  skip | lead | ask   skip = none asked · lead = the lead decides
 #                                           them (teamctl approvals) · ask = in the pane
 #   worker-spawn        off | on            may a worker run `teamctl spawn`?
+#   worker-isolation    on | off            refuse a worker's tool calls that reach outside its
+#                                           own worktree and branch (lib/guard.sh)
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions worker-spawn"
+POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation"
 
 policy_default() {
   case "$1" in
     lead-permissions) printf '%s\n' "${WOLFMUX_LEAD_PERMISSIONS:-skip}" ;;
     worker-permissions) printf '%s\n' "${WOLFMUX_WORKER_PERMISSIONS:-skip}" ;;
     worker-spawn) printf '%s\n' "${WOLFMUX_WORKER_SPAWN:-off}" ;;
+    worker-isolation) printf '%s\n' "${WOLFMUX_WORKER_ISOLATION:-on}" ;;
     *) return 1 ;;
   esac
 }
@@ -28,6 +31,7 @@ policy_valid() { # <key> <value>
     lead-permissions:skip | lead-permissions:ask) return 0 ;;
     worker-permissions:skip | worker-permissions:lead | worker-permissions:ask) return 0 ;;
     worker-spawn:on | worker-spawn:off) return 0 ;;
+    worker-isolation:on | worker-isolation:off) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -36,7 +40,7 @@ policy_choices() {
   case "$1" in
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
-    worker-spawn) printf 'on|off\n' ;;
+    worker-spawn | worker-isolation) printf 'on|off\n' ;;
   esac
 }
 
@@ -50,6 +54,8 @@ policy_get() {
     printf '%s\n' "$value"
   elif [ "$key" = "worker-spawn" ]; then
     printf 'off\n'
+  elif [ "$key" = "worker-isolation" ]; then
+    printf 'on\n'
   else
     printf 'ask\n'
   fi
@@ -97,8 +103,8 @@ require_manager() { # <command name>
 }
 
 policy_summary() {
-  printf 'lead: %s · workers: %s · worker spawning: %s\n' \
-    "$(policy_get lead-permissions)" "$(policy_get worker-permissions)" "$(policy_get worker-spawn)"
+  printf 'lead: %s · workers: %s · worker spawning: %s · worker isolation: %s\n' \
+    "$(policy_get lead-permissions)" "$(policy_get worker-permissions)" "$(policy_get worker-spawn)" "$(policy_get worker-isolation)"
 }
 
 # teamctl policy [<key> <value>]
@@ -111,6 +117,7 @@ cmd_policy() {
     say "  lead-permissions    $(policy_get lead-permissions)    (skip|ask)"
     say "  worker-permissions  $(policy_get worker-permissions)    (skip|lead|ask)   lead = you decide them: teamctl approvals"
     say "  worker-spawn        $(policy_get worker-spawn)     (on|off)          may workers run 'teamctl spawn'?"
+    say "  worker-isolation    $(policy_get worker-isolation)      (on|off)          refuse a worker's tool calls outside its own worktree and branch"
     say ""
     say "change:  teamctl policy <key> <value>     permission changes apply at the next start/restart of an agent"
     return 0

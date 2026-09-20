@@ -18,6 +18,7 @@ echo "STUB flags=${flags:-none}"
 echo "STUB name=${name:-none}"
 if [ -n "${WOLFMUX_EXTRA_SETTINGS:-}" ] && [ -r "$WOLFMUX_EXTRA_SETTINGS" ]; then
   echo "STUB settings=$(jq -c '{teams: .env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, mode: .teammateMode, hook: (.hooks.PermissionRequest != null)}' "$WOLFMUX_EXTRA_SETTINGS")"
+  echo "STUB guard=$(jq -c '(.hooks.PreToolUse // []) | map(.hooks[].command) | join(" ") | test("_guard")' "$WOLFMUX_EXTRA_SETTINGS")"
   echo "STUB notify=$(jq -c '{stop: (.hooks.Stop != null), silenced: .env.ECC_DISABLED_HOOKS}' "$WOLFMUX_EXTRA_SETTINGS")"
 else
   echo "STUB settings=none"

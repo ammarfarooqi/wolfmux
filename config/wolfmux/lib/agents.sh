@@ -276,6 +276,9 @@ build_role_prompt() {
   printf -- '- The manager of this team is the agent with TEAM_ROLE=lead. Nobody else manages, approves or assigns.\n'
   if [ "$kind" = "worker" ]; then
     printf -- '- You were spawned by: %s. You report to the lead regardless.\n' "$(reg_field "$role" spawned_by)"
+    if [ "$(policy_get worker-isolation)" = "on" ]; then
+      printf -- '- Worktree isolation is ON: a tool call that changes files outside your worktree, reads another teammate'"'"'s worktree, switches or deletes branches, or writes into the lead'"'"'s checkout is refused. That is by design; when something outside has to change, message the lead.\n'
+    fi
     if [ "$(policy_get worker-spawn)" = "on" ]; then
       printf -- '- Worker spawning is ON: you may run `teamctl spawn <role> <glm53|flash>` when the work needs it; the lead is told automatically.\n'
     else
@@ -303,20 +306,25 @@ kickoff_text() {
 # approver — is that worker. The lead's file holds the notification hook and nothing
 # about teams or permissions: those stay exactly as you have them.
 write_agent_settings() {
-  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command=""
+  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command=""
   /bin/mkdir -p "$STATE_DIR/settings"
   kind="$(reg_field "$role" kind)"
   if notify_wanted "$kind"; then notify_command="\"$TEAMCTL_SELF\" _notify"; fi
+  if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
   # Workers only: agent teams off, so a worker can never become a second manager.
+  # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh).
   # Everyone: notifications are teamctl's job inside a team (lib/notify.sh).
   # Lead mode only: permission requests go to the lead.
   "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" \
     --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$((APPROVAL_TIMEOUT + 30))" \
-    --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" '
+    --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" '
     (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
     * {env: {ECC_DISABLED_HOOKS: $silence}}
     * (if $notify_command != ""
        then {hooks: {Stop: [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}]}} else {} end)
+    * (if $guard_command != ""
+       then {hooks: {PreToolUse: [{matcher: "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Bash",
+                                   hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
     * (if $kind == "worker" and $mode == "lead"
        then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $permission_command, timeout: $timeout}]}]}}
        else {} end)' >"$path"
@@ -338,6 +346,11 @@ cmd_run_agent() {
   [ -d "$workdir" ] || die "working directory is gone: $workdir"
 
   export TEAM_ROLE="$role" BEADS_ACTOR="$role"
+  if [ "$(reg_field "$role" kind)" = "worker" ]; then
+    WOLFMUX_WORKTREE="$workdir" # what the worktree guard (lib/guard.sh) holds this agent to
+    WOLFMUX_BRANCH="$(reg_field "$role" branch)"
+    export WOLFMUX_WORKTREE WOLFMUX_BRANCH
+  fi
   WOLFMUX_SESSION="$(meta_get session || true)"
   WOLFMUX_MODEL="$(reg_field "$role" model)"
   export WOLFMUX_SESSION WOLFMUX_MODEL
@@ -453,6 +466,78 @@ cmd_restart() {
 }
 
 # --- teamctl destroy [--worktrees] [--yes] --------------------------------------------------
+# cmd_remove <role>... [--force] [--yes] — take a stopped worker off the books: worktree,
+# branch and record. Work is never discarded silently: without --force a worker with
+# uncommitted files or commits that are not in your current branch is refused, and the
+# refusal lists them. With --force the same list is shown and one question is asked.
+cmd_remove() {
+  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force) force=1 ;;
+      --yes | -y) assume_yes=1 ;;
+      -*) die_usage "unknown option for remove: $1" ;;
+      *)
+        require_role_arg "$1"
+        roles="$roles $1"
+        ;;
+    esac
+    shift
+  done
+  [ -n "$roles" ] || die_usage "usage: teamctl remove <role>... [--force] [--yes]"
+  require_tools
+  load_project
+  require_manager remove
+  SESSION="$(session_name_for_project)"
+  for role in $roles; do
+    reg_exists "$role" || die "no such agent: $role  (see: teamctl status)"
+    [ "$(reg_field "$role" kind)" = "worker" ] || die "'$role' is the lead; end the team with: teamctl destroy"
+    pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
+    [ "$(tm_pane_state "$pane")" != "running" ] || die "'$role' is running; stop it first: teamctl stop $role"
+  done
+
+  lock_acquire
+  for role in $roles; do
+    path="$(reg_field "$role" workdir)"
+    branch="$(reg_field "$role" branch)"
+    dirty="$(wt_dirty_count "$path")"
+    unmerged=0
+    if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
+    if [ "$dirty" != "0" ] || [ "$unmerged" != "0" ]; then
+      say "$role still holds work that is nowhere else:"
+      if [ "$unmerged" != "0" ]; then
+        say "  $unmerged commit$([ "$unmerged" = "1" ] || printf s) on $branch that your current branch does not have:"
+        gitr log --format='    %h %s' "HEAD..$branch" | head -10
+      fi
+      if [ "$dirty" != "0" ]; then
+        say "  $dirty uncommitted file$([ "$dirty" = "1" ] || printf s) in $(short_path "$path"):"
+        "$GIT_BIN" -C "$path" status --short | head -10 | sed 's/^/    /'
+      fi
+      if [ "$force" -ne 1 ]; then
+        say "  keep it:    commit in that worktree, then: git merge $branch"
+        say "  discard it: teamctl remove $role --force"
+        lock_release
+        die "'$role' was not removed."
+      fi
+      if [ "$assume_yes" -ne 1 ]; then
+        confirm "Discard all of that and remove '$role'?" || { lock_release; die "aborted; nothing was removed (pass --yes to skip this question)"; }
+      fi
+    fi
+    if [ -d "$path" ]; then gitr worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"; fi
+    gitr worktree prune
+    # -D only here: the refusal above, or your yes, is what makes discarding it deliberate.
+    if wt_branch_exists "$branch"; then gitr branch -D "$branch" >/dev/null 2>&1 || warn "could not delete branch $branch"; fi
+    pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
+    if [ -n "$pane" ]; then tmx kill-pane -t "$pane" 2>/dev/null || true; fi
+    /bin/rm -f "$STATE_DIR/settings/$role.json"
+    reg_delete "$role"
+    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged"
+    say "removed: $role  (worktree, branch $branch and record)"
+  done
+  layout_apply
+  lock_release
+}
+
 _destroy_worker_artifacts() {
   local role="$1" path branch result
   path="$(reg_field "$role" workdir)"
@@ -463,6 +548,7 @@ _destroy_worker_artifacts() {
     0) say "  $role: removed clean worktree $(short_path "$path")" ;;
     1)
       say "  $role: KEPT worktree (uncommitted work or in use): $(short_path "$path")"
+      say "      keep its work: commit there, then merge $branch · discard it: teamctl remove $role --force"
       return 0
       ;;
     *) : ;;
@@ -474,6 +560,7 @@ _destroy_worker_artifacts() {
     reg_delete "$role"
   else
     say "  $role: KEPT branch $branch (has unmerged commits; review with: teamctl diff $role)"
+    say "      keep its work: git merge $branch · discard it: teamctl remove $role --force"
   fi
 }
 
@@ -516,7 +603,7 @@ cmd_destroy() {
     done
     gitr worktree prune
   else
-    say "worktrees kept. Remove the clean ones later with: teamctl destroy --worktrees"
+    say "worktrees kept. Clean ones go with: teamctl destroy --worktrees · one that still holds work: teamctl remove <role> --force"
   fi
   reg_delete "$WOLFMUX_LEAD_ROLE"
   event_log destroy "" "worktrees=$remove_worktrees"

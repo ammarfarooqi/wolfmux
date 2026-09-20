@@ -25,6 +25,9 @@
 #WOLFMUX_WORKER_PERMISSIONS=skip
 # May a worker add teammates with `teamctl spawn`? The lead is told every time one does.
 #WOLFMUX_WORKER_SPAWN=off
+# Keep every worker inside its own worktree and on its own branch: tool calls that reach
+# outside are refused with a reason (a guard against mistakes, not a sandbox).
+#WOLFMUX_WORKER_ISOLATION=on
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
 

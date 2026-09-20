@@ -152,8 +152,41 @@ tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -gu WOLFMUX_NOTIFY
 teamctl restart qa >/dev/null 2>&1
 sleep 2
 
+echo "== a teammate stays in its own worktree and on its own branch"
+OWN_TREE="$(teamctl status --json | jq -r '.agents[] | select(.role == "backend") | .workdir')"
+OWN_BRANCH="$(teamctl status --json | jq -r '.agents[] | select(.role == "backend") | .branch')"
+QA_TREE="$(teamctl status --json | jq -r '.agents[] | select(.role == "qa") | .workdir')"
+ROOT_REAL="$(cd "$PROJECT" && pwd -P)"
+# guard <tool> <json tool_input> — the hook's answer for the backend worker: "deny" or "allow"
+guard() {
+  local answer
+  answer="$(jq -cn --arg tool "$1" --argjson input "$2" --arg cwd "$OWN_TREE" '{hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $input, cwd: $cwd}' |
+    TEAM_ROLE=backend WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$OWN_TREE" WOLFMUX_BRANCH="$OWN_BRANCH" "$REPO/bin/teamctl" _guard)"
+  if printf '%s' "$answer" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | length > 20)' >/dev/null 2>&1; then echo deny; else echo "allow${answer:+ (unexpected output)}"; fi
+}
+file() { jq -cn --arg p "$1" '{file_path: $p}'; }
+search() { jq -cn --arg p "$1" '{pattern: "x", path: $p}'; }
+as_write() { jq -c '{tool_name: "Write", tool_input: .}'; } # helpers instead of nested \"quotes\": bash 3.2 misreads those inside $( )
+sh() { jq -cn --arg c "$1" '{command: $c}'; }
+all() { local want="$1" tool="$2" input; shift 2; for input in "$@"; do [ "$(guard "$tool" "$input")" = "$want" ] || { echo "expected $want: $tool $input" >&2; return 1; }; done; }
+check "guard: every worker has it, the lead does not" 'teamctl capture backend --all | grep -q "STUB guard=true" && teamctl capture qa --all | grep -q "STUB guard=true"'
+check "guard: a worker may change files in its own worktree (absolute, relative, new) and in temporary directories" 'all allow Write "$(file "$OWN_TREE/src/new/file.ts")" "$(file "src/app.ts")" "$(file "/tmp/scratch.txt")" && all allow Edit "$(file "$OWN_TREE/README.md")"'
+check "guard: it may not change the lead's checkout, a teammate's worktree, or climb out with .." 'all deny Write "$(file "$ROOT_REAL/README.md")" "$(file "$QA_TREE/README.md")" "$(file "../$(basename "$QA_TREE")/x.ts")" "$(file "$HOME/.zshrc")" && all deny Edit "$(file "$ROOT_REAL/src/x.ts")"'
+check "guard: it may read the lead's checkout, never a teammate's work in progress or teamctl's state" 'all allow Read "$(file "$ROOT_REAL/README.md")" "$(file "$OWN_TREE/README.md")" && all deny Read "$(file "$QA_TREE/README.md")" "$(file "$WOLFMUX_DATA/state")" && all deny Grep "$(search "$QA_TREE")"'
+check "guard: ordinary shell work passes" 'all allow Bash "$(sh "npm test")" "$(sh "git status && git add -A && git commit -m wip")" "$(sh "git checkout -- src/app.ts")" "$(sh "git push -u origin HEAD")" "$(sh "cat $ROOT_REAL/.env.example")" "$(sh "cp $ROOT_REAL/.env .")" "$(sh "teamctl status")" "$(sh "bd list --assignee backend --status open --include-infra")" "$(sh "git rebase main")"'
+check "guard: shell commands that reach into other worktrees or write into the lead's checkout are refused" 'all deny Bash "$(sh "cat $QA_TREE/secret.txt")" "$(sh "cat $(cd "$QA_TREE" && pwd -P)/secret.txt")" "$(sh "cd $ROOT_REAL && git commit -am x")" "$(sh "git -C $ROOT_REAL reset --hard")" "$(sh "rm -rf $ROOT_REAL/src")" "$(sh "cp fix.ts $ROOT_REAL/src/")" "$(sh "echo x > $ROOT_REAL/notes.txt")"'
+check "guard: branches, worktrees, tmux and pushes to main are the lead's" 'all deny Bash "$(sh "git switch main")" "$(sh "git checkout main")" "$(sh "git checkout -b feature")" "$(sh "git branch -D ai/qa-1")" "$(sh "git worktree add ../x")" "$(sh "tmux capture-pane -p -t %0")" "$(sh "git push origin main")" "$(sh "git push --force origin +HEAD:main")"'
+check "guard: the lead is not guarded, and an agent it cannot place is allowed (fails open)" '[ -z "$(file "$QA_TREE/x" | as_write | TEAM_ROLE=lead WOLFMUX_WORKTREE="$OWN_TREE" "$REPO/bin/teamctl" _guard)" ] && [ -z "$(file "$QA_TREE/x" | as_write | TEAM_ROLE=backend "$REPO/bin/teamctl" _guard)" ]'
+teamctl policy worker-isolation off >/dev/null 2>&1
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "guard: teamctl policy worker-isolation off takes it away at the next start" 'teamctl capture qa --all | grep "STUB guard=" | tail -1 | grep -q "STUB guard=false"'
+teamctl policy worker-isolation on >/dev/null 2>&1
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+
 echo "== one manager, permissions, spawning"
-check "policy: defaults are skip / skip / worker spawning off" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\"}"'
+check "policy: defaults are skip / skip / worker spawning off / worker isolation on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\"}"'
 check "permissions: lead and workers start in their CLI's bypass mode" 'teamctl capture lead -n 8 | grep -q "flags=--dangerously-bypass-approvals-and-sandbox" && teamctl capture backend -n 8 | grep -q "flags=--dangerously-skip-permissions"'
 check "hierarchy: the CLI's own agent-teams feature is switched off inside workers" 'teamctl capture backend -n 8 | grep -q "settings={\"teams\":\"0\",\"mode\":\"in-process\",\"hook\":false}"'
 check "hierarchy: the lead's own settings are left alone" 'teamctl capture lead -n 8 | grep -q "settings=none"'
@@ -223,10 +256,18 @@ check "worktrees: lists lead + workers" '[ "$(teamctl worktrees | grep -cE "^(le
 echo "== stop / restart / destroy"
 check "stop: pane closed, record kept" 'teamctl stop qa && teamctl status --json | jq -e ".agents[] | select(.role == \"qa\") | .state == \"stopped\""'
 check "restart: same worktree and branch" 'before="$(git branch --list "ai/qa-*")" && teamctl restart qa && [ "$(git branch --list "ai/qa-*")" = "$before" ] && teamctl status --json | jq -e ".agents[] | select(.role == \"qa\") | .state == \"running\""'
+check "remove: a running agent is never removed" 'teamctl remove qa --force --yes; [ $? -eq 1 ] && teamctl status --json | jq -e ".agents[] | select(.role == \"qa\") | .state == \"running\""'
 check "destroy: refuses without confirmation when not interactive" '! teamctl destroy --worktrees </dev/null'
 check "destroy: runs with --yes" 'teamctl destroy --worktrees --yes'
 check "destroy: dirty worktree with an unmerged commit is kept" '[ -d "$BACKEND_DIR" ] && git rev-parse -q --verify "refs/heads/$(git -C "$BACKEND_DIR" branch --show-current)"'
 check "destroy: clean worktree removed, merged branch deleted" '[ -z "$(git branch --list "ai/qa-*")" ]'
+check "destroy: says which workers it kept, why, and how to keep or discard their work" 'teamctl destroy --worktrees --yes | grep -q "backend: KEPT" && teamctl destroy --worktrees --yes | grep -q "teamctl remove backend --force"'
+check "remove: without --force, work is never discarded, and the refusal says what would be lost" 'out="$(teamctl remove backend 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "1 commit" && printf "%s" "$out" | grep -q "feat: work" && printf "%s" "$out" | grep -q "uncommitted" && [ -d "$BACKEND_DIR" ]'
+check "remove: a worker cannot remove anyone (exit 77)" 'TEAM_ROLE=qa teamctl remove backend --force --yes; [ $? -eq 77 ] && [ -d "$BACKEND_DIR" ]'
+check "remove: --force needs a yes when nobody can be asked" '! teamctl remove backend --force </dev/null && [ -d "$BACKEND_DIR" ]'
+BACKEND_BRANCH="$(git -C "$BACKEND_DIR" branch --show-current)"
+check "remove --force --yes: worktree, branch and record are gone; the main checkout is untouched" 'teamctl remove backend --force --yes && [ ! -d "$BACKEND_DIR" ] && ! git rev-parse -q --verify "refs/heads/$BACKEND_BRANCH" && ! teamctl status --json | jq -e ".agents[] | select(.role == \"backend\")" && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && ! git worktree list | grep -q backend'
+check "remove: an unknown role is an error, not a silent success" 'teamctl remove nobody --force --yes; [ $? -eq 1 ]'
 check "destroy: tmux session gone" '! tmux -L "$WOLFMUX_TMUX_SOCKET" has-session 2>/dev/null'
 
 echo "== a team started before the rename to Wolfmux"

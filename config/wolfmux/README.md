@@ -172,6 +172,17 @@ status, commit hash, risks) → closes its task → lead reviews the diff → re
 changes, cherry-picks, rejects, or asks another worker to review. The lead owns
 integration. Full rules: `TEAM_PROTOCOL.md` (injected into every agent at launch).
 
+## Clearing up
+
+```bash
+teamctl destroy --worktrees        # end the team; remove workers that hold nothing
+teamctl remove qa                  # one stopped worker: worktree, branch, record
+teamctl remove research --force    # ...even though it holds work (lists it, asks once)
+```
+
+A worker with uncommitted files or unmerged commits is never removed silently: keep its
+work with `git merge <branch>`, or discard it with `--force`.
+
 ## Stopping
 
 ```bash
