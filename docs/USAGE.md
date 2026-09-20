@@ -163,15 +163,28 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | Model key | Runs | Pays with |
 |-----------|------|-----------|
 | `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan — the default for workers |
+| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription |
+| `minimax` | Claude Code + MiniMax M3 | MiniMax Coding Plan |
+| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan |
+| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API: metered, off until the owner sets `WOLFMUX_METERED=on` |
+| `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API: metered, off until the owner sets `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT / Codex subscription |
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
+| `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` | any other model id of that provider (GLM is not pinnable) | the same plan, or the same metered account |
 
 A Fable team can take on an Astra teammate for one review (`teamctl spawn fe-review astra`),
-an Astra team a Sonnet one (`teamctl spawn summary sonnet`); tell the lead, or run it
+an Astra team a Sonnet one (`teamctl spawn summary sonnet`), any team a Kimi one
+(`teamctl spawn docs2 kimi`); tell the lead, or run it
 yourself. Every teammate gets its own worktree and branch and the same Beads inbox. What
 differs by CLI: Claude-based teammates have the worktree guard and the lead-approval mode;
 Codex-based ones have neither (Codex has no such hooks) but do send notifications.
+
+A provider worker needs its key in the Keychain first
+([SETUP.md](SETUP.md#3-the-keys)); `teamctl doctor` says which are set up. `spawn` and
+`start` refuse a metered key (exit 77, and the launcher exit 78) until the owner has set
+`WOLFMUX_METERED=on`; `teamctl status` marks a running metered agent with `$` after its
+label, with a legend line under the table.
 
 ## Beads cheat sheet
 
@@ -237,3 +250,4 @@ arrows = move · `Ctrl`/`Alt`-arrows = resize · `z` = zoom · `T` = re-tile ·
 | Fable lead | `/status` | Claude subscription login, no API key, no custom base URL |
 | Astra lead | `/status` | signed in with ChatGPT, model `gpt-6-astra` |
 | GLM worker | `/status` | base URL `https://api.z.ai/api/anthropic`, auth `apiKeyHelper` (or `ANTHROPIC_AUTH_TOKEN` in env mode), model `glm-5.3` / `glm-5.3-flash` |
+| other provider worker | `/status` | that provider's base URL and model (Kimi auth may be `ANTHROPIC_API_KEY` in env mode); `WOLFMUX_DRY_RUN=1 claude-<provider>` prints the exact values |

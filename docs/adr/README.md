@@ -24,3 +24,4 @@ build; superseded decisions will link to their replacement.
 | [0017](0017-any-model-for-any-agent.md) | Any model can join any team | accepted | 2026-09-20 |
 | [0018](0018-several-teams-per-project.md) | Several named teams in one project | accepted | 2026-09-20 |
 | [0019](0019-deleting-a-team-and-founding-one.md) | Deleting a whole team, and a lead founding a new one | accepted | 2026-09-20 |
+| [0020](0020-providers-beyond-the-three-subscriptions.md) | Providers beyond the three subscriptions: one table, one launcher, metered off until the owner says on | accepted | 2026-09-20 |

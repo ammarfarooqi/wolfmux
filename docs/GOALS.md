@@ -19,9 +19,13 @@ Run a small AI development team locally, the way one would run a human one:
 These are requirements, not preferences. Each one maps to a mechanism described in
 [SECURITY.md](SECURITY.md) or [ARCHITECTURE.md](ARCHITECTURE.md).
 
-1. **No pay-as-you-go inference, ever.** Claude subscription, ChatGPT/Codex
-   subscription and the Z.ai GLM Coding Plan only. Never Anthropic API billing,
-   OpenAI API billing, Z.ai PAYG, OpenRouter, LiteLLM or any metered proxy.
+1. **Metered inference is never reached by accident.** The subscriptions are the
+   default: Claude, ChatGPT/Codex, and the coding plans of Z.ai, Kimi, MiniMax and
+   Alibaba. Two providers in the table (Moonshot's platform, DeepSeek) are
+   pay-as-you-go APIs: they refuse to run until the owner has stored their key and
+   set `WOLFMUX_METERED=on` (`teamctl` and the launcher both refuse without it).
+   Never Anthropic API billing, OpenAI API billing, OpenRouter, LiteLLM or any
+   metered proxy, whatever that switch says ([ADR-0020](adr/0020-providers-beyond-the-three-subscriptions.md)).
 2. **Normal `claude` is never redirected.** No global environment variable and no
    settings entry may point Claude Code at Z.ai. Z.ai configuration exists only
    inside the GLM launcher's own process.
@@ -52,6 +56,7 @@ with its decision record:
 | any model in any seat: a Fable team takes an Astra teammate for one review, an Astra team a Sonnet one; `opus`, `sonnet`, `haiku`, `claude:<id>`, `codex:<id>` next to the original keys | [ADR-0017](adr/0017-any-model-for-any-agent.md) |
 | several teams in one project, named by the owner, shown as a tree (team → 🐺 lead → 🐶 teammates) | [ADR-0018](adr/0018-several-teams-per-project.md) |
 | teams message each other; a lead founds a fresh team and hands work over; one command deletes a whole team and frees its disk space, after showing what would be lost | [ADR-0019](adr/0019-deleting-a-team-and-founding-one.md) |
+| more providers beside Z.ai (Kimi, Moonshot, DeepSeek, MiniMax, Qwen) through the same one launcher: one table of facts, one Keychain service per provider, metered ones off until the owner switches them on | [ADR-0020](adr/0020-providers-beyond-the-three-subscriptions.md) |
 | a teammate stays in its own worktree and on its own branch (a guard, on top of constraint 5) | [ADR-0016](adr/0016-worktree-guard.md) |
 | the manager is always recognisable, and you are told when an agent finishes: click the notification, land in the team | [ADR-0015](adr/0015-notifications-through-the-attached-terminal.md) |
 
