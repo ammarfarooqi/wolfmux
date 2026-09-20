@@ -22,7 +22,12 @@ $fields
 EOF
 
 actor="${BEADS_ACTOR:-${TEAM_ROLE:-}}"
-lead="lead"
+# All teams of a project share its Beads; a named team's agents are "<team>.<role>",
+# so the lead to tell is the lead of the actor's own team.
+case "$actor" in
+  *.*) lead="${actor%%.*}.lead" ;;
+  *) lead="lead" ;;
+esac
 target=""
 
 case "$event" in

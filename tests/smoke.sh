@@ -103,7 +103,7 @@ check "validation: reserved and malformed roles refused" '! teamctl spawn lead g
 check "validation: a capital letter is refused whatever the locale says about [a-z]" 'for l in C en_AU.UTF-8 en_US.UTF-8; do LC_ALL=$l LANG=$l teamctl spawn Riley-reviewer glm53; [ $? -eq 64 ] || exit 1; done; [ -z "$(git branch --list "ai/Riley*")" ]'
 LEGACY_RECORD="$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/Old-Reviewer.json"
 jq '.role = "Old-Reviewer" | .pane_id = "" | .state = "stopped"' "$(dirname "$LEGACY_RECORD")/backend.json" >"$LEGACY_RECORD"
-check "validation: a role an older version let through (capitals) can still be listed and stopped" 'teamctl status | grep -q "^Old-Reviewer  *GLM-5.3" && teamctl stop Old-Reviewer && teamctl status --json | jq -e ".agents[] | select(.role == \"Old-Reviewer\") | .state == \"stopped\""'
+check "validation: a role an older version let through (capitals) can still be listed and stopped" 'teamctl status | grep -q "🐶 Old-Reviewer  *GLM-5.3" && teamctl stop Old-Reviewer && teamctl status --json | jq -e ".agents[] | select(.role == \"Old-Reviewer\") | .state == \"stopped\""'
 check "validation: a role name can never leave the registry directory" 'teamctl stop "../backend"; [ $? -eq 64 ] && teamctl capture "a/b"; [ $? -eq 64 ]'
 /bin/rm -f "$LEGACY_RECORD"
 check "validation: flag without value reports usage (exit 64)" 'teamctl spawn x glm53 --base; [ $? -eq 64 ]'
@@ -165,11 +165,11 @@ printf '#!/bin/bash\nprintf "%%s\\n" "$@" >>"%s"\n' "$WORK/open.args" >"$FAKE_OP
 PROJECT_REAL="$(cd "$PROJECT" && pwd -P)" # git reports the physical path (/private/var/… on macOS)
 detached() { WOLFMUX_NOTIFIER_APP="$FAKE_APP" WOLFMUX_OPEN_BIN="$FAKE_OPEN" WOLFMUX_OSASCRIPT="$FAKE_OSA" WOLFMUX_TERMINAL=iterm "$REPO/bin/teamctl" "$@"; }
 /bin/rm -f "$WORK/osa.args" "$WORK/open.args"
-check "notify: nobody attached -> the message is handed to Wolfmux.app, not to osascript" 'printf "%s" "{\"last_assistant_message\":\"merged the cart API\"}" | TEAM_ROLE=lead detached _notify && grep -q "Wolfmux.app$" "$WORK/open.args" && [ ! -e "$WORK/osa.args" ] && [ "$(/bin/cat "$WOLFMUX_DATA/notify/last")" = "$PROJECT_REAL" ]'
+check "notify: nobody attached -> the message is handed to Wolfmux.app, not to osascript" 'printf "%s" "{\"last_assistant_message\":\"merged the cart API\"}" | TEAM_ROLE=lead detached _notify && grep -q "Wolfmux.app$" "$WORK/open.args" && [ ! -e "$WORK/osa.args" ] && [ "$(sed -n 1p "$WOLFMUX_DATA/notify/last")" = "$PROJECT_REAL" ]'
 check "notify: the app fetches its message exactly once (so its next start is a click)" '[ "$(detached _notify-pending | head -1)" = "🐺 lead: merged the cart API" ] && [ -z "$(detached _notify-pending)" ]'
 check "notify: a message the app never fetched is not posted late" 'printf "%s" "{}" | TEAM_ROLE=qa detached _notify && touch -t 202001010000 "$WOLFMUX_DATA/notify/pending" && [ -z "$(detached _notify-pending)" ]'
 /bin/rm -f "$WORK/osa.args" "$WORK/open.args"
-check "notify: a click opens a terminal on the team (script with the project and teamctl attach)" 'detached _open-team && grep -q "open-team.command" "$WORK/osa.args" && grep -q "create window with default profile command" "$WORK/osa.args" && grep -qF "$(printf "%q" "$PROJECT_REAL")" "$WOLFMUX_DATA/notify/open-team.command" && grep -q "teamctl. attach\|teamctl attach" "$WOLFMUX_DATA/notify/open-team.command"'
+check "notify: a click opens a terminal on the team (script with the project and teamctl attach)" 'detached _open-team && grep -q "open-team.command" "$WORK/osa.args" && grep -q "create window with default profile command" "$WORK/osa.args" && grep -qF "$(printf "%q" "$PROJECT_REAL")" "$WOLFMUX_DATA/notify/open-team.command" && grep -q "teamctl --team default attach" "$WOLFMUX_DATA/notify/open-team.command"'
 
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_NOTIFY lead
 teamctl restart qa >/dev/null 2>&1
@@ -340,6 +340,33 @@ check "start again: status says the session has ended when every agent has exite
 check "start again: when every agent has exited, start opens a fresh session, not the dead one" 'follow start fable --no-attach --skip-beads --continue && sleep 1 && [ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a | wc -l | tr -d " ")" = 1 ] && follow status --json | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")"'
 check "start again: --continue resumes the lead's last conversation" 'teamctl capture lead --all | grep -q "STUB flags=.*--continue"'
 check "start again: a stopped worker kept its worktree and returns with restart" 'follow restart docs && sleep 1 && follow status --json | jq -e "[.agents[] | select(.role == \"docs\")][0].state == \"running\"" && lead_left'
+teamctl destroy --worktrees --yes >/dev/null 2>&1
+
+echo "== several teams in one project"
+sessions() { tmux -L "$WOLFMUX_TMUX_SOCKET" list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' '; }
+teamctl start astra --no-attach --skip-beads >/dev/null 2>&1
+FIRST_SESSION="$(teamctl status --json | jq -r .session)"
+check "teams: asking for another lead model while a team runs never hijacks that team; it says how to start a second one" 'out="$(teamctl start fable --no-attach --skip-beads 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start fable --team" && teamctl status --json | jq -e ".agents[0].label == \"GPT-6 Astra\""'
+check "teams: a second, named team gets its own tmux session and its own lead" 'teamctl start fable --team review --no-attach --skip-beads && [ "$(sessions)" = "$FIRST_SESSION $FIRST_SESSION-review " ]'
+check "teams: with several teams a command has to say which one (exit 64, and it lists them)" 'out="$(teamctl spawn backend glm53 --no-kickoff 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "default" && printf "%s" "$out" | grep -q "review"'
+check "teams: the same role name can exist in two teams; --team works before or after the command" 'teamctl spawn backend glm53 --team review --no-kickoff && teamctl --team default spawn backend flash --no-kickoff && sleep 2 && [ "$(git branch --list "ai/review/backend-*" | wc -l | tr -d " ")" = 1 ] && [ "$(git branch --list "ai/backend-*" | wc -l | tr -d " ")" = 1 ] && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0] | (.branch | startswith(\"ai/review/backend-\")) and .commits_ahead == \"0\""'
+check "teams: status shows every team as a hierarchy: team, wolf, dogs" 'out="$(teamctl status)"; printf "%s\n" "$out" | grep -q "^TEAM default" && printf "%s\n" "$out" | grep -q "^TEAM review" && [ "$(printf "%s\n" "$out" | grep -c "🐺 lead")" = 2 ] && [ "$(printf "%s\n" "$out" | grep -c "🐶 backend")" = 2 ]'
+check "teams: status --json lists the teams; with --team it keeps the single-team shape" 'teamctl status --json | jq -e "(.teams | map(.team) | sort) == [\"default\", \"review\"] and ([.teams[] | select(.team == \"review\")][0].agents | map(.role)) == [\"lead\", \"backend\"]" && teamctl status --json --team review | jq -e ".team == \"review\" and .session_running and (.agents | length == 2)"'
+check "teams: teamctl teams is the short list" 'teamctl teams | grep -q "review .*running .*Fable 5.1" && teamctl teams | grep -q "default .*running .*GPT-6 Astra"'
+check "teams: a named team has its own Beads identities (<team>.<role>); the first team keeps plain roles" 'teamctl capture backend --team review --all | grep -q "STUB role=backend actor=review.backend" && teamctl capture backend --team default --all | grep -q "STUB role=backend actor=backend "'
+check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "-a review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
+check "teams: a notification finds the right team by identity" 'teamctl nudge review.backend --id abc-9 && sleep 1 && teamctl capture backend --team review -n 12 | grep -q "Beads update for review.backend (abc-9)" && ! teamctl capture backend --team default -n 12 | grep -q "abc-9"'
+check "teams: a lead manages its own team only (exit 77 for another team)" 'TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend --team default; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"stopped\"" && teamctl status --json --team default | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"running\""'
+check "teams: desktop notifications name the team" 'printf "%s" "{\"last_assistant_message\":\"review done\"}" | TEAM_ROLE=lead WOLFMUX_TEAM=review WOLFMUX_NOTIFY_TTY="$WORK/tty-team" notify && grep -q "🐺 review/lead: review done" "$WORK/tty-team" && [ "$(sed -n 2p "$WOLFMUX_DATA/notify/last")" = review ]'
+check "teams: a bad team name is refused (exit 64)" 'for name in "Bad Name" "a/b" "../x" "x."; do teamctl start fable --team "$name" --no-attach --skip-beads; [ $? -eq 64 ] || exit 1; done'
+if [ "$HAVE_BD" -eq 1 ]; then
+  teamctl restart backend --team review >/dev/null 2>&1
+  sleep 5
+  BEADS_ACTOR=review.backend TEAM_ROLE=backend WOLFMUX_TEAM=review bd create "Review ready" -t message -a review.lead -d "see branch" --silent >/dev/null 2>&1
+  sleep 3
+  check "teams: Beads messages reach the lead of the right team" 'teamctl capture lead --team review -n 12 | grep -q "Beads update for review.lead" && ! teamctl capture lead --team default -n 12 | grep -q "review.lead"'
+fi
+check "teams: destroy ends one team and leaves the other alone" 'teamctl destroy --team review --worktrees --yes && [ "$(sessions)" = "$FIRST_SESSION " ] && teamctl status --json | jq -e ".team == \"default\" and .session_running"'
 teamctl destroy --worktrees --yes >/dev/null 2>&1
 /bin/mkdir -p "$PROJECT/.beads/hooks"
 printf '#!/bin/bash\n# ai-team-hook v1 — written before the rename\nexit 0\n' >"$PROJECT/.beads/hooks/on_create"

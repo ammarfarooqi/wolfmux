@@ -139,6 +139,18 @@ teamctl focus backend       # jump to a pane            teamctl nudge backend   
 
 Process state comes from tmux, work state from Beads; terminal text is never parsed.
 
+## Several teams in one project
+
+```bash
+teamctl start fable --team review    # a second team, named by you; its own session, lead and workers
+teamctl status                       # all teams: TEAM, 🐺 lead, 🐶 teammates
+teamctl attach --team review         # add --team <name> to any command once there are several
+```
+
+With one team you never type `--team`. `teamctl start <model>` while the first team runs
+under another model does not open that team; it shows you both commands. All teams share
+the project's Beads; agents of a named team are `<team>.<role>` there.
+
 ## The wolf, and notifications
 
 - Arrangement: the lead is the large pane on the left, teammates are stacked on the right,

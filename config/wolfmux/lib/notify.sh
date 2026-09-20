@@ -97,7 +97,7 @@ notify_remember_project() {
   root="$(resolve_root 2>/dev/null || true)"
   [ -n "$root" ] || return 0
   /bin/mkdir -p "$(notify_dir)" 2>/dev/null || return 0
-  printf '%s\n' "$root" >"$(notify_dir)/last" 2>/dev/null || true
+  printf '%s\n%s\n' "$root" "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" >"$(notify_dir)/last" 2>/dev/null || true
 }
 
 # notify_through_app <body> — hand the message to Wolfmux.app; false when there is none
@@ -144,10 +144,13 @@ open_team_terminal() {
 
 # cmd_open_team — internal (`teamctl _open-team`): what a click on a notification does
 cmd_open_team() {
-  local dir root terminal script osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}" opener="${WOLFMUX_OPEN_BIN:-/usr/bin/open}"
+  local dir root team terminal script osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}" opener="${WOLFMUX_OPEN_BIN:-/usr/bin/open}"
   dir="$(notify_dir)"
   root="$(sed -n '1p' "$dir/last" 2>/dev/null || true)"
+  team="$(sed -n '2p' "$dir/last" 2>/dev/null || true)"
   [ -n "$root" ] && [ -d "$root" ] || return 0
+  valid_team_name "$team" || team="$WOLFMUX_DEFAULT_TEAM"
+  WOLFMUX_TEAM_ARG="$team"
   export WOLFMUX_ROOT="$root"
   require_tools
   load_project
@@ -168,7 +171,7 @@ cmd_open_team() {
   {
     printf '#!/bin/zsh -l\n# written by teamctl _open-team; safe to delete\n'
     printf 'cd -- %q || exit 1\n' "$root"
-    printf '%q attach || %q status\n' "$TEAMCTL_SELF" "$TEAMCTL_SELF"
+    printf '%q --team %q attach || %q status\n' "$TEAMCTL_SELF" "$TEAM" "$TEAMCTL_SELF"
     printf 'exec /bin/zsh -l\n'
   } >"$script"
   /bin/chmod 755 "$script"
@@ -189,7 +192,7 @@ cmd_open_team() {
 
 # cmd_notify — internal (`teamctl _notify`): Stop hook, JSON on stdin
 cmd_notify() {
-  local input role body tty sent=0 osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}"
+  local input role who body tty sent=0 osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}"
   if [ "${1:-}" = "--codex" ]; then
     # Codex: `notify` program, JSON as the last argument, "last-assistant-message"
     input="$(printf '%s' "${2:-}" | "$JQ_BIN" -c '{last_assistant_message: (.["last-assistant-message"] // "")}' 2>/dev/null || true)"
@@ -198,7 +201,10 @@ cmd_notify() {
   fi
   [ -n "$JQ_BIN" ] || return 0
   role="${TEAM_ROLE:-agent}"
-  body="$role: $(notify_text "$input")"
+  # "review/lead" in a named team, plain "lead" in the first one
+  who="$role"
+  if [ -n "${WOLFMUX_TEAM:-}" ] && [ "$WOLFMUX_TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then who="$WOLFMUX_TEAM/$role"; fi
+  body="$who: $(notify_text "$input")"
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then body="$WOLFMUX_LEAD_MARK $body"; else body="$WOLFMUX_WORKER_MARK $body"; fi
 
   notify_remember_project

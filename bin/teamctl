@@ -25,7 +25,10 @@ usage() {
   /bin/cat <<'EOF'
 teamctl — tmux panes, models, worktrees and lifecycle for your AI team
 
-  Lead  (the only manager; start/stop/restart/destroy/policy/approve are reserved for it and for you)
+  Teams  a project can have several: add --team <name> to any command (before or after it).
+         With one team you never need it. teamctl status shows them all; teamctl teams is the short list.
+    teamctl start fable --team review               a second team, named by you, with its own session
+  Lead  (the only manager of its team; start/stop/restart/destroy/policy/approve are reserved for it and for you)
     teamctl start <fable|astra|any model> [--no-attach] [--continue] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
   Workers
@@ -84,7 +87,25 @@ EOF
 }
 
 main() {
-  local command="${1:-help}"
+  # --team <name> may stand anywhere: `teamctl --team review status`, `teamctl stop qa --team review`
+  local rest=() command
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --team | -T)
+        [ "$#" -ge 2 ] || die_usage "--team needs a name"
+        WOLFMUX_TEAM_ARG="$2"
+        shift
+        ;;
+      --team=*) WOLFMUX_TEAM_ARG="${1#--team=}" ;;
+      *) rest+=("$1") ;;
+    esac
+    shift
+  done
+  if [ "${#rest[@]}" -gt 0 ]; then set -- "${rest[@]}"; fi
+  if [ -n "${WOLFMUX_TEAM_ARG:-}" ]; then
+    valid_team_name "$WOLFMUX_TEAM_ARG" || die_usage "invalid team name '$WOLFMUX_TEAM_ARG' (lowercase letters, digits and '-', max 24)"
+  fi
+  command="${1:-help}"
   [ "$#" -gt 0 ] && shift
   case "$command" in
     start) cmd_start "$@" ;;
@@ -101,6 +122,8 @@ main() {
     deny) cmd_deny "$@" ;;
     _permission-hook) cmd_permission_hook "$@" ;;
     status | workers) cmd_status "$@" ;;
+    teams) cmd_teams "$@" ;;
+    _prompt) cmd_prompt "$@" ;;
     panes) cmd_panes "$@" ;;
     capture) cmd_capture "$@" ;;
     log) cmd_capture "$@" --all ;;

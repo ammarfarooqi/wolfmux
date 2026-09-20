@@ -70,6 +70,10 @@ tm_session_root() { tmx show-options -t "=$1:" -qv @wolfmux_root 2>/dev/null || 
 
 tm_set_session_root() { tmx set-option -t "=$1:" @wolfmux_root "$2"; }
 
+# The team a session belongs to; a pane inherits it, which is how an agent's teamctl
+# knows its own team (caller_team).
+tm_set_session_team() { tmx set-option -t "=$1:" @wolfmux_team "$2"; }
+
 # tm_new_session <session> <start-dir> <command...> — prints the first pane's id.
 # The command is passed as separate arguments, so tmux executes it directly
 # (no `sh -c`, no quoting layer).

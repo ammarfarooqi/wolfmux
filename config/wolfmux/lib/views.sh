@@ -6,7 +6,7 @@
 
 _status_rows() { # emits one JSON object per agent
   local role kind pane state branch ahead dirty workdir
-  for role in $(reg_list); do
+  for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
     reg_exists "$role" || continue
     kind="$(reg_field "$role" kind)"
     workdir="$(reg_field "$role" workdir)"
@@ -45,51 +45,109 @@ role_column_width() {
   printf '%s\n' "$width"
 }
 
-cmd_status() {
-  local json=0 rows width
-  if [ "${1:-}" = "--json" ]; then json=1; fi
-  require_tools
-  load_project
+# _status_team_json — one team as an object (needs team_paths to have run)
+_status_team_json() {
   SESSION="$(session_name_for_project)"
   SESSION_LIVE=""
   if tm_session_exists "$SESSION"; then SESSION_LIVE=1; fi
-  rows="$(_status_rows)"
-  if [ "$json" -eq 1 ]; then
-    printf '%s\n' "$rows" | "$JQ_BIN" -s --arg root "$ROOT" --arg session "$SESSION" \
-      --arg running "${SESSION_LIVE:-0}" --arg lp "$(policy_get lead-permissions)" \
-      --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" \
-      --arg pending "$(approvals_pending_count)" \
-      '{root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
-        policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi},
-        approvals_pending: ($pending | tonumber), agents: .}'
-    return 0
-  fi
-  say "project   $(short_path "$ROOT")"
+  _status_rows | "$JQ_BIN" -s --arg team "$TEAM" --arg root "$ROOT" --arg session "$SESSION" \
+    --arg running "${SESSION_LIVE:-0}" --arg lp "$(policy_get lead-permissions)" \
+    --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" \
+    --arg pending "$(approvals_pending_count)" \
+    '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
+      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi},
+      approvals_pending: ($pending | tonumber), agents: .}'
+}
+
+# _status_team_text — one team as a small tree: the team, its wolf, its dogs
+_status_team_text() {
+  local rows width state hint=""
+  SESSION="$(session_name_for_project)"
+  SESSION_LIVE=""
+  if tm_session_exists "$SESSION"; then SESSION_LIVE=1; fi
+  if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then hint=" --team $TEAM"; fi
   if [ -z "$SESSION_LIVE" ]; then
-    say "session   $SESSION  (not running)"
+    state="not running"
   elif [ "$(tm_alive_count "$SESSION")" -eq 0 ]; then
-    say "session   $SESSION  (ended: every agent has exited — 'teamctl start <fable|astra>' opens a new one)"
+    state="ended: every agent has exited — 'teamctl start <fable|astra>$hint' opens a new one"
   else
-    say "session   $SESSION  (running)"
+    state="running"
   fi
-  say "policy    manager: $WOLFMUX_LEAD_MARK lead · $(policy_summary) · approvals pending: $(approvals_pending_count)"
-  say ""
+  say "TEAM $TEAM · $SESSION · $state"
+  say "  policy  $(policy_summary) · approvals pending: $(approvals_pending_count)"
+  rows="$(_status_rows)"
   if [ -z "$rows" ]; then
-    say "no agents registered. Start a team: teamctl start <fable|astra>"
+    say "  no agents on record. Start it: teamctl start <fable|astra>$hint"
     return 0
   fi
   width="$(role_column_width)"
-  printf '%-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$width" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY WORKDIR
+  printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY WORKDIR
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.role, .label, .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
-    while IFS='|' read -r role label state pane permissions spawned_by branch ahead dirty workdir; do
-      printf '%-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$width" "$role" "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, .label, .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
+    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty workdir; do
+      if [ "$kind" = "lead" ]; then
+        printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
+      else
+        printf '    %s %-*s' "$WOLFMUX_WORKER_MARK" "$width" "$role"
+      fi
+      printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
     done
+}
+
+# teamctl status [--json] — every team of the project, or the one named with --team
+cmd_status() {
+  local json=0 teams team first=1
+  if [ "${1:-}" = "--json" ]; then json=1; fi
+  require_tools
+  load_project any
+  if [ -n "$TEAM" ]; then teams="$TEAM"; else teams="$(team_list)"; fi
+  if [ "$json" -eq 1 ]; then
+    if [ -n "$TEAM" ]; then
+      _status_team_json
+    else
+      for team in $teams; do
+        team_paths "$team"
+        _status_team_json
+      done | "$JQ_BIN" -s --arg root "$ROOT" '{root: $root, teams: .}'
+    fi
+    return 0
+  fi
+  say "project   $(short_path "$ROOT")"
+  for team in $teams; do
+    say ""
+    team_paths "$team"
+    _status_team_text
+  done
   say ""
+  if [ "$(printf '%s\n' "$teams" | wc -w | tr -d ' ')" -gt 1 ]; then
+    say "several teams: add --team <name> to a command · each team has its own session: teamctl attach --team <name>"
+    say "they share this project's Beads; a named team's agents are <team>.<role> there (bd list --assignee review.lead …)"
+  fi
   say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open --include-infra"
 }
 
-# teamctl panes — what tmux itself reports for every pane of the team session
+# teamctl teams — the short list
+cmd_teams() {
+  local team lead state count
+  require_tools
+  load_project any
+  printf '%-16s %-12s %-16s %-7s %s\n' TEAM STATE LEAD AGENTS SESSION
+  for team in $(team_list); do
+    team_paths "$team"
+    SESSION="$(session_name_for_project)"
+    if ! tm_session_exists "$SESSION"; then
+      state="not running"
+    elif [ "$(tm_alive_count "$SESSION")" -eq 0 ]; then
+      state="ended"
+    else
+      state="running"
+    fi
+    lead="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
+    count="$(reg_list | wc -l | tr -d ' ')"
+    printf '%-16s %-12s %-16s %-7s %s\n' "$team" "$state" "${lead:--}" "$count" "$SESSION"
+  done
+}
+
 cmd_panes() {
   require_tools
   load_project

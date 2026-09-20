@@ -13,9 +13,14 @@ wt_require_commit() {
 }
 
 # wt_create <role> <stamp> <base-commit> — prints the worktree path
+# wt_branch_name <role> <stamp> — ai/<role>-<stamp>, or ai/<team>/<role>-<stamp> in a named team
+wt_branch_name() {
+  if [ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ]; then printf 'ai/%s-%s\n' "$1" "$2"; else printf 'ai/%s/%s-%s\n' "$TEAM" "$1" "$2"; fi
+}
+
 wt_create() {
   local role="$1" stamp="$2" base="$3" branch path
-  branch="ai/$role-$stamp"
+  branch="$(wt_branch_name "$role" "$stamp")"
   path="$WORKTREES_DIR/$role-$stamp"
   [ ! -e "$path" ] || die "worktree path already exists: $path"
   gitr worktree add -q -b "$branch" "$path" "$base" >&2 || die "git worktree add failed for $role"

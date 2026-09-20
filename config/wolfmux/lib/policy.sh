@@ -91,15 +91,19 @@ caller_role() {
   printf '%s\n' "$role"
 }
 
+# You manage every team. A lead manages its own team and no other.
 is_manager() {
-  local role
+  local role team
   role="$(caller_role)"
-  [ -z "$role" ] || [ "$role" = "$WOLFMUX_LEAD_ROLE" ]
+  [ -n "$role" ] || return 0
+  [ "$role" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  team="$(caller_team)"
+  [ "${team:-$WOLFMUX_DEFAULT_TEAM}" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ]
 }
 
 require_manager() { # <command name>
   is_manager && return 0
-  die "'teamctl $1' is reserved for the lead. You are '$(caller_role)'. Ask the lead: bd create \"<what you need>\" -t message -a lead -d \"<why>\"" 77
+  die "'teamctl $1' is reserved for the lead of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}'. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")'. Ask that lead: bd create \"<what you need>\" -t message -a $(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE") -d \"<why>\"" 77
 }
 
 policy_summary() {

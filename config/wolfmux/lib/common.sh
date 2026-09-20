@@ -2,7 +2,7 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-WOLFMUX_VERSION="1.7.0"
+WOLFMUX_VERSION="1.8.0"
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
 # This project was first called "ai-team". A team started under that name keeps
@@ -221,11 +221,103 @@ project_key() {
 }
 
 # load_project — sets ROOT PROJECT_KEY STATE_DIR WORKTREES_DIR, or dies.
+# --- teams ---------------------------------------------------------------------
+# A project can have several teams, each with its own tmux session, lead, workers, policy
+# and arrangement. The first one is called "default" and lives where the only team used to
+# live, so nothing moves for a project that has one team. A named team lives under teams/.
+#
+#   state       ~/.wolfmux/state/<project>/                     default
+#               ~/.wolfmux/state/<project>/teams/<team>/        named
+#   worktrees   ~/.wolfmux/worktrees/<project>/<role>-<stamp>   default
+#               ~/.wolfmux/worktrees/<project>/teams/<team>/<role>-<stamp>
+#   branches    ai/<role>-<stamp>  ·  ai/<team>/<role>-<stamp>
+#   Beads name  <role>             ·  <team>.<role>       (all teams share the project's Beads)
+WOLFMUX_DEFAULT_TEAM="default"
+
+valid_team_name() {
+  case "$1" in
+    "" | *[!${_WM_LOWER}${_WM_DIGITS}-]* | -* | *-) return 1 ;;
+  esac
+  [ "${#1}" -le 24 ]
+}
+
+# team_identity <team> <role> — what an agent is called in Beads
+team_identity() {
+  if [ "$1" = "$WOLFMUX_DEFAULT_TEAM" ]; then printf '%s\n' "$2"; else printf '%s.%s\n' "$1" "$2"; fi
+}
+
+# identity_split <identity> — sets ID_TEAM and ID_ROLE ("review.backend" -> review, backend)
+identity_split() {
+  case "$1" in
+    *.*) ID_TEAM="${1%%.*}" ID_ROLE="${1#*.}" ;;
+    *) ID_TEAM="$WOLFMUX_DEFAULT_TEAM" ID_ROLE="$1" ;;
+  esac
+}
+
+# team_paths <team> — point STATE_DIR and WORKTREES_DIR at one team of the loaded project
+team_paths() {
+  TEAM="$1"
+  if [ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ]; then
+    STATE_DIR="$PROJECT_STATE"
+    WORKTREES_DIR="$PROJECT_TREES"
+  else
+    STATE_DIR="$PROJECT_STATE/teams/$TEAM"
+    WORKTREES_DIR="$PROJECT_TREES/teams/$TEAM"
+  fi
+}
+
+# team_list — teams of the loaded project that have agents on record or a session running
+team_list() {
+  local dir name keep_team="${TEAM:-}" keep_state="${STATE_DIR:-}" keep_trees="${WORKTREES_DIR:-}"
+  for name in "$WOLFMUX_DEFAULT_TEAM" $(for dir in "$PROJECT_STATE"/teams/*/; do [ -d "$dir" ] && basename "$dir"; done 2>/dev/null); do
+    valid_team_name "$name" || continue
+    team_paths "$name"
+    if [ -n "$(reg_list 2>/dev/null)" ] || tm_session_exists "$(session_name_for_project)" 2>/dev/null; then printf '%s\n' "$name"; fi
+  done
+  TEAM="$keep_team" STATE_DIR="$keep_state" WORKTREES_DIR="$keep_trees"
+}
+
+# caller_team — the team of the agent running this command: the pane it runs in decides,
+# WOLFMUX_TEAM (exported into every agent) otherwise. Empty = you, at your own terminal.
+caller_team() {
+  local team=""
+  if [ -n "${TMUX_PANE:-}" ] && [ -n "$TMUX_BIN" ] && tm_inside_team_server; then
+    team="$(tmx display-message -p -t "$TMUX_PANE" '#{@wolfmux_team}' 2>/dev/null || true)"
+  fi
+  [ -n "$team" ] || team="${WOLFMUX_TEAM:-}"
+  printf '%s\n' "$team"
+}
+
+# load_project [any] — the repository, then the team. Which team: --team, else the caller's
+# own, else the only one there is. With several and none named, a command has to be told;
+# "any" is for the commands that can show all of them (TEAM stays empty).
 load_project() {
+  local wanted teams count
   ROOT="$(resolve_root)" || die "not inside a git repository (teams need git worktrees). cd into your project first."
   PROJECT_KEY="$(project_key "$ROOT")"
-  STATE_DIR="$WOLFMUX_DATA/state/$PROJECT_KEY"
-  WORKTREES_DIR="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
+  PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
+  PROJECT_TREES="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
+  wanted="${WOLFMUX_TEAM_ARG:-}"
+  [ -n "$wanted" ] || wanted="$(caller_team)"
+  if [ -n "$wanted" ]; then
+    valid_team_name "$wanted" || die_usage "invalid team name '$wanted' (lowercase letters, digits and '-', max 24)"
+    team_paths "$wanted"
+    return 0
+  fi
+  teams="$(team_list | tr '\n' ' ')"
+  count="$(printf '%s' "$teams" | wc -w | tr -d ' ')"
+  case "$count" in
+    0) team_paths "$WOLFMUX_DEFAULT_TEAM" ;;
+    1) team_paths "${teams% }" ;;
+    *)
+      if [ "${1:-}" = "any" ]; then
+        team_paths "$WOLFMUX_DEFAULT_TEAM"
+        TEAM=""
+      else
+        die_usage "this project has several teams (${teams% }); say which one: teamctl --team <name> …"
+      fi
+      ;;
+  esac
 }
 
 ensure_state_dirs() {

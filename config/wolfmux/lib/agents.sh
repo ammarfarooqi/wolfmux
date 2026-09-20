@@ -18,12 +18,21 @@ session_name_for_project() {
   if tm_session_exists "$candidate" && [ "$(tm_session_root "$candidate")" != "$ROOT" ]; then
     candidate="team-$PROJECT_KEY"
   fi
+  if [ "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" != "$WOLFMUX_DEFAULT_TEAM" ]; then candidate="$candidate-$TEAM"; fi
   printf '%s\n' "$candidate"
+}
+
+# agent_command <role> [--continue] — fills AGENT_CMD: what a pane of this team runs
+agent_command() {
+  AGENT_CMD=("$TEAMCTL_SELF")
+  if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then AGENT_CMD+=(--team "$TEAM"); fi
+  AGENT_CMD+=(_run-agent "$ROOT" "$1")
+  if [ "${2:-}" = "--continue" ]; then AGENT_CMD+=(--continue); fi
 }
 
 require_session() {
   SESSION="$(session_name_for_project)"
-  tm_session_exists "$SESSION" || die "no team session for this project. Start one: teamctl start <fable|astra>"
+  tm_session_exists "$SESSION" || die "team '$TEAM' has no session running. Start it: teamctl start <fable|astra>$([ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ] || printf ' --team %s' "$TEAM")"
 }
 
 # agent_state <role> — running | exited(N) | stopped
@@ -60,7 +69,7 @@ new_record() {
 
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
-  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role run stopped="" previous previous_model=""
+  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-attach | -d) attach=0 ;;
@@ -85,6 +94,8 @@ cmd_start() {
   [ -n "$model" ] && model_info "$model" ||
     die_usage "usage: teamctl start <fable|astra|…> [--no-attach] [--continue] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]   (models: $WOLFMUX_MODEL_KEYS)"
   require_tools
+  # start never guesses between teams: the one you name, else the first one.
+  WOLFMUX_TEAM_ARG="${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
   load_project
   require_manager start
   wt_require_commit
@@ -98,8 +109,16 @@ cmd_start() {
   SESSION="$(session_name_for_project)"
   if tm_session_exists "$SESSION"; then
     if [ "$(tm_pane_state "$(tm_pane_for_role "$SESSION" "$WOLFMUX_LEAD_ROLE")")" = "running" ]; then
-      info "team session '$SESSION' is already running (lead: $(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || printf unknown))."
       lock_release
+      # Asking for another model is asking for another team, not for this one.
+      if [ "$(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || true)" != "$model" ]; then
+        info "team '$TEAM' is already running here, led by $(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || printf 'another model')."
+        info "  open it:              teamctl attach$([ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ] || printf ' --team %s' "$TEAM")"
+        info "  a second team:        teamctl start $model --team <name>        e.g. --team $(printf '%s' "$model" | tr -c "${_WM_LOWER}${_WM_DIGITS}\n" '-' | cut -c1-24)"
+        info "  all teams:            teamctl status"
+        exit 1
+      fi
+      info "team '$TEAM' ($SESSION) is already running (lead: $(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || printf unknown))."
       if [ "$attach" -eq 1 ]; then cmd_attach; fi
       return 0
     fi
@@ -146,27 +165,26 @@ cmd_start() {
 
   branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
   new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
-  run=("$TEAMCTL_SELF" _run-agent "$ROOT" "$WOLFMUX_LEAD_ROLE")
-  if [ "$resume" -eq 1 ]; then run+=(--continue); fi
-  pane="$(tm_new_session "$SESSION" "$ROOT" "${run[@]}")" || {
+  if [ "$resume" -eq 1 ]; then agent_command "$WOLFMUX_LEAD_ROLE" --continue; else agent_command "$WOLFMUX_LEAD_ROLE"; fi
+  pane="$(tm_new_session "$SESSION" "$ROOT" "${AGENT_CMD[@]}")" || {
     reg_delete "$WOLFMUX_LEAD_ROLE"
     die "could not create tmux session '$SESSION'"
   }
   # A half-configured session would be invisible to every later command: roll back.
-  if ! { tm_set_session_root "$SESSION" "$ROOT" && tm_tag "$pane" "$WOLFMUX_LEAD_ROLE" "$MODEL_LABEL"; }; then
+  if ! { tm_set_session_root "$SESSION" "$ROOT" && tm_set_session_team "$SESSION" "$TEAM" && tm_tag "$pane" "$WOLFMUX_LEAD_ROLE" "$MODEL_LABEL"; }; then
     tmx kill-session -t "=$SESSION" 2>/dev/null || true
     reg_delete "$WOLFMUX_LEAD_ROLE"
     die "could not configure tmux session '$SESSION'; it was rolled back"
   fi
   reg_set "$WOLFMUX_LEAD_ROLE" pane_id "$pane" state running
-  meta_put root "$ROOT" session "$SESSION" lead_model "$model"
+  meta_put root "$ROOT" session "$SESSION" lead_model "$model" team "$TEAM"
   event_log start "$WOLFMUX_LEAD_ROLE" "$model"
   lock_release
   tm_set_splash "$SESSION"
   layout_apply
 
   brand_banner
-  say "team session:  $SESSION   (tmux socket: $WOLFMUX_TMUX_SOCKET)"
+  say "team:          $TEAM   (session $SESSION, tmux socket $WOLFMUX_TMUX_SOCKET)"
   say "lead:          $MODEL_LABEL via $MODEL_LAUNCHER in $(short_path "$ROOT")"
   say "policy:        $(policy_summary)   (teamctl policy)"
   if [ -n "$stopped" ]; then
@@ -220,14 +238,15 @@ cmd_spawn() {
   fi
 
   stamp="$(now_stamp)"
-  branch="ai/$role-$stamp"
+  branch="$(wt_branch_name "$role" "$stamp")"
   path="$(wt_create "$role" "$stamp" "$base_commit")"
   new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}"
 
   target="$(tm_split_target "$SESSION")" || target=""
   pane=""
   if [ -n "$target" ]; then
-    pane="$(tm_split "$target" "$path" "$TEAMCTL_SELF" _run-agent "$ROOT" "$role" || true)"
+    agent_command "$role"
+    pane="$(tm_split "$target" "$path" "${AGENT_CMD[@]}" || true)"
   fi
   if [ -z "$pane" ]; then
     wt_discard_new "$path" "$branch"
@@ -259,9 +278,11 @@ path_prepend() {
 }
 
 build_role_prompt() {
-  local role="$1" kind workdir
+  local role="$1" kind workdir me lead
   kind="$(reg_field "$role" kind)"
   workdir="$(reg_field "$role" workdir)"
+  me="$(team_identity "$TEAM" "$role")"
+  lead="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   printf '# Wolfmux session context\n\n'
   printf 'You are an agent in a Wolfmux tmux session. These facts are yours:\n\n'
   printf -- '- TEAM_ROLE: %s   (kind: %s, model: %s)\n' "$role" "$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')" "$(reg_field "$role" label)"
@@ -270,8 +291,12 @@ build_role_prompt() {
     printf -- '- Your private worktree (work ONLY here): %s\n' "$workdir"
     printf -- '- Your branch: %s   (base: %s @ %s)\n' "$(reg_field "$role" branch)" "$(reg_field "$role" base_ref)" "$(reg_field "$role" base_commit | cut -c1-12)"
   fi
-  printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported)\n' "$role"
-  printf -- '- The manager of this team is the agent with TEAM_ROLE=lead. Nobody else manages, approves or assigns.\n'
+  printf -- '- Your team: %s\n' "$TEAM"
+  printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported). Your inbox: bd list --assignee %s --status open --include-infra\n' "$me" "$me"
+  printf -- '- The manager of this team is the agent with TEAM_ROLE=lead; in Beads it is called "%s". Nobody else manages, approves or assigns.\n' "$lead"
+  if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then
+    printf -- '- This project has more than one team and they share one Beads database. Everyone in YOUR team is called "%s.<role>" there: assign and message with -a %s.<role> (your lead: -a %s). A plain "lead" is the lead of ANOTHER team, and the tasks of other teams are not yours.\n' "$TEAM" "$TEAM" "$lead"
+  fi
   if [ "$kind" = "worker" ]; then
     printf -- '- You were spawned by: %s. You report to the lead regardless.\n' "$(reg_field "$role" spawned_by)"
     if [ "$(policy_get worker-isolation)" = "on" ]; then
@@ -287,15 +312,29 @@ build_role_prompt() {
   fi
   printf -- '- Your permission mode: %s\n\n' "$(reg_field "$role" permissions)"
   printf 'The %s section of the protocol below is binding for you.\n\n---\n\n' "$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')"
-  if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then
+  if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ] && [ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ]; then
     /bin/cat "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
+  elif [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then
+    # The protocol's examples address "lead" and plain roles; in a named team those are
+    # <team>.lead and <team>.<role>. Rewrite the examples rather than hope it is remembered.
+    sed -E -e "s/(-a|--assignee) (lead|backend|frontend|qa)([^${_WM_LOWER}${_WM_DIGITS}.-]|\$)/\\1 $TEAM.\\2\\3/g" \
+      -e 's/--assignee \$TEAM_ROLE/--assignee $BEADS_ACTOR/g' "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
   else
     printf 'Team protocol file is missing: %s/TEAM_PROTOCOL.md\n' "$WOLFMUX_HOME"
   fi
 }
 
 kickoff_text() {
-  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$1"
+  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$(team_identity "$TEAM" "$1")"
+}
+
+# cmd_prompt <role> — internal (`teamctl _prompt`): the session context an agent is started with
+cmd_prompt() {
+  require_role_arg "${1:-}"
+  require_tools
+  load_project
+  reg_exists "$1" || die "no such agent: $1"
+  build_role_prompt "$1"
 }
 
 # write_agent_settings <role> — Claude Code settings for one Claude-based agent; prints
@@ -343,7 +382,9 @@ cmd_run_agent() {
   [ -x "$launcher" ] || die "launcher missing or not executable: $launcher"
   [ -d "$workdir" ] || die "working directory is gone: $workdir"
 
-  export TEAM_ROLE="$role" BEADS_ACTOR="$role"
+  WOLFMUX_TEAM="$TEAM"
+  BEADS_ACTOR="$(team_identity "$TEAM" "$role")" # all teams of a project share its Beads
+  export TEAM_ROLE="$role" BEADS_ACTOR WOLFMUX_TEAM
   if [ "$(reg_field "$role" kind)" = "worker" ]; then
     WOLFMUX_WORKTREE="$workdir" # what the worktree guard (lib/guard.sh) holds this agent to
     WOLFMUX_BRANCH="$(reg_field "$role" branch)"
@@ -426,7 +467,7 @@ cmd_stop() {
 }
 
 cmd_restart() {
-  local role="" resume=0 pane workdir target cmd
+  local role="" resume=0 pane workdir target
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --continue) resume=1 ;;
@@ -448,14 +489,13 @@ cmd_restart() {
   # A restart picks up the current policy.
   reg_set "$role" permissions "$(effective_permissions "$(reg_field "$role" kind)" "$(reg_field "$role" family)")"
 
-  cmd=("$TEAMCTL_SELF" _run-agent "$ROOT" "$role")
-  if [ "$resume" -eq 1 ]; then cmd+=(--continue); fi
+  if [ "$resume" -eq 1 ]; then agent_command "$role" --continue; else agent_command "$role"; fi
   pane="$(tm_pane_for_role "$SESSION" "$role")"
   if [ -n "$pane" ]; then
-    tm_respawn "$pane" "$workdir" "${cmd[@]}" || die "respawn failed for pane $pane"
+    tm_respawn "$pane" "$workdir" "${AGENT_CMD[@]}" || die "respawn failed for pane $pane"
   else
     target="$(tm_split_target "$SESSION")" || die "no pane to split in session $SESSION"
-    pane="$(tm_split "$target" "$workdir" "${cmd[@]}")" || die "could not create a tmux pane for '$role'"
+    pane="$(tm_split "$target" "$workdir" "${AGENT_CMD[@]}")" || die "could not create a tmux pane for '$role'"
   fi
   tm_tag "$pane" "$role" "$(reg_field "$role" label)"
   reg_set "$role" pane_id "$pane" state running
@@ -688,8 +728,10 @@ notify_lead() {
 # The ONLY thing ever typed into an agent's prompt: one short, fixed line. Task and
 # message bodies stay in Beads, so there is nothing to quote, escape or truncate.
 _nudge_one() {
-  local role="$1" bead="$2" pane text
-  [ "$role" != "${TEAM_ROLE:-}" ] || return 0
+  local role="$1" bead="$2" pane text who
+  # never yourself: the same role in the same team
+  if [ "$role" = "${TEAM_ROLE:-}" ] && [ "$TEAM" = "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" ]; then return 0; fi
+  who="$(team_identity "$TEAM" "$role")"
   pane="$(tm_pane_for_role "$SESSION" "$role")"
   [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
   nudge_begin "$role" || return 2
@@ -700,9 +742,9 @@ _nudge_one() {
     return 2
   fi
   if [ -n "$bead" ]; then
-    text="[wolfmux] Beads update for $role ($bead). Run: bd show $bead -- then: bd list --assignee $role --status open --include-infra"
+    text="[wolfmux] Beads update for $who ($bead). Run: bd show $bead -- then: bd list --assignee $who --status open --include-infra"
   else
-    text="[wolfmux] Beads update for $role. Run: bd list --assignee $role --status open --include-infra"
+    text="[wolfmux] Beads update for $who. Run: bd list --assignee $who --status open --include-infra"
   fi
   nudge_mark "$role"
   tm_type_line "$pane" "$text"
@@ -726,14 +768,28 @@ cmd_nudge() {
     esac
     shift
   done
+  # A Beads name says which team: "review.backend" is backend of team review.
+  case "$role" in
+    *.*)
+      identity_split "$role"
+      if ! valid_team_name "$ID_TEAM"; then
+        if [ "$quiet" -eq 1 ]; then return 0; fi
+        die_usage "invalid team in '$role'"
+      fi
+      WOLFMUX_TEAM_ARG="$ID_TEAM"
+      role="$ID_ROLE"
+      ;;
+  esac
   # Called from Beads hooks for every assignee, including humans and roles that
   # are not running: in quiet mode "nothing to notify" is success, not an error.
   if [ "$quiet" -eq 1 ]; then
     [ -n "$TMUX_BIN" ] && [ -n "$JQ_BIN" ] && [ -n "$GIT_BIN" ] || return 0
     ROOT="$(resolve_root 2>/dev/null)" || return 0
     PROJECT_KEY="$(project_key "$ROOT")"
-    STATE_DIR="$WOLFMUX_DATA/state/$PROJECT_KEY"
-    WORKTREES_DIR="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
+    PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
+    PROJECT_TREES="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
+    # The assignee's name decides the team; a plain name belongs to the first team.
+    team_paths "${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
     [ -d "$STATE_DIR" ] || return 0
     SESSION="$(session_name_for_project)"
     tm_session_exists "$SESSION" || return 0
