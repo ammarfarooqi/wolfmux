@@ -1,0 +1,7 @@
+#!/bin/bash
+# Stand-in for an agent CLI. Shows how it was wired, makes no model call, then
+# echoes whatever gets typed into its pane so notifications can be observed.
+echo "STUB role=${TEAM_ROLE:-} actor=${BEADS_ACTOR:-} model=${AI_TEAM_MODEL:-} argc=$#"
+echo "STUB cwd=$PWD branch=$(git branch --show-current 2>/dev/null)"
+echo "STUB leaked=$(env | cut -d= -f1 | grep -E '^(ANTHROPIC_|OPENAI_|CLAUDECODE$|CLAUDE_CODE_CHILD_SESSION$)' | tr '\n' ' ')"
+exec /bin/cat
