@@ -24,6 +24,11 @@ unset WOLFMUX_EXTRA_SETTINGS WOLFMUX_DRY_RUN WOLFMUX_METERED CLAUDE_CONFIG_DIR
 
 passed=0
 failed=0
+skipped=0
+skip() { # <description> <why>
+  skipped=$((skipped + 1))
+  printf '  SKIP  %s\n        (%s)\n' "$1" "$2"
+}
 check() { # <description> <command string>
   # Subshell: a check below may `exit 1` from inside a loop to fail itself, and that
   # must not end the run (tests/permissions.sh has no such check, hence no subshell).
@@ -48,12 +53,22 @@ printf '%s\n' '#!/bin/bash' 'env' >"$WORK/show-env" # stands in for the claude b
 chmod +x "$WORK/show-env"
 printf '%s\n' '{"env":{"WOLFMUX_TEST_AGENT_SETTINGS":"1"}}' >"$WORK/agent.json" # stands in for what teamctl writes per pane
 
-# A second WOLFMUX_HOME whose config file opens the meter. The gate reads that file and
-# nothing else, so this is the only way a metered provider can be launched.
-OPEN_HOME="$WORK/wolfmux-meter-open"
-/bin/mkdir -p "$OPEN_HOME" "$WORK/last-wins"
-/bin/ln -s "$REPO/config/wolfmux/lib" "$OPEN_HOME/lib"
-printf '%s\n' "# a comment first" "  " "WOLFMUX_METERED = on  " >"$OPEN_HOME/config" # whitespace and comments must not matter
+# A config directory that says the meter is open, exactly as an agent could write one in
+# its own worktree: lib symlinked to this checkout, a config file saying on. The gate
+# must ignore it, because the file it reads is found through the account and not through
+# $WOLFMUX_HOME. The throwaway $HOME gets the same file, for the same reason.
+FAKE_HOME="$WORK/wolfmux-meter-open"
+/bin/mkdir -p "$FAKE_HOME" "$WORK/last-wins" "$HOME/.config/wolfmux"
+/bin/ln -s "$REPO/config/wolfmux/lib" "$FAKE_HOME/lib"
+printf '%s\n' "# a comment first" "  " "WOLFMUX_METERED = on  " >"$FAKE_HOME/config"
+printf '%s\n' "WOLFMUX_METERED=on" >"$HOME/.config/wolfmux/config"
+
+# The owner's own file is never written by this test, only read: if it really says on,
+# the end-to-end checks below cannot hold and are skipped rather than quietly passed.
+OWNER_CONFIG="$(wolfmux_owner_config || true)"
+OWNER_METERED=0
+if wolfmux_metered_on; then OWNER_METERED=1; fi
+GATE_SKIP="the owner's own config ($OWNER_CONFIG) says WOLFMUX_METERED=on, so a closed gate cannot be observed"
 
 BIN="$WORK/bin"
 /bin/mkdir -p "$BIN"
@@ -80,21 +95,26 @@ live() { # <launcher> [VAR=value ...] : a real launch attempt (it must refuse)
   shift
   env "${CLEAN[@]}" -u WOLFMUX_DRY_RUN "$@" "$BIN/$launcher" 2>&1
 }
-dry_open() { # like dry, but with the config file that opens the meter
+dry_redirected() { # like dry, but pointed at the config directory that says "open"
   local launcher="$1"
   shift
-  env "${CLEAN[@]}" WOLFMUX_HOME="$OPEN_HOME" WOLFMUX_DRY_RUN=1 "$@" "$BIN/$launcher" 2>&1
+  env "${CLEAN[@]}" WOLFMUX_DRY_RUN=1 WOLFMUX_HOME="$FAKE_HOME" "$@" "$BIN/$launcher" 2>&1
 }
-live_open() { # like live, but with the config file that opens the meter
+live_redirected() { # the same, for a real launch attempt
   local launcher="$1"
   shift
-  env "${CLEAN[@]}" -u WOLFMUX_DRY_RUN WOLFMUX_HOME="$OPEN_HOME" "$@" "$BIN/$launcher" 2>&1
+  env "${CLEAN[@]}" -u WOLFMUX_DRY_RUN WOLFMUX_HOME="$FAKE_HOME" "$@" "$BIN/$launcher" 2>&1
+}
+dry_args() { # <launcher> <arg>... : a dry run with command-line arguments
+  local launcher="$1"
+  shift
+  env "${CLEAN[@]}" WOLFMUX_DRY_RUN=1 "$BIN/$launcher" "$@" 2>&1
 }
 field() { # <dry-run output> <label> : the value after "<label>:"
   printf '%s\n' "$1" | /usr/bin/sed -n "s/^$2: *//p" | /usr/bin/head -1
 }
 labels() { # the labels of a dry run, in order, comma separated
-  printf '%s\n' "$1" | /usr/bin/sed -n 's/^\([a-z][a-z ]*\):.*/\1/p' | tr '\n' ',' 
+  printf '%s\n' "$1" | /usr/bin/sed -n 's/^\([a-z][a-z ]*\):.*/\1/p' | tr '\n' ','
 }
 
 echo "== the table (lib/providers.sh)"
@@ -164,16 +184,33 @@ check "WOLFMUX_CONFIG_KEYS gained a setting per provider, plus WOLFMUX_METERED" 
      done) WOLFMUX_METERED; do
      case " $WOLFMUX_CONFIG_KEYS " in *" $key "*) ;; *) exit 1 ;; esac
    done'
-check "wolfmux_metered_on reads the config file, with comments and whitespace, last line winning" \
-  'WOLFMUX_HOME="$OPEN_HOME" wolfmux_metered_on &&
-   printf "%s\n" "WOLFMUX_METERED=on" "WOLFMUX_METERED=off" >"$WORK/last-wins/config" &&
-   ! WOLFMUX_HOME="$WORK/last-wins" wolfmux_metered_on &&
-   printf "%s\n" "#WOLFMUX_METERED=on" >"$WORK/last-wins/config" &&
-   ! WOLFMUX_HOME="$WORK/last-wins" wolfmux_metered_on &&
-   ! WOLFMUX_HOME="$WORK/no-such-home" wolfmux_metered_on'
-check "wolfmux_metered_on ignores the environment: only the owner's file opens the meter" \
-  '! WOLFMUX_METERED=on WOLFMUX_HOME="$WORK/no-such-home" wolfmux_metered_on &&
-   ! WOLFMUX_METERED=on WOLFMUX_HOME="$WOLFMUX_HOME" wolfmux_metered_on' # the checkout's config has it commented out
+check "_wolfmux_metered_in_file: on, with comments and whitespace around it" \
+  'F="$WORK/last-wins/config"
+   printf "%s\n" "# off" "  " "WOLFMUX_METERED = on  " >"$F" && _wolfmux_metered_in_file "$F"'
+check "_wolfmux_metered_in_file: off, a commented line, an unrelated key, the last line winning" \
+  'F="$WORK/last-wins/config"
+   printf "%s\n" "WOLFMUX_METERED=off" >"$F" && ! _wolfmux_metered_in_file "$F" &&
+   printf "%s\n" "#WOLFMUX_METERED=on" >"$F" && ! _wolfmux_metered_in_file "$F" &&
+   printf "%s\n" "WOLFMUX_METERED_X=on" >"$F" && ! _wolfmux_metered_in_file "$F" &&
+   printf "%s\n" "WOLFMUX_METERED=on" "WOLFMUX_METERED=off" >"$F" && ! _wolfmux_metered_in_file "$F" &&
+   printf "%s" "WOLFMUX_METERED=on" >"$F" && _wolfmux_metered_in_file "$F"' # no closing newline
+check "_wolfmux_metered_in_file fails closed on a missing, empty or unnamed file" \
+  '! _wolfmux_metered_in_file "$WORK/no-such-file" &&
+   ! _wolfmux_metered_in_file "" &&
+   : >"$WORK/last-wins/config" && ! _wolfmux_metered_in_file "$WORK/last-wins/config"'
+check "wolfmux_owner_config names the owner's own file, absolute, never \$HOME or \$WOLFMUX_HOME" \
+  'C="$(wolfmux_owner_config)" && case "$C" in /*/.config/wolfmux/config) ;; *) exit 1 ;; esac
+   case "$C" in "$HOME"/*) exit 1 ;; esac # $HOME is the throwaway one here
+   [ "$C" = "$(HOME=/nowhere WOLFMUX_HOME=/nowhere-else wolfmux_owner_config)" ]'
+check "wolfmux_metered_on takes no argument and no override: redirection cannot answer for it" \
+  '[ "$OWNER_METERED" = 1 ] ||
+   { ! WOLFMUX_HOME="$FAKE_HOME" wolfmux_metered_on &&
+     ! HOME="$HOME" wolfmux_metered_on &&
+     ! WOLFMUX_METERED=on wolfmux_metered_on &&
+     ! wolfmux_metered_on "$FAKE_HOME/config"; }'
+check "the launcher asks wolfmux_metered_on, and parses no config file of its own" \
+  '[ "$(LC_ALL=C /usr/bin/grep -c "wolfmux_metered_on" "$REPO/bin/claude-glm")" -ge 1 ] &&
+   ! LC_ALL=C /usr/bin/grep -q "WOLFMUX_METERED:-" "$REPO/bin/claude-glm"'
 check "CLAUDE_CODE_EFFORT_LEVEL is scrubbed, so a Claude-subscription child never inherits it" \
   'case "$WOLFMUX_CLAUDE_PROVIDER_VARS" in *CLAUDE_CODE_EFFORT_LEVEL*) ;; *) exit 1 ;; esac'
 
@@ -191,30 +228,38 @@ for p in $WOLFMUX_PROVIDERS; do
   check "$p: context line declares the table's window" \
     'case "$(field "$OUT" "context window")" in "'"$PROVIDER_CONTEXT"' tokens"*) ;; *) exit 1 ;; esac'
   if [ "$PROVIDER_BILLING" = metered ]; then
-    check "$p: billing line says METERED, and the gate is closed until the owner opens it" \
-      '[ "$(field "$OUT" billing)" = "METERED: '"$PROVIDER_BILLING_NOTE"'" ] &&
-       [ "$(field "$OUT" "metered gate")" = "closed" ]'
-    check "$p: a real launch is refused while the gate is closed (exit 78, names WOLFMUX_METERED and the config file)" \
-      'R="$(live "claude-'"$p"'")"
-       { live "claude-'"$p"'" >/dev/null 2>&1; [ $? -eq 78 ]; } &&
-       case "$R" in *"WOLFMUX_METERED=on"*) ;; *) exit 1 ;; esac
-       case "$R" in *"/config"*) ;; *) exit 1 ;; esac
-       case "$R" in *"the environment does not open it"*) ;; *) exit 1 ;; esac
-       true'
-    check "$p: WOLFMUX_METERED=on in the ENVIRONMENT does not open the gate" \
-      '[ "$(field "$(dry "claude-'"$p"'" WOLFMUX_METERED=on)" "metered gate")" = "closed" ] &&
-       { live "claude-'"$p"'" WOLFMUX_METERED=on >/dev/null 2>&1; [ $? -eq 78 ]; } &&
-       live "claude-'"$p"'" WOLFMUX_METERED=on | /usr/bin/grep -q "meter is closed"'
-    check "$p: the owner's config file opens the gate (it then stops at the missing key)" \
-      'case "$(field "$(dry_open "claude-'"$p"'")" "metered gate")" in "open ("*) ;; *) exit 1 ;; esac
-       live_open "claude-'"$p"'" | /usr/bin/grep -q "no Keychain item" &&
-       ! live_open "claude-'"$p"'" | /usr/bin/grep -q "meter is closed"'
+    check "$p: billing line says METERED" \
+      '[ "$(field "$OUT" billing)" = "METERED: '"$PROVIDER_BILLING_NOTE"'" ]'
+    if [ "$OWNER_METERED" = 1 ]; then
+      skip "$p: the gate is closed, and a real launch is refused (exit 78)" "$GATE_SKIP"
+      skip "$p: neither the environment nor a redirected config directory opens the gate" "$GATE_SKIP"
+    else
+      check "$p: the gate is closed, and a real launch is refused (exit 78, naming the owner's file)" \
+        '[ "$(field "$OUT" "metered gate")" = "closed" ]
+         R="$(live "claude-'"$p"'")"
+         { live "claude-'"$p"'" >/dev/null 2>&1; [ $? -eq 78 ]; } &&
+         case "$R" in *"WOLFMUX_METERED=on"*) ;; *) exit 1 ;; esac
+         case "$R" in *"$OWNER_CONFIG"*) ;; *) exit 1 ;; esac
+         true'
+      check "$p: neither the environment nor a redirected config directory opens the gate" \
+        '[ "$(field "$(dry "claude-'"$p"'" WOLFMUX_METERED=on)" "metered gate")" = "closed" ] &&
+         [ "$(field "$(dry_redirected "claude-'"$p"'")" "metered gate")" = "closed" ] &&
+         [ "$(field "$(dry_redirected "claude-'"$p"'" WOLFMUX_METERED=on)" "metered gate")" = "closed" ] &&
+         { live "claude-'"$p"'" WOLFMUX_METERED=on >/dev/null 2>&1; [ $? -eq 78 ]; } &&
+         { live_redirected "claude-'"$p"'" >/dev/null 2>&1; [ $? -eq 78 ]; } &&
+         live_redirected "claude-'"$p"'" | /usr/bin/grep -q "meter is closed"' # $HOME says on too: see the setup
+    fi
   else
     check "$p: billing line says plan, and a plan provider is never gated either way" \
       '[ "$(field "$OUT" billing)" = "plan: '"$PROVIDER_BILLING_NOTE"'" ] &&
        [ -z "$(field "$OUT" "metered gate")" ] &&
-       [ -z "$(field "$(dry_open "claude-'"$p"'")" "metered gate")" ] &&
+       [ -z "$(field "$(dry_redirected "claude-'"$p"'")" "metered gate")" ] &&
        ! live "claude-'"$p"'" | /usr/bin/grep -q WOLFMUX_METERED'
+    check "$p: without a Keychain item a real launch exits 78 and prints that provider's help" \
+      'OUT2="$(live "claude-'"$p"'")"
+       { live "claude-'"$p"'" >/dev/null 2>&1; [ $? -eq 78 ]; } &&
+       case "$OUT2" in *"no Keychain item for service '"'$PROVIDER_KEYCHAIN'"'"*) ;; *) exit 1 ;; esac
+       case "$OUT2" in *"add-generic-password -U -s '"$PROVIDER_KEYCHAIN"'"*) ;; *) exit 1 ;; esac'
   fi
   check "$p: auth mode defaults to helper and names this provider's Keychain service" \
     'case "$(field "$OUT" "auth mode")" in
@@ -245,11 +290,6 @@ for p in $WOLFMUX_PROVIDERS; do
      ENV_OUT="$(dry "claude-'"$p"'" WOLFMUX_'"$U"'_AUTH_MODE=env)"
      case "$(field "$ENV_OUT" "would exec")" in *apiKeyHelper* | *find-generic-password*) exit 1 ;; esac
      true'
-  check "$p: without a Keychain item a real launch exits 78 and prints that provider's help" \
-    'OUT2="$(live_open "claude-'"$p"'")"
-     { live_open "claude-'"$p"'" >/dev/null 2>&1; [ $? -eq 78 ]; } &&
-     case "$OUT2" in *"no Keychain item for service '"'$PROVIDER_KEYCHAIN'"'"*) ;; *) exit 1 ;; esac
-     case "$OUT2" in *"add-generic-password -U -s '"$PROVIDER_KEYCHAIN"'"*) ;; *) exit 1 ;; esac'
   if [ -n "$PROVIDER_EXTRA_ENV" ]; then
     check "$p: the vendor's extra environment is exported and reported" \
       '[ "$(field "$OUT" "extra env")" = "'"$PROVIDER_EXTRA_ENV"'" ]'
@@ -299,6 +339,31 @@ check "a model id ending in [1m] declares an auto-compact window, any other a ma
        *"[1m]") F="$(field "$(dry "claude-$p")" "context window")"; case "$F" in *"auto-compact"*) ;; *) exit 1 ;; esac ;;
      esac
    done'
+check "a --model id decides the window: no [1m] means a max-context window, not auto-compact" \
+  'D="$(dry_args claude-deepseek --model deepseek-v4-flash)"
+   [ "$(field "$D" model)" = "deepseek-v4-flash   (haiku/background tier: deepseek-v4-flash)" ] || exit 1
+   case "$(field "$D" "context window")" in
+     "786432 tokens (declared;"*) ;;
+     *) exit 1 ;;
+   esac
+   case "$(field "$D" "would exec")" in *"--model deepseek-v4-flash"*) ;; *) exit 1 ;; esac
+   true' # deepseek'"'"'s table id is deepseek-v4-pro[1m], so the default would have been auto-compact
+check "a --model id ending in [1m] decides the other way, even when the table id does not" \
+  'K="$(dry_args claude-kimi --model some-id[1m])"
+   [ "$(field "$K" model)" = "some-id[1m]   (haiku/background tier: kimi-for-coding)" ] || exit 1
+   case "$(field "$K" "context window")" in *"auto-compact window"*) ;; *) exit 1 ;; esac
+   case "$(field "$K" "context window")" in "262144 tokens"*) ;; *) exit 1 ;; esac
+   true'
+check "--model=<id> is read too, and glm ignores a pin however it arrives" \
+  '[ "$(field "$(dry_args claude-kimi --model=other-id)" model)" = "other-id   (haiku/background tier: kimi-for-coding)" ] &&
+   [ "$(field "$(dry_args claude-glm --model glm-5.3-flash)" model)" = "glm-5.3   (haiku/background tier: glm-5.3-flash)" ] &&
+   [ "$(field "$(dry_args claude-glm --model glm-5.3-flash)" "context window")" = "200000 tokens (declared; WOLFMUX_GLM_CONTEXT=1m for the 1M window)" ]'
+check "wolfmux_args_model_value reads both spellings, and says no when there is none" \
+  '[ "$(wolfmux_args_model_value --model a-id)" = "a-id" ] &&
+   [ "$(wolfmux_args_model_value -p hi --model=b-id --max-turns 1)" = "b-id" ] &&
+   [ "$(wolfmux_args_model_value --model-ish x --model c-id)" = "c-id" ] &&
+   ! wolfmux_args_model_value -p "say hi" &&
+   ! wolfmux_args_model_value'
 check "the glm dry run has exactly the lines it had before, plus provider: (and nothing else)" \
   '[ "$(labels "$(dry claude-glm)")" = "launcher,provider,billing,endpoint,model,context window,auth mode,keychain item,login guard,overlay,agent settings,scrubbed vars,would exec," ]'
 check "the scrub really happens: no inherited provider or session variable survives into the CLI" \
@@ -335,5 +400,5 @@ check "the overlay and the per-agent settings file reach every provider" \
    done'
 
 echo
-echo "result: $passed passed, $failed failed"
+echo "result: $passed passed, $failed failed, $skipped skipped"
 [ "$failed" -eq 0 ]

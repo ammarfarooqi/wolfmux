@@ -283,6 +283,27 @@ wolfmux_args_have_model() {
   return 1
 }
 
+# The model id the caller chose, from `--model <id>` or `--model=<id>`; returns 1 when
+# there is none. This is what teamctl passes for `<provider>:<id>`, so a launcher has
+# to derive its model mapping and its context window from it, not only forward it.
+wolfmux_args_model_value() {
+  local arg next=0
+  for arg in "$@"; do
+    if [ "$next" = 1 ]; then
+      printf '%s\n' "$arg"
+      return 0
+    fi
+    case "$arg" in
+      --model=*)
+        printf '%s\n' "${arg#--model=}"
+        return 0
+        ;;
+      --model) next=1 ;;
+    esac
+  done
+  return 1
+}
+
 # The GLM key helpers, kept under their old names for doctor.sh and for anything of
 # yours that calls them. The table's own functions (lib/providers.sh) do the work.
 wolfmux_zai_key_exists() {
