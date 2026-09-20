@@ -1,36 +1,36 @@
 #!/bin/bash
 # tmuxctl.sh — every tmux interaction lives here.
 #
-# Teams run on a dedicated tmux server (socket name "ai-team") with its own config
+# Teams run on a dedicated tmux server (socket name "wolfmux") with its own config
 # file, so your default tmux server and ~/.tmux.conf are never touched. Panes are
 # found by the pane option @ai_role, which survives respawns and layout changes;
 # tmux is the source of truth for "is this agent's process alive".
 
-tmx() { "$TMUX_BIN" -L "$AI_TEAM_TMUX_SOCKET" "$@"; }
+tmx() { "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
 
 # tmx_boot — like tmx, for the one call that may have to START the server. The
 # server keeps the environment of whoever starts it and hands it to every pane,
 # so agent-session and provider variables are removed first.
 tmx_boot() {
   local unset_args=() name
-  for name in $AI_TEAM_CLAUDE_SESSION_VARS \
-    $(ai_team_list_set_vars "$AI_TEAM_CLAUDE_PROVIDER_VARS" "$AI_TEAM_CLAUDE_PROVIDER_PREFIXES") \
-    $(ai_team_list_set_vars "$AI_TEAM_CODEX_PROVIDER_VARS" "$AI_TEAM_CODEX_PROVIDER_PREFIXES"); do
+  for name in $WOLFMUX_CLAUDE_SESSION_VARS \
+    $(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES") \
+    $(wolfmux_list_set_vars "$WOLFMUX_CODEX_PROVIDER_VARS" "$WOLFMUX_CODEX_PROVIDER_PREFIXES"); do
     unset_args+=(-u "$name")
   done
-  if [ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$AI_TEAM_GLM_GUARD_TOKEN" ]; then
+  if [ "${CLAUDE_CODE_OAUTH_TOKEN:-}" = "$WOLFMUX_GLM_GUARD_TOKEN" ]; then
     unset_args+=(-u CLAUDE_CODE_OAUTH_TOKEN)
   fi
-  env "${unset_args[@]}" "$TMUX_BIN" -L "$AI_TEAM_TMUX_SOCKET" -f "$AI_TEAM_HOME/tmux.conf" "$@"
+  env "${unset_args[@]}" "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" -f "$WOLFMUX_HOME/tmux.conf" "$@"
 }
 
 tm_session_exists() { tmx has-session -t "=$1" 2>/dev/null; }
 
 # Session-scoped options need the trailing colon: set-option/show-options parse -t
 # as a pane target, where a bare "=name" is not recognised as an exact session match.
-tm_session_root() { tmx show-options -t "=$1:" -qv @ai_team_root 2>/dev/null || true; }
+tm_session_root() { tmx show-options -t "=$1:" -qv @wolfmux_root 2>/dev/null || true; }
 
-tm_set_session_root() { tmx set-option -t "=$1:" @ai_team_root "$2"; }
+tm_set_session_root() { tmx set-option -t "=$1:" @wolfmux_root "$2"; }
 
 # tm_new_session <session> <start-dir> <command...> — prints the first pane's id.
 # The command is passed as separate arguments, so tmux executes it directly
@@ -44,7 +44,7 @@ tm_new_session() {
   case "$rows" in "" | *[!0-9]*) rows=60 ;; esac
   [ "$cols" -ge 120 ] || cols=220
   [ "$rows" -ge 30 ] || rows=60
-  tmx_boot new-session -d -s "$session" -n "$AI_TEAM_WINDOW" -c "$dir" -x "$cols" -y "$rows" \
+  tmx_boot new-session -d -s "$session" -n "$WOLFMUX_WINDOW" -c "$dir" -x "$cols" -y "$rows" \
     -P -F '#{pane_id}' "$@"
 }
 
@@ -135,7 +135,7 @@ tm_capture() {
 
 tm_inside_team_server() {
   case "${TMUX:-}" in
-    */"$AI_TEAM_TMUX_SOCKET",*) return 0 ;;
+    */"$WOLFMUX_TMUX_SOCKET",*) return 0 ;;
     *) return 1 ;;
   esac
 }

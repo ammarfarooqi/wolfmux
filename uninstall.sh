@@ -1,9 +1,9 @@
 #!/bin/bash
-# uninstall.sh — remove ai-team. Claude Code, Codex, Beads, your repositories,
+# uninstall.sh — remove wolfmux. Claude Code, Codex, Beads, your repositories,
 # commits and branches are not touched. Edited files are backed up first.
 #
-#   ./uninstall.sh            remove the tool, keep ~/.ai-team (worktrees + state)
-#   ./uninstall.sh --purge    also remove ~/.ai-team, but only when it holds no worktree
+#   ./uninstall.sh            remove the tool, keep ~/.wolfmux (worktrees + state)
+#   ./uninstall.sh --purge    also remove ~/.wolfmux, but only when it holds no worktree
 #
 # Not done for you, on purpose:
 #   security delete-generic-password -s zai-coding-plan     (your Keychain item)
@@ -13,7 +13,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd -P)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BIN_DIR="$HOME/bin"
-CONF_DIR="$HOME/.config/ai-team"
+CONF_DIR="$HOME/.config/wolfmux"
 PURGE=0
 [ "${1:-}" = "--purge" ] && PURGE=1
 
@@ -23,7 +23,7 @@ backup() {
   note "backup: $1.backup-$STAMP"
 }
 
-SOCKET="${AI_TEAM_TMUX_SOCKET:-ai-team}"
+SOCKET="${WOLFMUX_TMUX_SOCKET:-wolfmux}"
 
 echo "== team tmux server"
 if command -v tmux >/dev/null 2>&1 && tmux -L "$SOCKET" ls >/dev/null 2>&1; then
@@ -50,28 +50,28 @@ if [ -L "$BIN_DIR/codex" ] && [ "$(readlink "$BIN_DIR/codex")" = "/Applications/
 fi
 /bin/rmdir "$BIN_DIR" 2>/dev/null && note "removed empty $BIN_DIR" || true
 
-echo "== ~/.config/ai-team"
+echo "== ~/.config/wolfmux"
 if [ -d "$CONF_DIR" ]; then
   /bin/rm -rf "$CONF_DIR"
   note "removed: $CONF_DIR"
 fi
 
 echo "== ~/.zshrc"
-if [ -f "$HOME/.zshrc" ] && grep -q '>>> ai-team >>>' "$HOME/.zshrc"; then
+if [ -f "$HOME/.zshrc" ] && grep -q '>>> wolfmux >>>' "$HOME/.zshrc"; then
   backup "$HOME/.zshrc"
   # Drops the block and the one blank separator line install.sh put in front of it,
   # so the file ends up byte-identical to what it was before.
   awk '
-    /^# >>> ai-team >>>/ { skipping = 1; holding = 0; next }
-    skipping && /^# <<< ai-team <<</ { skipping = 0; next }
+    /^# >>> wolfmux >>>/ { skipping = 1; holding = 0; next }
+    skipping && /^# <<< wolfmux <<</ { skipping = 0; next }
     skipping { next }
     { if (holding) print held; if ($0 == "") { held = $0; holding = 1 } else { holding = 0; print } }
     END { if (holding) print held }
   ' "$HOME/.zshrc" >"$HOME/.zshrc.tmp.$$"
   /bin/mv -f "$HOME/.zshrc.tmp.$$" "$HOME/.zshrc"
-  note "removed the ai-team block"
+  note "removed the wolfmux block"
 else
-  note "no ai-team block"
+  note "no wolfmux block"
 fi
 
 echo "== Claude Code permissions"
@@ -84,29 +84,29 @@ if [ -f "$settings" ] && command -v jq >/dev/null 2>&1; then
       | if (.permissions.ask | length) == 0 then del(.permissions.ask) else . end
     else . end' "$settings")"
   if [ "$(jq -S . "$settings")" = "$(printf '%s' "$cleaned" | jq -S .)" ]; then
-    note "no ai-team rules present"
+    note "no wolfmux rules present"
   else
     backup "$settings"
     printf '%s\n' "$cleaned" >"$settings.tmp.$$"
     /bin/mv -f "$settings.tmp.$$" "$settings"
     /bin/chmod 600 "$settings"
-    note "removed the ai-team allow/ask rules"
+    note "removed the wolfmux allow/ask rules"
   fi
 fi
 
 echo "== Codex rules"
-if [ -f "$HOME/.codex/rules/ai-team.rules" ]; then
-  /bin/rm -f "$HOME/.codex/rules/ai-team.rules"
-  note "removed: ~/.codex/rules/ai-team.rules"
+if [ -f "$HOME/.codex/rules/wolfmux.rules" ]; then
+  /bin/rm -f "$HOME/.codex/rules/wolfmux.rules"
+  note "removed: ~/.codex/rules/wolfmux.rules"
 fi
 
-echo "== ~/.ai-team (worktrees + state)"
-if [ "$PURGE" -eq 1 ] && [ -d "$HOME/.ai-team" ]; then
-  if [ -n "$(find "$HOME/.ai-team/worktrees" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)" ]; then
-    note "KEPT: worktrees still exist under ~/.ai-team/worktrees (they may hold uncommitted work)"
+echo "== ~/.wolfmux (worktrees + state)"
+if [ "$PURGE" -eq 1 ] && [ -d "$HOME/.wolfmux" ]; then
+  if [ -n "$(find "$HOME/.wolfmux/worktrees" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | head -1)" ]; then
+    note "KEPT: worktrees still exist under ~/.wolfmux/worktrees (they may hold uncommitted work)"
   else
-    /bin/rm -rf "$HOME/.ai-team"
-    note "removed: ~/.ai-team"
+    /bin/rm -rf "$HOME/.wolfmux"
+    note "removed: ~/.wolfmux"
   fi
 else
   note "kept (use --purge to remove it when it holds no worktree)"

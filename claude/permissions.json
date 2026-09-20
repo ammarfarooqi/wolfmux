@@ -7,8 +7,8 @@
     "Bash(git log *)",
     "Bash(git show *)",
     "Bash(git worktree list *)",
-    "Bash(tmux -L ai-team list-panes *)",
-    "Bash(tmux -L ai-team capture-pane *)"
+    "Bash(tmux -L wolfmux list-panes *)",
+    "Bash(tmux -L wolfmux capture-pane *)"
   ],
   "ask": [
     "Bash(teamctl destroy *)"

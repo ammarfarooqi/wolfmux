@@ -2,7 +2,7 @@
 # smoke.sh — end-to-end lifecycle test of THIS checkout. No model is called.
 #
 # Fully isolated from any team you have running: its own tmux server (socket
-# ai-team-test-<pid>), its own state directory, a throwaway git repository, and
+# wolfmux-test-<pid>), its own state directory, a throwaway git repository, and
 # stub agents instead of real CLIs. Needs tmux, git, jq; Beads checks run when
 # `bd` is installed.
 #
@@ -11,16 +11,16 @@
 set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ai-team-smoke.XXXXXX")"
-export AI_TEAM_HOME="$REPO/config/ai-team"
-export AI_TEAM_BIN_DIR="$REPO/bin"
-export AI_TEAM_DATA="$WORK/data"
-export AI_TEAM_TMUX_SOCKET="ai-team-test-$$"
-export AI_TEAM_LAUNCHER_FABLE="$REPO/tests/stub-agent"
-export AI_TEAM_LAUNCHER_ASTRA="$REPO/tests/stub-agent"
-export AI_TEAM_LAUNCHER_GLM53="$REPO/tests/stub-agent"
-export AI_TEAM_LAUNCHER_FLASH="$REPO/tests/stub-agent"
-unset AI_TEAM_ROOT TEAM_ROLE BEADS_ACTOR
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/wolfmux-smoke.XXXXXX")"
+export WOLFMUX_HOME="$REPO/config/wolfmux"
+export WOLFMUX_BIN_DIR="$REPO/bin"
+export WOLFMUX_DATA="$WORK/data"
+export WOLFMUX_TMUX_SOCKET="wolfmux-test-$$"
+export WOLFMUX_LAUNCHER_FABLE="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_ASTRA="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_GLM53="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_FLASH="$REPO/tests/stub-agent"
+unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 
 passed=0
@@ -36,8 +36,8 @@ check() { # <description> <command string>
 }
 
 cleanup() {
-  tmux -L "$AI_TEAM_TMUX_SOCKET" kill-server >/dev/null 2>&1
-  /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$AI_TEAM_TMUX_SOCKET" # tmux leaves the socket file behind
+  tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
+  /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$WOLFMUX_TMUX_SOCKET" # tmux leaves the socket file behind
   /bin/rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -72,8 +72,8 @@ check "spawn: --base recorded" 'teamctl diff backend | grep -q "base:    release
 check "spawn: role environment set inside the pane" 'teamctl capture backend -n 8 | grep -q "STUB role=backend actor=backend model=glm53"'
 check "spawn: no provider or agent-session variable leaks into a pane" 'teamctl capture backend -n 8 | grep -Eq "^STUB leaked= *$"'
 check "spawn: kickoff prompt passed by default, omitted with --no-kickoff" 'teamctl capture backend -n 8 | grep -q "argc=6" && teamctl capture qa -n 8 | grep -q "argc=5"'
-check "spawn: tiled 2x2-style layout, lead first" '[ "$(tmux -L "$AI_TEAM_TMUX_SOCKET" list-panes -a -F "#{pane_index}:#{@ai_role}" | head -1)" = "0:lead" ]'
-check "spawn: pane titles are roles" 'tmux -L "$AI_TEAM_TMUX_SOCKET" list-panes -a -F "#{pane_title}" | grep -q "^backend · GLM-5.3$"'
+check "spawn: tiled 2x2-style layout, lead first" '[ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_index}:#{@ai_role}" | head -1)" = "0:lead" ]'
+check "spawn: pane titles are roles" 'tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_title}" | grep -q "^backend · GLM-5.3$"'
 check "validation: duplicate role refused" '! teamctl spawn backend glm53'
 check "validation: reserved and malformed roles refused" '! teamctl spawn lead glm53 && ! teamctl spawn "Bad Role" glm53'
 check "validation: flag without value reports usage (exit 64)" 'teamctl spawn x glm53 --base; [ $? -eq 64 ]'
@@ -112,7 +112,7 @@ sleep 3
 teamctl deny A2 "use npm ci instead" >/dev/null 2>&1
 sleep 2
 check "lead mode: deny -> the worker's CLI receives deny with the reason" 'jq -e ".hookSpecificOutput.decision.behavior == \"deny\" and (.hookSpecificOutput.decision.message | contains(\"use npm ci instead\"))" "$WORK/hook2.out"'
-check "lead mode: no answer -> no decision, so the worker's own prompt appears" 'out="$(printf "%s" "$HOOK_IN" | AI_TEAM_APPROVAL_TIMEOUT=2 TEAM_ROLE=qa teamctl _permission-hook)"; [ -z "$out" ] && teamctl approvals --all | grep -q "A3 .*expired"'
+check "lead mode: no answer -> no decision, so the worker's own prompt appears" 'out="$(printf "%s" "$HOOK_IN" | WOLFMUX_APPROVAL_TIMEOUT=2 TEAM_ROLE=qa teamctl _permission-hook)"; [ -z "$out" ] && teamctl approvals --all | grep -q "A3 .*expired"'
 teamctl policy worker-permissions ask >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
 sleep 2
@@ -152,7 +152,7 @@ check "destroy: refuses without confirmation when not interactive" '! teamctl de
 check "destroy: runs with --yes" 'teamctl destroy --worktrees --yes'
 check "destroy: dirty worktree with an unmerged commit is kept" '[ -d "$BACKEND_DIR" ] && git rev-parse -q --verify "refs/heads/$(git -C "$BACKEND_DIR" branch --show-current)"'
 check "destroy: clean worktree removed, merged branch deleted" '[ -z "$(git branch --list "ai/qa-*")" ]'
-check "destroy: tmux session gone" '! tmux -L "$AI_TEAM_TMUX_SOCKET" has-session 2>/dev/null'
+check "destroy: tmux session gone" '! tmux -L "$WOLFMUX_TMUX_SOCKET" has-session 2>/dev/null'
 
 echo
 echo "result: $passed passed, $failed failed"

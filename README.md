@@ -1,4 +1,4 @@
-# ai-team
+# wolfmux
 
 A local, multi-model AI development team on one Mac. One **lead** agent plans,
 delegates and reviews; any number of **worker** agents implement in parallel. Every
@@ -26,7 +26,7 @@ pay-as-you-go path anywhere in this system.**
 ## Quick start
 
 ```bash
-git clone <this repo> ~/Documents/ai-team && cd ~/Documents/ai-team
+git clone <this repo> ~/Documents/wolfmux && cd ~/Documents/wolfmux
 ./install.sh                                  # idempotent; backs up what it edits
 security add-generic-password -U -s zai-coding-plan -a "$USER" -l "Z.ai Coding Plan API key" -w
 teamctl doctor                                # no "!! WARNING !!" lines = ready
@@ -45,9 +45,9 @@ reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 | Path | What |
 |------|------|
 | `bin/` | `teamctl` and the three launchers (`claude-glm-flash` is a symlink the installer creates) |
-| `config/ai-team/` | everything installed to `~/.config/ai-team/`: `lib/*.sh`, the Beads hook, the team tmux config, the agent protocol, the user manual, launcher settings |
+| `config/wolfmux/` | everything installed to `~/.config/wolfmux/`: `lib/*.sh`, the Beads hook, the team tmux config, the agent protocol, the user manual, launcher settings |
 | `claude/permissions.json` | the narrow allow/ask rules merged into `~/.claude/settings.json` |
-| `codex/ai-team.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
+| `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `tests/` | `smoke.sh` (31 isolated lifecycle checks, no model calls), `credential-routing.sh` (evidence for the billing/credential design) |
 | `docs/` | the documentation below |
@@ -66,7 +66,7 @@ reviews their diffs with `teamctl diff <role>` and integrates what it approves.
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | symptoms and fixes |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | known limits and what a V2 could be |
 | [docs/adr/](docs/adr/README.md) | the architecture decisions, each with alternatives and consequences |
-| [config/ai-team/TEAM_PROTOCOL.md](config/ai-team/TEAM_PROTOCOL.md) | the rules every agent receives at launch |
+| [config/wolfmux/TEAM_PROTOCOL.md](config/wolfmux/TEAM_PROTOCOL.md) | the rules every agent receives at launch |
 
 ## Requirements
 

@@ -6,20 +6,20 @@
 
 ## Context
 
-The brief suggested a project-local `.ai-team/` directory plus a `.gitignore` entry.
+The brief suggested a project-local `.wolfmux/` directory plus a `.gitignore` entry.
 After tasks and messages moved to Beads, what remains is a tiny registry (role, model,
 worktree, branch, pane) and an event log. Worktrees must not be nested in the project.
 
 ## Decision
 
-State lives in `~/.ai-team/state/<project>-<hash>/`, worktrees in `~/.ai-
+State lives in `~/.wolfmux/state/<project>-<hash>/`, worktrees in `~/.ai-
 team/worktrees/<project>-<hash>/`. The project is identified by the main checkout's
 path, resolved through git's common directory so it also works from a worker's external
 worktree.
 
 ## Alternatives Considered
 
-### Alternative 1: `.ai-team/` in the project + `.gitignore`
+### Alternative 1: `.wolfmux/` in the project + `.gitignore`
 - **Pros**: easy to find
 - **Cons**: edits a tracked file or leaves an untracked directory; dirties `git status`
 - **Why not**: unnecessary once the state is this small

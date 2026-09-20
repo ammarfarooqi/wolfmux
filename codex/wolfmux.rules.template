@@ -1,13 +1,13 @@
-# ai-team — lets a Codex lead (GPT-6 Astra) drive the same team tooling as a Claude lead.
+# wolfmux — lets a Codex lead (GPT-6 Astra) drive the same team tooling as a Claude lead.
 # "allow" = run outside the Codex sandbox without a prompt. That is required here:
-# teamctl talks to the tmux socket and creates worktrees under ~/.ai-team, and bd
+# teamctl talks to the tmux socket and creates worktrees under ~/.wolfmux, and bd
 # (Beads) writes its database in the main checkout and fires the pane-notify hook.
 # Nothing else is granted. Delete this file to revoke it; default.rules is untouched.
 
 prefix_rule(
     pattern = [["teamctl", "__HOME__/bin/teamctl"]],
     decision = "allow",
-    justification = "ai-team orchestration: tmux panes, models, worktrees, lifecycle",
+    justification = "wolfmux orchestration: tmux panes, models, worktrees, lifecycle",
     match = ["teamctl status", "teamctl spawn backend glm53", "teamctl diff backend --stat"],
 )
 

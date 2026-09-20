@@ -1,10 +1,10 @@
 #!/bin/bash
-# install.sh — put ai-team in place for the current user. Idempotent and reversible.
+# install.sh — put wolfmux in place for the current user. Idempotent and reversible.
 #
 # It copies files, creates two symlinks, and makes three small, backed-up edits:
 #   ~/.zshrc                      one marked block that appends ~/bin to PATH
 #   ~/.claude/settings.json       narrow allow/ask permission rules (merged, never replaced)
-#   ~/.codex/rules/ai-team.rules  a separate rule file (default.rules is not touched)
+#   ~/.codex/rules/wolfmux.rules  a separate rule file (default.rules is not touched)
 # It never reads, writes or asks for a credential. Undo everything with ./uninstall.sh.
 #
 #   ./install.sh [--no-path] [--no-claude-permissions] [--no-codex-rules]
@@ -13,7 +13,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd -P)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BIN_DIR="$HOME/bin"
-CONF_DIR="$HOME/.config/ai-team"
+CONF_DIR="$HOME/.config/wolfmux"
 DO_PATH=1
 DO_CLAUDE=1
 DO_CODEX=1
@@ -43,7 +43,7 @@ backup() { # <file> — timestamped copy next to the original
 }
 
 # install_file <src> <dst> <mode> — replace only when the content differs. The
-# previous version of one of OUR files goes to ~/.ai-team/backups/<stamp>/, never
+# previous version of one of OUR files goes to ~/.wolfmux/backups/<stamp>/, never
 # next to the original: an executable copy in ~/bin would sit on your PATH.
 install_file() {
   local src="$1" dst="$2" mode="$3" keep
@@ -51,7 +51,7 @@ install_file() {
     return 0
   fi
   if [ -e "$dst" ]; then
-    keep="$HOME/.ai-team/backups/$STAMP/${dst#"$HOME"/}"
+    keep="$HOME/.wolfmux/backups/$STAMP/${dst#"$HOME"/}"
     /bin/mkdir -p "$(dirname "$keep")"
     /bin/cp -p "$dst" "$keep"
     /bin/chmod 600 "$keep"
@@ -93,18 +93,18 @@ say "== files"
 for name in teamctl claude-fable codex-astra claude-glm; do
   install_file "$REPO/bin/$name" "$BIN_DIR/$name" 755
 done
-for path in "$REPO"/config/ai-team/lib/*.sh; do
+for path in "$REPO"/config/wolfmux/lib/*.sh; do
   install_file "$path" "$CONF_DIR/lib/$(basename "$path")" 644
 done
-install_file "$REPO/config/ai-team/hooks/beads-nudge" "$CONF_DIR/hooks/beads-nudge" 755
+install_file "$REPO/config/wolfmux/hooks/beads-nudge" "$CONF_DIR/hooks/beads-nudge" 755
 for name in tmux.conf TEAM_PROTOCOL.md README.md; do
-  install_file "$REPO/config/ai-team/$name" "$CONF_DIR/$name" 644
+  install_file "$REPO/config/wolfmux/$name" "$CONF_DIR/$name" 644
 done
-install_once "$REPO/config/ai-team/config" "$CONF_DIR/config" 644
-if ! /usr/bin/cmp -s "$REPO/config/ai-team/config" "$CONF_DIR/config"; then
-  note "new settings may exist: compare with $REPO/config/ai-team/config"
+install_once "$REPO/config/wolfmux/config" "$CONF_DIR/config" 644
+if ! /usr/bin/cmp -s "$REPO/config/wolfmux/config" "$CONF_DIR/config"; then
+  note "new settings may exist: compare with $REPO/config/wolfmux/config"
 fi
-install_once "$REPO/config/ai-team/glm-worker-settings.json" "$CONF_DIR/glm-worker-settings.json" 644
+install_once "$REPO/config/wolfmux/glm-worker-settings.json" "$CONF_DIR/glm-worker-settings.json" 644
 
 say "== symlinks"
 if [ ! -e "$BIN_DIR/claude-glm-flash" ]; then
@@ -123,18 +123,18 @@ fi
 
 if [ "$DO_PATH" -eq 1 ]; then
   say "== PATH (~/.zshrc)"
-  if [ -f "$HOME/.zshrc" ] && grep -q '>>> ai-team >>>' "$HOME/.zshrc"; then
+  if [ -f "$HOME/.zshrc" ] && grep -q '>>> wolfmux >>>' "$HOME/.zshrc"; then
     note "block already present"
   else
     if [ -f "$HOME/.zshrc" ]; then backup "$HOME/.zshrc"; fi
     {
-      printf '\n# >>> ai-team >>> (added %s; delete this block to uninstall)\n' "$(date +%Y-%m-%d)"
+      printf '\n# >>> wolfmux >>> (added %s; delete this block to uninstall)\n' "$(date +%Y-%m-%d)"
       printf '# teamctl + model launchers live in ~/bin. Appended, not prepended, so nothing\n'
       printf '# in ~/bin can shadow an existing tool.\n'
       printf '[[ -d "$HOME/bin" ]] && path+=("$HOME/bin")\n'
-      printf '# <<< ai-team <<<\n'
+      printf '# <<< wolfmux <<<\n'
     } >>"$HOME/.zshrc"
-    note "appended the ai-team block to ~/.zshrc (open a new terminal to pick it up)"
+    note "appended the wolfmux block to ~/.zshrc (open a new terminal to pick it up)"
   fi
 fi
 
@@ -160,17 +160,17 @@ if [ "$DO_CLAUDE" -eq 1 ]; then
 fi
 
 if [ "$DO_CODEX" -eq 1 ]; then
-  say "== Codex rules (~/.codex/rules/ai-team.rules)"
+  say "== Codex rules (~/.codex/rules/wolfmux.rules)"
   if [ -d "$HOME/.codex" ]; then
     /bin/mkdir -p "$HOME/.codex/rules"
-    sed "s|__HOME__|$HOME|g" "$REPO/codex/ai-team.rules.template" >"$HOME/.codex/rules/ai-team.rules.tmp.$$"
-    if [ -f "$HOME/.codex/rules/ai-team.rules" ] && /usr/bin/cmp -s "$HOME/.codex/rules/ai-team.rules.tmp.$$" "$HOME/.codex/rules/ai-team.rules"; then
-      /bin/rm -f "$HOME/.codex/rules/ai-team.rules.tmp.$$"
+    sed "s|__HOME__|$HOME|g" "$REPO/codex/wolfmux.rules.template" >"$HOME/.codex/rules/wolfmux.rules.tmp.$$"
+    if [ -f "$HOME/.codex/rules/wolfmux.rules" ] && /usr/bin/cmp -s "$HOME/.codex/rules/wolfmux.rules.tmp.$$" "$HOME/.codex/rules/wolfmux.rules"; then
+      /bin/rm -f "$HOME/.codex/rules/wolfmux.rules.tmp.$$"
       note "rule file already current"
     else
-      if [ -f "$HOME/.codex/rules/ai-team.rules" ]; then backup "$HOME/.codex/rules/ai-team.rules"; fi
-      /bin/mv -f "$HOME/.codex/rules/ai-team.rules.tmp.$$" "$HOME/.codex/rules/ai-team.rules"
-      note "installed: ~/.codex/rules/ai-team.rules"
+      if [ -f "$HOME/.codex/rules/wolfmux.rules" ]; then backup "$HOME/.codex/rules/wolfmux.rules"; fi
+      /bin/mv -f "$HOME/.codex/rules/wolfmux.rules.tmp.$$" "$HOME/.codex/rules/wolfmux.rules"
+      note "installed: ~/.codex/rules/wolfmux.rules"
     fi
   else
     note "no ~/.codex directory: skipped (run Codex once, then re-run this script)"

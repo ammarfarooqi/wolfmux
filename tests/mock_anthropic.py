@@ -18,7 +18,7 @@ def classify(value):
         return "absent"
     if "dummy-zai-key" in value:
         return "DUMMY_ZAI_KEY"
-    if "ai-team-glm-worker" in value:
+    if "wolfmux-glm-worker" in value:
         return "GUARD_PLACEHOLDER"
     return "OTHER_REAL_CREDENTIAL(len=%d)" % len(value)
 

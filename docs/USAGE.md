@@ -1,7 +1,7 @@
 # Usage
 
-The installed user manual is [`config/ai-team/README.md`](../config/ai-team/README.md)
-(`~/.config/ai-team/README.md` on the machine). This page walks through one
+The installed user manual is [`config/wolfmux/README.md`](../config/wolfmux/README.md)
+(`~/.config/wolfmux/README.md` on the machine). This page walks through one
 complete session and lists every command.
 
 ## A complete session
@@ -36,7 +36,7 @@ directly:
 ```bash
 # in the frontend pane
 bd create "Need expires_at in the confirm response" -t message -a backend -d "ISO-8601, UTC"
-# backend's pane shows:  [ai-team] Beads update for backend (shop-wisp-x1). Run: bd show shop-wisp-x1 ...
+# backend's pane shows:  [wolfmux] Beads update for backend (shop-wisp-x1). Run: bd show shop-wisp-x1 ...
 ```
 
 When a worker finishes it commits, reports and closes:

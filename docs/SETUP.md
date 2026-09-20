@@ -29,8 +29,8 @@ bd metrics off        # Beads sends anonymous command names by default; this tur
 ## 2. Install
 
 ```bash
-git clone <this repo> ~/Documents/ai-team
-cd ~/Documents/ai-team
+git clone <this repo> ~/Documents/wolfmux
+cd ~/Documents/wolfmux
 ./install.sh
 ```
 
@@ -38,11 +38,11 @@ What it does, and nothing else:
 
 | Action | Detail |
 |--------|--------|
-| copies files | `bin/*` → `~/bin/`, `config/ai-team/*` → `~/.config/ai-team/` (a differing existing file is backed up first; `config` and `glm-worker-settings.json` are never overwritten) |
+| copies files | `bin/*` → `~/bin/`, `config/wolfmux/*` → `~/.config/wolfmux/` (a differing existing file is backed up first; `config` and `glm-worker-settings.json` are never overwritten) |
 | two symlinks | `~/bin/claude-glm-flash` → `claude-glm`; `~/bin/codex` → ChatGPT.app's CLI, only when no `codex` is on PATH |
 | `~/.zshrc` | appends one marked block that adds `~/bin` to the **end** of `PATH`, so nothing in it can shadow an existing tool |
 | `~/.claude/settings.json` | merges the rules in `claude/permissions.json`: allow `teamctl`, `bd`, read-only `git` and read-only tmux on the team server; **ask** before `teamctl destroy` |
-| `~/.codex/rules/ai-team.rules` | a separate execpolicy file: `teamctl` and `bd` may run outside the Codex sandbox, `teamctl destroy` prompts. `default.rules` is not touched |
+| `~/.codex/rules/wolfmux.rules` | a separate execpolicy file: `teamctl` and `bd` may run outside the Codex sandbox, `teamctl destroy` prompts. `default.rules` is not touched |
 
 Every edited file gets `<file>.backup-YYYYMMDD-HHMMSS`. Running it again changes
 nothing. Skip parts with `--no-path`, `--no-claude-permissions`, `--no-codex-rules`.
@@ -68,8 +68,8 @@ Open a new terminal (for the `PATH` change), then:
 
 ```bash
 teamctl doctor                  # expect no "!! WARNING !!" and no FAIL lines
-AI_TEAM_DRY_RUN=1 claude-glm    # shows endpoint, model, auth mode; starts nothing
-~/Documents/ai-team/tests/smoke.sh   # 31 checks, isolated, no model calls (~1 minute)
+WOLFMUX_DRY_RUN=1 claude-glm    # shows endpoint, model, auth mode; starts nothing
+~/Documents/wolfmux/tests/smoke.sh   # 31 checks, isolated, no model calls (~1 minute)
 ```
 
 Account-side switches no local tool can see — check them once:
@@ -86,8 +86,8 @@ cd ~/code/your-project        # any git repository with at least one commit
 teamctl start fable           # offers the stealth Beads init on first use
 ```
 
-If GLM workers report an authentication error, set `AI_TEAM_GLM_AUTH_MODE=env` in
-`~/.config/ai-team/config` and `teamctl restart <role>`
+If GLM workers report an authentication error, set `WOLFMUX_GLM_AUTH_MODE=env` in
+`~/.config/wolfmux/config` and `teamctl restart <role>`
 ([why](SECURITY.md#how-the-zai-key-reaches-a-worker)).
 
 ## Updating
@@ -107,7 +107,7 @@ Never run `codex login --with-api-key`, never export `ANTHROPIC_API_KEY` or
 
 ```bash
 teamctl destroy --worktrees     # in each project that has a team
-./uninstall.sh                  # add --purge to also remove an empty ~/.ai-team
+./uninstall.sh                  # add --purge to also remove an empty ~/.wolfmux
 security delete-generic-password -s zai-coding-plan     # optional
 ```
 

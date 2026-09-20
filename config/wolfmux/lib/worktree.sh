@@ -2,7 +2,7 @@
 # worktree.sh — git worktrees and branches for workers, plus read-only inspection.
 #
 # Every worker gets its own branch (ai/<role>-<stamp>) in its own worktree under
-# ~/.ai-team/worktrees/<project>/, outside the repository, so no two agents can
+# ~/.wolfmux/worktrees/<project>/, outside the repository, so no two agents can
 # edit the same working tree and nothing is nested inside your project.
 
 gitr() { "$GIT_BIN" -C "$ROOT" "$@"; }

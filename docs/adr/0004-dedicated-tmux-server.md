@@ -13,7 +13,7 @@ every pane.
 
 ## Decision
 
-Teams run on their own server, `tmux -L ai-team -f ~/.config/ai-team/tmux.conf`. The
+Teams run on their own server, `tmux -L wolfmux -f ~/.config/wolfmux/tmux.conf`. The
 file sources the user's tmux config first if one exists. The server is started with
 provider and agent-session variables removed.
 
@@ -34,10 +34,10 @@ provider and agent-session variables removed.
 ### Positive
 - zero global footprint; delete one file to remove it
 - clean pane environments by construction
-- `tmux -L ai-team kill-server` stops every team and nothing else
+- `tmux -L wolfmux kill-server` stops every team and nothing else
 
 ### Negative
-- `tmux ls` without `-L ai-team` shows nothing; `teamctl attach` hides that
+- `tmux ls` without `-L wolfmux` shows nothing; `teamctl attach` hides that
 
 ### Risks
 - a user expecting their own key bindings — covered by sourcing their config first

@@ -3,22 +3,22 @@
 # multi-model AI development team. Nothing else: tasks and messages live in
 # Beads (bd). No daemon, no network service, no API keys.
 #
-# Code:    ~/.config/ai-team/lib/*.sh      State: ~/.ai-team/state/<project>/
-# Docs:    ~/.config/ai-team/README.md     Worktrees: ~/.ai-team/worktrees/<project>/
+# Code:    ~/.config/wolfmux/lib/*.sh      State: ~/.wolfmux/state/<project>/
+# Docs:    ~/.config/wolfmux/README.md     Worktrees: ~/.wolfmux/worktrees/<project>/
 set -euo pipefail
 
-AI_TEAM_HOME="${AI_TEAM_HOME:-$HOME/.config/ai-team}"
+WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
 for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor; do
-  if [ ! -r "$AI_TEAM_HOME/lib/$module.sh" ]; then
-    echo "teamctl: missing $AI_TEAM_HOME/lib/$module.sh" >&2
+  if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
+    echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
   fi
   # shellcheck source=/dev/null
-  . "$AI_TEAM_HOME/lib/$module.sh"
+  . "$WOLFMUX_HOME/lib/$module.sh"
 done
-ai_team_load_config # ~/.config/ai-team/config supplies defaults; the environment wins
+wolfmux_load_config # ~/.config/wolfmux/config supplies defaults; the environment wins
 
 usage() {
   /bin/cat <<'EOF'
@@ -55,7 +55,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     bd create "Subject" -t message -a frontend -d "body"            message an agent
     bd list --assignee <role> --status open --include-infra        an agent's inbox (tasks + messages)
     bd show <id> · bd update <id> --claim · bd close <id> -r "..."  · bd ready
-  Full protocol: ~/.config/ai-team/TEAM_PROTOCOL.md      Docs: ~/.config/ai-team/README.md
+  Full protocol: ~/.config/wolfmux/TEAM_PROTOCOL.md      Docs: ~/.config/wolfmux/README.md
 EOF
 }
 
@@ -103,7 +103,7 @@ main() {
     doctor) cmd_doctor "$@" ;;
     _run-agent) cmd_run_agent "$@" ;;
     send | inbox | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
-    version | --version | -V) say "teamctl $AI_TEAM_VERSION" ;;
+    version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;
     *)
       usage >&2

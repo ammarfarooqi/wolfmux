@@ -36,7 +36,7 @@ file or a profile.
   environment, so nothing the agent spawns can see it, and it cannot end up in a
   transcript or in tmux scrollback through an `env` dump. Only the command line —
   which contains no secret — is visible in `ps`.
-- **`env` (fallback).** `AI_TEAM_GLM_AUTH_MODE=env` in `~/.config/ai-team/config`
+- **`env` (fallback).** `WOLFMUX_GLM_AUTH_MODE=env` in `~/.config/wolfmux/config`
   exports `ANTHROPIC_AUTH_TOKEN`, which is Z.ai's documented method. Use it if the
   endpoint ever rejects helper mode (Claude Code sends a helper's value as both
   `x-api-key` and `Authorization: Bearer`). The trade-off: the key is then visible
@@ -72,7 +72,7 @@ again, and a genuine `CLAUDE_CODE_OAUTH_TOKEN` of yours is left alone.
 
 ## GLM worker settings overlay
 
-`~/.config/ai-team/glm-worker-settings.json` is merged into GLM workers' settings
+`~/.config/wolfmux/glm-worker-settings.json` is merged into GLM workers' settings
 only. It ships with the `claude-mem` plugin disabled there: that plugin runs a
 long-lived summarizer that inherits the environment of whichever session starts
 it, and one started from a GLM worker would route memory traffic from your normal
@@ -141,11 +141,11 @@ Every agent runs as your macOS user. That has consequences worth stating plainly
 - The Beads hook passes values as separate arguments, never through `eval` or
   `sh -c`. The one `eval` in the code base interpolates one of four literals.
 - `rm -rf` is only ever applied to lock and guard directories under
-  `~/.ai-team/state/<project>/`, a path derived from the repository root.
+  `~/.wolfmux/state/<project>/`, a path derived from the repository root.
 
 Optional hardening (not applied, because it changes every Claude session on the
-machine): deny rules for `Bash(tmux -L ai-team send-keys*)`,
-`Bash(tmux -L ai-team kill-*)` and `Bash(security *)`.
+machine): deny rules for `Bash(tmux -L wolfmux send-keys*)`,
+`Bash(tmux -L wolfmux kill-*)` and `Bash(security *)`.
 
 ## Review record (2026-09-20)
 

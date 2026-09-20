@@ -12,7 +12,7 @@ standalone CLI share `~/.codex`, whose state databases are versioned.
 
 ## Decision
 
-`codex-astra` resolves `AI_TEAM_CODEX_BIN`, then `codex` on PATH, then the app-bundled
+`codex-astra` resolves `WOLFMUX_CODEX_BIN`, then `codex` on PATH, then the app-bundled
 binary. The installer links `~/bin/codex` to the bundled binary only when no `codex`
 exists. `~/bin` is last in PATH, so a future official install takes over by itself.
 

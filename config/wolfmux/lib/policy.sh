@@ -10,15 +10,15 @@
 #                                           them (teamctl approvals) · ask = in the pane
 #   worker-spawn        off | on            may a worker run `teamctl spawn`?
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
-# meta.json) > environment > ~/.config/ai-team/config > the defaults below.
+# meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
 POLICY_KEYS="lead-permissions worker-permissions worker-spawn"
 
 policy_default() {
   case "$1" in
-    lead-permissions) printf '%s\n' "${AI_TEAM_LEAD_PERMISSIONS:-skip}" ;;
-    worker-permissions) printf '%s\n' "${AI_TEAM_WORKER_PERMISSIONS:-skip}" ;;
-    worker-spawn) printf '%s\n' "${AI_TEAM_WORKER_SPAWN:-off}" ;;
+    lead-permissions) printf '%s\n' "${WOLFMUX_LEAD_PERMISSIONS:-skip}" ;;
+    worker-permissions) printf '%s\n' "${WOLFMUX_WORKER_PERMISSIONS:-skip}" ;;
+    worker-spawn) printf '%s\n' "${WOLFMUX_WORKER_SPAWN:-off}" ;;
     *) return 1 ;;
   esac
 }
@@ -88,7 +88,7 @@ caller_role() {
 is_manager() {
   local role
   role="$(caller_role)"
-  [ -z "$role" ] || [ "$role" = "$AI_TEAM_LEAD_ROLE" ]
+  [ -z "$role" ] || [ "$role" = "$WOLFMUX_LEAD_ROLE" ]
 }
 
 require_manager() { # <command name>
@@ -127,7 +127,7 @@ cmd_policy() {
     *) say "applies to agents started or restarted from now on (teamctl restart <role>)" ;;
   esac
   SESSION="$(session_name_for_project)"
-  if tm_session_exists "$SESSION" && [ "$(caller_role)" != "$AI_TEAM_LEAD_ROLE" ]; then
+  if tm_session_exists "$SESSION" && [ "$(caller_role)" != "$WOLFMUX_LEAD_ROLE" ]; then
     notify_lead policy "$key" "$value" || true
   fi
 }

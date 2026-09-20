@@ -20,7 +20,7 @@ _risk() {
 _head() { printf '\n%s%s%s\n' "$_C_BLD" "$*" "$_C_OFF"; }
 
 _doc_launcher() { # <launcher-name>
-  local path="$AI_TEAM_BIN_DIR/$1"
+  local path="$WOLFMUX_BIN_DIR/$1"
   if [ -x "$path" ]; then
     if [ -L "$path" ]; then _ok "launcher  $(short_path "$path") -> $(readlink "$path")"; else _ok "launcher  $(short_path "$path")"; fi
   else
@@ -67,18 +67,18 @@ _doc_tools() {
     if [ -n "$path" ]; then _ok "$tool  $path"; elif [ "$tool" = "sqlite3" ]; then _note "sqlite3 not found (unused in V1)"; else _fail "$tool not found"; fi
   done
   case ":$PATH:" in
-    *":$AI_TEAM_BIN_DIR:"*) _ok "$(short_path "$AI_TEAM_BIN_DIR") is on PATH" ;;
-    *) _fail "$(short_path "$AI_TEAM_BIN_DIR") is not on PATH in this shell (open a new terminal, or check the ai-team block in ~/.zshrc)" ;;
+    *":$WOLFMUX_BIN_DIR:"*) _ok "$(short_path "$WOLFMUX_BIN_DIR") is on PATH" ;;
+    *) _fail "$(short_path "$WOLFMUX_BIN_DIR") is not on PATH in this shell (open a new terminal, or check the wolfmux block in ~/.zshrc)" ;;
   esac
-  if [ -r "$AI_TEAM_HOME/TEAM_PROTOCOL.md" ]; then _ok "team protocol  $(short_path "$AI_TEAM_HOME/TEAM_PROTOCOL.md")"; else _fail "team protocol file missing"; fi
+  if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then _ok "team protocol  $(short_path "$WOLFMUX_HOME/TEAM_PROTOCOL.md")"; else _fail "team protocol file missing"; fi
 }
 
 _doc_fable() {
   local bin inherited auth_json auth_method
   _head "Lead option 1 — Claude Code + Fable 5.1   (expected billing: Claude subscription)"
   _doc_launcher claude-fable
-  if bin="$(ai_team_resolve_claude)"; then _ok "claude    $bin  ($("$bin" --version 2>/dev/null | head -1))"; else _fail "Claude Code CLI not found"; fi
-  inherited="$(ai_team_list_set_vars "$AI_TEAM_CLAUDE_PROVIDER_VARS" "$AI_TEAM_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
+  if bin="$(wolfmux_resolve_claude)"; then _ok "claude    $bin  ($("$bin" --version 2>/dev/null | head -1))"; else _fail "Claude Code CLI not found"; fi
+  inherited="$(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
   case " $inherited" in *" ANTHROPIC_API_KEY "*) _risk "ANTHROPIC_API_KEY is set in this environment. claude-fable removes it, but plain 'claude' would bill the Anthropic API." ;; *) _ok "ANTHROPIC_API_KEY is not inherited" ;; esac
   case " $inherited" in *" ANTHROPIC_BASE_URL "*) _risk "ANTHROPIC_BASE_URL is set in this environment. claude-fable removes it, but plain 'claude' would send traffic there." ;; *) _ok "no custom ANTHROPIC_BASE_URL is inherited" ;; esac
   case " $inherited" in *" ANTHROPIC_AUTH_TOKEN "*) _risk "ANTHROPIC_AUTH_TOKEN is set in this environment. claude-fable removes it; plain 'claude' would use it." ;; esac
@@ -94,7 +94,7 @@ _doc_fable() {
   fi
   # Ask Claude Code itself which credential it would use from the launcher's
   # scrubbed environment (local status query; no model call, no secret printed).
-  auth_json="$("$AI_TEAM_BIN_DIR/claude-fable" auth status --json 2>/dev/null || true)"
+  auth_json="$("$WOLFMUX_BIN_DIR/claude-fable" auth status --json 2>/dev/null || true)"
   auth_method="$(printf '%s' "$auth_json" | "$JQ_BIN" -r '.authMethod // "unknown"' 2>/dev/null || printf 'unknown')"
   case "$auth_method" in
     claude.ai) _ok "claude-fable authenticates with: claude.ai login (subscription: $(printf '%s' "$auth_json" | "$JQ_BIN" -r '.subscriptionType // "unknown"'))" ;;
@@ -108,7 +108,7 @@ _doc_astra() {
   local bin status inherited
   _head "Lead option 2 — Codex CLI + GPT-6 Astra   (expected billing: ChatGPT/Codex subscription)"
   _doc_launcher codex-astra
-  if bin="$(ai_team_resolve_codex)"; then
+  if bin="$(wolfmux_resolve_codex)"; then
     _ok "codex     $bin  ($("$bin" --version 2>/dev/null | head -1))"
     status="$("$bin" login status 2>&1 | head -1 | sed -E 's/sk-[A-Za-z0-9_*.-]+/<redacted>/g' || true)"
     case "$status" in
@@ -119,7 +119,7 @@ _doc_astra() {
   else
     _fail "Codex CLI not found (PATH and ChatGPT.app were checked)"
   fi
-  inherited="$(ai_team_list_set_vars "$AI_TEAM_CODEX_PROVIDER_VARS" "$AI_TEAM_CODEX_PROVIDER_PREFIXES" | tr '\n' ' ')"
+  inherited="$(wolfmux_list_set_vars "$WOLFMUX_CODEX_PROVIDER_VARS" "$WOLFMUX_CODEX_PROVIDER_PREFIXES" | tr '\n' ' ')"
   case " $inherited" in *" OPENAI_API_KEY "*) _risk "OPENAI_API_KEY is set in this environment. codex-astra removes it, but other tools here would bill the OpenAI API." ;; *) _ok "OPENAI_API_KEY is not inherited" ;; esac
   case " $inherited" in *" CODEX_API_KEY "*) _risk "CODEX_API_KEY is set in this environment. codex-astra removes it; plain 'codex exec' would bill the API." ;; esac
   if [ -n "${CODEX_HOME:-}" ]; then
@@ -133,34 +133,34 @@ _doc_astra() {
   if grep -qE '^[[:space:]]*model_provider[[:space:]]*=' "$CODEX_DIR/config.toml" 2>/dev/null; then
     _note "~/.codex/config.toml sets model_provider; codex-astra overrides it with the built-in 'openai' provider"
   fi
-  if [ -f "$CODEX_DIR/rules/ai-team.rules" ]; then _ok "Codex rule file lets Astra run teamctl and bd: $(short_path "$CODEX_DIR/rules/ai-team.rules")"; else _note "no ~/.codex/rules/ai-team.rules: Astra will ask before each teamctl / bd command"; fi
+  if [ -f "$CODEX_DIR/rules/wolfmux.rules" ]; then _ok "Codex rule file lets Astra run teamctl and bd: $(short_path "$CODEX_DIR/rules/wolfmux.rules")"; else _note "no ~/.codex/rules/wolfmux.rules: Astra will ask before each teamctl / bd command"; fi
   _note "Configured for subscription authentication; verify account status in the CLI (/status)."
 }
 
 _doc_glm() {
   local file leaked=0 glm_mode
-  glm_mode="$( (ai_team_load_config; printf '%s' "${AI_TEAM_GLM_AUTH_MODE:-helper}") )"
+  glm_mode="$( (wolfmux_load_config; printf '%s' "${WOLFMUX_GLM_AUTH_MODE:-helper}") )"
   _head "Workers — Claude Code + GLM-5.3 / GLM-5.3 Flash   (expected billing: Z.ai GLM Coding Plan)"
   _doc_launcher claude-glm
   _doc_launcher claude-glm-flash
-  if ai_team_zai_key_exists; then
-    _ok "Keychain item '$AI_TEAM_ZAI_KEYCHAIN_SERVICE' exists (value not read)"
+  if wolfmux_zai_key_exists; then
+    _ok "Keychain item '$WOLFMUX_ZAI_KEYCHAIN_SERVICE' exists (value not read)"
   else
-    _risk "Z.ai credential is missing: no Keychain item '$AI_TEAM_ZAI_KEYCHAIN_SERVICE'. Workers cannot start. Add it:"
-    printf '                   security add-generic-password -U -s %s -a "$USER" -l "Z.ai Coding Plan API key" -w\n' "$AI_TEAM_ZAI_KEYCHAIN_SERVICE"
+    _risk "Z.ai credential is missing: no Keychain item '$WOLFMUX_ZAI_KEYCHAIN_SERVICE'. Workers cannot start. Add it:"
+    printf '                   security add-generic-password -U -s %s -a "$USER" -l "Z.ai Coding Plan API key" -w\n' "$WOLFMUX_ZAI_KEYCHAIN_SERVICE"
   fi
-  _ok "endpoint  $AI_TEAM_ZAI_BASE_URL  (Coding Plan endpoint; set only inside the launcher process)"
+  _ok "endpoint  $WOLFMUX_ZAI_BASE_URL  (Coding Plan endpoint; set only inside the launcher process)"
   case "$glm_mode" in
     helper) _ok "key delivery: apiKeyHelper (Keychain read on demand; the key never enters a worker's environment)" ;;
     env) _note "key delivery: ANTHROPIC_AUTH_TOKEN (Z.ai's documented mode; the key is visible to a worker's subprocesses)" ;;
-    *) _fail "AI_TEAM_GLM_AUTH_MODE='$glm_mode' in $(short_path "$AI_TEAM_HOME/config") is invalid (use helper or env)" ;;
+    *) _fail "WOLFMUX_GLM_AUTH_MODE='$glm_mode' in $(short_path "$WOLFMUX_HOME/config") is invalid (use helper or env)" ;;
   esac
   _ok "login guard on: nothing a GLM worker spawns can present your claude.ai login to Z.ai"
-  if [ -r "$AI_TEAM_HOME/glm-worker-settings.json" ]; then
-    if "$JQ_BIN" -e . "$AI_TEAM_HOME/glm-worker-settings.json" >/dev/null 2>&1; then
-      _ok "worker settings overlay: $(short_path "$AI_TEAM_HOME/glm-worker-settings.json")  (plugins off in workers: $("$JQ_BIN" -r '[(.enabledPlugins // {}) | to_entries[] | select(.value == false) | .key] | join(", ") | if . == "" then "none" else . end' "$AI_TEAM_HOME/glm-worker-settings.json"))"
+  if [ -r "$WOLFMUX_HOME/glm-worker-settings.json" ]; then
+    if "$JQ_BIN" -e . "$WOLFMUX_HOME/glm-worker-settings.json" >/dev/null 2>&1; then
+      _ok "worker settings overlay: $(short_path "$WOLFMUX_HOME/glm-worker-settings.json")  (plugins off in workers: $("$JQ_BIN" -r '[(.enabledPlugins // {}) | to_entries[] | select(.value == false) | .key] | join(", ") | if . == "" then "none" else . end' "$WOLFMUX_HOME/glm-worker-settings.json"))"
     else
-      _fail "worker settings overlay is not valid JSON: $(short_path "$AI_TEAM_HOME/glm-worker-settings.json")"
+      _fail "worker settings overlay is not valid JSON: $(short_path "$WOLFMUX_HOME/glm-worker-settings.json")"
     fi
   else
     _note "no worker settings overlay: GLM workers load exactly your normal Claude Code plugins"
@@ -196,17 +196,17 @@ _doc_beads() {
 
 _doc_team() {
   local sessions
-  _head "tmux team server (socket: $AI_TEAM_TMUX_SOCKET)"
+  _head "tmux team server (socket: $WOLFMUX_TMUX_SOCKET)"
   [ -n "$TMUX_BIN" ] || return 0
   _ok "tmux      $TMUX_BIN  ($("$TMUX_BIN" -V))"
-  if [ -r "$AI_TEAM_HOME/tmux.conf" ]; then _ok "config    $(short_path "$AI_TEAM_HOME/tmux.conf") (team server only; ~/.tmux.conf is not touched)"; else _fail "team tmux config missing: $AI_TEAM_HOME/tmux.conf"; fi
+  if [ -r "$WOLFMUX_HOME/tmux.conf" ]; then _ok "config    $(short_path "$WOLFMUX_HOME/tmux.conf") (team server only; ~/.tmux.conf is not touched)"; else _fail "team tmux config missing: $WOLFMUX_HOME/tmux.conf"; fi
   sessions="$(tmx list-sessions -F '#{session_name} (#{session_windows} window, attached: #{session_attached})' 2>/dev/null | tr '\n' ';' || true)"
   if [ -n "$sessions" ]; then _ok "running sessions: $sessions"; else _note "no team session running"; fi
 }
 
 _doc_policy() {
   local settings="$CLAUDE_DIR/settings.json" teams
-  _head "Team policy (defaults from $(short_path "$AI_TEAM_HOME/config"); per project: teamctl policy)"
+  _head "Team policy (defaults from $(short_path "$WOLFMUX_HOME/config"); per project: teamctl policy)"
   _ok "manager: the lead only — workers cannot stop, restart, destroy, approve or change policy"
   _note "lead-permissions=$(policy_default lead-permissions)  worker-permissions=$(policy_default worker-permissions)  worker-spawn=$(policy_default worker-spawn)"
   case "$(policy_default lead-permissions)$(policy_default worker-permissions)" in
@@ -223,7 +223,7 @@ cmd_doctor() {
   ROOT="$(resolve_root 2>/dev/null || true)"
   CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
-  printf '%steamctl doctor%s  (teamctl %s)\n' "$_C_BLD" "$_C_OFF" "$AI_TEAM_VERSION"
+  printf '%steamctl doctor%s  (teamctl %s)\n' "$_C_BLD" "$_C_OFF" "$WOLFMUX_VERSION"
   _doc_tools
   _doc_fable
   _doc_astra

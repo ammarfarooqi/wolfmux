@@ -9,7 +9,7 @@
 # decision back to the worker's CLI. No answer in time: the hook returns nothing
 # and the normal prompt appears in the worker's pane, so a human can still decide.
 
-APPROVAL_TIMEOUT="${AI_TEAM_APPROVAL_TIMEOUT:-600}"
+APPROVAL_TIMEOUT="${WOLFMUX_APPROVAL_TIMEOUT:-600}"
 case "$APPROVAL_TIMEOUT" in "" | *[!0-9]*) APPROVAL_TIMEOUT=600 ;; esac
 
 approvals_dir() { printf '%s/approvals\n' "$STATE_DIR"; }
@@ -140,16 +140,16 @@ cmd_permission_hook() {
   set +e
   input="$(/bin/cat)"
   role="${TEAM_ROLE:-}"
-  [ -n "$role" ] && [ "$role" != "$AI_TEAM_LEAD_ROLE" ] || exit 0
+  [ -n "$role" ] && [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || exit 0
   [ -n "$TMUX_BIN" ] && [ -n "$JQ_BIN" ] && [ -n "$GIT_BIN" ] || exit 0
   ROOT="$(resolve_root 2>/dev/null)" || exit 0
   PROJECT_KEY="$(project_key "$ROOT")"
-  STATE_DIR="$AI_TEAM_DATA/state/$PROJECT_KEY"
-  WORKTREES_DIR="$AI_TEAM_DATA/worktrees/$PROJECT_KEY"
+  STATE_DIR="$WOLFMUX_DATA/state/$PROJECT_KEY"
+  WORKTREES_DIR="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
   [ -d "$STATE_DIR" ] || exit 0
   SESSION="$(session_name_for_project)"
   # Nobody to ask: do not make the worker wait for a lead that is not there.
-  [ "$(tm_pane_state "$(tm_pane_for_role "$SESSION" "$AI_TEAM_LEAD_ROLE")")" = "running" ] || exit 0
+  [ "$(tm_pane_state "$(tm_pane_for_role "$SESSION" "$WOLFMUX_LEAD_ROLE")")" = "running" ] || exit 0
 
   tool="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_name // "tool"' 2>/dev/null)"
   summary="$(printf '%s' "$input" | "$JQ_BIN" -r '(.tool_input.command // .tool_input.file_path // .tool_input.url // .tool_input.query // (.tool_input | tojson)) | tostring | .[0:400]' 2>/dev/null)"

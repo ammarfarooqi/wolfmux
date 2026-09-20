@@ -143,6 +143,6 @@ cmd_attach() {
   if [ -n "${TMUX:-}" ]; then
     die "you are inside another tmux server. Open a new terminal tab and run: teamctl attach"
   fi
-  [ -t 0 ] && [ -t 1 ] || die "not a terminal. In your own terminal run: teamctl attach   (or: tmux -L $AI_TEAM_TMUX_SOCKET attach -t $SESSION)"
-  exec "$TMUX_BIN" -L "$AI_TEAM_TMUX_SOCKET" attach-session -t "=$SESSION"
+  [ -t 0 ] && [ -t 1 ] || die "not a terminal. In your own terminal run: teamctl attach   (or: tmux -L $WOLFMUX_TMUX_SOCKET attach -t $SESSION)"
+  exec "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" attach-session -t "=$SESSION"
 }

@@ -14,12 +14,12 @@ writes a bead.
 ```mermaid
 flowchart TB
   human([You]) -->|teamctl start fable / astra| T[teamctl]
-  T -->|dedicated server: tmux -L ai-team| S[(tmux session)]
+  T -->|dedicated server: tmux -L wolfmux| S[(tmux session)]
   S --> L[lead pane<br/>claude-fable or codex-astra]
   S --> W1[worker pane<br/>claude-glm]
   S --> W2[worker pane<br/>claude-glm-flash]
   L -->|teamctl spawn / status / diff| T
-  T -->|git worktree add| G[(~/.ai-team/worktrees)]
+  T -->|git worktree add| G[(~/.wolfmux/worktrees)]
   L -->|bd create -a backend| B[(Beads .beads/)]
   W1 -->|bd create -a lead| B
   B -->|on_create / on_update / on_close hook| N[beads-nudge]
@@ -50,14 +50,14 @@ overrides, and the session variables Claude Code sets in its own subprocesses
 agent's shell believes it is a child session and stops persisting transcripts.
 Scrubbed in `codex-astra`: all `OPENAI_*`, `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`.
 
-`AI_TEAM_DRY_RUN=1 <launcher>` prints exactly what would be executed, without
+`WOLFMUX_DRY_RUN=1 <launcher>` prints exactly what would be executed, without
 secrets and without starting anything.
 
-Persistent launcher settings come from `~/.config/ai-team/config` (parsed as
+Persistent launcher settings come from `~/.config/wolfmux/config` (parsed as
 `KEY=value`, never sourced). A file is needed because a pane's environment comes
 from the tmux server, not from the shell that ran `teamctl spawn`.
 
-### teamctl (`~/bin/teamctl` + `~/.config/ai-team/lib/`)
+### teamctl (`~/bin/teamctl` + `~/.config/wolfmux/lib/`)
 
 About 2,200 lines of bash in small modules, written for macOS `/bin/bash` 3.2
 under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
@@ -83,8 +83,8 @@ two leads interchangeable.
 
 ### tmux
 
-Teams run on a **dedicated tmux server** (`tmux -L ai-team`) started with its own
-config file (`~/.config/ai-team/tmux.conf`). The user's default tmux server and any
+Teams run on a **dedicated tmux server** (`tmux -L wolfmux`) started with its own
+config file (`~/.config/wolfmux/tmux.conf`). The user's default tmux server and any
 `~/.tmux.conf` are untouched; the team config sources the user's config first if one
 exists. It adds mouse support, 100k lines of scrollback, role titles on pane
 borders, `remain-on-exit` (a crashed agent keeps its pane and its error), and
@@ -105,7 +105,7 @@ current-directory inheritance for new panes. One extra key: `prefix T` re-tiles.
 
 `teamctl spawn <role> <model>` creates branch `ai/<role>-<timestamp>` from the
 lead's current `HEAD` (or `--base <ref>`) in a worktree at
-`~/.ai-team/worktrees/<project>-<hash>/<role>-<timestamp>/` — outside the
+`~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/` — outside the
 repository, so nothing is nested in the project. Git itself refuses to check one
 branch out twice, and `teamctl` refuses a duplicate role, so two agents can never
 share a working tree. Claude Code keys folder trust on the main checkout, so
@@ -151,7 +151,7 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
    `teamctl nudge backend --quiet --id <bead-id>` in the background
 4. `teamctl` validates role and id, debounces bursts (3 s, under a per-role guard),
    and types **one fixed line** into the pane:
-   `[ai-team] Beads update for backend (<id>). Run: bd show <id> -- then: bd list …`
+   `[wolfmux] Beads update for backend (<id>). Run: bd show <id> -- then: bd list …`
 5. the worker runs the command it was shown and reads the body from Beads
 
 The message body never travels through tmux, so there is nothing to quote, escape
@@ -175,12 +175,12 @@ The lead is the only manager. Three mechanisms keep it that way:
    `spawn` does too unless the `worker-spawn` policy is `on`.
 2. **No native teams inside workers.** `_run-agent` writes a per-worker settings file
    (`env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = "0"`, `teammateMode = "in-process"`) and
-   hands it to the launcher through `AI_TEAM_EXTRA_SETTINGS`; the launcher merges it
+   hands it to the launcher through `WOLFMUX_EXTRA_SETTINGS`; the launcher merges it
    into its single `--settings` value. With Claude Code's agent-teams feature on, any
    subagent a session names becomes a teammate whose team lead — and permission
    approver — is that session, so a worker would become a second manager.
 3. **Awareness.** A spawn by a worker records `spawned_by`, shows in `teamctl status`,
-   and types `[ai-team] Team change: <spawner> spawned teammate <role> (<model>)` into
+   and types `[wolfmux] Team change: <spawner> spawned teammate <role> (<model>)` into
    the lead's pane. Policy changes made from outside are announced the same way.
 
 ### Permission modes
@@ -192,8 +192,8 @@ The lead is the only manager. Three mechanisms keep it that way:
 | `ask` | the CLI's own prompts | the CLI's own approvals and sandbox |
 
 In `lead` mode the hook files `approvals/A<n>.json` (tool, a 400-character summary of
-the input, role, time), types `[ai-team] Permission request A<n> from <role>` into the
-lead's pane, and polls for up to `AI_TEAM_APPROVAL_TIMEOUT` seconds. `teamctl approve`
+the input, role, time), types `[wolfmux] Permission request A<n> from <role>` into the
+lead's pane, and polls for up to `WOLFMUX_APPROVAL_TIMEOUT` seconds. `teamctl approve`
 / `deny` flip the record; the hook returns Claude Code's documented decision object
 (`behavior: allow` or `deny` with the lead's reason). On timeout, or when no lead pane
 is alive, it returns nothing, which means "show the normal prompt".
@@ -202,9 +202,9 @@ is alive, it returns nothing, which means "show the normal prompt".
 
 ```
 ~/bin/                          teamctl + launchers
-~/.config/ai-team/              code, tmux.conf, TEAM_PROTOCOL.md, README.md, config, glm-worker-settings.json
-~/.ai-team/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/
-~/.ai-team/worktrees/<project>/ one directory per worker
+~/.config/wolfmux/              code, tmux.conf, TEAM_PROTOCOL.md, README.md, config, glm-worker-settings.json
+~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/
+~/.wolfmux/worktrees/<project>/ one directory per worker
 <project>/.beads/               tasks and messages (Beads)
 macOS Keychain                  service "zai-coding-plan"
 ```

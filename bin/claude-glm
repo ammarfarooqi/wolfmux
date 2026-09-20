@@ -13,31 +13,31 @@
 #                     The key never enters the environment, so the agent's
 #                     subprocesses, transcripts and tmux scrollback cannot hold it.
 #   env               Z.ai's documented ANTHROPIC_AUTH_TOKEN variable; set
-#                     AI_TEAM_GLM_AUTH_MODE=env in ~/.config/ai-team/config if
+#                     WOLFMUX_GLM_AUTH_MODE=env in ~/.config/wolfmux/config if
 #                     workers report an authentication error in helper mode.
 # In both modes an inert guard value keeps your claude.ai login away from anything
-# the worker spawns (see AI_TEAM_GLM_GUARD_TOKEN in lib/provider-env.sh).
+# the worker spawns (see WOLFMUX_GLM_GUARD_TOKEN in lib/provider-env.sh).
 #
-# Settings (environment, else ~/.config/ai-team/config):
-#   AI_TEAM_GLM_AUTH_MODE  helper | env
-#   AI_TEAM_GLM_CONTEXT    1m -> request the 1M-token window (uses quota faster)
-#   AI_TEAM_CLAUDE_BIN     explicit path to the claude binary
-#   AI_TEAM_DRY_RUN=1      print what would run (no secrets) and exit
-#   AI_TEAM_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
-# ~/.config/ai-team/glm-worker-settings.json, when present, is a Claude Code
+# Settings (environment, else ~/.config/wolfmux/config):
+#   WOLFMUX_GLM_AUTH_MODE  helper | env
+#   WOLFMUX_GLM_CONTEXT    1m -> request the 1M-token window (uses quota faster)
+#   WOLFMUX_CLAUDE_BIN     explicit path to the claude binary
+#   WOLFMUX_DRY_RUN=1      print what would run (no secrets) and exit
+#   WOLFMUX_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
+# ~/.config/wolfmux/glm-worker-settings.json, when present, is a Claude Code
 # settings overlay for GLM workers only (default: turns off claude-mem there).
 set -euo pipefail
 
 SELF="$(basename "$0")"
-AI_TEAM_HOME="${AI_TEAM_HOME:-$HOME/.config/ai-team}"
-LIB="$AI_TEAM_HOME/lib/provider-env.sh"
+WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
+LIB="$WOLFMUX_HOME/lib/provider-env.sh"
 if [ ! -r "$LIB" ]; then
   echo "$SELF: missing $LIB — refusing to launch without environment scrubbing" >&2
   exit 78
 fi
 # shellcheck source=/dev/null
 . "$LIB"
-ai_team_load_config
+wolfmux_load_config
 
 # The Coding Plan only covers these two model ids; anything else can be refused
 # or billed against account balance, so every alias below maps to one of them.
@@ -49,35 +49,35 @@ case "$SELF" in
   *) PRIMARY="$GLM_MAIN" ;;
 esac
 
-SCRUBBED="$(ai_team_list_set_vars "$AI_TEAM_CLAUDE_PROVIDER_VARS" "$AI_TEAM_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
-ai_team_scrub_claude_env
+SCRUBBED="$(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
+wolfmux_scrub_claude_env
 
-CLAUDE_BIN="$(ai_team_resolve_claude)" || {
+CLAUDE_BIN="$(wolfmux_resolve_claude)" || {
   echo "$SELF: Claude Code CLI not found. Install: https://code.claude.com/docs/en/setup" >&2
   exit 127
 }
 
 # Housekeeping subcommands (doctor, update, mcp, ...) never talk to a model.
-if ai_team_is_claude_subcommand "${1:-}"; then
+if wolfmux_is_claude_subcommand "${1:-}"; then
   exec "$CLAUDE_BIN" "$@"
 fi
 
-AUTH_MODE="${AI_TEAM_GLM_AUTH_MODE:-helper}"
+AUTH_MODE="${WOLFMUX_GLM_AUTH_MODE:-helper}"
 case "$AUTH_MODE" in
   helper | env) ;;
   *)
-    echo "$SELF: AI_TEAM_GLM_AUTH_MODE must be 'helper' or 'env' (got '$AUTH_MODE')" >&2
+    echo "$SELF: WOLFMUX_GLM_AUTH_MODE must be 'helper' or 'env' (got '$AUTH_MODE')" >&2
     exit 64
     ;;
 esac
 
 SUFFIX=""
-if [ "${AI_TEAM_GLM_CONTEXT:-}" = "1m" ]; then
+if [ "${WOLFMUX_GLM_CONTEXT:-}" = "1m" ]; then
   SUFFIX="[1m]"
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW="1000000"
 fi
 
-export ANTHROPIC_BASE_URL="$AI_TEAM_ZAI_BASE_URL"
+export ANTHROPIC_BASE_URL="$WOLFMUX_ZAI_BASE_URL"
 export ANTHROPIC_MODEL="${PRIMARY}${SUFFIX}"
 export ANTHROPIC_DEFAULT_OPUS_MODEL="${PRIMARY}${SUFFIX}"
 export ANTHROPIC_DEFAULT_SONNET_MODEL="${PRIMARY}${SUFFIX}"
@@ -86,36 +86,36 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL="${GLM_FLASH}${SUFFIX}"
 export CLAUDE_CODE_SUBAGENT_MODEL="${PRIMARY}${SUFFIX}"
 export API_TIMEOUT_MS="3000000"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1"
-export CLAUDE_CODE_OAUTH_TOKEN="$AI_TEAM_GLM_GUARD_TOKEN"
+export CLAUDE_CODE_OAUTH_TOKEN="$WOLFMUX_GLM_GUARD_TOKEN"
 
-KEY_CMD="/usr/bin/security find-generic-password -s ${AI_TEAM_ZAI_KEYCHAIN_SERVICE} -w"
-OVERLAY="$AI_TEAM_HOME/glm-worker-settings.json"
+KEY_CMD="/usr/bin/security find-generic-password -s ${WOLFMUX_ZAI_KEYCHAIN_SERVICE} -w"
+OVERLAY="$WOLFMUX_HOME/glm-worker-settings.json"
 
 # One --settings value: the GLM overlay, then the per-agent settings teamctl
 # generated for this pane (they win), plus the key helper in helper mode.
 HELPER=""
 if [ "$AUTH_MODE" = "helper" ]; then HELPER="$KEY_CMD"; fi
-SETTINGS_JSON="$(ai_team_merge_settings "$HELPER" "$OVERLAY" "${AI_TEAM_EXTRA_SETTINGS:-}")" || exit 78
+SETTINGS_JSON="$(wolfmux_merge_settings "$HELPER" "$OVERLAY" "${WOLFMUX_EXTRA_SETTINGS:-}")" || exit 78
 
 CMD=("$CLAUDE_BIN")
 if [ "$SETTINGS_JSON" != "{}" ]; then
   CMD+=(--settings "$SETTINGS_JSON")
 fi
-if ! ai_team_args_have_model "$@"; then
+if ! wolfmux_args_have_model "$@"; then
   CMD+=(--model "${PRIMARY}${SUFFIX}")
 fi
 CMD+=("$@")
 
-if [ "${AI_TEAM_DRY_RUN:-}" = "1" ]; then
+if [ "${WOLFMUX_DRY_RUN:-}" = "1" ]; then
   echo "launcher:        $SELF"
   echo "billing:         Z.ai GLM Coding Plan (Anthropic-compatible endpoint)"
   echo "endpoint:        $ANTHROPIC_BASE_URL"
   echo "model:           ${PRIMARY}${SUFFIX}   (haiku/background tier: ${GLM_FLASH}${SUFFIX})"
-  echo "auth mode:       $AUTH_MODE   (key source: macOS Keychain service '${AI_TEAM_ZAI_KEYCHAIN_SERVICE}')"
-  if ai_team_zai_key_exists; then echo "keychain item:   present"; else echo "keychain item:   MISSING"; fi
+  echo "auth mode:       $AUTH_MODE   (key source: macOS Keychain service '${WOLFMUX_ZAI_KEYCHAIN_SERVICE}')"
+  if wolfmux_zai_key_exists; then echo "keychain item:   present"; else echo "keychain item:   MISSING"; fi
   echo "login guard:     on (children can never present your claude.ai login to Z.ai)"
   if [ -r "$OVERLAY" ]; then echo "overlay:         $OVERLAY"; else echo "overlay:         none"; fi
-  echo "agent settings:  ${AI_TEAM_EXTRA_SETTINGS:-none (not started by teamctl)}"
+  echo "agent settings:  ${WOLFMUX_EXTRA_SETTINGS:-none (not started by teamctl)}"
   echo "scrubbed vars:   ${SCRUBBED:-(none were set)}"
   printf 'would exec:     '
   printf ' %q' "${CMD[@]}"
@@ -123,11 +123,11 @@ if [ "${AI_TEAM_DRY_RUN:-}" = "1" ]; then
   exit 0
 fi
 
-if ! ai_team_zai_key_exists; then
+if ! wolfmux_zai_key_exists; then
   {
-    echo "$SELF: no Keychain item for service '${AI_TEAM_ZAI_KEYCHAIN_SERVICE}'."
+    echo "$SELF: no Keychain item for service '${WOLFMUX_ZAI_KEYCHAIN_SERVICE}'."
     echo
-    ai_team_zai_key_help
+    wolfmux_zai_key_help
   } >&2
   exit 78
 fi

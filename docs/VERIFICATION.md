@@ -12,7 +12,7 @@ teamctl doctor
 ```
 
 `smoke.sh` tests the checkout it lives in. It uses its own tmux server
-(`ai-team-test-<pid>`), its own state directory, a throwaway repository whose path
+(`wolfmux-test-<pid>`), its own state directory, a throwaway repository whose path
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
@@ -41,7 +41,7 @@ real team was live on the same machine; the real team was unaffected.
 | worker → lead | `Done:` message with `--body-file` notified the lead; closing the task notified the lead again; report body intact in the lead's inbox |
 | worker → worker | backend messaged frontend directly; frontend's pane was notified |
 | `claude-fable` with hostile environment (Z.ai base URL, a token, the guard placeholder) | `claude-fable auth status` → `authMethod: claude.ai`, `subscriptionType: max` |
-| `AI_TEAM_DRY_RUN=1` with injected `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY` | each launcher lists them as scrubbed and shows an empty provider environment |
+| `WOLFMUX_DRY_RUN=1` with injected `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY` | each launcher lists them as scrubbed and shows an empty provider environment |
 | fresh login shell | no `ANTHROPIC_*`, `OPENAI_*`, `CODEX_API_KEY`, `ZAI*` or `CLAUDE_CODE_USE_*` variable; plain `claude` still resolves to the original binary |
 | secrets scan of every created file | no matches |
 | Codex rules | `codex execpolicy check`: `teamctl …` → allow, `bd …` → allow, `teamctl destroy` → prompt, unrelated commands → no match |
@@ -76,7 +76,7 @@ the added permission rules removed · uninstall refused while a team was running
 
 - **A real request to Z.ai.** No key was available during the build and inference
   was avoided on purpose. Helper mode sends the key as both `x-api-key` and
-  `Authorization`; if Z.ai rejects that, `AI_TEAM_GLM_AUTH_MODE=env` is the
+  `Authorization`; if Z.ai rejects that, `WOLFMUX_GLM_AUTH_MODE=env` is the
   documented path.
 - Model ids sent by background features of an *interactive* session (titles,
   suggestions). The `-p` runs showed only `glm-5.3`; the alias mapping covers the

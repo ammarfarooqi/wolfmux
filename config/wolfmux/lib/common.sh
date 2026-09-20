@@ -2,13 +2,13 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-AI_TEAM_VERSION="1.1.0"
-AI_TEAM_HOME="${AI_TEAM_HOME:-$HOME/.config/ai-team}"
-AI_TEAM_DATA="${AI_TEAM_DATA:-$HOME/.ai-team}"
-AI_TEAM_TMUX_SOCKET="${AI_TEAM_TMUX_SOCKET:-ai-team}"
-AI_TEAM_BIN_DIR="${AI_TEAM_BIN_DIR:-$HOME/bin}"
-AI_TEAM_WINDOW="team"
-AI_TEAM_LEAD_ROLE="lead"
+WOLFMUX_VERSION="1.1.0"
+WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
+WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
+WOLFMUX_TMUX_SOCKET="${WOLFMUX_TMUX_SOCKET:-wolfmux}"
+WOLFMUX_BIN_DIR="${WOLFMUX_BIN_DIR:-$HOME/bin}"
+WOLFMUX_WINDOW="team"
+WOLFMUX_LEAD_ROLE="lead"
 
 # --- output ------------------------------------------------------------------
 if [ -t 2 ]; then
@@ -112,18 +112,18 @@ model_info() {
   esac
 }
 
-AI_TEAM_MODEL_KEYS="fable astra glm53 flash"
+WOLFMUX_MODEL_KEYS="fable astra glm53 flash"
 
-# launcher_path <key> — AI_TEAM_LAUNCHER_<KEY> overrides the default (used by tests).
+# launcher_path <key> — WOLFMUX_LAUNCHER_<KEY> overrides the default (used by tests).
 launcher_path() {
   local key="$1" upper override
   model_info "$key" || return 1
   upper="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')"
-  eval "override=\"\${AI_TEAM_LAUNCHER_${upper}:-}\""
+  eval "override=\"\${WOLFMUX_LAUNCHER_${upper}:-}\""
   if [ -n "$override" ]; then
     printf '%s\n' "$override"
   else
-    printf '%s\n' "$AI_TEAM_BIN_DIR/$MODEL_LAUNCHER"
+    printf '%s\n' "$WOLFMUX_BIN_DIR/$MODEL_LAUNCHER"
   fi
 }
 
@@ -132,8 +132,8 @@ launcher_path() {
 # linked worktree that lives outside it (every worker does).
 resolve_root() {
   local common top
-  if [ -n "${AI_TEAM_ROOT:-}" ] && [ -d "$AI_TEAM_ROOT" ]; then
-    printf '%s\n' "$AI_TEAM_ROOT"
+  if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then
+    printf '%s\n' "$WOLFMUX_ROOT"
     return 0
   fi
   [ -n "$GIT_BIN" ] || return 1
@@ -164,13 +164,13 @@ project_key() {
 load_project() {
   ROOT="$(resolve_root)" || die "not inside a git repository (teams need git worktrees). cd into your project first."
   PROJECT_KEY="$(project_key "$ROOT")"
-  STATE_DIR="$AI_TEAM_DATA/state/$PROJECT_KEY"
-  WORKTREES_DIR="$AI_TEAM_DATA/worktrees/$PROJECT_KEY"
+  STATE_DIR="$WOLFMUX_DATA/state/$PROJECT_KEY"
+  WORKTREES_DIR="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
 }
 
 ensure_state_dirs() {
   /bin/mkdir -p "$STATE_DIR/agents" "$STATE_DIR/nudge" "$WORKTREES_DIR"
-  /bin/chmod 700 "$AI_TEAM_DATA" 2>/dev/null || true
+  /bin/chmod 700 "$WOLFMUX_DATA" 2>/dev/null || true
 }
 
 # short_path <abs> — $HOME-relative for display

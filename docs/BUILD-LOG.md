@@ -71,7 +71,7 @@ protocol; the user manual.
 
 Claude Code: allow rules for `teamctl`, `bd`, read-only git and read-only team-tmux,
 plus an *ask* rule for `teamctl destroy`, merged into `~/.claude/settings.json`
-after a backup. Codex: a separate `~/.codex/rules/ai-team.rules`, validated with
+after a backup. Codex: a separate `~/.codex/rules/wolfmux.rules`, validated with
 `codex execpolicy check`. Codex needs this because its sandbox blocks the tmux
 socket and writes outside the workspace.
 
@@ -113,7 +113,7 @@ override was confirmed against the real CLI.
 
 ## Footprint on the machine
 
-| Created | `~/bin/*`, `~/.config/ai-team/`, `~/.ai-team/`, `~/.local/bin/bd`, `~/.codex/rules/ai-team.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
+| Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
 |---------|------|
 | Modified (backed up) | `~/.zshrc` (one block), `~/.claude/settings.json` (9 allow rules, 1 ask rule) |
 | Deliberately not created or touched | `~/.tmux.conf`, `~/.zprofile`, any CLAUDE.md / AGENTS.md, `~/.codex/config.toml`, `~/.codex/rules/default.rules`, git config, any project's `.gitignore` |

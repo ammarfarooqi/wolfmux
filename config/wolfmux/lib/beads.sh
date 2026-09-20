@@ -6,12 +6,12 @@
 # (2) two tiny event hooks that turn "a bead needs <role>" into a tmux pane
 # notification through `teamctl nudge`.
 
-AI_TEAM_HOOK_MARKER="ai-team-hook v1"
-AI_TEAM_BEADS_HOOKS="on_create on_update on_close"
+WOLFMUX_HOOK_MARKER="wolfmux-hook v1"
+WOLFMUX_BEADS_HOOKS="on_create on_update on_close"
 
 # The least intrusive documented init: no git commit, no tracked files (uses
 # .git/info/exclude), no git hooks, no AGENTS.md / Claude / Codex file changes.
-AI_TEAM_BD_INIT_ARGS="init --stealth --skip-hooks --skip-agents --non-interactive"
+WOLFMUX_BD_INIT_ARGS="init --stealth --skip-hooks --skip-agents --non-interactive"
 
 # beads_prefix — an issue prefix Beads accepts (letters, digits, hyphens, starting
 # with a letter), derived from the directory name. bd's own default is the raw
@@ -45,10 +45,10 @@ beads_ensure() {
   info "Beads is not initialized in $(short_path "$ROOT")."
   info "Least intrusive setup (no commit, no tracked files, no git hooks, no AGENTS.md changes):"
   prefix="$(beads_prefix)"
-  info "    cd \"$(short_path "$ROOT")\" && bd $AI_TEAM_BD_INIT_ARGS --prefix $prefix"
+  info "    cd \"$(short_path "$ROOT")\" && bd $WOLFMUX_BD_INIT_ARGS --prefix $prefix"
   if [ "$mode" = "yes" ] || confirm "Run that now?"; then
     # shellcheck disable=SC2086
-    (cd "$ROOT" && "$BD_BIN" $AI_TEAM_BD_INIT_ARGS --prefix "$prefix" >&2) || die "bd init failed"
+    (cd "$ROOT" && "$BD_BIN" $WOLFMUX_BD_INIT_ARGS --prefix "$prefix" >&2) || die "bd init failed"
     dir="$(beads_dir)" || die "bd init finished but no workspace was found"
     beads_install_hooks "$dir"
     return 0
@@ -59,8 +59,8 @@ beads_ensure() {
 _beads_hook_body() {
   /bin/cat <<EOF
 #!/bin/bash
-# $AI_TEAM_HOOK_MARKER — tmux pane notifications for ai-team (installed by teamctl; safe to delete)
-hook="\${AI_TEAM_HOME:-\$HOME/.config/ai-team}/hooks/beads-nudge"
+# $WOLFMUX_HOOK_MARKER — tmux pane notifications for wolfmux (installed by teamctl; safe to delete)
+hook="\${WOLFMUX_HOME:-\$HOME/.config/wolfmux}/hooks/beads-nudge"
 [ -x "\$hook" ] || exit 0
 exec "\$hook" "\$@"
 EOF
@@ -70,10 +70,10 @@ EOF
 beads_install_hooks() {
   local dir="$1/hooks" name path
   /bin/mkdir -p "$dir"
-  for name in $AI_TEAM_BEADS_HOOKS; do
+  for name in $WOLFMUX_BEADS_HOOKS; do
     path="$dir/$name"
-    if [ -e "$path" ] && ! grep -q "$AI_TEAM_HOOK_MARKER" "$path" 2>/dev/null; then
-      warn "$(short_path "$path") exists and is not ours; left untouched. Pane notifications for '$name' are off until it calls: ~/.config/ai-team/hooks/beads-nudge \"\$@\""
+    if [ -e "$path" ] && ! grep -q "$WOLFMUX_HOOK_MARKER" "$path" 2>/dev/null; then
+      warn "$(short_path "$path") exists and is not ours; left untouched. Pane notifications for '$name' are off until it calls: ~/.config/wolfmux/hooks/beads-nudge \"\$@\""
       continue
     fi
     _beads_hook_body >"$path"
@@ -84,9 +84,9 @@ beads_install_hooks() {
 # beads_hooks_status <beads-dir> — installed | partial | missing
 beads_hooks_status() {
   local dir="$1/hooks" name ours=0 total=0
-  for name in $AI_TEAM_BEADS_HOOKS; do
+  for name in $WOLFMUX_BEADS_HOOKS; do
     total=$((total + 1))
-    grep -q "$AI_TEAM_HOOK_MARKER" "$dir/$name" 2>/dev/null && ours=$((ours + 1))
+    grep -q "$WOLFMUX_HOOK_MARKER" "$dir/$name" 2>/dev/null && ours=$((ours + 1))
   done
   if [ "$ours" -eq "$total" ]; then
     printf 'installed\n'

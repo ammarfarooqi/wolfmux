@@ -20,13 +20,13 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 # shellcheck source=/dev/null
-. "$REPO/config/ai-team/lib/provider-env.sh"
+. "$REPO/config/wolfmux/lib/provider-env.sh"
 
 PORT="${PORT:-18765}"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ai-team-routing.XXXXXX")"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/wolfmux-routing.XXXXXX")"
 WORK="$(cd "$WORK" && pwd -P)" # physical path: that is what Claude Code names its transcript folder after
 LOG="$WORK/requests.log"
-CLAUDE_BIN="$(ai_team_resolve_claude)" || {
+CLAUDE_BIN="$(wolfmux_resolve_claude)" || {
   echo "claude not found" >&2
   exit 1
 }
@@ -38,7 +38,7 @@ cleanup() {
   kill "$MOCK_PID" 2>/dev/null
   local slug
   slug="$(printf '%s' "$WORK/cwd" | sed 's|[^A-Za-z0-9]|-|g')"
-  case "$slug" in *ai-team-routing*) /bin/rm -rf "$HOME/.claude/projects/$slug" ;; esac
+  case "$slug" in *wolfmux-routing*) /bin/rm -rf "$HOME/.claude/projects/$slug" ;; esac
   /bin/rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -59,7 +59,7 @@ run() {
   fi
   printf '### %s\n' "$label" >>"$LOG"
   (
-    ai_team_scrub_claude_env
+    wolfmux_scrub_claude_env
     env CLAUDE_CODE_SAFE_MODE=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 API_TIMEOUT_MS=8000 \
       ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT" "${GLM_ENV[@]}" "$@" \
       "$CLAUDE_BIN" ${settings[@]+"${settings[@]}"} -p "say hi" --model glm-5.3 --max-turns 1 >/dev/null 2>&1 </dev/null
@@ -67,10 +67,10 @@ run() {
 }
 
 HELPER='{"apiKeyHelper":"echo dummy-zai-key"}'
-GUARD="CLAUDE_CODE_OAUTH_TOKEN=$AI_TEAM_GLM_GUARD_TOKEN"
+GUARD="CLAUDE_CODE_OAUTH_TOKEN=$WOLFMUX_GLM_GUARD_TOKEN"
 
 run "1. helper mode + guard  (the default claude-glm launch)" --settings "$HELPER" "$GUARD"
-run "2. env mode + guard     (AI_TEAM_GLM_AUTH_MODE=env)" ANTHROPIC_AUTH_TOKEN=dummy-zai-key "$GUARD"
+run "2. env mode + guard     (WOLFMUX_GLM_AUTH_MODE=env)" ANTHROPIC_AUTH_TOKEN=dummy-zai-key "$GUARD"
 run "3. HAZARD: only the base URL is inherited, no guard"
 run "4. same, with the guard (what a child of a GLM worker presents)" "$GUARD"
 

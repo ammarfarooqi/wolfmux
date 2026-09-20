@@ -1,4 +1,4 @@
-# ai-team — a local multi-model AI development team in tmux
+# wolfmux — a local multi-model AI development team in tmux
 
 One lead (Fable **or** Astra) plus any number of GLM workers, every agent visible in
 its own tmux pane, all inference on subscriptions — no API keys, no metered proxy.
@@ -62,7 +62,7 @@ teamctl spawn qa flash           # GLM-5.3 Flash: simple / repetitive / QA
 ```
 
 Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
-`~/.ai-team/worktrees/<project>/`, its own pane titled `<role> · <model>`, and
+`~/.wolfmux/worktrees/<project>/`, its own pane titled `<role> · <model>`, and
 `TEAM_ROLE` / `BEADS_ACTOR` set to its role. Panes re-tile automatically
 (lead top-left). A worker reads its Beads inbox as soon as it boots, so assign
 work first, then spawn. Options: `--base <ref>`, `--no-kickoff`.
@@ -89,11 +89,11 @@ teamctl start fable --worker-permissions lead --worker-spawn on    # or set them
 
 Permission changes apply when an agent is started or restarted
 (`teamctl restart <role> --continue` keeps its conversation). `worker-spawn` applies at
-once. Defaults for new projects live in `~/.config/ai-team/config`.
+once. Defaults for new projects live in `~/.config/wolfmux/config`.
 
 When worker spawning is on and a worker spawns someone, the new agent is a normal team
 member (own pane, branch, worktree), reports to the lead, shows up in `teamctl status`
-under SPAWNED BY, and the lead's pane gets `[ai-team] Team change: …`.
+under SPAWNED BY, and the lead's pane gets `[wolfmux] Team change: …`.
 
 Inside workers, Claude Code's own agent-teams feature is switched off. With it on, any
 subagent a worker names becomes a teammate that treats the *worker* as its team lead and
@@ -166,7 +166,7 @@ credentials or Beads data, and always asks first (`--yes` to skip).
 
 ```bash
 teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins
-AI_TEAM_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
+WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
 ```
 
 ## Where things live
@@ -174,14 +174,14 @@ AI_TEAM_DRY_RUN=1 claude-glm                    # what a launcher would exec —
 | What | Where |
 |------|-------|
 | Launchers + CLI | `~/bin/` — `teamctl`, `claude-fable`, `codex-astra`, `claude-glm`, `claude-glm-flash` → `claude-glm`, `codex` → ChatGPT.app's bundled CLI |
-| Code, tmux config, protocol, this file | `~/.config/ai-team/` (`lib/*.sh`, `hooks/beads-nudge`, `tmux.conf`, `TEAM_PROTOCOL.md`, `config`, `glm-worker-settings.json`) |
+| Code, tmux config, protocol, this file | `~/.config/wolfmux/` (`lib/*.sh`, `hooks/beads-nudge`, `tmux.conf`, `TEAM_PROTOCOL.md`, `config`, `glm-worker-settings.json`) |
 | Z.ai credential | macOS login Keychain, service `zai-coding-plan`. Nowhere else. |
 | Claude / Codex logins | wherever those CLIs keep them (`/login`, `codex login`); untouched |
-| Worktrees | `~/.ai-team/worktrees/<project>-<hash>/<role>-<timestamp>/` |
-| teamctl state (role ↔ model ↔ worktree, event log) | `~/.ai-team/state/<project>-<hash>/` — nothing is written into your repository |
+| Worktrees | `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/` |
+| teamctl state (role ↔ model ↔ worktree, event log) | `~/.wolfmux/state/<project>-<hash>/` — nothing is written into your repository |
 | Tasks + messages | the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode) |
-| tmux | dedicated server: `tmux -L ai-team`; your default tmux and `~/.tmux.conf` are untouched |
-| Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, read-only git/tmux; ask on `teamctl destroy`), `~/.codex/rules/ai-team.rules` |
+| tmux | dedicated server: `tmux -L wolfmux`; your default tmux and `~/.tmux.conf` are untouched |
+| Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, read-only git/tmux; ask on `teamctl destroy`), `~/.codex/rules/wolfmux.rules` |
 
 ## How subscription separation works
 
@@ -205,12 +205,12 @@ AI_TEAM_DRY_RUN=1 claude-glm                    # what a launcher would exec —
   handing it your Claude token. `claude-fable` drops that placeholder again.
 - The team tmux server is started with a scrubbed environment, so panes inherit none of it.
 
-Launcher knobs are read from `~/.config/ai-team/config` (a pane's environment comes from
+Launcher knobs are read from `~/.config/wolfmux/config` (a pane's environment comes from
 the tmux server, not from the shell you typed `teamctl spawn` in):
-`AI_TEAM_GLM_AUTH_MODE=env` switches workers to Z.ai's documented `ANTHROPIC_AUTH_TOKEN`
+`WOLFMUX_GLM_AUTH_MODE=env` switches workers to Z.ai's documented `ANTHROPIC_AUTH_TOKEN`
 variable — use it if workers report an authentication error in the default helper mode;
-`AI_TEAM_GLM_CONTEXT=1m` opts into the 1M window (uses quota faster).
-`~/.config/ai-team/glm-worker-settings.json` is a Claude Code settings overlay applied to
+`WOLFMUX_GLM_CONTEXT=1m` opts into the 1M window (uses quota faster).
+`~/.config/wolfmux/glm-worker-settings.json` is a Claude Code settings overlay applied to
 GLM workers only. It ships with `claude-mem` turned off there: that plugin runs a
 long-lived summarizer daemon which inherits the environment of whichever session starts
 it, and one started from a GLM worker would route your normal sessions' memory traffic
@@ -252,10 +252,10 @@ numbers · `d` = detach · `"` `%` `c` = new pane/window in the current director
 ```bash
 teamctl destroy --worktrees                      # in each project that has a team
 rm ~/bin/teamctl ~/bin/claude-fable ~/bin/codex-astra ~/bin/claude-glm ~/bin/claude-glm-flash ~/bin/codex
-rm -r ~/.config/ai-team ~/.ai-team
-rm ~/.codex/rules/ai-team.rules
+rm -r ~/.config/wolfmux ~/.wolfmux
+rm ~/.codex/rules/wolfmux.rules
 security delete-generic-password -s zai-coding-plan
-# ~/.zshrc: delete the block between ">>> ai-team >>>" and "<<< ai-team <<<"
+# ~/.zshrc: delete the block between ">>> wolfmux >>>" and "<<< wolfmux <<<"
 # ~/.claude/settings.json: delete the teamctl / bd / git / tmux allow lines and the "ask" entry
 #   (or restore ~/.claude/settings.json.backup-<timestamp>)
 # Beads itself (optional): rm ~/.local/bin/bd; per project: rm -r .beads and its .git/info/exclude lines
@@ -264,11 +264,11 @@ security delete-generic-password -s zai-coding-plan
 ## Manual cleanup
 
 ```bash
-tmux -L ai-team ls                          # sessions on the team server
-tmux -L ai-team kill-server                 # stop every team at once
+tmux -L wolfmux ls                          # sessions on the team server
+tmux -L wolfmux kill-server                 # stop every team at once
 git worktree list && git worktree prune     # in a project
 git branch --list 'ai/*'                    # leftover worker branches (delete merged ones: git branch -d)
-ls ~/.ai-team/state ~/.ai-team/worktrees    # per-project state and worktrees
+ls ~/.wolfmux/state ~/.wolfmux/worktrees    # per-project state and worktrees
 ```
 
 ## Limits worth knowing

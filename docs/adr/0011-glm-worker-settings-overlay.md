@@ -13,7 +13,7 @@ memory traffic from the owner's normal sessions to Z.ai, under a Claude model id
 
 ## Decision
 
-`~/.config/ai-team/glm-worker-settings.json` is merged into the single `--settings`
+`~/.config/wolfmux/glm-worker-settings.json` is merged into the single `--settings`
 value of GLM workers. It ships with `claude-mem@thedotmack` disabled. Deleting the file
 restores identical behaviour to normal sessions; `doctor` reports what it disables.
 

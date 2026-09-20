@@ -6,51 +6,51 @@
 # `claude` binary, so the only credential left is the subscription login.
 # Your shell environment is not modified.
 #
-#   AI_TEAM_FABLE_MODEL   model to pin (default: claude-fable-5-1[1m])
-#   AI_TEAM_CLAUDE_BIN    explicit path to the claude binary
-#   AI_TEAM_DRY_RUN=1     print what would run (no secrets) and exit
-#   AI_TEAM_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
+#   WOLFMUX_FABLE_MODEL   model to pin (default: claude-fable-5-1[1m])
+#   WOLFMUX_CLAUDE_BIN    explicit path to the claude binary
+#   WOLFMUX_DRY_RUN=1     print what would run (no secrets) and exit
+#   WOLFMUX_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
 set -euo pipefail
 
-LIB="${AI_TEAM_HOME:-$HOME/.config/ai-team}/lib/provider-env.sh"
+LIB="${WOLFMUX_HOME:-$HOME/.config/wolfmux}/lib/provider-env.sh"
 if [ ! -r "$LIB" ]; then
   echo "claude-fable: missing $LIB — refusing to launch without environment scrubbing" >&2
   exit 78
 fi
 # shellcheck source=/dev/null
 . "$LIB"
-ai_team_load_config
+wolfmux_load_config
 
-SCRUBBED="$(ai_team_list_set_vars "$AI_TEAM_CLAUDE_PROVIDER_VARS" "$AI_TEAM_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
-ai_team_scrub_claude_env
+SCRUBBED="$(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')"
+wolfmux_scrub_claude_env
 
-CLAUDE_BIN="$(ai_team_resolve_claude)" || {
+CLAUDE_BIN="$(wolfmux_resolve_claude)" || {
   echo "claude-fable: Claude Code CLI not found. Install: https://code.claude.com/docs/en/setup" >&2
   exit 127
 }
 
-MODEL="${AI_TEAM_FABLE_MODEL:-claude-fable-5-1[1m]}"
+MODEL="${WOLFMUX_FABLE_MODEL:-claude-fable-5-1[1m]}"
 
-if ai_team_is_claude_subcommand "${1:-}"; then
+if wolfmux_is_claude_subcommand "${1:-}"; then
   exec "$CLAUDE_BIN" "$@"
 fi
 
 CMD=("$CLAUDE_BIN")
 # Per-agent settings that teamctl generated for this pane (none for a lead).
-SETTINGS_JSON="$(ai_team_merge_settings "" "${AI_TEAM_EXTRA_SETTINGS:-}")" || exit 78
+SETTINGS_JSON="$(wolfmux_merge_settings "" "${WOLFMUX_EXTRA_SETTINGS:-}")" || exit 78
 if [ "$SETTINGS_JSON" != "{}" ]; then
   CMD+=(--settings "$SETTINGS_JSON")
 fi
-if ! ai_team_args_have_model "$@"; then
+if ! wolfmux_args_have_model "$@"; then
   CMD+=(--model "$MODEL")
 fi
 CMD+=("$@")
 
-if [ "${AI_TEAM_DRY_RUN:-}" = "1" ]; then
+if [ "${WOLFMUX_DRY_RUN:-}" = "1" ]; then
   echo "launcher:        claude-fable"
   echo "billing:         Claude subscription (OAuth login); no key, no custom endpoint"
   echo "scrubbed vars:   ${SCRUBBED:-(none were set)}"
-  echo "provider env now: $(ai_team_list_set_vars "$AI_TEAM_CLAUDE_PROVIDER_VARS" "$AI_TEAM_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')(none expected)"
+  echo "provider env now: $(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES" | tr '\n' ' ')(none expected)"
   printf 'would exec:     '; printf ' %q' "${CMD[@]}"; echo
   exit 0
 fi

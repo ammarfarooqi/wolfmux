@@ -11,7 +11,7 @@ payload="$(/bin/cat)"
 
 jq_bin="$(command -v jq 2>/dev/null || true)"
 [ -n "$jq_bin" ] || jq_bin="/usr/bin/jq"
-teamctl_bin="${AI_TEAM_BIN_DIR:-$HOME/bin}/teamctl"
+teamctl_bin="${WOLFMUX_BIN_DIR:-$HOME/bin}/teamctl"
 [ -x "$jq_bin" ] && [ -x "$teamctl_bin" ] || exit 0
 
 # Unit separator, not tab: a whitespace IFS would collapse empty fields (an

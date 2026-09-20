@@ -1,4 +1,4 @@
-# ai-team protocol
+# wolfmux protocol
 
 One **lead** and any number of **workers** share one repository. Every agent runs in
 its own tmux pane. The protocol is the same whichever model plays which role.
@@ -68,7 +68,7 @@ bd close <id> -r read                                                    # mark 
 
 To reach everyone, send one message per role. Creating or assigning a bead
 notifies the assignee's pane automatically; you only ever see the one-line notice
-`[ai-team] Beads update for <role> ...`. When you see it, run the command it names.
+`[wolfmux] Beads update for <role> ...`. When you see it, run the command it names.
 Comments notify nobody: if someone must act, send a message.
 
 ## LEAD
@@ -93,7 +93,7 @@ integration; you do not do the bulk implementation yourself.
    `teamctl capture <role>` only to diagnose a stuck or crashed agent.
    `teamctl restart <role>` revives one; `teamctl stop <role>` parks one.
 4. **Decide permission requests** when `teamctl policy` shows
-   `worker-permissions lead`. A notice `[ai-team] Permission request A7 from backend`
+   `worker-permissions lead`. A notice `[wolfmux] Permission request A7 from backend`
    means a worker is blocked until you answer:
    ```bash
    teamctl approvals                      # what exactly is being asked
@@ -104,7 +104,7 @@ integration; you do not do the bulk implementation yourself.
    configuration, force pushes and installs from untrusted sources — and say why, so
    the worker can choose another way. Answer quickly; an unanswered request falls
    back to a prompt in the worker's pane after ten minutes.
-   A notice `[ai-team] Team change: X spawned teammate Y` means the team grew without
+   A notice `[wolfmux] Team change: X spawned teammate Y` means the team grew without
    you: run `teamctl status`, give Y a task or stop it (`teamctl stop Y`).
 5. **Review every delivery.** Never merge on a worker's word.
    ```bash

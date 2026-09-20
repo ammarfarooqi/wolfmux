@@ -6,30 +6,30 @@
 # key can never be used, even if one is stored later), then execs `codex`.
 # Your shell environment is not modified.
 #
-#   AI_TEAM_ASTRA_MODEL   model slug to pin (default: gpt-6-astra)
-#   AI_TEAM_CODEX_BIN     explicit path to the codex binary
-#   AI_TEAM_DRY_RUN=1     print what would run (no secrets) and exit
+#   WOLFMUX_ASTRA_MODEL   model slug to pin (default: gpt-6-astra)
+#   WOLFMUX_CODEX_BIN     explicit path to the codex binary
+#   WOLFMUX_DRY_RUN=1     print what would run (no secrets) and exit
 set -euo pipefail
 
-LIB="${AI_TEAM_HOME:-$HOME/.config/ai-team}/lib/provider-env.sh"
+LIB="${WOLFMUX_HOME:-$HOME/.config/wolfmux}/lib/provider-env.sh"
 if [ ! -r "$LIB" ]; then
   echo "codex-astra: missing $LIB — refusing to launch without environment scrubbing" >&2
   exit 78
 fi
 # shellcheck source=/dev/null
 . "$LIB"
-ai_team_load_config
+wolfmux_load_config
 
-SCRUBBED="$(ai_team_list_set_vars "$AI_TEAM_CODEX_PROVIDER_VARS" "$AI_TEAM_CODEX_PROVIDER_PREFIXES" | tr '\n' ' ')"
-ai_team_scrub_codex_env
+SCRUBBED="$(wolfmux_list_set_vars "$WOLFMUX_CODEX_PROVIDER_VARS" "$WOLFMUX_CODEX_PROVIDER_PREFIXES" | tr '\n' ' ')"
+wolfmux_scrub_codex_env
 
-CODEX_BIN="$(ai_team_resolve_codex)" || {
+CODEX_BIN="$(wolfmux_resolve_codex)" || {
   echo "codex-astra: Codex CLI not found (looked on PATH and inside ChatGPT.app)." >&2
   echo "  Install: curl -fsSL https://chatgpt.com/codex/install.sh | sh" >&2
   exit 127
 }
 
-MODEL="${AI_TEAM_ASTRA_MODEL:-gpt-6-astra}"
+MODEL="${WOLFMUX_ASTRA_MODEL:-gpt-6-astra}"
 
 # -c overrides are global, so they are valid in front of any subcommand.
 CMD=("$CODEX_BIN"
@@ -38,11 +38,11 @@ CMD=("$CODEX_BIN"
   -c "model=\"$MODEL\""
   "$@")
 
-if [ "${AI_TEAM_DRY_RUN:-}" = "1" ]; then
+if [ "${WOLFMUX_DRY_RUN:-}" = "1" ]; then
   echo "launcher:        codex-astra"
   echo "billing:         ChatGPT/Codex subscription login (API-key login is force-disabled)"
   echo "scrubbed vars:   ${SCRUBBED:-(none were set)}"
-  echo "provider env now: $(ai_team_list_set_vars "$AI_TEAM_CODEX_PROVIDER_VARS" "$AI_TEAM_CODEX_PROVIDER_PREFIXES" | tr '\n' ' ')(none expected)"
+  echo "provider env now: $(wolfmux_list_set_vars "$WOLFMUX_CODEX_PROVIDER_VARS" "$WOLFMUX_CODEX_PROVIDER_PREFIXES" | tr '\n' ' ')(none expected)"
   printf 'would exec:     '; printf ' %q' "${CMD[@]}"; echo
   exit 0
 fi

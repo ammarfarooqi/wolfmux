@@ -15,7 +15,7 @@ through to the stored claude.ai login and sends it to that URL.
 ## Decision
 
 Default: pass `apiKeyHelper` (a Keychain read) through `--settings`, so the key never
-enters the environment. Fallback: `AI_TEAM_GLM_AUTH_MODE=env` in the config file. In
+enters the environment. Fallback: `WOLFMUX_GLM_AUTH_MODE=env` in the config file. In
 both modes export `CLAUDE_CODE_OAUTH_TOKEN` as an inert placeholder: it outranks the
 stored login and is outranked by both real delivery modes, so children of a worker fail
 closed at Z.ai instead of presenting the Claude subscription token. `claude-fable`
