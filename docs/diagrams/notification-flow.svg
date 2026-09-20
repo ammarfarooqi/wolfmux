@@ -72,6 +72,6 @@
 <rect x="840" y="607" width="332" height="19" rx="4" fill="#0b1020"/>
 <text class="sans text" x="1006" y="621" text-anchor="middle" font-size="12.5">click → the tab with the team comes to the front</text>
 <circle cx="1128" cy="634" r="10" fill="#f5b942"/><text class="sans" x="1128" y="638" text-anchor="middle" font-size="11" font-weight="700" fill="#0b1020">7</text>
-<text class="sans muted" x="48" y="708" font-size="13">Nothing attached (detached team, or a terminal without OSC 9): osascript, with "open it with: teamctl attach". The ECC plugin's own notifier is switched off inside team agents.</text>
-<text class="sans muted" x="48" y="730" font-size="13">WOLFMUX_NOTIFY = all (default) · lead · off</text>
+<text class="sans muted" x="48" y="708" font-size="13">Team on no screen: Wolfmux.app posts the notification instead (wolf icon). macOS opens the owner of a notification on click, and Wolfmux.app answers by opening a terminal attached to the team.</text>
+<text class="sans muted" x="48" y="730" font-size="13">The ECC plugin's own notifier is switched off inside team agents.   WOLFMUX_NOTIFY = all (default) · lead · off</text>
 </svg>

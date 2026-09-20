@@ -7,7 +7,7 @@
 #   ~/.codex/rules/wolfmux.rules  a separate rule file (default.rules is not touched)
 # It never reads, writes or asks for a credential. Undo everything with ./uninstall.sh.
 #
-#   ./install.sh [--no-path] [--no-claude-permissions] [--no-codex-rules]
+#   ./install.sh [--no-path] [--no-claude-permissions] [--no-codex-rules] [--no-notifier-app]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd -P)"
@@ -17,12 +17,14 @@ CONF_DIR="$HOME/.config/wolfmux"
 DO_PATH=1
 DO_CLAUDE=1
 DO_CODEX=1
+DO_APP=1
 
 for arg in "$@"; do
   case "$arg" in
     --no-path) DO_PATH=0 ;;
     --no-claude-permissions) DO_CLAUDE=0 ;;
     --no-codex-rules) DO_CODEX=0 ;;
+    --no-notifier-app) DO_APP=0 ;;
     -h | --help)
       sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -118,6 +120,51 @@ if ! /usr/bin/cmp -s "$REPO/config/wolfmux/config" "$CONF_DIR/config"; then
   note "new settings may exist: compare with $REPO/config/wolfmux/config"
 fi
 install_once "$REPO/config/wolfmux/glm-worker-settings.json" "$CONF_DIR/glm-worker-settings.json" 644
+
+# Wolfmux.app owns the notifications of a team that is on no screen, so that clicking one
+# opens the team and not Script Editor (lib/notify.sh). Built here because an application
+# bundle is not something to keep in git; rebuilt only when its source changes, because
+# macOS ties the "may control iTerm" permission to the exact build.
+if [ "$DO_APP" -eq 1 ]; then
+  say "== Wolfmux.app (click a notification -> the team opens)"
+  notifier="$REPO/config/wolfmux/notifier"
+  app="$CONF_DIR/Wolfmux.app"
+  if ! command -v osacompile >/dev/null 2>&1; then
+    note "osacompile not found: skipped (notifications of a detached team will open Script Editor)"
+  else
+    want="$(/bin/cat "$notifier/Wolfmux.applescript" "$notifier/Wolfmux.icns" | shasum -a 256 | cut -d' ' -f1)"
+    have="$(/bin/cat "$app/Contents/Resources/wolfmux-build" 2>/dev/null || true)"
+    if [ "$want" = "$have" ]; then
+      note "already current"
+    else
+      # osacompile decides by the name: only "*.app" becomes an application
+      build="$CONF_DIR/.notifier-build"
+      fresh="$build/Wolfmux.app"
+      /bin/rm -rf "$build"
+      /bin/mkdir -p "$build"
+      if osacompile -o "$fresh" "$notifier/Wolfmux.applescript" >/dev/null 2>&1 && [ -d "$fresh/Contents/Resources" ]; then
+        plist="$fresh/Contents/Info.plist"
+        /bin/cp "$notifier/Wolfmux.icns" "$fresh/Contents/Resources/applet.icns"
+        /bin/rm -f "$fresh/Contents/Resources/Assets.car" # it carries the stock script icon and would win
+        /usr/libexec/PlistBuddy -c 'Delete :CFBundleIconName' "$plist" >/dev/null 2>&1 || true
+        for entry in 'CFBundleIdentifier string local.wolfmux.notifier' 'CFBundleName string Wolfmux' 'LSUIElement bool true'; do
+          /usr/libexec/PlistBuddy -c "Delete :${entry%% *}" "$plist" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c "Add :$entry" "$plist" >/dev/null
+        done
+        printf '%s\n' "$want" >"$fresh/Contents/Resources/wolfmux-build"
+        /usr/bin/codesign --force -s - "$fresh" >/dev/null 2>&1 || note "could not sign the application (it still runs)"
+        /bin/rm -rf "$app"
+        /bin/mv "$fresh" "$app"
+        /bin/rm -rf "$build"
+        note "built: $app"
+        note "the first time, macOS asks once to allow Wolfmux notifications, and once to let it control your terminal: allow both"
+      else
+        /bin/rm -rf "$build"
+        note "could not build it: skipped (notifications of a detached team will open Script Editor)"
+      fi
+    fi
+  fi
+fi
 
 say "== symlinks"
 if [ ! -e "$BIN_DIR/claude-glm-flash" ]; then

@@ -181,6 +181,21 @@ what `claude-glm` does. The variable stays on the scrub list — a Fable child m
 inherit a GLM window — so a different number goes through `WOLFMUX_GLM_CONTEXT`.
 `tests/smoke.sh` 71 → 85.
 
+## 16. The notification opened Script Editor again (v1.5)
+
+ADR-0015's first version handled the attached team and fell back to `osascript` for the
+detached one, "because there is nowhere to go back to". The owner's very next
+notification was the detached case. The assumption was wrong twice: a team working in the
+background is the normal case, and there *is* somewhere to go — a new terminal window.
+macOS opens the owner of a notification on click, which is why Script Editor kept
+appearing; so Wolfmux now ships an owner of its own, built by `install.sh` with
+`osacompile`, with the wolf as its icon. One application, two meanings of "launched":
+a message is waiting → post it; nothing is waiting → that was a click, open the team.
+
+Found on the way: a lead had spawned `Riley-pr-reviewer`. Role names are lowercase by
+contract, but `[a-z]` follows the locale's collation and matches capitals under
+`en_AU.UTF-8`. Alphabets are now spelled out. `tests/smoke.sh`: 85 → 92.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

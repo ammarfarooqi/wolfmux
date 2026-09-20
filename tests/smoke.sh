@@ -129,6 +129,21 @@ check "notify: the manager is marked with the wolf" 'printf "%s" "{\"last_assist
 check "notify: escape sequences in a message never reach the terminal" 'jq -cn "{last_assistant_message: \"ok \u001b]52;c;aGk=\u0007 \u001b[2J done\"}" | TEAM_ROLE=qa WOLFMUX_NOTIFY_TTY="$WORK/tty3" notify && [ "$(LC_ALL=C tr -cd "\033\007" <"$WORK/tty3" | wc -c | tr -d " ")" = 2 ]'
 check "notify: long messages are shortened" 'jq -cn "{last_assistant_message: (\"x\" * 400)}" | TEAM_ROLE=qa WOLFMUX_NOTIFY_TTY="$WORK/tty4" notify && [ "$(wc -m <"$WORK/tty4" | tr -d " ")" -lt 120 ]'
 check "notify: with no terminal attached it falls back, text passed as an argument, and never fails" 'printf "not json" | TEAM_ROLE=qa notify && grep -q "^🐶 qa: finished$" "$WORK/osa.args" && grep -q "teamctl attach" "$WORK/osa.args"'
+# a team on no screen: Wolfmux.app owns the notification, and a click opens the team
+FAKE_APP="$WORK/Wolfmux.app"
+FAKE_OPEN="$WORK/fake-open"
+/bin/mkdir -p "$FAKE_APP"
+printf '#!/bin/bash\nprintf "%%s\\n" "$@" >>"%s"\n' "$WORK/open.args" >"$FAKE_OPEN"
+/bin/chmod 755 "$FAKE_OPEN"
+PROJECT_REAL="$(cd "$PROJECT" && pwd -P)" # git reports the physical path (/private/var/… on macOS)
+detached() { WOLFMUX_NOTIFIER_APP="$FAKE_APP" WOLFMUX_OPEN_BIN="$FAKE_OPEN" WOLFMUX_OSASCRIPT="$FAKE_OSA" WOLFMUX_TERMINAL=iterm "$REPO/bin/teamctl" "$@"; }
+/bin/rm -f "$WORK/osa.args" "$WORK/open.args"
+check "notify: nobody attached -> the message is handed to Wolfmux.app, not to osascript" 'printf "%s" "{\"last_assistant_message\":\"merged the cart API\"}" | TEAM_ROLE=lead detached _notify && grep -q "Wolfmux.app$" "$WORK/open.args" && [ ! -e "$WORK/osa.args" ] && [ "$(/bin/cat "$WOLFMUX_DATA/notify/last")" = "$PROJECT_REAL" ]'
+check "notify: the app fetches its message exactly once (so its next start is a click)" '[ "$(detached _notify-pending | head -1)" = "🐺 lead: merged the cart API" ] && [ -z "$(detached _notify-pending)" ]'
+check "notify: a message the app never fetched is not posted late" 'printf "%s" "{}" | TEAM_ROLE=qa detached _notify && touch -t 202001010000 "$WOLFMUX_DATA/notify/pending" && [ -z "$(detached _notify-pending)" ]'
+/bin/rm -f "$WORK/osa.args" "$WORK/open.args"
+check "notify: a click opens a terminal on the team (script with the project and teamctl attach)" 'detached _open-team && grep -q "open-team.command" "$WORK/osa.args" && grep -q "create window with default profile command" "$WORK/osa.args" && grep -qF "$(printf "%q" "$PROJECT_REAL")" "$WOLFMUX_DATA/notify/open-team.command" && grep -q "teamctl. attach\|teamctl attach" "$WOLFMUX_DATA/notify/open-team.command"'
+
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_NOTIFY lead
 teamctl restart qa >/dev/null 2>&1
 sleep 2

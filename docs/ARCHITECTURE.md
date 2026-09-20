@@ -210,8 +210,11 @@ the team (`tmux list-clients`, terminals known to support it: iTerm2, kitty, Gho
 WezTerm). The notification therefore belongs to the terminal, and clicking it brings
 the tab with the team to the front. The usual notifiers cannot do that from inside
 tmux: they fall back to `osascript`, whose notifications macOS files under Script
-Editor. With nothing attached, `teamctl` falls back to `osascript` too and says how to
-open the team. The ECC plugin's own notifier is switched off inside team agents
+Editor. With nothing attached — a team left to work in the background — the message is
+posted by `~/.config/wolfmux/Wolfmux.app`, a small application `install.sh` builds with
+`osacompile`. macOS opens the owner of a notification when you click it; Wolfmux.app,
+started with no message waiting, takes that as the click and runs `teamctl _open-team`,
+which opens a terminal window attached to the team. The ECC plugin's own notifier is switched off inside team agents
 (`ECC_DISABLED_HOOKS`, merged with whatever you already disable) so you get one
 notification, not two. `WOLFMUX_NOTIFY=all|lead|off`. See
 [ADR-0015](adr/0015-notifications-through-the-attached-terminal.md).

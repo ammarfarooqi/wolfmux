@@ -8,12 +8,16 @@
 # terminal that is attached to the team, as OSC 9 written to that client's tty.
 # The notification then belongs to the terminal (iTerm2, kitty, Ghostty, WezTerm),
 # and a click brings the tab with the team to the front.
-# With no such terminal attached there is nowhere to go back to: osascript it is,
-# and the text says how to open the team.
+# With no such terminal attached — the normal case for a team left to work in the
+# background — Wolfmux.app posts it (built by install.sh from notifier/). macOS opens
+# the application that owns a notification when you click it, and Wolfmux.app answers
+# a click by opening a terminal attached to the team (`teamctl _open-team`).
+# Only without that application does it come down to osascript and Script Editor.
 #
 # Rule for this file: a notification may never fail or delay an agent.
 
 WOLFMUX_NOTIFY_MAX=100
+WOLFMUX_NOTIFY_PENDING_SECONDS=20 # a message Wolfmux.app never fetched is not posted late
 # The ECC plugin's documented switch for its own Stop notifier; see notify_silence_value.
 WOLFMUX_ECC_NOTIFY_HOOK="stop:desktop-notify"
 
@@ -84,6 +88,105 @@ notify_client_ttys() {
     done
 }
 
+notify_dir() { printf '%s\n' "$WOLFMUX_DATA/notify"; }
+notify_app() { printf '%s\n' "${WOLFMUX_NOTIFIER_APP:-$WOLFMUX_HOME/Wolfmux.app}"; }
+
+# notify_remember_project — a click has to know which team to open
+notify_remember_project() {
+  local root
+  root="$(resolve_root 2>/dev/null || true)"
+  [ -n "$root" ] || return 0
+  /bin/mkdir -p "$(notify_dir)" 2>/dev/null || return 0
+  printf '%s\n' "$root" >"$(notify_dir)/last" 2>/dev/null || true
+}
+
+# notify_through_app <body> — hand the message to Wolfmux.app; false when there is none
+notify_through_app() {
+  local app dir opener="${WOLFMUX_OPEN_BIN:-/usr/bin/open}"
+  app="$(notify_app)"
+  dir="$(notify_dir)"
+  [ -d "$app" ] && [ -x "$opener" ] || return 1
+  /bin/mkdir -p "$dir" 2>/dev/null || return 1
+  printf '%s\n%s\n' "$1" "click to open the team" >"$dir/pending.$$" 2>/dev/null || return 1
+  /bin/mv -f "$dir/pending.$$" "$dir/pending" || return 1
+  "$opener" -g "$app" >/dev/null 2>&1
+}
+
+# cmd_notify_pending — internal (`teamctl _notify-pending`): Wolfmux.app asks whether it
+# was started to post something. Prints "body\nsubtitle" once, then nothing: the next
+# start of the application is therefore a click.
+cmd_notify_pending() {
+  local file claimed now written
+  file="$(notify_dir)/pending"
+  [ -f "$file" ] || return 0
+  claimed="$file.claimed.$$"
+  /bin/mv -f "$file" "$claimed" 2>/dev/null || return 0
+  now="$(date +%s)"
+  written="$(/usr/bin/stat -f %m "$claimed" 2>/dev/null || printf '%s' "$now")"
+  if [ $((now - written)) -le "$WOLFMUX_NOTIFY_PENDING_SECONDS" ]; then /bin/cat "$claimed"; fi
+  /bin/rm -f "$claimed"
+}
+
+# open_team_terminal — iterm | terminal | <Application name>: WOLFMUX_TERMINAL, else the
+# terminal the team was last attached from, else iTerm2 when installed, else Terminal
+open_team_terminal() {
+  local choice="${WOLFMUX_TERMINAL:-}"
+  [ -n "$choice" ] || choice="$(meta_get last_terminal 2>/dev/null || true)"
+  case "$choice" in
+    iterm | iTerm.app | iTerm2) printf 'iterm\n' ;;
+    terminal | Apple_Terminal) printf 'terminal\n' ;;
+    ghostty | Ghostty) printf 'Ghostty\n' ;;
+    WezTerm | wezterm) printf 'WezTerm\n' ;;
+    kitty) printf 'kitty\n' ;;
+    *) if [ -d /Applications/iTerm.app ]; then printf 'iterm\n'; else printf 'terminal\n'; fi ;;
+  esac
+}
+
+# cmd_open_team — internal (`teamctl _open-team`): what a click on a notification does
+cmd_open_team() {
+  local dir root terminal script osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}" opener="${WOLFMUX_OPEN_BIN:-/usr/bin/open}"
+  dir="$(notify_dir)"
+  root="$(sed -n '1p' "$dir/last" 2>/dev/null || true)"
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  export WOLFMUX_ROOT="$root"
+  require_tools
+  load_project
+  SESSION="$(session_name_for_project)"
+  terminal="$(open_team_terminal)"
+
+  # Already on a screen somewhere: bring that application forward, open nothing new.
+  if tm_session_exists "$SESSION" && [ -n "$(tmx list-clients -t "=$SESSION" -F x 2>/dev/null || true)" ]; then
+    case "$terminal" in
+      iterm) "$opener" -a iTerm >/dev/null 2>&1 || true ;;
+      terminal) "$opener" -a Terminal >/dev/null 2>&1 || true ;;
+      *) "$opener" -a "$terminal" >/dev/null 2>&1 || true ;;
+    esac
+    return 0
+  fi
+
+  script="$dir/open-team.command"
+  {
+    printf '#!/bin/zsh -l\n# written by teamctl _open-team; safe to delete\n'
+    printf 'cd -- %q || exit 1\n' "$root"
+    printf '%q attach || %q status\n' "$TEAMCTL_SELF" "$TEAMCTL_SELF"
+    printf 'exec /bin/zsh -l\n'
+  } >"$script"
+  /bin/chmod 755 "$script"
+  case "$terminal" in
+    iterm)
+      "$osascript" -e 'on run argv' -e 'tell application "iTerm2"' -e 'activate' \
+        -e 'create window with default profile command (item 1 of argv)' -e 'end tell' -e 'end run' \
+        "$(printf '%q' "$script")" >/dev/null 2>&1 || true
+      ;;
+    terminal)
+      "$osascript" -e 'on run argv' -e 'tell application "Terminal"' -e 'activate' \
+        -e 'do script (item 1 of argv)' -e 'end tell' -e 'end run' "$(printf '%q' "$script")" >/dev/null 2>&1 || true
+      ;;
+    *) "$opener" -a "$terminal" >/dev/null 2>&1 || true ;; # no scripting interface we rely on: at least bring it forward
+  esac
+  return 0
+}
+
 # cmd_notify — internal (`teamctl _notify`): Stop hook, JSON on stdin
 cmd_notify() {
   local input role body tty sent=0 osascript="${WOLFMUX_OSASCRIPT:-/usr/bin/osascript}"
@@ -93,14 +196,17 @@ cmd_notify() {
   body="$role: $(notify_text "$input")"
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then body="$WOLFMUX_LEAD_MARK $body"; else body="$WOLFMUX_WORKER_MARK $body"; fi
 
+  notify_remember_project
   while IFS= read -r tty; do
     # One short write, so it cannot land inside one of tmux's own sequences.
     if { printf '\033]9;%s\007' "$body" >"$tty"; } 2>/dev/null; then sent=1; fi
   done < <(notify_client_ttys)
+  if [ "$sent" -eq 0 ] && notify_through_app "$body"; then sent=1; fi
   if [ "$sent" -eq 0 ] && [ -x "$osascript" ]; then
     # Passed as arguments, never pasted into the script text: nothing to escape.
+    # Last resort (no Wolfmux.app): this one belongs to Script Editor, and says so.
     "$osascript" -e 'on run argv' -e 'display notification (item 1 of argv) with title "Wolfmux" subtitle (item 2 of argv)' -e 'end run' \
-      "$body" "open it with: teamctl attach" >/dev/null 2>&1 || true
+      "$body" "open it with: teamctl attach (run ./install.sh for click-through)" >/dev/null 2>&1 || true
   fi
   return 0
 }

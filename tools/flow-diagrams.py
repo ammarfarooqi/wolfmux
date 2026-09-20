@@ -131,8 +131,8 @@ FLOWS = (
             Step(4, 3, "click → the tab with the team comes to the front", mono=False),
         ),
         footer=(
-            "Nothing attached (detached team, or a terminal without OSC 9): osascript, with \"open it with: teamctl attach\". The ECC plugin's own notifier is switched off inside team agents.",
-            "WOLFMUX_NOTIFY = all (default) · lead · off",
+            "Team on no screen: Wolfmux.app posts the notification instead (wolf icon). macOS opens the owner of a notification on click, and Wolfmux.app answers by opening a terminal attached to the team.",
+            "The ECC plugin's own notifier is switched off inside team agents.   WOLFMUX_NOTIFY = all (default) · lead · off",
         ),
     ),
 )

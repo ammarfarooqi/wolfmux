@@ -161,6 +161,7 @@ cmd_attach() {
     die "you are inside another tmux server. Open a new terminal tab and run: teamctl attach"
   fi
   tm_set_splash "$SESSION"
+  if [ -n "${TERM_PROGRAM:-}" ] && [ -d "$STATE_DIR" ]; then meta_put last_terminal "$TERM_PROGRAM" 2>/dev/null || true; fi
   [ -t 0 ] && [ -t 1 ] || die "not a terminal. In your own terminal run: teamctl attach   (or: tmux -L $WOLFMUX_TMUX_SOCKET attach -t $SESSION)"
   exec "$TMUX_BIN" -L "$WOLFMUX_TMUX_SOCKET" attach-session -t "=$SESSION"
 }

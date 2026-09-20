@@ -108,6 +108,8 @@ main() {
     _refresh-hooks) cmd_refresh_hooks "$@" ;;
     _splash) cmd_splash "$@" ;;
     _notify) cmd_notify "$@" ;;
+    _notify-pending) cmd_notify_pending "$@" ;;
+    _open-team) cmd_open_team "$@" ;;
     send | inbox | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
     version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;

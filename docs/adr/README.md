@@ -19,4 +19,4 @@ build; superseded decisions will link to their replacement.
 | [0012](0012-bash-modules-and-a-swappable-registry.md) | Bash 3.2 modules and a registry behind one interface | accepted | 2026-09-20 |
 | [0013](0013-one-manager-policy.md) | One manager — policy for permissions and spawning, native agent teams off in workers | accepted | 2026-09-20 |
 | [0014](0014-rename-to-wolfmux.md) | Rename to Wolfmux, with a migration instead of a reinstall | accepted | 2026-09-20 |
-| [0015](0015-notifications-through-the-attached-terminal.md) | Notifications go through the terminal attached to the team | accepted | 2026-09-20 |
+| [0015](0015-notifications-through-the-attached-terminal.md) | Notifications lead back to the team: through the attached terminal, else through Wolfmux.app | accepted | 2026-09-20 |

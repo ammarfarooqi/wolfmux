@@ -152,9 +152,10 @@ Process state comes from tmux, work state from Beads; terminal text is never par
   the pack: `🐶 backend · <model>`, `🐶 team/backend`, grey border.
   The status line starts with `🐺 WOLFMUX`; the terminal tab is titled `🐺 <session>`.
 - When an agent finishes a turn you get a desktop notification (`🐺 lead: …`,
-  `backend: …`). It is sent through the terminal attached to the team, so clicking it
-  brings that tab to the front (iTerm2, kitty, Ghostty, WezTerm). With the team
-  detached it falls back to a plain notification that says `teamctl attach`.
+  `🐶 backend: …`). Click it and you are at the team: if it is open in a tab, that tab
+  comes forward (the notification went through that terminal); if it is on no screen,
+  a new window opens attached to it (the notification then comes from Wolfmux.app, the
+  small application `install.sh` builds; allow its two macOS prompts once).
   `WOLFMUX_NOTIFY=all` (default) · `lead` · `off`.
 - Both reach an agent when it starts: after an update run `teamctl restart <role> --continue`.
 

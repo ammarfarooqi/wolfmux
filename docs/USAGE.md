@@ -116,7 +116,7 @@ Comments (`bd comment`) notify nobody; send a message when someone must act.
 | a popup with the wolf when you open the team | `teamctl start` / `attach` worked. Any key closes it (or 3 seconds). Off: `WOLFMUX_SPLASH=off` in `~/.config/wolfmux/config` |
 | `🐺 lead · <model>` and an amber pane border | the manager. Teammates are `🐶 <role> · <model>` with grey borders (blue when focused) |
 | `🐺 WOLFMUX` in the status line, `🐺 <session>` as the tab title | this terminal tab is a Wolfmux team |
-| a desktop notification `🐺 lead: …` or `backend: …` | that agent finished a turn. Click it: the tab with the team comes to the front. Scope: `WOLFMUX_NOTIFY=all` (default), `lead`, or `off` |
+| a desktop notification `🐺 lead: …` or `🐶 backend: …` | that agent finished a turn. Click it: if the team is open in a tab, that tab comes to the front; if it is on no screen, a new terminal window opens attached to it (the notification then comes from **Wolfmux**, with the wolf as its icon). The first time, macOS asks to allow Wolfmux notifications and to let Wolfmux control your terminal: allow both. Scope: `WOLFMUX_NOTIFY=all` (default), `lead`, or `off`; terminal: `WOLFMUX_TERMINAL=iterm\|terminal` |
 
 **Closing and coming back.** Quitting an agent's CLI leaves its pane on screen (so you can
 read its last output); quitting all of them leaves a window of finished panes. `teamctl start

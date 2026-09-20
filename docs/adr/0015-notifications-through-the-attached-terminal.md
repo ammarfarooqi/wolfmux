@@ -1,4 +1,4 @@
-# ADR-0015: Notifications go through the terminal attached to the team
+# ADR-0015: Notifications lead back to the team — through the attached terminal, else through Wolfmux.app
 
 **Date**: 2026-09-20
 **Status**: accepted
@@ -20,8 +20,20 @@ broken kind. tmux knows which terminals are attached to a session and what they 
 Inside a team, notifications are `teamctl`'s job. Every Claude-based agent — the lead
 included — gets a generated settings file with a `Stop` hook, `teamctl _notify`. It
 writes `ESC ] 9 ; <role>: <first line of the last message> BEL` to the tty of each
-attached terminal known to support OSC 9 (iTerm2, kitty, Ghostty, WezTerm). With none
-attached it falls back to `osascript` and says `teamctl attach`. The same file sets
+attached terminal known to support OSC 9 (iTerm2, kitty, Ghostty, WezTerm).
+
+**Amended the same day.** The first version fell back to `osascript` when nothing was
+attached, on the theory that there was then "nowhere to go back to". The owner's next
+notification was exactly that case — a team left to work in the background is the normal
+case, not the rare one — and it opened Script Editor again. macOS opens whichever
+application *owns* a notification, so Wolfmux now brings its own owner: `install.sh`
+builds `~/.config/wolfmux/Wolfmux.app` (an AppleScript applet with the wolf as its icon).
+`teamctl _notify` leaves the message in `~/.wolfmux/notify/pending` and launches the
+application, which fetches it (`teamctl _notify-pending`, once, and only if it is fresh)
+and posts it. Started with nothing to fetch, it has been clicked: `teamctl _open-team`
+opens a terminal window attached to the team (iTerm2 or Terminal by AppleScript; other
+terminals are brought forward). `osascript` remains only for a machine without the app.
+The same file sets
 `ECC_DISABLED_HOOKS`, merged with what the owner already disables, so the plugin's
 notifier does not fire a second time. `WOLFMUX_NOTIFY=all|lead|off`.
 
@@ -32,10 +44,10 @@ notifier does not fire a second time. `WOLFMUX_NOTIFY=all|lead|off`.
 - **Cons**: lets any program in a pane send any escape sequence to the outer terminal; needs tmux 3.3; only works for a visible pane; the plugin would still not use it
 - **Why not**: writing to the client's tty needs no tmux option and reaches exactly the terminals we chose
 
-### Alternative 2: install `terminal-notifier` and activate the terminal on click
+### Alternative 2: install `terminal-notifier` and run a command on click
 - **Pros**: works for any terminal, attached or not
-- **Cons**: a new dependency for a cosmetic path; activates the application, not the tab
-- **Why not**: iTerm2 already does the precise thing for free
+- **Cons**: a dependency unmaintained since 2017, with click actions that are unreliable on current macOS
+- **Why not**: `osacompile` ships with macOS and gives the same thing: an application that owns the notification
 
 ### Alternative 3: patch or reconfigure the plugin
 - **Pros**: one notifier
@@ -53,6 +65,8 @@ notifier does not fire a second time. `WOLFMUX_NOTIFY=all|lead|off`.
 - no tmux option changed, nothing installed
 
 ### Negative
+- macOS asks twice, once each: to allow notifications from Wolfmux, and to let Wolfmux control the terminal. Until the first is allowed, a detached team's notifications do not show
+- an application is built at install time; it is rebuilt only when its source changes, because macOS ties the "may control iTerm" permission to the exact build
 - the lead now has a generated settings file too (before, only workers did). It holds the `Stop` hook and the `ECC_DISABLED_HOOKS` value, nothing about teams or permissions, so [ADR-0013](0013-one-manager-policy.md) stands
 - Wolfmux knows the name of one third-party hook. Without the plugin the variable is inert
 - Codex-based agents do not notify yet (Codex has a `notify` program setting; untested here, see ROADMAP)

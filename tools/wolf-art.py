@@ -8,6 +8,7 @@ always carry the same animal:
     tools/wolf-art.py ansi      half-block text with 256-colour codes  (terminal)
     tools/wolf-art.py plain     the same without colour                (NO_COLOR, pipes)
     tools/wolf-art.py svg       pixel logo                             (docs/diagrams/wolf.svg)
+    tools/wolf-art.py icns      app icon for the notifier (config/wolfmux/notifier/Wolfmux.icns; needs macOS sips + iconutil)
     tools/wolf-art.py install   rewrite the generated block in config/wolfmux/lib/brand.sh,
                                 docs/diagrams/wolf.svg, and the wolf inside any diagram that
                                 carries the markers <!-- wolf:begin cell=N x=X y=Y --> … <!-- wolf:end -->
@@ -17,7 +18,11 @@ why the drawing has an even number of rows. Python 3 standard library only.
 """
 import os
 import re
+import struct
+import subprocess
 import sys
+import tempfile
+import zlib
 
 # Left half, 18 columns; column 17 touches the centre line. Legend:
 #   .  nothing      d  dark fur      m  mid fur      l  light fur
@@ -161,6 +166,61 @@ def refresh_diagram(path: str, rows: list[str]) -> bool:
     return count > 0
 
 
+def hex_rgba(color: str) -> tuple[int, int, int, int]:
+    return int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16), 255
+
+
+def icon_pixels(rows: list[str], size: int = 1024) -> list[bytearray]:
+    """The wolf on a night-coloured rounded square, the shape macOS icons have."""
+    margin, radius, cell = 100, 184, 20
+    night, clear = hex_rgba("#0b1020"), (0, 0, 0, 0)
+    inner = size - 2 * margin
+    image = [bytearray(clear * size) for _ in range(size)]
+    for y in range(margin, size - margin):
+        for x in range(margin, size - margin):
+            dx = max(margin + radius - x, 0, x - (size - margin - radius - 1))
+            dy = max(margin + radius - y, 0, y - (size - margin - radius - 1))
+            if dx * dx + dy * dy <= radius * radius:
+                image[y][4 * x:4 * x + 4] = bytes(night)
+    left = margin + (inner - len(rows[0]) * cell) // 2
+    top = margin + (inner - len(rows) * cell) // 2
+    for row_index, row in enumerate(rows):
+        for column, tone in enumerate(row):
+            if tone == ".":
+                continue
+            pixel = bytes(hex_rgba(TONES[tone][1]))
+            for y in range(top + row_index * cell, top + (row_index + 1) * cell):
+                image[y][4 * (left + column * cell):4 * (left + (column + 1) * cell)] = pixel * cell
+    return image
+
+
+def png_bytes(image: list[bytearray]) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+
+    size = len(image)
+    raw = b"".join(b"\x00" + bytes(row) for row in image)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
+
+
+def write_icns(rows: list[str]) -> None:
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    target = os.path.join(repo, "config", "wolfmux", "notifier", "Wolfmux.icns")
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with tempfile.TemporaryDirectory() as work:
+        master = os.path.join(work, "master.png")
+        with open(master, "wb") as handle:
+            handle.write(png_bytes(icon_pixels(rows)))
+        iconset = os.path.join(work, "Wolfmux.iconset")
+        os.makedirs(iconset)
+        for points in (16, 32, 128, 256, 512):
+            for scale in (1, 2):
+                name = f"icon_{points}x{points}{'@2x' if scale == 2 else ''}.png"
+                subprocess.run(["sips", "-z", str(points * scale), str(points * scale), master, "--out", os.path.join(iconset, name)], check=True, capture_output=True)
+        subprocess.run(["iconutil", "-c", "icns", iconset, "-o", target], check=True)
+    print(f"wrote {os.path.relpath(target, repo)}")
+
+
 def brand_block(rows: list[str]) -> str:
     # The escape character is written as the four characters \033 and turned back by
     # printf %b, so brand.sh stays a plain text file without control bytes.
@@ -195,6 +255,8 @@ def main() -> None:
         print("\n".join(plain_lines(rows)))
     elif mode == "svg":
         sys.stdout.write(svg(rows))
+    elif mode == "icns":
+        write_icns(rows)
     elif mode == "install":
         install(rows)
     else:
