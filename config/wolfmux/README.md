@@ -1,7 +1,10 @@
 # Wolfmux — a local multi-model AI development team in tmux
 
-One lead plus any number of teammates, every agent visible in its own tmux pane, all
-inference on subscriptions — no API keys, no metered proxy. The usual cast is below (Fable
+One lead plus any number of teammates, every agent visible in its own tmux pane. The
+default seats run on the three subscriptions (Claude, ChatGPT/Codex, Z.ai), with no API
+keys anywhere. Other Anthropic-compatible providers (Kimi, MiniMax, Qwen, and the metered
+Moonshot platform and DeepSeek) are one Keychain key each away and stay off until you add
+it. The usual cast is below (Fable
 **or** Astra leads, GLM workers implement), but any model key can sit in either seat, and a
 project can have several teams.
 
@@ -31,7 +34,14 @@ someone, which types one fixed line into that agent's pane. Bodies stay in Beads
 # Z.ai Coding Plan key -> macOS Keychain (you are prompted; nothing is echoed or logged)
 security add-generic-password -U -s zai-coding-plan -a "$USER" -l "Z.ai Coding Plan API key" -w
 
-teamctl doctor        # must show no "!! WARNING !!" lines
+# optional, one per provider you actually want:
+security add-generic-password -U -s wolfmux-kimi     -a "$USER" -l "Kimi for Coding API key"      -w
+security add-generic-password -U -s wolfmux-moonshot -a "$USER" -l "Moonshot platform API key"    -w
+security add-generic-password -U -s wolfmux-deepseek -a "$USER" -l "DeepSeek API key"             -w
+security add-generic-password -U -s wolfmux-minimax  -a "$USER" -l "MiniMax Coding Plan API key"  -w
+security add-generic-password -U -s wolfmux-qwen     -a "$USER" -l "Alibaba Model Studio API key" -w
+
+teamctl doctor        # must show no "!! WARNING !!" lines; says which providers are set up
 ```
 
 ## Starting with Fable
@@ -62,6 +72,7 @@ teamctl spawn backend glm53      # GLM-5.3: substantial implementation
 teamctl spawn frontend glm53
 teamctl spawn qa flash           # GLM-5.3 Flash: simple / repetitive / QA
 teamctl spawn fe-review astra    # any model can join any team: fable · opus · sonnet · haiku · astra
+teamctl spawn docs2 kimi         # another provider's plan, same isolation (key in the Keychain first)
 teamctl spawn x claude:<model-id>   # …or codex:<model-id>, for a model that has no key
 ```
 
@@ -72,12 +83,23 @@ Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
 on the left; teammates stack on the right. A worker reads its Beads inbox as soon as it
 boots, so assign work first, then spawn. Options: `--base <ref>`, `--no-kickoff`.
 
+A provider worker needs that provider's key in the Keychain first (one-time setup above);
+`teamctl doctor` says which are set up. `spawn` and `start` refuse a metered key until
+`WOLFMUX_METERED=on` (exit 77), and `teamctl status` marks a running metered agent with
+`$` after its label.
+
 | Model key | Runs | Pays with |
 |-----------|------|-----------|
 | `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan |
+| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription |
+| `minimax` | Claude Code + MiniMax M3 | MiniMax Coding Plan |
+| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan |
+| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API, metered: refused until `WOLFMUX_METERED=on` |
+| `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API, metered: refused until `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
+| `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` | any other model id of that provider (GLM is not pinnable) | the same plan, or the same metered account |
 
 The same keys work for `teamctl start <model>`: any of them can lead.
 
@@ -263,16 +285,17 @@ credentials or Beads data, and always asks first (`--yes` to skip).
 ```bash
 teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins
 WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
+WOLFMUX_DRY_RUN=1 claude-kimi                   # any provider name works; shows billing and the metered gate too
 ```
 
 ## Where things live
 
 | What | Where |
 |------|-------|
-| Launchers + CLI | `~/bin/` — `teamctl`, `claude-fable`, `codex-astra`, `claude-glm`; symlinks `claude-glm-flash` → `claude-glm` and `claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable` (the launcher picks the model from the name it was started as); `codex`, a small `sh` wrapper (one `exec` line) that starts ChatGPT.app's bundled CLI by its real path (only when no other `codex` is installed) |
+| Launchers + CLI | `~/bin/` — `teamctl`, `claude-fable`, `codex-astra`, `claude-glm`; symlinks `claude-glm-flash`, `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen` → `claude-glm` (it picks the provider from the name it was started as) and `claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable` (the model the same way); `codex`, a small `sh` wrapper (one `exec` line) that starts ChatGPT.app's bundled CLI by its real path (only when no other `codex` is installed) |
 | Code, tmux config, protocol, this file | `~/.config/wolfmux/` (`lib/*.sh`, `hooks/beads-nudge`, `tmux.conf`, `TEAM_PROTOCOL.md`, `config`, `glm-worker-settings.json`) |
 | Notifications | `~/.config/wolfmux/Wolfmux.app` (built by `install.sh`; owns the notifications of a team that is not open in a terminal which can show them itself — iTerm2, kitty, Ghostty, WezTerm — so a click opens the team) and `~/.wolfmux/notify/` (the message in transit, the last project, the script a click runs) |
-| Z.ai credential | macOS login Keychain, service `zai-coding-plan`. Nowhere else. |
+| Provider credentials | macOS login Keychain, one service each: `zai-coding-plan` (Z.ai), `wolfmux-kimi`, `wolfmux-moonshot`, `wolfmux-deepseek`, `wolfmux-minimax`, `wolfmux-qwen`. Nowhere else. |
 | Claude / Codex logins | wherever those CLIs keep them (`/login`, `codex login`); untouched |
 | Worktrees | `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/`; a named team's under `…/<project>-<hash>/teams/<team>/` |
 | teamctl state (role ↔ model ↔ worktree, policy, approvals, event log) | `~/.wolfmux/state/<project>-<hash>/`; a named team's under `…/teams/<team>/` — nothing is written into your repository |
@@ -302,6 +325,10 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_TERMINAL` | the one you last attached from, else iTerm2 when installed, else Terminal | `iterm` or `terminal`: what a click on a notification opens |
 | `WOLFMUX_GLM_AUTH_MODE` | `helper` | `env` hands the Z.ai key over as `ANTHROPIC_AUTH_TOKEN` instead (if workers report an authentication error) |
 | `WOLFMUX_GLM_CONTEXT` | 200000 tokens | `1m`, or a number: the context window GLM workers declare |
+| `WOLFMUX_METERED` | `off` | `on` lets the metered providers start. Which those are, and what that can cost: [Metered providers](#metered-providers) |
+| `WOLFMUX_KIMI_AUTH_MODE` · `WOLFMUX_MOONSHOT_AUTH_MODE` · `WOLFMUX_DEEPSEEK_AUTH_MODE` · `WOLFMUX_MINIMAX_AUTH_MODE` · `WOLFMUX_QWEN_AUTH_MODE` | `helper` | per provider, the same two modes as `WOLFMUX_GLM_AUTH_MODE`; `env` exports the vendor's documented variable (`ANTHROPIC_API_KEY` for Kimi, `ANTHROPIC_AUTH_TOKEN` for the others) |
+| `WOLFMUX_KIMI_CONTEXT` · `WOLFMUX_MOONSHOT_CONTEXT` · `WOLFMUX_DEEPSEEK_CONTEXT` · `WOLFMUX_MINIMAX_CONTEXT` · `WOLFMUX_QWEN_CONTEXT` | the table value | a number: the context window that provider's workers declare to Claude Code |
+| `WOLFMUX_KIMI_MODEL` · `WOLFMUX_MOONSHOT_MODEL` · `WOLFMUX_DEEPSEEK_MODEL` · `WOLFMUX_MINIMAX_MODEL` · `WOLFMUX_QWEN_MODEL` · `WOLFMUX_KIMI_FAST_MODEL` · `WOLFMUX_MOONSHOT_FAST_MODEL` · `WOLFMUX_DEEPSEEK_FAST_MODEL` · `WOLFMUX_MINIMAX_FAST_MODEL` · `WOLFMUX_QWEN_FAST_MODEL` | the ids in `lib/providers.sh` | model pins per provider, for when a vendor changes its ids. GLM is not pinnable |
 | `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | the current ids | which model id each key means |
 
 ## How subscription separation works
@@ -314,15 +341,20 @@ the same name wins for a launcher you start by hand.
 - `claude-fable`: no key, no endpoint → the only credential left is your `/login`.
 - `codex-astra`: `forced_login_method="chatgpt"`, `model_provider="openai"`,
   `model="gpt-6-astra"` → an API key cannot be used even if one appears later.
-- `claude-glm*`: sets `ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic` (the Coding
-  Plan endpoint) inside that process only, and maps **every** Claude alias (opus, sonnet,
-  fable, haiku, subagents) to `glm-5.3` / `glm-5.3-flash` — the only two ids the plan
-  covers. The key reaches Claude Code through `apiKeyHelper` (a Keychain read), so it is
-  never in the environment, the agent's subprocesses, transcripts or tmux scrollback.
+- `claude-glm` and every name it is linked as (`claude-glm-flash`,
+  `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`,
+  `claude-qwen`): reads provider, endpoint, key, billing and model ids from one
+  table (`lib/providers.sh`), sets `ANTHROPIC_BASE_URL` to that provider's endpoint
+  inside its own process only, and maps **every** Claude alias (opus, sonnet, fable,
+  haiku, subagents) to that provider's main and background model ids (GLM's plan
+  covers exactly `glm-5.3` / `glm-5.3-flash`). The key reaches Claude Code through
+  `apiKeyHelper` (a Keychain read), so it is never in the environment, the agent's
+  subprocesses, transcripts or tmux scrollback. The User-Agent is never touched
+  (Kimi Code's terms forbid altering it).
 - **Login guard.** Measured on a localhost mock endpoint: a Claude Code process that
   inherits a custom base URL but no token sends your real claude.ai login to that URL.
-  Every GLM worker therefore carries an inert `CLAUDE_CODE_OAUTH_TOKEN` placeholder that
-  outranks the stored login, so anything a worker spawns fails closed at Z.ai instead of
+  Every provider worker therefore carries an inert `CLAUDE_CODE_OAUTH_TOKEN` placeholder that
+  outranks the stored login, so anything a worker spawns fails closed at that provider's endpoint instead of
   handing it your Claude token. `claude-fable` drops that placeholder again.
 - The team tmux server is started with a scrubbed environment, so panes inherit none of it.
 
@@ -333,14 +365,39 @@ variable — use it if workers report an authentication error in the default hel
 `WOLFMUX_GLM_CONTEXT=1m` opts into the 1M window (uses quota faster); by default the
 launcher declares a 200k window, which is what keeps Claude Code from printing its
 "isn't described by this version's model catalog" notice in worker panes.
+The other providers take the same knobs under their own names
+(`WOLFMUX_KIMI_AUTH_MODE=env`, `WOLFMUX_KIMI_CONTEXT=400000`), plus model pins
+(`WOLFMUX_KIMI_MODEL`, `WOLFMUX_KIMI_FAST_MODEL`) for when a vendor changes its ids;
+the config template lists every name with a one-line explanation.
 `~/.config/wolfmux/glm-worker-settings.json` is a Claude Code settings overlay applied to
-GLM workers only. It ships with `claude-mem` turned off there: that plugin runs a
+every third-party provider worker. It ships with `claude-mem` turned off there: that plugin runs a
 long-lived summarizer daemon which inherits the environment of whichever session starts
-it, and one started from a GLM worker would route your normal sessions' memory traffic
-to Z.ai. Delete the file to make workers identical to your normal sessions.
+it, and one started from a provider worker would route your normal sessions' memory traffic
+to that provider. Delete the file to make workers identical to your normal sessions.
 
 What no local tool can prove: account-side switches. Keep claude.ai "extra usage" off,
 do not buy Codex credits, and keep the Z.ai cash balance at zero.
+
+## Metered providers
+
+Two of the provider table entries bill per request instead of by subscription: the
+Moonshot platform (`moonshot`, Kimi K3 API) and DeepSeek (`deepseek`). Two switches
+must be on at once, and both are yours, the owner's: the key in the Keychain
+(`security add-generic-password -U -s wolfmux-moonshot ...`, one-time setup above),
+and this line in `~/.config/wolfmux/config`:
+
+```bash
+WOLFMUX_METERED=on
+```
+
+While either is missing, `teamctl spawn` and `teamctl start` refuse with exit 77 and
+the launcher with exit 78, each naming the missing switch. A dry run still prints
+(`WOLFMUX_DRY_RUN=1 claude-moonshot`), with `metered gate: closed`.
+
+Switched on, a metered worker bills its vendor per request for as long as the balance
+you loaded lasts. There is no local cap: no spending limit, no quota, nothing in
+wolfmux that stops a long run. The switch lives in your config file, changed by you
+at your terminal; an agent that offers to flip it for you should be refused.
 
 ## Verify provider and model inside each CLI
 
@@ -349,6 +406,7 @@ do not buy Codex credits, and keep the Z.ai cash balance at zero.
 | Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.1 |
 | Astra lead | `/status` | Signed in with ChatGPT · model `gpt-6-astra` |
 | GLM worker | `/status` | Base URL `https://api.z.ai/api/anthropic` · auth: apiKeyHelper (or ANTHROPIC_AUTH_TOKEN in env mode) · model `glm-5.3` / `glm-5.3-flash` |
+| provider worker | `/status` | that provider's base URL and model (Kimi auth may be `ANTHROPIC_API_KEY` in env mode); `WOLFMUX_DRY_RUN=1 claude-<provider>` prints the exact values |
 
 ## Updating safely
 
@@ -379,11 +437,13 @@ Keychain item and Beads. By hand:
 ```bash
 teamctl destroy --worktrees                      # in each project that has a team
 rm ~/bin/teamctl ~/bin/claude-fable ~/bin/claude-opus ~/bin/claude-sonnet ~/bin/claude-haiku \
-   ~/bin/codex-astra ~/bin/claude-glm ~/bin/claude-glm-flash
+   ~/bin/codex-astra ~/bin/claude-glm ~/bin/claude-glm-flash \
+   ~/bin/claude-kimi ~/bin/claude-moonshot ~/bin/claude-deepseek ~/bin/claude-minimax ~/bin/claude-qwen
 grep -q wolfmux-codex-wrapper ~/bin/codex && rm ~/bin/codex      # only the wrapper install.sh wrote
 rm -r ~/.config/wolfmux ~/.wolfmux               # includes Wolfmux.app
 rm ~/.codex/rules/wolfmux.rules
 security delete-generic-password -s zai-coding-plan
+# the same for every provider key you added: -s wolfmux-kimi, -s wolfmux-moonshot, -s wolfmux-deepseek, -s wolfmux-minimax, -s wolfmux-qwen
 # ~/.zshrc: delete the block between ">>> wolfmux >>>" and "<<< wolfmux <<<"
 # ~/.claude/settings.json: delete the teamctl / bd / git / tmux allow lines and the "ask" entry
 #   (or restore ~/.claude/settings.json.backup-<timestamp>)

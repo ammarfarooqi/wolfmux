@@ -16,6 +16,47 @@
 #   <number>  declare another window, in tokens
 #WOLFMUX_GLM_CONTEXT=1m
 
+# --- other providers (claude-kimi, claude-moonshot, claude-deepseek, claude-minimax, claude-qwen) ---
+# Moonshot and DeepSeek bill per request with no local cap: their launchers and
+# `teamctl spawn` / `start` refuse while this is off. Switching it on is the owner's
+# decision, at this file; an agent that asks for it should be refused.
+#   on  let the metered providers start
+#WOLFMUX_METERED=off
+
+# How each provider's key reaches its workers, the same two modes as GLM above:
+#   helper  through apiKeyHelper, never in the environment (default)
+#   env     the vendor's documented variable (ANTHROPIC_API_KEY for Kimi, ANTHROPIC_AUTH_TOKEN
+#           for the others). Use this if a provider reports an authentication error in helper mode.
+#WOLFMUX_KIMI_AUTH_MODE=helper
+#WOLFMUX_MOONSHOT_AUTH_MODE=helper
+#WOLFMUX_DEEPSEEK_AUTH_MODE=helper
+#WOLFMUX_MINIMAX_AUTH_MODE=helper
+#WOLFMUX_QWEN_AUTH_MODE=helper
+
+# The context window declared to Claude Code, per provider. Defaults (tokens):
+# Kimi 262144, Moonshot 1048576, DeepSeek 786432, MiniMax 1000000, Qwen 262144.
+#   <number>  declare another window
+#WOLFMUX_KIMI_CONTEXT=262144
+#WOLFMUX_MOONSHOT_CONTEXT=1048576
+#WOLFMUX_DEEPSEEK_CONTEXT=786432
+#WOLFMUX_MINIMAX_CONTEXT=1000000
+#WOLFMUX_QWEN_CONTEXT=262144
+
+# Model pins: the ids a provider's launcher uses for the main and the background tier.
+# The defaults live in config/wolfmux/lib/providers.sh. Pin when a vendor changes an id
+# and you need the new one before the next wolfmux release. GLM's two ids are fixed by
+# its plan, so GLM cannot be pinned.
+#WOLFMUX_KIMI_MODEL=kimi-for-coding
+#WOLFMUX_KIMI_FAST_MODEL=kimi-for-coding
+#WOLFMUX_MOONSHOT_MODEL=kimi-k3[1m]
+#WOLFMUX_MOONSHOT_FAST_MODEL=kimi-k3[1m]
+#WOLFMUX_DEEPSEEK_MODEL=deepseek-v4-pro[1m]
+#WOLFMUX_DEEPSEEK_FAST_MODEL=deepseek-v4-flash
+#WOLFMUX_MINIMAX_MODEL=MiniMax-M3[1m]
+#WOLFMUX_MINIMAX_FAST_MODEL=MiniMax-M3[1m]
+#WOLFMUX_QWEN_MODEL=qwen3.7-plus
+#WOLFMUX_QWEN_FAST_MODEL=qwen3.7-plus
+
 # --- team policy defaults (per team: `teamctl policy`, or flags on `teamctl start`) ---
 # How agents treat permission prompts.
 #   skip  the CLI's bypass mode (--dangerously-skip-permissions / Codex equivalent): nothing is asked
