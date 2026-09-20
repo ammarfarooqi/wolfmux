@@ -104,26 +104,32 @@ printf '#!/bin/bash\necho "{}"\n' >"$WORK/stubbin/claude"
 doctor_utf8() { env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME" LC_ALL=en_US.UTF-8 WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null; }
 check "doctor: reports a provider override in settings.json under a UTF-8 locale instead of dying" 'doctor_utf8 | grep -q "sets env: ANTHROPIC_BASE_URL" && ! doctor_utf8 | grep -q "unbound variable"'
 check "doctor: in the throwaway HOME no keychain of yours is on the search list, and doctor finds no Z.ai item there" '[ -z "$(HOME="$DOCTOR_HOME" /usr/bin/security list-keychains -d user 2>/dev/null)" ] && doctor_utf8 | grep -q "no Keychain item"'
-# The metered gate is the owner's switch: it reads the config file of WOLFMUX_HOME and never the
-# environment. Throwaway program folders (links to the real one) with a config of their own:
-home_with() { # <name> <config content>
-  local dir="$WORK/home-$1" entry
-  /bin/mkdir -p "$dir"
-  for entry in "$REPO"/config/wolfmux/*; do [ "$(basename "$entry")" = "config" ] || /bin/ln -sf "$entry" "$dir/"; done
-  printf '%s\n' "$2" >"$dir/config"
+# The metered gate is the owner's switch: it reads the owner's real config file (found through the
+# password database, not through $HOME or $WOLFMUX_HOME) and never the environment. So no test can
+# open it, by design: these tests hold it CLOSED, and show what an open gate would show with agent
+# records made by hand. If your own config says WOLFMUX_METERED=on, the closed-side checks cannot
+# hold: that is detected once and they are skipped, with the reason. Nothing here writes to your config.
+OWNER_GATE_OPEN=0
+if (. "$REPO/config/wolfmux/lib/provider-env.sh" && wolfmux_metered_on) >/dev/null 2>&1; then OWNER_GATE_OPEN=1; fi
+# a program folder (links to the real one) whose config says on: pointing WOLFMUX_HOME at it must not open the gate
+REDIRECTED_HOME="$WORK/home-redirected"
+/bin/mkdir -p "$REDIRECTED_HOME"
+for entry in "$REPO"/config/wolfmux/*; do [ "$(basename "$entry")" = "config" ] || /bin/ln -sf "$entry" "$REDIRECTED_HOME/"; done
+printf 'WOLFMUX_METERED=on\n' >"$REDIRECTED_HOME/config"
+closed_check() { # <description> <command string>: needs the gate closed
+  if [ "$OWNER_GATE_OPEN" -eq 1 ]; then
+    printf '  skip  %s (your own config has WOLFMUX_METERED=on: this check needs the gate closed)\n' "$1"
+  else
+    check "$1" "$2"
+  fi
 }
-home_with metered "WOLFMUX_METERED=on"
-home_with last-off "WOLFMUX_METERED=on
-WOLFMUX_METERED=off"
-home_with commented "# WOLFMUX_METERED=on"
-metered() { WOLFMUX_HOME="$WORK/home-metered" "$REPO/bin/teamctl" "$@"; } # teamctl with the gate open
 # every provider of the table gets its own section; only the Z.ai key is a warning when missing
 DOCTOR_HOME2="$WORK/doctor-home2"
 /bin/mkdir -p "$DOCTOR_HOME2/.claude"
 printf '{"note":"routes to api.deepseek.com"}\n' >"$DOCTOR_HOME2/.claude/settings.local.json"
 doctor_other() { env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME2" WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null; }
 check "doctor: every provider has a section with its own Keychain service; a missing key of an optional one is a note, only Z.ai's is a warning" 'for p in kimi moonshot deepseek minimax qwen; do doctor_utf8 | grep -q "no Keychain item .wolfmux-$p." || exit 1; done && [ "$(doctor_utf8 | grep -c "optional, not set up: no Keychain item")" = 5 ] && doctor_utf8 | grep -q "WARNING.*no Keychain item .zai-coding-plan." && ! doctor_utf8 | grep "WARNING" | grep -q "wolfmux-"'
-check "doctor: a metered provider says so, and that teamctl refuses it until the config file says WOLFMUX_METERED=on (the environment does not count)" 'doctor_utf8 | grep -q "billing: METERED (.*prepaid balance.*); teamctl refuses" && WOLFMUX_METERED=on doctor_utf8 | grep -q "teamctl refuses" && WOLFMUX_HOME="$WORK/home-metered" doctor_utf8 | grep -q "WOLFMUX_METERED=on in .*: teamctl starts metered agents" && doctor_utf8 | grep -q "billing: plan (Kimi for Coding"'
+closed_check "doctor: a metered provider says so, and that teamctl refuses it (the environment does not count)" 'doctor_utf8 | grep -q "billing: METERED (.*prepaid balance.*); teamctl refuses" && WOLFMUX_METERED=on doctor_utf8 | grep -q "teamctl refuses" && doctor_utf8 | grep -q "billing: plan (Kimi for Coding"'
 check "doctor: a settings file that names the host of any provider (not only Z.ai) is reported" 'doctor_other | grep -q "settings.local.json mentions api.deepseek.com" && ! doctor_utf8 | grep -q "mentions api.deepseek.com"'
 check "doctor: no variable in any script is followed directly by a non-ASCII character" '! LC_ALL=C grep -nE "\\\$[A-Za-z_][A-Za-z0-9_]*[^ -~]" "$REPO"/bin/* "$REPO"/config/wolfmux/lib/*.sh "$REPO"/config/wolfmux/hooks/* "$REPO"/*.sh "$REPO"/tests/*.sh "$REPO"/tests/stub-agent'
 # `bd update --claim` sets in_progress: an inbox that lists only `open` hides the task a
@@ -185,18 +191,33 @@ check "providers: a provider agent is a Claude Code agent (bypass flag, worker s
 check "providers: status --json says how each one is billed (a plan for Kimi Code, none for a subscription model)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"kimi-w\")][0].billing == \"plan\") and ([.agents[] | select(.role == \"backend\")][0].billing == \"plan\") and ([.agents[] | select(.role == \"lead\")][0].billing == \"subscription\")"'
 check "providers: the status table marks nothing while nothing is metered" '! teamctl status | grep -q "metered"'
 # the metered gate: a provider that bills per token is off until the owner says otherwise
-check "metered: spawn refuses a metered provider by default (exit 77), says how the owner switches it on, and creates nothing" 'out="$(teamctl spawn m1 moonshot --no-kickoff 2>&1)"; [ $? -eq 77 ] && printf "%s" "$out" | grep -q "WOLFMUX_METERED=on" && printf "%s" "$out" | grep -qi "owner" && [ -z "$(git branch --list "ai/m1-*")" ] && ! teamctl status --json | jq -e ".agents[] | select(.role == \"m1\")"'
-check "metered: the environment alone never opens the gate (WOLFMUX_METERED=on on the command line), for a plain key, a pinned model id and a lead" 'WOLFMUX_METERED=on teamctl spawn m1 moonshot --no-kickoff; [ $? -eq 77 ] && WOLFMUX_METERED=on teamctl spawn m1 deepseek:deepseek-v4-flash --no-kickoff; [ $? -eq 77 ] && WOLFMUX_METERED=on teamctl start deepseek --team gated --no-attach --skip-beads; [ $? -eq 77 ] && ! teamctl teams | grep -q "^gated " && [ -z "$(git branch --list "ai/m1-*")" ]'
-check "metered: a config file whose last active line says off, or that only comments the switch, keeps it closed" 'WOLFMUX_HOME="$WORK/home-last-off" teamctl spawn m1 moonshot --no-kickoff; [ $? -eq 77 ] && WOLFMUX_HOME="$WORK/home-commented" teamctl spawn m1 moonshot --no-kickoff; [ $? -eq 77 ] && [ -z "$(git branch --list "ai/m1-*")" ]'
-check "metered: an agent cannot open the gate by asking for a lead that costs money (worker spawning is off, and the gate is checked first)" 'TEAM_ROLE=backend teamctl spawn m1 moonshot --no-kickoff; [ $? -eq 77 ] && [ -z "$(git branch --list "ai/m1-*")" ]'
-metered spawn m1 moonshot --no-kickoff >/dev/null 2>&1
-metered spawn m2 deepseek:deepseek-v4-flash --no-kickoff >/dev/null 2>&1
-sleep 2
-check "metered: WOLFMUX_METERED=on in the config file lets it through, and the record and status --json say metered" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"m1\")][0] | .billing == \"metered\" and .state == \"running\" and .label == \"Kimi K3 API\") and ([.agents[] | select(.role == \"m2\")][0].billing == \"metered\")" && jq -e ".billing == \"metered\"" "$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/m1.json"'
-check "metered: the status table puts a \$ after the label of a metered agent, and only of those, with a legend line" 'out="$(teamctl status)"; printf "%s\n" "$out" | grep -q "🐶 m1 .*Kimi K3 API\\$ " && printf "%s\n" "$out" | grep -q "🐶 kimi-w .*Kimi Code  " && ! printf "%s\n" "$out" | grep -q "Kimi Code\\$" && printf "%s\n" "$out" | grep -q "^  \\$ = metered"'
-check "metered: a metered lead is allowed with the gate open, and shows its \$ in its own team" 'metered start deepseek --team paid --no-attach --skip-beads && sleep 1 && teamctl status --team paid | grep -q "🐺 lead .*DeepSeek V4\\$ " && teamctl destroy --team paid --purge --yes'
+closed_check "metered: spawn refuses a metered provider by default (exit 77), says how the owner switches it on, and creates nothing" 'out="$(teamctl spawn m1 moonshot --no-kickoff 2>&1)"; [ $? -eq 77 ] && printf "%s" "$out" | grep -q "WOLFMUX_METERED=on" && printf "%s" "$out" | grep -qi "owner" && [ -z "$(git branch --list "ai/m1-*")" ] && ! teamctl status --json | jq -e ".agents[] | select(.role == \"m1\")"'
+closed_check "metered: the environment alone never opens the gate (WOLFMUX_METERED=on on the command line), for a plain key, a pinned model id and a lead" 'WOLFMUX_METERED=on teamctl spawn m1 moonshot --no-kickoff; [ $? -eq 77 ] && WOLFMUX_METERED=on teamctl spawn m1 deepseek:deepseek-v4-flash --no-kickoff; [ $? -eq 77 ] && WOLFMUX_METERED=on teamctl start deepseek --team gated --no-attach --skip-beads; [ $? -eq 77 ] && ! teamctl teams | grep -q "^gated " && [ -z "$(git branch --list "ai/m1-*")" ]'
+closed_check "metered: WOLFMUX_HOME pointed at a folder whose config says on does not open it either: spawn, spawn <p>:<id>, start (exit 77 each) and doctor" 'WOLFMUX_HOME="$REDIRECTED_HOME" teamctl spawn gate-probe moonshot --no-kickoff; [ $? -eq 77 ] && WOLFMUX_HOME="$REDIRECTED_HOME" teamctl spawn gate-probe deepseek:deepseek-v4-flash --no-kickoff; [ $? -eq 77 ] && WOLFMUX_HOME="$REDIRECTED_HOME" teamctl start deepseek --team gated --no-attach --skip-beads; [ $? -eq 77 ] && [ -z "$(git branch --list "ai/gate-probe-*")" ] && ! teamctl teams | grep -q "^gated " && WOLFMUX_HOME="$REDIRECTED_HOME" doctor_utf8 | grep -q "teamctl refuses"'
+# if a gate that is not closed let anything through, do not leave it around for the checks below
+teamctl destroy --team gated --purge --yes >/dev/null 2>&1
+teamctl stop gate-probe >/dev/null 2>&1
+teamctl remove gate-probe --force --yes >/dev/null 2>&1
+closed_check "metered: an agent cannot open the gate by asking for a lead that costs money (worker spawning is off, and the gate is checked first)" 'TEAM_ROLE=backend teamctl spawn m1 moonshot --no-kickoff; [ $? -eq 77 ] && [ -z "$(git branch --list "ai/m1-*")" ]'
+# What an open gate would show, from agent records made by hand (as "idle-one" and "rogue" are planted below).
+METER_AGENTS="$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)"
+plant() { # <agents dir> <role> <kind> <model> <label> <billing>
+  jq -n --arg role "$2" --arg kind "$3" --arg model "$4" --arg label "$5" --arg billing "$6" --arg dir "$PROJECT" \
+    '{role: $role, kind: $kind, model: $model, label: $label, family: "claude", billing: $billing, launcher: "/bin/true",
+      workdir: (if $kind == "lead" then $dir else "/nonexistent/wolfmux" end), branch: ("ai/" + $role + "-1"), base_ref: "main", base_commit: "",
+      kickoff: "0", spawned_by: "operator", permissions: "skip", pane_id: "", state: "stopped", created_at: "2099-01-01T00:00:00Z"}' >"$1/$2.json"
+}
+plant "$METER_AGENTS" meter-1 worker moonshot "Kimi K3 API" metered
+plant "$METER_AGENTS" meter-2 worker deepseek:deepseek-v4-flash "deepseek-v4-flash" metered
+check "metered: status --json says metered for a metered record and plan for a plan one" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"meter-1\")][0].billing == \"metered\") and ([.agents[] | select(.role == \"meter-2\")][0].billing == \"metered\") and ([.agents[] | select(.role == \"kimi-w\")][0].billing == \"plan\")"'
+check "metered: the status table puts a \$ after the label of a metered agent, and only of those, with a legend line" 'out="$(teamctl status)"; printf "%s\n" "$out" | grep -q "🐶 meter-1 .*Kimi K3 API\\$ " && printf "%s\n" "$out" | grep -q "🐶 meter-2 .*deepseek-v4-flash\\$ " && printf "%s\n" "$out" | grep -q "🐶 kimi-w .*Kimi Code  " && ! printf "%s\n" "$out" | grep -q "Kimi Code\\$" && printf "%s\n" "$out" | grep -q "^  \\$ = metered"'
+PAID_TEAM_DIR="$(dirname "$METER_AGENTS")/teams/paid"
+/bin/mkdir -p "$PAID_TEAM_DIR/agents"
+plant "$PAID_TEAM_DIR/agents" lead lead deepseek "DeepSeek V4" metered
+check "metered: a metered lead shows its \$ in its own team, and --json says metered" 'teamctl status --team paid | grep -q "🐺 lead .*DeepSeek V4\\$ " && teamctl status --json --team paid | jq -e ".agents[0].billing == \"metered\""'
+/bin/rm -rf "$PAID_TEAM_DIR"
 check "providers: teamctl help, the usage line and the unknown-model error list every provider key" 'for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do teamctl help | grep -qF -- "$k" || exit 1; teamctl spawn 2>&1 | grep -qF -- "$k" || exit 1; teamctl spawn x nosuchmodel 2>&1 | grep -qF -- "$k" || exit 1; teamctl start 2>&1 | grep -qF -- "$k" || exit 1; done'
-for role in kimi-w mm-w qw-w m1 m2; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
+for role in kimi-w mm-w qw-w meter-1 meter-2; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
 
 echo "== the wolf (cosmetic: it may never break a command)"
 SESSION_NAME="$(teamctl status --json | jq -r .session)"
