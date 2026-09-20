@@ -6,8 +6,9 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # ~3 minutes, 139 checks, isolated from any running team
+tests/smoke.sh                 # ~4 minutes, 156 checks, isolated from any running team
 tests/migration.sh             # ~30 seconds, 21 checks, in a throwaway HOME
+tests/permissions.sh           # ~5 seconds, 9 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```
@@ -17,7 +18,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh — 139 of 139 pass (2026-09-20)
+## smoke.sh — 156 of 156 pass (2026-09-20)
 
 | Area | Checks |
 |------|--------|
@@ -106,6 +107,20 @@ Second install run changed nothing · existing `allow` entries not duplicated an
 `deny` preserved · install then uninstall left `~/.zshrc` byte-identical · exactly
 the added permission rules removed · uninstall refused while a team was running.
 
+## permissions.sh — 9 of 9 pass (2026-09-20)
+
+`install.sh` and `uninstall.sh` against `~/.claude/settings.json` in a throwaway `HOME`
+(no team, no CLI, nothing of yours read). Written first: 4 of the 9 failed before the change.
+
+| Area | Checks |
+|------|--------|
+| a fresh install | `teamctl` and `bd` allowed, `teamctl destroy` asks · no rule that can write a file or run a command through its arguments · `claude/permissions.json` names what it retired and adds none of it |
+| over a settings file an earlier version wrote | the five retired rules are taken out · the installer names each one and the backup still holds them · your own rules, `deny` and every other key untouched · a second run changes nothing |
+| uninstall | current and retired rules both removed · your own rules stay |
+
+Not covered: a rule of yours that is spelled exactly like a retired one cannot be told apart
+from ours and is taken out as well; the installer names it and the backup holds it.
+
 ## migration.sh — 21 of 21 pass (2026-09-20)
 
 A throwaway `HOME` gets v1.1 installed from git history, a team started with it (lead +
@@ -117,7 +132,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | state | old directories gone, old config parked in backups · a user setting arrives under its new key · program files are the new version · no stored record points into `~/.ai-team` · a second run finds nothing to do |
 | the live team | **the running lead is not restarted** (same pid, pane alive) · new `teamctl` sees lead running and the worker stopped with its worktree |
 | git | git lists the worktree at its new path, nothing prunable · uncommitted work in it survived · the worker restarts in the moved worktree |
-| edited files | `~/.zshrc`: one block, only its two marker lines changed · `settings.json`: tmux rules renamed, every other rule and key kept · Codex rules: new file in place, old one parked · Beads hooks point at the new location |
+| edited files | `~/.zshrc`: one block, only its two marker lines changed · `settings.json`: no rule under the old name, the five retired rules gone, your own rule and every other key kept · Codex rules: new file in place, old one parked · Beads hooks point at the new location |
 | round trip | `uninstall.sh` refuses while the pre-rename team is up · after destroy, uninstall leaves `~/.zshrc` byte-identical to the original and `settings.json` equal in content |
 
 ## Observed in the owner's real team (2026-09-20, after the migration)

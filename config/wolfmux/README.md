@@ -107,7 +107,7 @@ and the lead keep the feature exactly as you configured it.
 ```bash
 bd create "Subject" -t message -a backend -d "body"            # send; recipient's pane is notified
 bd create "Subject" -t message -a backend --body-file msg.md   # long / code-heavy body
-bd list --assignee $TEAM_ROLE --status open,in_progress,blocked --include-infra    # inbox: your tasks (new, claimed, blocked) + unread messages
+bd list --assignee $BEADS_ACTOR --status open,in_progress,blocked --include-infra   # inbox: your tasks (new, claimed, blocked) + unread messages; $BEADS_ACTOR is your role, or <team>.<role> in a named team
 bd show <id>                    # read            bd close <id> -r read       # mark read
 bd create "Re: ..." -t message -a frontend -d "..." --deps replies-to:<id>    # reply
 bd show <id> --thread           # conversation    bd list --type message --all    # history

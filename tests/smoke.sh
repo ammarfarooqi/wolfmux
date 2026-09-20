@@ -84,15 +84,28 @@ for name in opus sonnet haiku; do /bin/ln -s "$REPO/bin/claude-fable" "$WORK/lin
 check "claude-opus / -sonnet / -haiku: the same subscription launcher, each pinned to its model" 'WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-5" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-opus" | grep -q -- "--model claude-opus-5" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-haiku" | grep -q -- "--model claude-haiku-4-5" && WOLFMUX_DRY_RUN=1 WOLFMUX_SONNET_MODEL=claude-sonnet-9 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-9" && WOLFMUX_DRY_RUN=1 "$REPO/bin/claude-fable" | grep -q -- "--model claude-fable-5-1"'
 
 echo "== doctor and the inbox command (nothing is started)"
-# bash 3.2 under a UTF-8 locale reads the first byte of a dash as part of a variable name:
-# "$keys—" became an unbound variable and doctor died on the one case it exists to report.
-/bin/mkdir -p "$WORK/claude-dir"
-printf '{"env":{"ANTHROPIC_BASE_URL":"https://example.invalid"}}\n' >"$WORK/claude-dir/settings.json"
-check "doctor: reports a provider override in settings.json under a UTF-8 locale instead of dying" 'LC_ALL=en_US.UTF-8 CLAUDE_CONFIG_DIR="$WORK/claude-dir" teamctl doctor 2>&1 | grep -q "sets env: ANTHROPIC_BASE_URL"'
-check "doctor: no variable anywhere is followed directly by a non-ASCII character" '! LC_ALL=C grep -nE "\\\$[A-Za-z_][A-Za-z0-9_]*[^ -~]" "$REPO"/bin/* "$REPO"/config/wolfmux/lib/*.sh "$REPO"/config/wolfmux/hooks/* "$REPO"/*.sh'
+# bash 3.2 under a UTF-8 locale reads the first byte of a dash as part of a variable name: a
+# variable written right before one became an unbound variable, and doctor died on the one
+# case it exists to report. Doctor looks at your login, shell profiles and Keychain, so here
+# it gets a throwaway HOME and stand-ins for both CLIs: nothing of yours is read. That holds
+# for the Keychain too: `security find-generic-password` without a keychain argument searches
+# the user's search list, which macOS resolves from HOME (~/Library/Preferences,
+# ~/Library/Keychains). Under the throwaway HOME that list is empty; a check below says so.
+DOCTOR_HOME="$WORK/doctor-home"
+/bin/mkdir -p "$DOCTOR_HOME/.claude" "$WORK/stubbin"
+printf '{"env":{"ANTHROPIC_BASE_URL":"https://example.invalid"}}\n' >"$DOCTOR_HOME/.claude/settings.json"
+printf '#!/bin/bash\necho "{}"\n' >"$WORK/stubbin/claude"
+/bin/chmod 755 "$WORK/stubbin/claude"
+doctor_utf8() { env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME" LC_ALL=en_US.UTF-8 WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null; }
+check "doctor: reports a provider override in settings.json under a UTF-8 locale instead of dying" 'doctor_utf8 | grep -q "sets env: ANTHROPIC_BASE_URL" && ! doctor_utf8 | grep -q "unbound variable"'
+check "doctor: in the throwaway HOME no keychain of yours is on the search list, and doctor finds no Z.ai item there" '[ -z "$(HOME="$DOCTOR_HOME" /usr/bin/security list-keychains -d user 2>/dev/null)" ] && doctor_utf8 | grep -q "no Keychain item"'
+check "doctor: no variable in any script is followed directly by a non-ASCII character" '! LC_ALL=C grep -nE "\\\$[A-Za-z_][A-Za-z0-9_]*[^ -~]" "$REPO"/bin/* "$REPO"/config/wolfmux/lib/*.sh "$REPO"/config/wolfmux/hooks/* "$REPO"/*.sh "$REPO"/tests/*.sh "$REPO"/tests/stub-agent'
 # `bd update --claim` sets in_progress: an inbox that lists only `open` hides the task a
 # restarted worker is in the middle of, and it would answer "ready" and wait for ever.
-check "inbox: every inbox command we print or teach lists claimed and blocked work too" '! grep -rn -- "--status open --include-infra" "$REPO/bin" "$REPO/config/wolfmux" "$REPO/docs" "$REPO/README.md"'
+check "inbox: every inbox command we print or teach lists claimed and blocked work too" '! grep -rn -- "--status open --include-infra" "$REPO/bin" "$REPO/config/wolfmux" "$REPO/codex" "$REPO/docs" "$REPO/README.md"'
+# In a named team the inbox belongs to <team>.<role>, which is $BEADS_ACTOR and not $TEAM_ROLE.
+# (TEAM_PROTOCOL.md says $TEAM_ROLE in the file and is rewritten when it is handed to an agent.)
+check "inbox: help and manuals address the inbox by Beads identity, never by plain role" '! grep -rnE -- "--assignee .?.TEAM_ROLE" "$REPO/bin" "$REPO/docs" "$REPO/config/wolfmux/README.md" "$REPO/config/wolfmux/lib" "$REPO/README.md" | grep -v "sed\|-e .s/"'
 
 echo "== lifecycle"
 teamctl start astra --no-attach $START_FLAGS >/dev/null 2>&1
@@ -367,6 +380,9 @@ check "teams: status shows every team as a hierarchy: team, wolf, dogs" 'out="$(
 check "teams: status --json lists the teams; with --team it keeps the single-team shape" 'teamctl status --json | jq -e "(.teams | map(.team) | sort) == [\"default\", \"review\"] and ([.teams[] | select(.team == \"review\")][0].agents | map(.role)) == [\"lead\", \"backend\"]" && teamctl status --json --team review | jq -e ".team == \"review\" and .session_running and (.agents | length == 2)"'
 check "teams: teamctl teams is the short list" 'teamctl teams | grep -q "review .*running .*Fable 5.1" && teamctl teams | grep -q "default .*running .*GPT-6 Astra"'
 check "teams: a named team has its own Beads identities (<team>.<role>); the first team keeps plain roles" 'teamctl capture backend --team review --all | grep -q "STUB role=backend actor=review.backend" && teamctl capture backend --team default --all | grep -q "STUB role=backend actor=backend "'
+check "teams: the kickoff of a teammate in a named team names its own inbox (<team>.<role>)" 'teamctl spawn scribe flash --team review && sleep 2 && teamctl capture scribe --team review --all | grep -q "STUB kickoff_assignee=review.scribe"'
+teamctl stop scribe --team review >/dev/null 2>&1
+teamctl remove scribe --team review --force --yes >/dev/null 2>&1
 check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "-a review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
 check "teams: a notification finds the right team by identity" 'teamctl nudge review.backend --id abc-9 && sleep 1 && teamctl capture backend --team review -n 12 | grep -q "Beads update for review.backend (abc-9)" && ! teamctl capture backend --team default -n 12 | grep -q "abc-9"'
 check "teams: a lead manages its own team only (exit 77 for another team)" 'TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend --team default; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"stopped\"" && teamctl status --json --team default | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"running\""'

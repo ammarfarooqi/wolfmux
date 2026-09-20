@@ -23,5 +23,5 @@ prefix_rule(
     pattern = [["bd", "__HOME__/.local/bin/bd"]],
     decision = "allow",
     justification = "Beads: the team's tasks and messages",
-    match = ["bd ready", "bd list --assignee lead --status open --include-infra", "bd create Title -t task -a backend"],
+    match = ["bd ready", "bd list --assignee lead --status open,in_progress,blocked --include-infra", "bd create Title -t task -a backend"],
 )

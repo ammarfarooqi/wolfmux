@@ -374,8 +374,10 @@ build_role_prompt() {
   fi
 }
 
+# kickoff_text <role> <beads-identity> — the inbox is addressed by identity (<team>.<role> in a
+# named team, the plain role in the first one); teamctl takes the plain role and knows the team.
 kickoff_text() {
-  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `git log --oneline -5` in your worktree and continue it, do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$(team_identity "$TEAM" "$1")"
+  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "${2:-$1}" "$1"
 }
 
 # handover_text — what the lead of a team founded by another lead is started with
@@ -486,7 +488,7 @@ $prompt
       if [ "$resume" -eq 1 ]; then
         args+=(resume --last)
       elif [ "$(reg_field "$role" kickoff)" = "1" ]; then
-        args+=("$(kickoff_text "$role")")
+        args+=("$(kickoff_text "$role" "$BEADS_ACTOR")")
       fi
       ;;
     *)
@@ -498,7 +500,7 @@ $prompt
       if [ "$resume" -eq 1 ]; then
         args+=(--continue)
       elif [ "$(reg_field "$role" kickoff)" = "1" ]; then
-        args+=("$(kickoff_text "$role")")
+        args+=("$(kickoff_text "$role" "$BEADS_ACTOR")")
       fi
       ;;
   esac

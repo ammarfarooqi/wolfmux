@@ -77,7 +77,7 @@ moved_to_beads() {
 teamctl: '$1' is not a teamctl command — tasks and messages live in Beads (bd).
 
   message an agent     bd create "Subject" -t message -a <role> -d "body"      (long body: --body-file <file>)
-  your inbox           bd list --assignee \$TEAM_ROLE --status open,in_progress,blocked --include-infra
+  your inbox           bd list --assignee \$BEADS_ACTOR --status open,in_progress,blocked --include-infra
   read / mark read     bd show <id>   then   bd close <id> -r read
   reply in a thread    bd create "Re: ..." -t message -a <role> -d "..." --deps replies-to:<id>
   message history      bd list --type message --all          thread: bd show <id> --thread

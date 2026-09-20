@@ -29,6 +29,9 @@ echo "STUB codexnotify=$codexnotify"
 last=""
 [ "$#" -eq 0 ] || last="${!#}" # the kickoff prompt, when there is one, is the last argument
 case "$last" in *open,in_progress,blocked*"do not start over"*) echo "STUB kickoff_in_progress=yes" ;; *) echo "STUB kickoff_in_progress=no" ;; esac
+assignee="none" # whose inbox the kickoff names: in a named team that is <team>.<role>
+case "$last" in *"--assignee "*) assignee="${last#*--assignee }" && assignee="${assignee%% *}" ;; esac
+echo "STUB kickoff_assignee=$assignee"
 if [ -n "${WOLFMUX_EXTRA_SETTINGS:-}" ] && [ -r "$WOLFMUX_EXTRA_SETTINGS" ]; then
   echo "STUB settings=$(jq -c '{teams: .env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, mode: .teammateMode, hook: (.hooks.PermissionRequest != null)}' "$WOLFMUX_EXTRA_SETTINGS")"
   echo "STUB guard=$(jq -c '(.hooks.PreToolUse // []) | map(.hooks[].command) | join(" ") | test("_guard")' "$WOLFMUX_EXTRA_SETTINGS")"

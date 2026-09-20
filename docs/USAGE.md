@@ -167,7 +167,7 @@ Codex-based ones have neither (Codex has no such hooks) but do send notification
 ## Beads cheat sheet
 
 ```bash
-bd list --assignee $TEAM_ROLE --status open,in_progress,blocked --include-infra   # inbox: your tasks (new, claimed, blocked) + unread messages
+bd list --assignee $BEADS_ACTOR --status open,in_progress,blocked --include-infra   # inbox: your tasks (new, claimed, blocked) + unread messages; $BEADS_ACTOR is your role, or <team>.<role> in a named team
 bd show <id>                  bd show <id> --thread           # read; whole conversation
 bd close <id> -r read                                         # mark a message read
 bd create "Subject" -t message -a <role> -d "body"            # send        (--body-file for long text)

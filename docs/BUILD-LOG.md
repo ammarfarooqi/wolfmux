@@ -248,7 +248,6 @@ repository. Both worked in their own git worktrees on their own branches; this o
 on `main` before merging and installed only from `main`.
 
 `tests/smoke.sh`: 120 → 139 (15 for teams, 4 from the other session's audit fixes, merged here).
-
 ## 20. Deleting a team; teams that talk and found teams
 
 Asked: what does a team cost on disk, and can one command give it back? Measured on the
@@ -267,9 +266,48 @@ words; you are notified; `lead-teams off` switches it off.
 
 `tests/smoke.sh` gained 14 checks for this.
 
+## 21. An audit, and three things it was right about (v1.8, v1.8.1)
+
+A full audit of the repository (ten readers, each finding checked by a second one that tried
+to refute it) came back with a long list. The first three were small, certain and cheap:
+
+- **`teamctl doctor` died on the one case it exists for.** `"$keys` followed directly by a
+  dash: macOS bash 3.2 is not multibyte-aware, and under a UTF-8 locale it read the first
+  byte of the dash as part of the variable name. With `set -u` that is "unbound variable",
+  and it only happened when a settings file held a provider override. The same class as the
+  role-name bug of entry 16. Now `${keys}`, and a check that no variable in any script is
+  followed directly by a non-ASCII character.
+- **A restarted worker said "ready" and waited.** `bd update --claim` sets `in_progress`;
+  every inbox command printed or taught listed `--status open` only, so the task a worker was
+  in the middle of was the one it could not see. Now `--status open,in_progress,blocked`
+  everywhere (kickoff, both notices, help, protocol, manuals, the Codex rule file), and the
+  kickoff says to continue, with `git status` and `teamctl diff <role> --commits`: commands
+  every permission mode allows.
+- **The "narrow" allow rules were not narrow.** They go into the global
+  `~/.claude/settings.json`, and a rule is a prefix match: `git log *` also allowed
+  `git log --output=<file>`, and the tmux rules allowed `… \; run-shell …`, in every Claude
+  Code session on the machine. Five rules moved to `retired` in `claude/permissions.json`;
+  `install.sh` never adds them and takes them out of an existing file (backup, each one
+  named), `uninstall.sh` removes them too.
+
+The review of the fix found that the first version of it contradicted itself (the kickoff
+recommended `git log` in the same commit that retired its rule) and that the new doctor check
+read the real `HOME`, Keychain and CLIs; both fixed before merging.
+Rebasing onto the teams work of entries 19 and 20 showed one more: the kickoff addressed the inbox by
+plain role, so a teammate of a *named* team was sent to an inbox that is not its own
+(`backend` instead of `review.backend`); no check had covered it because every named-team
+spawn in the suite used `--no-kickoff`. Now it names the Beads identity.
+
+The three fixes went into `main` with v1.8 (entry 19 counts their four smoke checks); what the
+review found, and the kickoff address, is v1.8.1. The second review asked whether the throwaway `HOME` really keeps doctor away from
+the Keychain. It does (macOS resolves the user's keychain search list from `HOME`), and the
+suite now says so with a check instead of a comment; the help and the manuals address the
+inbox by `$BEADS_ACTOR` as well. `tests/smoke.sh`: 153 → 156 (three checks on top of entry 20). `tests/permissions.sh`: new, 9. `tests/migration.sh`: 21, one
+expectation changed (the retired rules are gone after a migration).
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
 |---------|------|
-| Modified (backed up) | `~/.zshrc` (one block), `~/.claude/settings.json` (9 allow rules, 1 ask rule) |
+| Modified (backed up) | `~/.zshrc` (one block), `~/.claude/settings.json` (4 allow rules, 1 ask rule; 9 before v1.8) |
 | Deliberately not created or touched | `~/.tmux.conf`, `~/.zprofile`, any CLAUDE.md / AGENTS.md, `~/.codex/config.toml`, `~/.codex/rules/default.rules`, git config, any project's `.gitignore` |
