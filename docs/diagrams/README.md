@@ -25,9 +25,12 @@ founded. Details: [USAGE.md](../USAGE.md#several-teams-in-one-project),
 
 ![Several teams in one project](teams.svg)
 
-## Billing isolation — every model call rides a subscription
+## Billing isolation: plans by default, metered only on request
 
 What each launcher removes from its own process, what it pins, and who gets paid.
+The diagram shows the three subscriptions it was drawn for; the provider launchers
+added in v1.10 work the same way, one endpoint and one Keychain key each, and the
+metered pair (the Moonshot platform, DeepSeek) stays behind `WOLFMUX_METERED`.
 Details and evidence: [SECURITY.md](../SECURITY.md).
 
 ![Billing isolation](billing-isolation.svg)
