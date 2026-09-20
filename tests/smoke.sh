@@ -82,6 +82,17 @@ check "codex-astra: starts Codex by its real path, never through a symlink" 'WOL
 for name in opus sonnet haiku; do /bin/ln -s "$REPO/bin/claude-fable" "$WORK/linkbin/claude-$name"; done
 check "claude-opus / -sonnet / -haiku: the same subscription launcher, each pinned to its model" 'WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-5" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-opus" | grep -q -- "--model claude-opus-5" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-haiku" | grep -q -- "--model claude-haiku-4-5" && WOLFMUX_DRY_RUN=1 WOLFMUX_SONNET_MODEL=claude-sonnet-9 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-9" && WOLFMUX_DRY_RUN=1 "$REPO/bin/claude-fable" | grep -q -- "--model claude-fable-5-1"'
 
+echo "== doctor and the inbox command (nothing is started)"
+# bash 3.2 under a UTF-8 locale reads the first byte of a dash as part of a variable name:
+# "$keys—" became an unbound variable and doctor died on the one case it exists to report.
+/bin/mkdir -p "$WORK/claude-dir"
+printf '{"env":{"ANTHROPIC_BASE_URL":"https://example.invalid"}}\n' >"$WORK/claude-dir/settings.json"
+check "doctor: reports a provider override in settings.json under a UTF-8 locale instead of dying" 'LC_ALL=en_US.UTF-8 CLAUDE_CONFIG_DIR="$WORK/claude-dir" teamctl doctor 2>&1 | grep -q "sets env: ANTHROPIC_BASE_URL"'
+check "doctor: no variable anywhere is followed directly by a non-ASCII character" '! LC_ALL=C grep -nE "\\\$[A-Za-z_][A-Za-z0-9_]*[^ -~]" "$REPO"/bin/* "$REPO"/config/wolfmux/lib/*.sh "$REPO"/config/wolfmux/hooks/* "$REPO"/*.sh'
+# `bd update --claim` sets in_progress: an inbox that lists only `open` hides the task a
+# restarted worker is in the middle of, and it would answer "ready" and wait for ever.
+check "inbox: every inbox command we print or teach lists claimed and blocked work too" '! grep -rn -- "--status open --include-infra" "$REPO/bin" "$REPO/config/wolfmux" "$REPO/docs" "$REPO/README.md"'
+
 echo "== lifecycle"
 teamctl start astra --no-attach $START_FLAGS >/dev/null 2>&1
 check "start: session running, lead registered" 'teamctl status --json | jq -e ".session_running and (.agents[0].role == \"lead\")"'
@@ -96,6 +107,7 @@ check "spawn: --base recorded" 'teamctl diff backend | grep -q "base:    release
 check "spawn: role environment set inside the pane" 'teamctl capture backend -n 8 | grep -q "STUB role=backend actor=backend model=glm53"'
 check "spawn: no provider or agent-session variable leaks into a pane" 'teamctl capture backend -n 8 | grep -Eq "^STUB leaked= *$"'
 check "spawn: kickoff prompt passed by default, omitted with --no-kickoff" 'teamctl capture backend -n 8 | grep -q "argc=6" && teamctl capture qa -n 8 | grep -q "argc=5"'
+check "spawn: the kickoff lists claimed work and says to continue it, not start over" 'teamctl capture backend -n 12 | grep -q "STUB kickoff_in_progress=yes"'
 check "spawn: the lead is the first pane" '[ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_index}:#{@ai_role}" | head -1)" = "0:lead" ]'
 check "spawn: pane titles are roles" 'tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_title}" | grep -q "^backend · GLM-5.3$"'
 check "validation: duplicate role refused" '! teamctl spawn backend glm53'
@@ -259,7 +271,7 @@ check "ask mode: no bypass flag and no hook" 'teamctl capture qa -n 8 | grep -q 
 teamctl policy worker-permissions skip >/dev/null 2>&1
 
 echo "== notifications"
-check "nudge: fixed line typed into the pane" 'teamctl nudge qa --id abc-123 && sleep 1 && teamctl capture qa -n 8 | grep -q "Beads update for qa (abc-123)"'
+check "nudge: fixed line typed into the pane" 'teamctl nudge qa --id abc-123 && sleep 1 && teamctl capture qa -n 8 | grep -q "Beads update for qa (abc-123).*--status open,in_progress,blocked"'
 check "nudge: debounced inside the window" 'teamctl nudge qa | grep -q skipped'
 sleep 4
 check "nudge: hostile bead id is dropped, never typed" 'teamctl nudge qa --id "x;rm -rf ~" && sleep 1 && ! teamctl capture qa -n 12 | grep -q "rm -rf"'

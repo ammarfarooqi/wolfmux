@@ -116,7 +116,7 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 | dependency | `bd dep add <task> <blocker>` |
 | message | a bead of type `message`; assignee = recipient, open = unread, `bd close <id> -r read` = read |
 | thread | `--deps replies-to:<id>`, shown with `bd show <id> --thread` |
-| inbox | `bd list --assignee <role> --status open --include-infra` (without `--include-infra`, message beads are hidden) |
+| inbox | `bd list --assignee <role> --status open,in_progress,blocked --include-infra` (without `--include-infra`, message beads are hidden) |
 | identity | `BEADS_ACTOR=<role>`, exported into every pane |
 
 ## Flows

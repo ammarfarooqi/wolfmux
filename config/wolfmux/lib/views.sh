@@ -123,7 +123,7 @@ cmd_status() {
     say "several teams: add --team <name> to a command · each team has its own session: teamctl attach --team <name>"
     say "they share this project's Beads; a named team's agents are <team>.<role> there (bd list --assignee review.lead …)"
   fi
-  say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open --include-infra"
+  say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
 }
 
 # teamctl teams — the short list

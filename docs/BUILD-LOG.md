@@ -247,7 +247,7 @@ This was written while a second Claude session was fixing other things in the sa
 repository. Both worked in their own git worktrees on their own branches; this one rebased
 on `main` before merging and installed only from `main`.
 
-`tests/smoke.sh`: 120 → 135.
+`tests/smoke.sh`: 120 → 139 (15 for teams, 4 from the other session's audit fixes, merged here).
 
 ## Footprint on the machine
 

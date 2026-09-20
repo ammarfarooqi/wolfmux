@@ -292,7 +292,7 @@ build_role_prompt() {
     printf -- '- Your branch: %s   (base: %s @ %s)\n' "$(reg_field "$role" branch)" "$(reg_field "$role" base_ref)" "$(reg_field "$role" base_commit | cut -c1-12)"
   fi
   printf -- '- Your team: %s\n' "$TEAM"
-  printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported). Your inbox: bd list --assignee %s --status open --include-infra\n' "$me" "$me"
+  printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported). Your inbox: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$me" "$me"
   printf -- '- The manager of this team is the agent with TEAM_ROLE=lead; in Beads it is called "%s". Nobody else manages, approves or assigns.\n' "$lead"
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then
     printf -- '- This project has more than one team and they share one Beads database. Everyone in YOUR team is called "%s.<role>" there: assign and message with -a %s.<role> (your lead: -a %s). A plain "lead" is the lead of ANOTHER team, and the tasks of other teams are not yours.\n' "$TEAM" "$TEAM" "$lead"
@@ -325,7 +325,7 @@ build_role_prompt() {
 }
 
 kickoff_text() {
-  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$(team_identity "$TEAM" "$1")"
+  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `git log --oneline -5` in your worktree and continue it, do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "$(team_identity "$TEAM" "$1")"
 }
 
 # cmd_prompt <role> — internal (`teamctl _prompt`): the session context an agent is started with
@@ -742,9 +742,9 @@ _nudge_one() {
     return 2
   fi
   if [ -n "$bead" ]; then
-    text="[wolfmux] Beads update for $who ($bead). Run: bd show $bead -- then: bd list --assignee $who --status open --include-infra"
+    text="[wolfmux] Beads update for $who ($bead). Run: bd show $bead -- then: bd list --assignee $who --status open,in_progress,blocked --include-infra"
   else
-    text="[wolfmux] Beads update for $who. Run: bd list --assignee $who --status open --include-infra"
+    text="[wolfmux] Beads update for $who. Run: bd list --assignee $who --status open,in_progress,blocked --include-infra"
   fi
   nudge_mark "$role"
   tm_type_line "$pane" "$text"

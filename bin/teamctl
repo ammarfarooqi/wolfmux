@@ -62,7 +62,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Tasks and messages are Beads, not teamctl:
     bd create "Title" -t task -p 1 -a backend -d "what to do"      assign work
     bd create "Subject" -t message -a frontend -d "body"            message an agent
-    bd list --assignee <role> --status open --include-infra        an agent's inbox (tasks + messages)
+    bd list --assignee <role> --status open,in_progress,blocked --include-infra        an agent's inbox (tasks + messages)
     bd show <id> · bd update <id> --claim · bd close <id> -r "..."  · bd ready
   Full protocol: ~/.config/wolfmux/TEAM_PROTOCOL.md      Docs: ~/.config/wolfmux/README.md
 EOF
@@ -73,7 +73,7 @@ moved_to_beads() {
 teamctl: '$1' is not a teamctl command — tasks and messages live in Beads (bd).
 
   message an agent     bd create "Subject" -t message -a <role> -d "body"      (long body: --body-file <file>)
-  your inbox           bd list --assignee \$TEAM_ROLE --status open --include-infra
+  your inbox           bd list --assignee \$TEAM_ROLE --status open,in_progress,blocked --include-infra
   read / mark read     bd show <id>   then   bd close <id> -r read
   reply in a thread    bd create "Re: ..." -t message -a <role> -d "..." --deps replies-to:<id>
   message history      bd list --type message --all          thread: bd show <id> --thread

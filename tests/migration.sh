@@ -113,7 +113,10 @@ check "uncommitted work in the worktree survived" '[ "$(/bin/cat "$NEW_TREE/note
 check "the worker restarts in the moved worktree" 'new_teamctl restart research && sleep 2 && new_teamctl capture research -n 8 | grep -q "STUB cwd=$NEW_TREE"'
 check "Beads hooks point at the new location" '[ "$(grep -l "wolfmux-hook v1" "$PROJECT"/.beads/hooks/on_* | wc -l | tr -d " ")" = 3 ] && ! grep -q "ai-team" "$PROJECT"/.beads/hooks/on_*'
 check "~/.zshrc: one block; only its two marker lines changed" '[ "$(grep -c ">>> wolfmux >>>" "$HOME/.zshrc")" = 1 ] && sed -e "s/^# >>> ai-team >>>/# >>> wolfmux >>>/" -e "s/^# <<< ai-team <<</# <<< wolfmux <<</" "$WORK/zshrc.before" | /usr/bin/cmp -s - "$HOME/.zshrc"'
-check "settings.json: tmux rules renamed, everything else kept" 'jq -e "(.permissions.allow | index(\"Bash(tmux -L wolfmux list-panes *)\")) and (.permissions.allow | index(\"Bash(ls *)\")) and (.tui == \"fullscreen\") and ([.permissions.allow[] | select(test(\"ai-team\"))] | length == 0) and (.permissions.allow | length == 10)" "$HOME/.claude/settings.json"'
+# v1.1 added rules that allowed more than they read (git diff/log/show *, tmux list-panes/capture-pane *).
+# The migration renames the tmux ones, then install.sh retires all five: what is left is your own
+# rule plus the four current ones.
+check "settings.json: no rule under the old name, the retired rules are gone, everything else kept" 'jq -e "(.permissions.allow | index(\"Bash(ls *)\")) and (.permissions.allow | index(\"Bash(teamctl *)\")) and (.tui == \"fullscreen\") and ([.permissions.allow[] | select(test(\"ai-team|tmux -L|git (diff|log|show) \"))] | length == 0) and (.permissions.allow | length == 5)" "$HOME/.claude/settings.json"'
 check "Codex rules: new file in place, old one parked" '[ -f "$HOME/.codex/rules/wolfmux.rules" ] && [ ! -e "$HOME/.codex/rules/ai-team.rules" ] && ls "$HOME"/.wolfmux/backups/*/ai-team.rules'
 check "no stored record still points into ~/.ai-team" '! grep -rIl --exclude="events.jsonl" -e "/\.ai-team/" "$HOME/.wolfmux/state"'
 check "running it again finds nothing to do" '"$REPO/migrate-from-ai-team.sh" | grep -q "Nothing to migrate"'

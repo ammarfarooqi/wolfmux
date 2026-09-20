@@ -37,7 +37,7 @@ _doc_settings_file() { # <path>
   keys="$("$JQ_BIN" -r '(.env // {}) | keys[] | select(test("^(ANTHROPIC_|CLAUDE_CODE_USE_|AWS_BEARER_TOKEN_BEDROCK)"))' "$file" 2>/dev/null | tr '\n' ' ')"
   helper="$("$JQ_BIN" -r 'if .apiKeyHelper then "yes" else "" end' "$file" 2>/dev/null)"
   if [ -n "$keys" ]; then
-    _risk "$(short_path "$file") sets env: $keys— applies to EVERY claude session, including claude-fable. Remove it."
+    _risk "$(short_path "$file") sets env: ${keys}— applies to EVERY claude session, including claude-fable. Remove it."
   fi
   if [ -n "$helper" ]; then
     _risk "$(short_path "$file") defines apiKeyHelper — every claude session would use that key instead of the subscription. Remove it."
