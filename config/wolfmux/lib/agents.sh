@@ -59,8 +59,8 @@ new_record() {
   "$JQ_BIN" -n --arg role "$1" --arg kind "$2" --arg model "$3" --arg label "$MODEL_LABEL" \
     --arg family "$MODEL_FAMILY" --arg launcher "$launcher" --arg workdir "$4" --arg branch "$5" \
     --arg base_ref "$6" --arg base_commit "$7" --arg kickoff "$8" --arg now "$(now_iso)" \
-    --arg spawned_by "${9:-operator}" --arg permissions "$permissions" --arg model_id "$MODEL_ID" \
-    '{role: $role, kind: $kind, model: $model, model_id: $model_id, label: $label, family: $family, launcher: $launcher,
+    --arg spawned_by "${9:-operator}" --arg permissions "$permissions" --arg model_id "$MODEL_ID" --arg billing "$MODEL_BILLING" \
+    '{role: $role, kind: $kind, model: $model, model_id: $model_id, label: $label, family: $family, billing: $billing, launcher: $launcher,
       workdir: $workdir, branch: $branch, base_ref: $base_ref, base_commit: $base_commit,
       kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions,
       pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
@@ -134,6 +134,7 @@ cmd_start() {
   done
   [ -n "$model" ] && model_info "$model" ||
     die_usage "usage: teamctl start <fable|astra|…> [--no-attach] [--continue] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]   (models: $WOLFMUX_MODEL_KEYS)"
+  require_metered_ok
   require_tools
   # start never guesses between teams: the one you name, else the first one.
   WOLFMUX_TEAM_ARG="${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
@@ -263,6 +264,7 @@ cmd_spawn() {
   require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
+  require_metered_ok
   require_tools
   load_project
   ensure_state_dirs

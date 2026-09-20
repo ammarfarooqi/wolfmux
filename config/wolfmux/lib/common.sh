@@ -2,7 +2,7 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-WOLFMUX_VERSION="1.9.0"
+WOLFMUX_VERSION="1.10.0"
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
 # This project was first called "ai-team". A team started under that name keeps
@@ -122,10 +122,13 @@ valid_bead_id() {
 }
 
 # --- model table (the only place that knows which CLI serves which model) -----
-# model_info <key> — sets MODEL_KEY MODEL_LAUNCHER MODEL_LABEL MODEL_FAMILY
+# model_info <key> — sets MODEL_KEY MODEL_ID MODEL_LAUNCHER MODEL_LABEL MODEL_FAMILY MODEL_BILLING
 # A model is a key from this table, or "claude:<model id>" / "codex:<model id>" for any
 # other model of those two subscriptions. (GLM: the Coding Plan covers only the two ids
-# behind glm53 and flash, so there is no "glm:<id>".)
+# behind glm53 and flash, so there is no "glm:<id>".) Every other provider of the provider
+# table (lib/providers.sh) is a key of its own, and "<key>:<model id>" where the provider
+# lets you name the model. MODEL_BILLING: subscription (Claude, ChatGPT), plan (a coding plan
+# with a quota) or metered (every token is billed: off unless WOLFMUX_METERED=on).
 valid_model_id() {
   case "$1" in
     "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}._\[\]-]*) return 1 ;;
@@ -133,8 +136,24 @@ valid_model_id() {
   [ "${#1}" -le 64 ]
 }
 
+# _model_info_provider <key>: "<provider>" or "<provider>:<model id>" for a provider of the
+# table other than glm. Returns 1 for anything else, so a typo is refused before anything is created.
+_model_info_provider() {
+  local provider="${1%%:*}" model_id=""
+  [ -n "$provider" ] && [ "$provider" != "glm" ] || return 1
+  case " $WOLFMUX_PROVIDERS " in *" $provider "*) ;; *) return 1 ;; esac
+  wolfmux_provider_info "$provider" || return 1
+  if [ "$1" != "$provider" ]; then
+    [ "$PROVIDER_PINNABLE" = "1" ] || return 1
+    model_id="${1#*:}"
+    valid_model_id "$model_id" || return 1
+  fi
+  MODEL_ID="$model_id" MODEL_LAUNCHER="claude-$provider" MODEL_FAMILY="claude" MODEL_BILLING="$PROVIDER_BILLING"
+  MODEL_LABEL="${model_id:-$PROVIDER_LABEL}"
+}
+
 model_info() {
-  MODEL_KEY="$1" MODEL_ID=""
+  MODEL_KEY="$1" MODEL_ID="" MODEL_BILLING="subscription"
   case "$1" in
     fable)
       MODEL_LAUNCHER="claude-fable" MODEL_LABEL="Fable 5.1" MODEL_FAMILY="claude"
@@ -160,23 +179,47 @@ model_info() {
       MODEL_LAUNCHER="codex-astra" MODEL_LABEL="GPT-6 Astra" MODEL_FAMILY="codex"
       ;;
     glm53)
-      MODEL_LAUNCHER="claude-glm" MODEL_LABEL="GLM-5.3" MODEL_FAMILY="claude"
+      MODEL_LAUNCHER="claude-glm" MODEL_LABEL="GLM-5.3" MODEL_FAMILY="claude" MODEL_BILLING="plan"
       ;;
     flash)
-      MODEL_LAUNCHER="claude-glm-flash" MODEL_LABEL="GLM-5.3 Flash" MODEL_FAMILY="claude"
+      MODEL_LAUNCHER="claude-glm-flash" MODEL_LABEL="GLM-5.3 Flash" MODEL_FAMILY="claude" MODEL_BILLING="plan"
       ;;
-    *) return 1 ;;
+    *) _model_info_provider "$1" ;;
   esac
 }
 
-WOLFMUX_MODEL_KEYS="glm53 flash fable opus sonnet haiku astra claude:<model-id> codex:<model-id>"
+# What usage lines and "unknown model" errors list: the fixed keys, then whatever the provider
+# table holds (so a new provider is named everywhere without editing a string).
+WOLFMUX_MODEL_KEYS="glm53 flash fable opus sonnet haiku astra"
+for _wm_provider in $WOLFMUX_PROVIDERS; do
+  [ "$_wm_provider" = "glm" ] || WOLFMUX_MODEL_KEYS="$WOLFMUX_MODEL_KEYS $_wm_provider"
+done
+WOLFMUX_MODEL_KEYS="$WOLFMUX_MODEL_KEYS claude:<model-id> codex:<model-id>"
+for _wm_provider in $WOLFMUX_PROVIDERS; do
+  [ "$_wm_provider" = "glm" ] && continue
+  if wolfmux_provider_info "$_wm_provider" && [ "$PROVIDER_PINNABLE" = "1" ]; then
+    WOLFMUX_MODEL_KEYS="$WOLFMUX_MODEL_KEYS $_wm_provider:<model-id>"
+  fi
+done
+unset _wm_provider
+
+# require_metered_ok, after model_info: a metered model (every token is billed to a prepaid
+# balance) is refused unless the owner's config file says WOLFMUX_METERED=on (wolfmux_metered_on).
+# The environment never counts: an agent could put a variable in front of one command, and the
+# pane a spawned agent runs in gets its environment from the tmux server, not from that command.
+require_metered_ok() {
+  [ "$MODEL_BILLING" = "metered" ] || return 0
+  wolfmux_metered_on && return 0
+  die "'$MODEL_KEY' is metered: every token is billed to a prepaid balance, not to a plan or a subscription, so it is off. Only the owner switches it on (an agent does not decide that): put WOLFMUX_METERED=on in $(short_path "$WOLFMUX_HOME/config"). An environment variable does not count." 77
+}
 
 # launcher_path <key> — WOLFMUX_LAUNCHER_<KEY> overrides the default (used by tests).
 launcher_path() {
   local key="$1" upper override
   model_info "$key" || return 1
   case "$key" in
-    *:*) upper="$(printf '%s' "$MODEL_FAMILY" | tr '[:lower:]' '[:upper:]')" ;; # claude:<id> / codex:<id>
+    claude:* | codex:*) upper="$(printf '%s' "$MODEL_FAMILY" | tr '[:lower:]' '[:upper:]')" ;; # claude:<id> / codex:<id>
+    *:*) upper="$(printf '%s' "${key%%:*}" | tr '[:lower:]' '[:upper:]')" ;;                    # <provider>:<id>
     *) upper="$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')" ;;
   esac
   eval "override=\"\${WOLFMUX_LAUNCHER_${upper}:-}\""
