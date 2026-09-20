@@ -24,10 +24,11 @@
 # the worker spawns (see WOLFMUX_GLM_GUARD_TOKEN in lib/provider-env.sh). This
 # launcher refuses to start without it.
 #
-# A provider billed per token (PROVIDER_BILLING=metered) is refused unless the owner's
-# ~/.config/wolfmux/config carries WOLFMUX_METERED=on. The config file and nothing else:
-# no agent can decide to spend money, and a variable in a pane's environment came from
-# the tmux server, not from the owner.
+# A provider billed per token (PROVIDER_BILLING=metered) is refused unless the OWNER's
+# ~/.config/wolfmux/config carries WOLFMUX_METERED=on. That file and nothing else: not a
+# variable (a pane's environment comes from the tmux server, not from the owner) and not
+# a config directory chosen by $WOLFMUX_HOME (an agent sets that). See
+# wolfmux_owner_config in lib/providers.sh, which also says what this is not.
 #
 # Settings (environment, else ~/.config/wolfmux/config), <P> being the provider in
 # capitals:
@@ -36,8 +37,10 @@
 #                          additionally asks Z.ai for its 1M window (uses quota faster)
 #   WOLFMUX_<P>_MODEL      pin the main model id; WOLFMUX_<P>_FAST_MODEL the haiku
 #                          tier (both ignored for glm: the plan covers two ids)
-#   WOLFMUX_METERED=on     allow a provider billed per token (the config file only:
-#                          the environment never opens that gate)
+#   WOLFMUX_METERED=on     allow a provider billed per token. The owner's own config
+#                          file only, located through the account rather than through
+#                          $HOME or $WOLFMUX_HOME: neither the environment nor a config
+#                          directory an agent chose opens that gate
 #   WOLFMUX_CLAUDE_BIN     explicit path to the claude binary
 #   WOLFMUX_DRY_RUN=1      print what would run (no secrets) and exit
 #   WOLFMUX_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
@@ -142,6 +145,13 @@ if [ "$PROVIDER_PINNABLE" = 1 ]; then
   [ -z "$PINNED" ] || MAIN="$PINNED"
   PINNED="$(wolfmux_provider_setting "$PROVIDER" FAST_MODEL)"
   [ -z "$PINNED" ] || FAST="$PINNED"
+  # `--model <id>` on the command line is how teamctl passes <provider>:<id>. It is the
+  # model the session will run on, so it has to decide the mappings and the window too,
+  # not just be forwarded: an id without [1m] needs a max-context window even when the
+  # table's default id has the suffix, and the other way round. The fast tier keeps the
+  # table's id (the caller chose one model, not two).
+  ARG_MODEL="$(wolfmux_args_model_value "$@")" || ARG_MODEL=""
+  [ -z "$ARG_MODEL" ] || MAIN="$ARG_MODEL"
 fi
 MAIN="${MAIN}${SUFFIX}"
 FAST="${FAST}${SUFFIX}"
@@ -196,10 +206,13 @@ fi
 # Billed per token: the owner decides, never an agent, and only in the config file.
 # The gate is checked before the Keychain, so the refusal says which of the two
 # problems it is.
+# The one file that decides, named in full wherever this launcher mentions it.
+OWNER_CONFIG="$(wolfmux_owner_config)" || OWNER_CONFIG=""
+[ -n "$OWNER_CONFIG" ] || OWNER_CONFIG="$HOME/.config/wolfmux/config (your account has no home directory: guessing)"
 METERED_GATE=""
 if [ "$PROVIDER_BILLING" = "metered" ]; then
   if wolfmux_metered_on; then
-    METERED_GATE="open (WOLFMUX_METERED=on in $WOLFMUX_HOME/config)"
+    METERED_GATE="open (WOLFMUX_METERED=on in $OWNER_CONFIG)"
   else
     METERED_GATE="closed"
   fi
@@ -273,13 +286,14 @@ if [ "$METERED_GATE" = "closed" ]; then
   {
     echo "$SELF: $PROVIDER is billed per token ($PROVIDER_BILLING_NOTE), and the meter is closed."
     echo
-    echo "Only you can open it, not an agent, and only in your config file. Add this"
-    echo "line to $WOLFMUX_HOME/config:"
+    echo "Only you can open it, not an agent, and only in your own config file. Add"
+    echo "this line to $OWNER_CONFIG:"
     echo
     echo "  WOLFMUX_METERED=on"
     echo
-    echo "A variable in the environment does not open it: a pane's environment comes from"
-    echo "the tmux server, not from the shell you typed the command in."
+    echo "Nothing else opens it: not a variable in the environment, and not a config file"
+    echo "somewhere else. That file is found through your account, not through \$HOME or"
+    echo "\$WOLFMUX_HOME, so an agent cannot point the decision at a file it wrote itself."
     echo
   } >&2
   exit 78

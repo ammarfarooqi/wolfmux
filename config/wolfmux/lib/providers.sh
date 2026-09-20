@@ -191,15 +191,40 @@ wolfmux_provider_key_exists() {
   /usr/bin/security find-generic-password -s "$PROVIDER_KEYCHAIN" >/dev/null 2>&1
 }
 
-# wolfmux_metered_on — true only when the owner's config file has an active
-# WOLFMUX_METERED=on line. The file is parsed, never sourced (the rules of
-# wolfmux_load_config: comments and blank lines skipped, whitespace trimmed, the last
-# line wins). The environment is ignored on purpose: a pane's environment comes from
-# the tmux server, not from the shell that ran `teamctl spawn`, so a variable there
-# would be a billing switch that an agent can flip with a prefix on one command.
-wolfmux_metered_on() {
-  local file="${WOLFMUX_HOME:-$HOME/.config/wolfmux}/config" line key value answer=""
-  [ -r "$file" ] || return 1
+# wolfmux_owner_config — the ONE file that may open the metered gate: the owner's
+# ~/.config/wolfmux/config, located through the password database.
+#
+# Not through $HOME and not through $WOLFMUX_HOME. Both are environment values, so an
+# agent that can set either could point billing consent at a file it wrote itself: it
+# would not need the owner's config, or write access to it, to spend the owner's money.
+# The login name of the effective user is the only input, and it is checked against a
+# safe character set before the expansion that turns it into a home directory (bash 3.2
+# has no other way to expand ~name).
+#
+# What this is NOT: a sandbox. An agent that can run arbitrary code as this user can do
+# anything this user can do, including editing the owner's config. The gate stops the
+# ordinary path (a variable, a redirected config directory), not same-user code.
+wolfmux_owner_config() {
+  local name home
+  name="$(/usr/bin/id -un 2>/dev/null)" || return 1
+  case "$name" in
+    "" | *[!A-Za-z0-9._-]*) return 1 ;; # nothing that could carry shell syntax
+  esac
+  eval "home=~$name" 2>/dev/null || return 1
+  case "$home" in
+    /*) ;;
+    *) return 1 ;; # no such user: bash left the tilde unexpanded
+  esac
+  printf '%s\n' "$home/.config/wolfmux/config"
+}
+
+# _wolfmux_metered_in_file <file> — the parser, and nothing else: true when this file
+# has an active WOLFMUX_METERED=on line. Same rules as wolfmux_load_config (the file is
+# parsed, never sourced; comments and blank lines skipped, whitespace trimmed, the last
+# line wins). Which file is policy, and policy lives in wolfmux_metered_on.
+_wolfmux_metered_in_file() {
+  local file="$1" line key value answer=""
+  [ -n "$file" ] && [ -r "$file" ] || return 1
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in "" | \#*) continue ;; esac
     case "$line" in *=*) ;; *) continue ;; esac
@@ -212,6 +237,14 @@ wolfmux_metered_on() {
     answer="$value"
   done <"$file"
   [ "$answer" = "on" ]
+}
+
+# wolfmux_metered_on — true only when the OWNER said so, in the owner's own file. No
+# argument, no override, no test seam: a way to ask this question about another file
+# would be the hole it exists to close. It fails closed (an unreadable or missing file
+# is a no).
+wolfmux_metered_on() {
+  _wolfmux_metered_in_file "$(wolfmux_owner_config)"
 }
 
 wolfmux_provider_key_help() {
