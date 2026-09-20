@@ -1,7 +1,7 @@
 #!/bin/bash
 # install.sh — put wolfmux in place for the current user. Idempotent and reversible.
 #
-# It copies files, links four launcher names, builds Wolfmux.app (the owner of the team's
+# It copies files, links the launcher names, builds Wolfmux.app (the owner of the team's
 # notifications), writes ~/bin/codex when no codex is installed, and makes three small,
 # backed-up edits:
 #   ~/.zshrc                      one marked block that appends ~/bin to PATH
@@ -180,6 +180,20 @@ for name in claude-opus claude-sonnet claude-haiku; do
     note "linked: $BIN_DIR/$name -> claude-fable"
   fi
 done
+# The other providers of the table (lib/providers.sh): claude-glm again, under the provider's name.
+# The name it is called by decides which endpoint and key it uses. A file of yours under one of
+# those names is kept, and then teamctl would start yours: the note says so.
+PROVIDERS="$( . "$REPO/config/wolfmux/lib/provider-env.sh"; printf '%s' "$WOLFMUX_PROVIDERS")"
+for provider in $PROVIDERS; do
+  [ "$provider" = "glm" ] && continue
+  name="claude-$provider"
+  if [ ! -e "$BIN_DIR/$name" ] && [ ! -L "$BIN_DIR/$name" ]; then
+    /bin/ln -s claude-glm "$BIN_DIR/$name"
+    note "linked: $BIN_DIR/$name -> claude-glm"
+  elif [ "$(readlink "$BIN_DIR/$name" 2>/dev/null || true)" != "claude-glm" ]; then
+    note "kept your existing $BIN_DIR/$name (it is not our link: teamctl will start that one for '$provider')"
+  fi
+done
 BUNDLED_CODEX="/Applications/ChatGPT.app/Contents/Resources/codex"
 # A wrapper, not a symlink: Codex looks for its helper programs (its command runner among
 # them) next to the path it was started as, and through a symlink that would be ~/bin.
@@ -279,4 +293,20 @@ fi
      security add-generic-password -U -s zai-coding-plan -a "$USER" -l "Z.ai Coding Plan API key" -w
 2. Open a new terminal, then:   teamctl doctor
 3. In a project:                teamctl start fable      (or: teamctl start astra)
+
+Other providers are optional; add a key only for one you will use, the same way (Keychain service
+in brackets), then: teamctl spawn <role> <provider>
 EOF
+metered=""
+for provider in $PROVIDERS; do
+  [ "$provider" = "glm" ] && continue
+  ( . "$REPO/config/wolfmux/lib/provider-env.sh"; wolfmux_provider_info "$provider" && printf '     %-9s (%s)\n' "$provider" "$PROVIDER_KEYCHAIN" )
+  if [ "$( . "$REPO/config/wolfmux/lib/provider-env.sh"; wolfmux_provider_info "$provider" && printf '%s' "$PROVIDER_BILLING")" = "metered" ]; then metered="$metered $provider"; fi
+done
+/bin/cat <<'EOF'
+     security add-generic-password -U -s <service> -a "$USER" -l "<name> API key" -w
+   teamctl doctor prints the exact command per provider.
+EOF
+if [ -n "$metered" ]; then
+  printf '   Metered (every token is billed):%s. teamctl refuses them until you set WOLFMUX_METERED=on in %s/config.\n' "$metered" "~/.config/wolfmux"
+fi

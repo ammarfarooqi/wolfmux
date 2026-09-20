@@ -140,43 +140,99 @@ _doc_astra() {
   _note "Configured for subscription authentication; verify account status in the CLI (/status)."
 }
 
-_doc_glm() {
-  local file leaked=0 glm_mode
-  glm_mode="$( (wolfmux_load_config; printf '%s' "${WOLFMUX_GLM_AUTH_MODE:-helper}") )"
-  _head "Workers — Claude Code + GLM-5.3 / GLM-5.3 Flash   (expected billing: Z.ai GLM Coding Plan)"
-  _doc_launcher claude-glm
-  _doc_launcher claude-glm-flash
-  if wolfmux_zai_key_exists; then
-    _ok "Keychain item '$WOLFMUX_ZAI_KEYCHAIN_SERVICE' exists (value not read)"
-  else
-    _risk "Z.ai credential is missing: no Keychain item '$WOLFMUX_ZAI_KEYCHAIN_SERVICE'. Workers cannot start. Add it:"
-    printf '                   security add-generic-password -U -s %s -a "$USER" -l "Z.ai Coding Plan API key" -w\n' "$WOLFMUX_ZAI_KEYCHAIN_SERVICE"
-  fi
-  _ok "endpoint  $WOLFMUX_ZAI_BASE_URL  (Coding Plan endpoint; set only inside the launcher process)"
-  case "$glm_mode" in
-    helper) _ok "key delivery: apiKeyHelper (Keychain read on demand; the key never enters a worker's environment)" ;;
-    env) _note "key delivery: ANTHROPIC_AUTH_TOKEN (Z.ai's documented mode; the key is visible to a worker's subprocesses)" ;;
-    *) _fail "WOLFMUX_GLM_AUTH_MODE='$glm_mode' in $(short_path "$WOLFMUX_HOME/config") is invalid (use helper or env)" ;;
-  esac
-  _ok "login guard on: nothing a GLM worker spawns can present your claude.ai login to Z.ai"
-  if [ -r "$WOLFMUX_HOME/glm-worker-settings.json" ]; then
-    if "$JQ_BIN" -e . "$WOLFMUX_HOME/glm-worker-settings.json" >/dev/null 2>&1; then
-      _ok "worker settings overlay: $(short_path "$WOLFMUX_HOME/glm-worker-settings.json")  (plugins off in workers: $("$JQ_BIN" -r '[(.enabledPlugins // {}) | to_entries[] | select(.value == false) | .key] | join(", ") | if . == "" then "none" else . end' "$WOLFMUX_HOME/glm-worker-settings.json"))"
+# _doc_overlay: the Claude Code settings overlay every third-party provider's agents get
+_doc_overlay() {
+  local overlay="$WOLFMUX_HOME/glm-worker-settings.json"
+  if [ -r "$overlay" ]; then
+    if "$JQ_BIN" -e . "$overlay" >/dev/null 2>&1; then
+      _ok "worker settings overlay: $(short_path "$overlay")  (applies to every provider below; plugins off there: $("$JQ_BIN" -r '[(.enabledPlugins // {}) | to_entries[] | select(.value == false) | .key] | join(", ") | if . == "" then "none" else . end' "$overlay"))"
     else
-      _fail "worker settings overlay is not valid JSON: $(short_path "$WOLFMUX_HOME/glm-worker-settings.json")"
+      _fail "worker settings overlay is not valid JSON: $(short_path "$overlay")"
     fi
   else
-    _note "no worker settings overlay: GLM workers load exactly your normal Claude Code plugins"
+    _note "no worker settings overlay: agents on other providers load exactly your normal Claude Code plugins"
   fi
-  _ok "models    glm-5.3 (claude-glm), glm-5.3-flash (claude-glm-flash); every Claude alias is mapped to one of the two"
+}
+
+# _doc_provider <provider>: one third-party provider that Claude Code can be pointed at. The
+# Z.ai key is the default workers' key, so a missing one is a risk; every other provider is
+# optional and a missing key is only a note. Prints names and locations, never a key.
+_doc_provider() {
+  local p="$1" file leaked=0 mode host pattern name upper
+  wolfmux_provider_info "$p" || return 0
+  upper="$(printf '%s' "$p" | tr '[:lower:]' '[:upper:]')"
+  host="${PROVIDER_BASE_URL#*://}"
+  host="${host%%/*}"
+  if [ "$p" = "glm" ]; then
+    _head "Workers — Claude Code + GLM-5.3 / GLM-5.3 Flash   (expected billing: Z.ai GLM Coding Plan)"
+    _doc_launcher claude-glm
+    _doc_launcher claude-glm-flash
+  else
+    if [ "$PROVIDER_BILLING" = "metered" ]; then
+      _head "Optional: Claude Code + $PROVIDER_VENDOR   (expected billing: METERED, $PROVIDER_BILLING_NOTE)"
+    else
+      _head "Optional: Claude Code + $PROVIDER_VENDOR   (expected billing: $PROVIDER_BILLING_NOTE)"
+    fi
+    # Optional: a launcher that install.sh has not linked yet is a note, as for claude-opus.
+    if [ -x "$WOLFMUX_BIN_DIR/claude-$p" ]; then _doc_launcher "claude-$p"; else _note "launcher claude-$p is missing; ./install.sh links it"; fi
+  fi
+  if wolfmux_provider_key_exists "$p"; then
+    _ok "Keychain item '$PROVIDER_KEYCHAIN' exists (value not read)"
+  elif [ "$p" = "glm" ]; then
+    _risk "Z.ai credential is missing: no Keychain item '$PROVIDER_KEYCHAIN'. Workers cannot start. Add it:"
+    printf '                   security add-generic-password -U -s %s -a "$USER" -l "Z.ai Coding Plan API key" -w\n' "$PROVIDER_KEYCHAIN"
+  else
+    _note "optional, not set up: no Keychain item '$PROVIDER_KEYCHAIN' (key from $PROVIDER_KEY_URL). To use it, add the key:"
+    printf '                   security add-generic-password -U -s %s -a "$USER" -l "%s key" -w\n' "$PROVIDER_KEYCHAIN" "$PROVIDER_LABEL"
+  fi
+  _ok "endpoint  $PROVIDER_BASE_URL  (set only inside the launcher process)"
+  mode="$(wolfmux_provider_setting "$p" AUTH_MODE)"
+  case "${mode:-helper}" in
+    helper) _ok "key delivery: apiKeyHelper (Keychain read on demand; the key never enters an agent's environment)" ;;
+    env) _note "key delivery: $PROVIDER_AUTH_VAR (the vendor's documented mode; the key is visible to an agent's subprocesses)" ;;
+    *) _fail "WOLFMUX_${upper}_AUTH_MODE='$mode' in $(short_path "$WOLFMUX_HOME/config") is invalid (use helper or env)" ;;
+  esac
+  _ok "login guard on: nothing an agent on $PROVIDER_LABEL spawns can present your claude.ai login to $host"
+  if [ "$p" = "glm" ]; then
+    _doc_overlay
+    _ok "models    glm-5.3 (claude-glm), glm-5.3-flash (claude-glm-flash); every Claude alias is mapped to one of the two"
+  else
+    _ok "models    $PROVIDER_MAIN_MODEL (claude-$p), background tier $PROVIDER_FAST_MODEL; another one: WOLFMUX_${upper}_MODEL, or teamctl spawn <role> $p:<model-id>"
+  fi
+  if [ "$PROVIDER_BILLING" = "metered" ]; then
+    if [ "${WOLFMUX_METERED:-}" = "on" ]; then
+      _note "billing: METERED ($PROVIDER_BILLING_NOTE). WOLFMUX_METERED=on: teamctl starts metered agents, every token they use is billed"
+    else
+      _ok "billing: METERED ($PROVIDER_BILLING_NOTE); teamctl refuses to start it because WOLFMUX_METERED is off (the owner's decision)"
+    fi
+  else
+    _ok "billing: plan ($PROVIDER_BILLING_NOTE)"
+  fi
+  # Hosts are matched with their dots escaped; a settings file or profile that names one would
+  # redirect plain 'claude' (or hand it this provider's model ids), whatever the launcher scrubs.
+  pattern="$(printf '%s' "$host" | sed 's/\./\\./g')"
+  name="$host"
+  if [ "$p" = "glm" ]; then
+    pattern="$pattern|bigmodel\\.cn|glm-[0-9]"
+    name="Z.ai/GLM"
+  fi
   for file in "$CLAUDE_DIR/settings.json" "$CLAUDE_DIR/settings.local.json" "$HOME/.zshrc" "$HOME/.zprofile" "$HOME/.zshenv" "$HOME/.profile"; do
-    if [ -f "$file" ] && grep -qiE 'api\.z\.ai|bigmodel\.cn|glm-[0-9]' "$file" 2>/dev/null; then
+    if [ -f "$file" ] && grep -qiE "$pattern" "$file" 2>/dev/null; then
       leaked=1
-      _risk "$(short_path "$file") mentions Z.ai/GLM — Z.ai settings must live only in the launchers, or plain 'claude' is redirected."
+      _risk "$(short_path "$file") mentions $name: its settings must live only in the launchers, or plain 'claude' is redirected."
     fi
   done
-  if [ "$leaked" -eq 0 ]; then _ok "no Z.ai configuration outside the launchers (plain 'claude' stays on Anthropic)"; fi
-  _note "Configured for the Coding Plan endpoint; verify the plan and quota at z.ai, and in a worker with /status."
+  if [ "$leaked" -eq 0 ]; then _ok "no $name configuration outside the launchers (plain 'claude' stays on Anthropic)"; fi
+  if [ "$p" = "glm" ]; then
+    _note "Configured for the Coding Plan endpoint; verify the plan and quota at z.ai, and in a worker with /status."
+  else
+    _note "Configured for the endpoint above; verify the account, its balance or quota with the vendor, and in an agent with /status."
+  fi
+}
+
+_doc_providers() {
+  local p
+  for p in $WOLFMUX_PROVIDERS; do _doc_provider "$p"; done
 }
 
 _doc_beads() {
@@ -228,6 +284,7 @@ _doc_policy() {
 }
 
 cmd_doctor() {
+  local p metered
   [ -n "$JQ_BIN" ] || die "jq is required for doctor"
   ROOT="$(resolve_root 2>/dev/null || true)"
   CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -236,7 +293,7 @@ cmd_doctor() {
   _doc_tools
   _doc_fable
   _doc_astra
-  _doc_glm
+  _doc_providers
   _head "Shell profiles"
   _doc_profiles
   _doc_beads
@@ -246,6 +303,14 @@ cmd_doctor() {
   _note "claude.ai  > Settings > Usage: keep 'extra usage' OFF, or overage beyond the plan is metered."
   _note "chatgpt.com > Settings > Codex usage: do not buy or auto-refill credits if you want plan-only usage."
   _note "z.ai       > Billing: a zero cash balance makes pay-as-you-go impossible even if a call left the plan."
+  metered=""
+  for p in $WOLFMUX_PROVIDERS; do
+    if wolfmux_provider_info "$p" && [ "$PROVIDER_BILLING" = "metered" ]; then metered="$metered $p"; fi
+  done
+  if [ -n "$metered" ]; then
+    _note "metered providers ($(printf '%s' "$metered" | sed 's/^ //; s/ /, /g')): a prepaid balance is spent per token. Keep WOLFMUX_METERED off unless you mean it, and load only what you can lose."
+  fi
+  _note "minimax: the key decides the billing; a pay-as-you-go key on the Token Plan URL is metered. Use the plan's Subscription Key."
   printf '\n'
   if [ "$DOC_FAIL" -gt 0 ] || [ "$DOC_WARN" -gt 0 ]; then
     printf '%sresult: %d failure(s), %d warning(s)%s\n' "$_C_BLD" "$DOC_FAIL" "$DOC_WARN" "$_C_OFF"

@@ -35,7 +35,11 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Workers
     teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]
         models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
-                claude:<model-id> · codex:<model-id>      any model in any team, whoever leads
+                kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
+                claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
+                minimax:<model-id> · qwen:<model-id>      any model in any team, whoever leads
+                moonshot and deepseek bill every token (metered): refused unless the owner sets WOLFMUX_METERED=on;
+                teamctl status marks them with $
     teamctl stop <role>                               close the pane; worktree, branch and record stay
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else

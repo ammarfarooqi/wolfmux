@@ -58,6 +58,14 @@ for name in claude-glm-flash claude-opus claude-sonnet claude-haiku; do
     note "removed: $BIN_DIR/$name"
   fi
 done
+# The provider launchers are links to claude-glm (claude-kimi, claude-qwen, ...). Any link of that
+# kind goes, whichever version of the table put it there; a file of yours under such a name stays.
+for link in "$BIN_DIR"/claude-*; do
+  if [ -L "$link" ] && [ "$(readlink "$link")" = "claude-glm" ]; then
+    /bin/rm -f "$link"
+    note "removed: $link"
+  fi
+done
 # Only our own symlink to the app-bundled CLI; a real codex install is left alone.
 if [ -L "$BIN_DIR/codex" ] && [ "$(readlink "$BIN_DIR/codex")" = "/Applications/ChatGPT.app/Contents/Resources/codex" ]; then
   /bin/rm -f "$BIN_DIR/codex"

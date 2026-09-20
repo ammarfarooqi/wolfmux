@@ -4,6 +4,16 @@
 # Process state comes from tmux, worktree state from git, and the role/model
 # mapping from the registry. Terminal output is never parsed for state.
 
+# _billing_of <role>: how the agent is paid for: plan | metered | subscription. A record from
+# before the field existed has none: it is worked out from its model key, and an agent whose
+# model is not in the table any more is simply not metered ("").
+_billing_of() {
+  local billing
+  billing="$(reg_field "$1" billing)"
+  if [ -z "$billing" ] && model_info "$(reg_field "$1" model)" 2>/dev/null; then billing="$MODEL_BILLING"; fi
+  printf '%s\n' "$billing"
+}
+
 _status_rows() { # emits one JSON object per agent
   local role kind pane state branch ahead dirty workdir
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
@@ -25,10 +35,10 @@ _status_rows() { # emits one JSON object per agent
     fi
     dirty="$(wt_dirty_count "$workdir")"
     "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$(reg_field "$role" model)" \
-      --arg label "$(reg_field "$role" label)" --arg family "$(reg_field "$role" family)" --arg state "$state" --arg pane "$pane" \
+      --arg label "$(reg_field "$role" label)" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
-      '{role: $role, kind: $kind, model: $model, label: $label, family: $family, state: $state, pane: $pane,
+      '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
         branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir}'
@@ -83,7 +93,8 @@ _status_team_text() {
   width="$(role_column_width)"
   printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY WORKDIR
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, .label, .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
+  # A metered agent is marked with a $ after its label (every token it uses is billed).
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
     while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty workdir; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
@@ -92,6 +103,9 @@ _status_team_text() {
       fi
       printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
     done
+  if [ -n "$(printf '%s\n' "$rows" | "$JQ_BIN" -r 'select(.billing == "metered") | .role' | head -1)" ]; then
+    say '  $ = metered: every token is billed to a prepaid balance, not to a plan or subscription (WOLFMUX_METERED=on, the owner'"'"'s decision)'
+  fi
 }
 
 # teamctl status [--json] — every team of the project, or the one named with --team

@@ -23,6 +23,7 @@ export PATH="$HOME/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:
 export WOLFMUX_LEGACY_SOCKET="$OLD_SOCKET"
 export WOLFMUX_TMUX_SOCKET="$NEW_SOCKET" # everything the new code starts or asks stays on test sockets
 unset TMUX TMUX_PANE TEAM_ROLE BEADS_ACTOR WOLFMUX_ROOT AI_TEAM_ROOT
+unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL WOLFMUX_EXTRA_SETTINGS # an agent running this test carries its own team
 
 passed=0
 failed=0
@@ -97,6 +98,14 @@ check "migration refuses while a worker runs inside ~/.ai-team, and changes noth
 old_teamctl stop research >/dev/null 2>&1
 check "--dry-run changes nothing" '"$REPO/migrate-from-ai-team.sh" --dry-run && [ -d "$HOME/.ai-team" ] && [ ! -e "$HOME/.wolfmux" ] && [ ! -e "$HOME/.config/wolfmux" ] && grep -q ">>> ai-team >>>" "$HOME/.zshrc"'
 
+# The third-party providers come from the provider table: one launcher link each, except glm
+# (claude-glm is the file itself). A script of the user's own under one of those names is theirs.
+PROVIDER_LAUNCHERS="$( . "$REPO/config/wolfmux/lib/provider-env.sh"; for provider in $WOLFMUX_PROVIDERS; do [ "$provider" = glm ] || printf 'claude-%s ' "$provider"; done)"
+OWN_LAUNCHER="claude-minimax"
+/bin/mkdir -p "$HOME/bin"
+printf '#!/bin/sh\necho mine\n' >"$HOME/bin/$OWN_LAUNCHER"
+/bin/chmod 755 "$HOME/bin/$OWN_LAUNCHER"
+
 echo "== migrate"
 /bin/cp "$HOME/.zshrc" "$WORK/zshrc.before"
 "$REPO/migrate-from-ai-team.sh" >"$WORK/migrate.log" 2>&1
@@ -106,6 +115,8 @@ NEW_TREE="$HOME/.wolfmux/worktrees/${OLD_TREE#"$HOME/.ai-team/worktrees/"}"
 check "old directories are gone, the old config is parked in backups" '[ ! -e "$HOME/.ai-team" ] && [ ! -e "$HOME/.config/ai-team" ] && ls "$HOME"/.wolfmux/backups/*/config-ai-team/lib/common.sh'
 check "the user setting came along under its new key" 'grep -qx "WOLFMUX_APPROVAL_TIMEOUT=42" "$HOME/.config/wolfmux/config" && ! grep -q "AI_TEAM" "$HOME/.config/wolfmux/config"'
 check "program files are the new version" '[ "$("$HOME/bin/teamctl" version)" = "teamctl $(sed -n "s/^WOLFMUX_VERSION=\"\(.*\)\"/\1/p" "$REPO/config/wolfmux/lib/common.sh")" ]'
+check "provider launchers: one link to claude-glm per provider; a launcher script of the user's own is kept" '[ -n "$PROVIDER_LAUNCHERS" ] && for name in $PROVIDER_LAUNCHERS; do [ "$name" = "$OWN_LAUNCHER" ] && continue; [ "$(readlink "$HOME/bin/$name")" = "claude-glm" ] || exit 1; done && [ ! -L "$HOME/bin/$OWN_LAUNCHER" ] && [ "$("$HOME/bin/$OWN_LAUNCHER")" = mine ]'
+check "provider launchers: installed teamctl knows the providers (help lists them, the table is installed)" '[ -f "$HOME/.config/wolfmux/lib/providers.sh" ] && "$HOME/bin/teamctl" help | grep -q "kimi:<model-id>"'
 check "the running lead was not restarted" '[ "$(tmux -L "$OLD_SOCKET" list-panes -a -F "#{@ai_role} #{pane_pid} #{pane_dead}" | awk "\$1 == \"lead\" { print \$2, \$3 }")" = "$LEAD_PID 0" ]'
 check "new teamctl sees that team: lead running, research stopped, worktree present" 'new_teamctl status --json | jq -e --arg tree "$NEW_TREE" ".session_running and ([.agents[] | select(.role == \"lead\")][0].state == \"running\") and ([.agents[] | select(.role == \"research\")][0] | .state == \"stopped\" and .workdir == \$tree)"'
 check "git knows the worktree at its new path, nothing prunable" 'git -C "$PROJECT" worktree list --porcelain | grep -qx "worktree $NEW_TREE" && ! git -C "$PROJECT" worktree list --porcelain | grep -q "^prunable"'
@@ -125,6 +136,8 @@ echo "== round trip"
 check "uninstall refuses while the pre-rename team is still up" '! "$REPO/uninstall.sh"'
 new_teamctl destroy --worktrees --yes >/dev/null 2>&1
 check "after destroy, uninstall restores ~/.zshrc byte for byte and settings.json in content" '"$REPO/uninstall.sh" && /usr/bin/cmp -s "$HOME/.zshrc" "$WORK/zshrc.original" && [ "$(jq -S . "$HOME/.claude/settings.json")" = "$(/bin/cat "$WORK/settings.original")" ]'
+# uninstall has run in the check above
+check "uninstall took the provider links away, and kept the launcher script that is the user's own" 'for name in $PROVIDER_LAUNCHERS; do [ "$name" = "$OWN_LAUNCHER" ] && continue; [ ! -e "$HOME/bin/$name" ] && [ ! -L "$HOME/bin/$name" ] || exit 1; done && [ "$("$HOME/bin/$OWN_LAUNCHER")" = mine ] && [ ! -e "$HOME/bin/claude-glm" ] && [ ! -e "$HOME/bin/claude-glm-flash" ] && [ ! -e "$HOME/bin/teamctl" ]'
 
 echo
 echo "result: $passed passed, $failed failed"

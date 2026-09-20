@@ -22,9 +22,14 @@ export WOLFMUX_LAUNCHER_GLM53="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_FLASH="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_OPUS="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_SONNET="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_HAIKU="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_CLAUDE="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_CODEX="$REPO/tests/stub-agent" # for claude:<id> / codex:<id>
+export WOLFMUX_LAUNCHER_KIMI="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_MOONSHOT="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_DEEPSEEK="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_MINIMAX="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_QWEN="$REPO/tests/stub-agent" # also for <provider>:<id>
 export WOLFMUX_CLAUDE_PROJECTS="$WORK/claude-projects" # where a purge looks for the agents' transcripts
 export ECC_DISABLED_HOOKS="post:example" # a hook the user already disables; teamctl must keep it
-unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
+# Run from an agent's pane (a teammate testing its change), the environment carries that agent's
+# team, worktree and session: all of it is dropped, or every command would act as that agent.
+unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH WOLFMUX_METERED TMUX TMUX_PANE
+unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL WOLFMUX_EXTRA_SETTINGS
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 
 passed=0
@@ -99,6 +104,14 @@ printf '#!/bin/bash\necho "{}"\n' >"$WORK/stubbin/claude"
 doctor_utf8() { env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME" LC_ALL=en_US.UTF-8 WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null; }
 check "doctor: reports a provider override in settings.json under a UTF-8 locale instead of dying" 'doctor_utf8 | grep -q "sets env: ANTHROPIC_BASE_URL" && ! doctor_utf8 | grep -q "unbound variable"'
 check "doctor: in the throwaway HOME no keychain of yours is on the search list, and doctor finds no Z.ai item there" '[ -z "$(HOME="$DOCTOR_HOME" /usr/bin/security list-keychains -d user 2>/dev/null)" ] && doctor_utf8 | grep -q "no Keychain item"'
+# every provider of the table gets its own section; only the Z.ai key is a warning when missing
+DOCTOR_HOME2="$WORK/doctor-home2"
+/bin/mkdir -p "$DOCTOR_HOME2/.claude"
+printf '{"note":"routes to api.deepseek.com"}\n' >"$DOCTOR_HOME2/.claude/settings.local.json"
+doctor_other() { env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME2" WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null; }
+check "doctor: every provider has a section with its own Keychain service; a missing key of an optional one is a note, only Z.ai's is a warning" 'for p in kimi moonshot deepseek minimax qwen; do doctor_utf8 | grep -q "no Keychain item .wolfmux-$p." || exit 1; done && [ "$(doctor_utf8 | grep -c "optional, not set up: no Keychain item")" = 5 ] && doctor_utf8 | grep -q "WARNING.*no Keychain item .zai-coding-plan." && ! doctor_utf8 | grep "WARNING" | grep -q "wolfmux-"'
+check "doctor: a metered provider says so, and that teamctl refuses it while WOLFMUX_METERED is off" 'doctor_utf8 | grep -q "billing: METERED (prepaid balance, billed per token); teamctl refuses" && WOLFMUX_METERED=on doctor_utf8 | grep -q "WOLFMUX_METERED=on: teamctl starts metered agents" && doctor_utf8 | grep -q "billing: plan (Kimi for Coding"'
+check "doctor: a settings file that names the host of any provider (not only Z.ai) is reported" 'doctor_other | grep -q "settings.local.json mentions api.deepseek.com" && ! doctor_utf8 | grep -q "mentions api.deepseek.com"'
 check "doctor: no variable in any script is followed directly by a non-ASCII character" '! LC_ALL=C grep -nE "\\\$[A-Za-z_][A-Za-z0-9_]*[^ -~]" "$REPO"/bin/* "$REPO"/config/wolfmux/lib/*.sh "$REPO"/config/wolfmux/hooks/* "$REPO"/*.sh "$REPO"/tests/*.sh "$REPO"/tests/stub-agent'
 # `bd update --claim` sets in_progress: an inbox that lists only `open` hides the task a
 # restarted worker is in the middle of, and it would answer "ready" and wait for ever.
@@ -145,8 +158,32 @@ check "models: a Codex teammate in a team that is led by another model" '[ "$(ag
 check "models: a Claude-subscription teammate (sonnet) beside GLM workers" '[ "$(agent summary)" = "{\"label\":\"Sonnet 5\",\"family\":\"claude\",\"state\":\"running\"}" ] && teamctl capture summary --all | grep -q "STUB guard=true"'
 check "models: any model id of a family — claude:<id> and codex:<id> reach the CLI" 'teamctl capture triage --all | grep -q "STUB modelarg=claude-haiku-4-5-20251001" && teamctl capture second --all | grep -q "STUB astra_model=gpt-6-astra-mini"'
 check "models: a Codex teammate reports finished turns too (notify program set)" 'teamctl capture fe-review --all | grep -q "STUB codexnotify=true"'
-check "models: nonsense is refused before anything is created (exit 64)" 'for m in gpt claude: "claude:bad;id" "glm:glm-9" "codex:a b"; do teamctl spawn bogus "$m"; [ $? -eq 64 ] || exit 1; done; [ -z "$(git branch --list "ai/bogus-*")" ]'
+check "models: nonsense is refused before anything is created (exit 64)" 'for m in gpt claude: "claude:bad;id" "glm:glm-9" "codex:a b" glm kimi: "kimi:bad;id" "qwen:a b" "deepseek:a:b" "kimi:x/y"; do teamctl spawn bogus "$m"; [ $? -eq 64 ] || exit 1; done; [ -z "$(git branch --list "ai/bogus-*")" ]'
 for role in fe-review summary triage second; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
+
+echo "== other providers (Kimi, Moonshot, DeepSeek, MiniMax, Qwen) through the same launcher"
+teamctl spawn kimi-w kimi --no-kickoff >/dev/null 2>&1
+teamctl spawn mm-w minimax --no-kickoff >/dev/null 2>&1
+teamctl spawn qw-w qwen:qwen3.7-max --no-kickoff >/dev/null 2>&1
+sleep 2
+check "providers: a plain provider key starts an agent, labelled from the table, through its own launcher name" '[ "$(agent kimi-w)" = "{\"label\":\"Kimi Code\",\"family\":\"claude\",\"state\":\"running\"}" ] && teamctl capture kimi-w --all | grep -q "STUB role=kimi-w actor=kimi-w model=kimi " && [ "$(jq -r .launcher "$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/kimi-w.json" | xargs basename)" = "stub-agent" ] && [ "$(agent mm-w)" = "{\"label\":\"MiniMax M3\",\"family\":\"claude\",\"state\":\"running\"}" ]'
+check "providers: <provider>:<model-id> pins a model of that provider, as claude:<id> does" 'teamctl capture qw-w --all | grep -q "STUB modelarg=qwen3.7-max" && [ "$(agent qw-w)" = "{\"label\":\"qwen3.7-max\",\"family\":\"claude\",\"state\":\"running\"}" ]'
+check "providers: a provider agent is a Claude Code agent (bypass flag, worker settings, guard) and never sees a credential in its pane" 'teamctl capture kimi-w --all | grep -q "STUB flags=--dangerously-skip-permissions" && teamctl capture kimi-w --all | grep -q "STUB guard=true" && teamctl capture kimi-w --all | grep -Eq "^STUB leaked= *$"'
+check "providers: status --json says how each one is billed (a plan for Kimi Code, none for a subscription model)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"kimi-w\")][0].billing == \"plan\") and ([.agents[] | select(.role == \"backend\")][0].billing == \"plan\") and ([.agents[] | select(.role == \"lead\")][0].billing == \"subscription\")"'
+check "providers: the status table marks nothing while nothing is metered" '! teamctl status | grep -q "metered"'
+# the metered gate: a provider that bills per token is off until the owner says otherwise
+check "metered: spawn refuses a metered provider by default (exit 77), says how the owner switches it on, and creates nothing" 'out="$(teamctl spawn m1 moonshot --no-kickoff 2>&1)"; [ $? -eq 77 ] && printf "%s" "$out" | grep -q "WOLFMUX_METERED=on" && printf "%s" "$out" | grep -qi "owner" && [ -z "$(git branch --list "ai/m1-*")" ] && ! teamctl status --json | jq -e ".agents[] | select(.role == \"m1\")"'
+check "metered: also a pinned model id of a metered provider, and also for a lead (start), and WOLFMUX_METERED=off is closed" 'teamctl spawn m1 deepseek:deepseek-v4-flash --no-kickoff; [ $? -eq 77 ] && WOLFMUX_METERED=off teamctl spawn m1 moonshot --no-kickoff; [ $? -eq 77 ] && teamctl start deepseek --team gated --no-attach --skip-beads; [ $? -eq 77 ] && ! teamctl teams | grep -q "^gated "'
+check "metered: an agent cannot open the gate by asking for a lead that costs money (worker spawning is off, and the gate is checked first)" 'TEAM_ROLE=backend teamctl spawn m1 moonshot --no-kickoff; [ $? -eq 77 ] && [ -z "$(git branch --list "ai/m1-*")" ]'
+WOLFMUX_METERED=on teamctl spawn m1 moonshot --no-kickoff >/dev/null 2>&1
+WOLFMUX_METERED=on teamctl spawn m2 deepseek:deepseek-v4-flash --no-kickoff >/dev/null 2>&1
+sleep 2
+check "metered: WOLFMUX_METERED=on lets it through, and the record and status --json say metered" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"m1\")][0] | .billing == \"metered\" and .state == \"running\" and .label == \"Kimi K3 API\") and ([.agents[] | select(.role == \"m2\")][0].billing == \"metered\")" && jq -e ".billing == \"metered\"" "$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/m1.json"'
+check "metered: the status table puts a \$ after the label of a metered agent, and only of those, with a legend line" 'out="$(teamctl status)"; printf "%s\n" "$out" | grep -q "🐶 m1 .*Kimi K3 API\\$ " && printf "%s\n" "$out" | grep -q "🐶 kimi-w .*Kimi Code  " && ! printf "%s\n" "$out" | grep -q "Kimi Code\\$" && printf "%s\n" "$out" | grep -q "^  \\$ = metered"'
+check "metered: the gate is read from ~/.config/wolfmux/config too" '/bin/mkdir -p "$WORK/home-metered" && for entry in "$REPO"/config/wolfmux/*; do [ "$(basename "$entry")" = "config" ] || /bin/ln -sf "$entry" "$WORK/home-metered/"; done && printf "WOLFMUX_METERED=on\n" >"$WORK/home-metered/config" && WOLFMUX_HOME="$WORK/home-metered" teamctl spawn m3 moonshot --no-kickoff && teamctl status --json | jq -e "[.agents[] | select(.role == \"m3\")][0].billing == \"metered\""'
+check "metered: a metered lead is allowed with the gate open, and shows its \$ in its own team" 'WOLFMUX_METERED=on teamctl start deepseek --team paid --no-attach --skip-beads && sleep 1 && teamctl status --team paid | grep -q "🐺 lead .*DeepSeek V4\\$ " && teamctl destroy --team paid --purge --yes'
+check "providers: teamctl help, the usage line and the unknown-model error list every provider key" 'for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do teamctl help | grep -qF -- "$k" || exit 1; teamctl spawn 2>&1 | grep -qF -- "$k" || exit 1; teamctl spawn x nosuchmodel 2>&1 | grep -qF -- "$k" || exit 1; teamctl start 2>&1 | grep -qF -- "$k" || exit 1; done'
+for role in kimi-w mm-w qw-w m1 m2 m3; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
 
 echo "== the wolf (cosmetic: it may never break a command)"
 SESSION_NAME="$(teamctl status --json | jq -r .session)"
@@ -333,6 +370,7 @@ check "remove: without --force, work is never discarded, and the refusal says wh
 check "remove: a worker cannot remove anyone (exit 77)" 'TEAM_ROLE=qa teamctl remove backend --force --yes; [ $? -eq 77 ] && [ -d "$BACKEND_DIR" ]'
 check "remove: --force needs a yes when nobody can be asked" '! teamctl remove backend --force </dev/null && [ -d "$BACKEND_DIR" ]'
 jq -n '{role: "idle-one", kind: "worker", model: "glm53", label: "GLM-5.3", family: "claude", launcher: "/bin/true", workdir: "/nonexistent/wolfmux", branch: "ai/idle-one-1", base_ref: "main", base_commit: "", kickoff: "0", spawned_by: "operator", permissions: "skip", pane_id: "", state: "stopped"}' >"$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/idle-one.json"
+check "status: a record from before the billing field is shown as it always was (plan, no \$), never as metered" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"idle-one\")][0].billing == \"plan\"" && ! teamctl status | grep "idle-one" | grep -q "GLM-5.3\$"'
 check "remove: all or nothing — one worker that holds work stops the whole command" 'teamctl remove idle-one backend; [ $? -eq 1 ] && teamctl status --json | jq -e "[.agents[].role] | (index(\"idle-one\") != null) and (index(\"backend\") != null)" && teamctl remove idle-one && ! teamctl status --json | jq -e ".agents[] | select(.role == \"idle-one\")"'
 BACKEND_BRANCH="$(git -C "$BACKEND_DIR" branch --show-current)"
 check "remove --force --yes: worktree, branch and record are gone; the main checkout is untouched" 'teamctl remove backend --force --yes && [ ! -d "$BACKEND_DIR" ] && ! git rev-parse -q --verify "refs/heads/$BACKEND_BRANCH" && ! teamctl status --json | jq -e ".agents[] | select(.role == \"backend\")" && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && ! git worktree list | grep -q backend'

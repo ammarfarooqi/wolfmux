@@ -2,7 +2,7 @@
 # docs.sh — does the documentation name everything the tool offers?
 #
 # Reads the CODE for what exists (teamctl's commands and their options, policy keys, model
-# keys, settings, launchers, the installer's options) and the DOCUMENTS for whether each is
+# keys, settings, launchers, the installer's options; the third-party providers from their table) and the DOCUMENTS for whether each is
 # named. Nothing is started: no tmux, no agents, no network. A few seconds.
 #
 # Run it after adding a command, an option or a setting: it fails, and says what is missing
@@ -173,7 +173,18 @@ echo "== policy keys and models"
 POLICY_KEYS="$(/usr/bin/sed -n 's/^POLICY_KEYS="\(.*\)"$/\1/p' "$LIB/policy.sh")"
 MODEL_KEYS="$(/usr/bin/awk '/^model_info\(\) \{/ { inside = 1; next } inside && /^}/ { exit }
   inside && /^    [a-z][a-z0-9]*:?\*?\)/ { key = $1; sub(/\*?\).*/, "", key); print key }' "$LIB/common.sh")"
-[ -n "$POLICY_KEYS" ] && [ -n "$MODEL_KEYS" ] || { echo "cannot read the policy keys or the model keys out of the libraries" >&2; exit 1; }
+# The third-party providers are not case labels in model_info: they come from the provider table
+# (glm is left out: its keys are glm53 and flash). A pinnable one also takes "<key>:<model-id>".
+# provider-env.sh has no side effects when sourced, so the table is read by sourcing it.
+PROVIDER_KEYS="$( . "$LIB/provider-env.sh"
+  for provider in $WOLFMUX_PROVIDERS; do
+    [ "$provider" = glm ] && continue
+    wolfmux_provider_info "$provider" || continue
+    printf '%s\n' "$provider"
+    if [ "$PROVIDER_PINNABLE" = 1 ]; then printf '%s:\n' "$provider"; fi
+  done)"
+[ -n "$POLICY_KEYS" ] && [ -n "$MODEL_KEYS" ] && [ -n "$PROVIDER_KEYS" ] || { echo "cannot read the policy keys or the model keys out of the libraries" >&2; exit 1; }
+MODEL_KEYS="$(printf '%s\n%s\n' "$MODEL_KEYS" "$PROVIDER_KEYS")"
 for name in "teamctl help:$HELP" "README.md:$README" "docs/USAGE.md:$USAGE" "the user manual:$MANUAL"; do
   # shellcheck disable=SC2086
   report "${name%%:*} names every policy key" "$(missing_words "${name#*:}" $POLICY_KEYS)"
@@ -182,8 +193,9 @@ for name in "teamctl help:$HELP" "README.md:$README" "docs/USAGE.md:$USAGE" "the
 done
 
 echo "== settings, launchers, the installer"
-SETTINGS="$(/usr/bin/awk '/^WOLFMUX_CONFIG_KEYS="/ { inside = 1 } inside { print } inside && /"$/ { exit }' "$LIB/provider-env.sh" |
-  LC_ALL=C /usr/bin/grep -o 'WOLFMUX_[A-Z0-9_]*' | /usr/bin/grep -v '^WOLFMUX_CONFIG_KEYS$' | /usr/bin/sort -u)"
+# WOLFMUX_CONFIG_KEYS is a literal list plus, for every provider, generated WOLFMUX_<P>_* names
+# (and the global WOLFMUX_METERED): the value the library ends up with is what has to be documented.
+SETTINGS="$( . "$LIB/provider-env.sh"; printf '%s\n' $WOLFMUX_CONFIG_KEYS | LC_ALL=C /usr/bin/grep -o 'WOLFMUX_[A-Z0-9_]*' | /usr/bin/sort -u)"
 [ -n "$SETTINGS" ] || { echo "cannot read WOLFMUX_CONFIG_KEYS out of provider-env.sh" >&2; exit 1; }
 # shellcheck disable=SC2086
 report "the config template shows every setting it accepts" "$(missing_words "$(/bin/cat "$REPO/config/wolfmux/config")" $SETTINGS)"
@@ -191,9 +203,12 @@ report "the config template shows every setting it accepts" "$(missing_words "$(
 DOCS_TEXT="$(for file in "$REPO"/docs/*.md; do [ -e "$file" ] && ! ignored "$file" && /bin/cat "$file"; done)"
 # shellcheck disable=SC2086
 report "every setting is explained in the user manual or under docs/" "$(missing_words "$MANUAL $DOCS_TEXT" $SETTINGS)"
+# Launchers: the files in bin/, the names install.sh spells out, and one claude-<provider> per
+# provider of the table (install.sh links those in a loop over the table, so they are not spelled out).
 LAUNCHERS="$( (cd "$REPO/bin" && /bin/ls) | /usr/bin/grep -v '^teamctl$'
-  LC_ALL=C /usr/bin/grep -o 'BIN_DIR/claude-[a-z-]*' "$REPO/install.sh" | /usr/bin/sed 's|.*/||'
-  /usr/bin/sed -n 's/^for name in \(claude-[a-z -]*\); do$/\1/p' "$REPO/install.sh" | /usr/bin/tr ' ' '\n')"
+  LC_ALL=C /usr/bin/grep -o 'BIN_DIR/claude-[a-z][a-z-]*' "$REPO/install.sh" | /usr/bin/sed 's|.*/||'
+  /usr/bin/sed -n 's/^for name in \(claude-[a-z -]*\); do$/\1/p' "$REPO/install.sh" | /usr/bin/tr ' ' '\n'
+  printf '%s\n' "$PROVIDER_KEYS" | /usr/bin/sed -n 's/^\([a-z][a-z0-9]*\)$/claude-\1/p')"
 LAUNCHERS="$(printf '%s\n' "$LAUNCHERS" | /usr/bin/sed '/^$/d' | /usr/bin/sort -u)"
 [ -n "$LAUNCHERS" ] || { echo "cannot read the launcher names out of bin/ and install.sh" >&2; exit 1; }
 # shellcheck disable=SC2086
