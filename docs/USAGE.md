@@ -79,7 +79,7 @@ teamctl destroy --team review --worktrees
 
 | Rule | |
 |------|---|
-| naming | lowercase letters, digits, `-`; `--team <name>` may stand before or after the command |
+| naming | lowercase letters, digits, `-`, 50 characters at most; `--team <name>` may stand before or after the command |
 | which team a command means | inside a pane: the agent's own team. At your terminal: the only team there is; with several, the command lists them and asks (`status` and `teams` show all) |
 | `teamctl start <model>` without `--team` | the first team. If that is running under another model it is not opened for you; you are shown `teamctl attach` and `teamctl start <model> --team <name>` |
 | roles | per team: two teams can each have a `backend`. Branches are `ai/<team>/<role>-…`, worktrees live under `…/teams/<team>/` |

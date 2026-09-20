@@ -115,7 +115,7 @@ main() {
   done
   if [ "${#rest[@]}" -gt 0 ]; then set -- "${rest[@]}"; fi
   if [ -n "${WOLFMUX_TEAM_ARG:-}" ]; then
-    valid_team_name "$WOLFMUX_TEAM_ARG" || die_usage "invalid team name '$WOLFMUX_TEAM_ARG' (lowercase letters, digits and '-', max 24)"
+    valid_team_name "$WOLFMUX_TEAM_ARG" || die_usage "$(team_name_error "$WOLFMUX_TEAM_ARG")"
   fi
   command="${1:-help}"
   [ "$#" -gt 0 ] && shift

@@ -277,11 +277,24 @@ project_key() {
 #   Beads name  <role>             ·  <team>.<role>       (all teams share the project's Beads)
 WOLFMUX_DEFAULT_TEAM="default"
 
+# A team's name is part of its tmux session, its branches and its Beads names, so it is kept
+# to a harmless alphabet; the length is only there so that a slip of the hand is not a name.
+WOLFMUX_TEAM_NAME_MAX=50
+
 valid_team_name() {
   case "$1" in
     "" | *[!${_WM_LOWER}${_WM_DIGITS}-]* | -* | *-) return 1 ;;
   esac
-  [ "${#1}" -le 24 ]
+  [ "${#1}" -le "$WOLFMUX_TEAM_NAME_MAX" ]
+}
+
+# team_name_error <name>: why valid_team_name refused it, for every command alike
+team_name_error() {
+  if [ "${#1}" -gt "$WOLFMUX_TEAM_NAME_MAX" ]; then
+    printf "invalid team name '%s': it is %s characters, max %s\n" "$1" "${#1}" "$WOLFMUX_TEAM_NAME_MAX"
+  else
+    printf "invalid team name '%s' (lowercase letters, digits and '-', not at either end, max %s)\n" "$1" "$WOLFMUX_TEAM_NAME_MAX"
+  fi
 }
 
 # team_identity <team> <role> — what an agent is called in Beads
@@ -343,7 +356,7 @@ load_project() {
   wanted="${WOLFMUX_TEAM_ARG:-}"
   [ -n "$wanted" ] || wanted="$(caller_team)"
   if [ -n "$wanted" ]; then
-    valid_team_name "$wanted" || die_usage "invalid team name '$wanted' (lowercase letters, digits and '-', max 24)"
+    valid_team_name "$wanted" || die_usage "$(team_name_error "$wanted")"
     team_paths "$wanted"
     return 0
   fi
