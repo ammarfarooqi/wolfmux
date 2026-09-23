@@ -6,7 +6,7 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 4 to 6 minutes, 249 checks, isolated from any running team
+tests/smoke.sh                 # 4 to 6 minutes, 250 checks, isolated from any running team
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~2 seconds, 32 checks, starts nothing
 tests/migration.sh             # ~30 seconds, 24 checks, in a throwaway HOME
@@ -20,7 +20,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 249 of 249 pass (v1.11.0)
+## smoke.sh: 250 of 250 pass (v1.11.0)
 
 | Area | Checks |
 |------|--------|

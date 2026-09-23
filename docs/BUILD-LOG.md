@@ -419,7 +419,7 @@ Where two of them met, the lead decided: a worktree handed over stays in its own
 (so `--from-worktree` and `--repo` do not combine), and its new branch follows the team's
 template like any other. Left out on purpose: a warm idle worker, isolation per worker.
 
-`tests/smoke.sh`: 184 → 249. `tests/providers.sh`: 116 → 134. `tests/docs.sh`: 28 → 32. v1.11.0.
+`tests/smoke.sh`: 184 → 250. `tests/providers.sh`: 116 → 134. `tests/docs.sh`: 28 → 32. v1.11.0.
 
 ## Footprint on the machine
 
