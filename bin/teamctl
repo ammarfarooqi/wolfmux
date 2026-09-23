@@ -35,13 +35,16 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl start <fable|astra|any model> [--no-attach] [--continue] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
   Workers
-    teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]
+    teamctl spawn <role> <model> [--base <ref>] [--from-worktree <role>] [--no-kickoff]
         models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
                 kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
                 minimax:<model-id> · qwen:<model-id>      any model in any team, whoever leads
                 moonshot and deepseek bill every token (metered): refused unless the owner's config file says WOLFMUX_METERED=on;
                 teamctl status marks them with $
+        --from-worktree <role>: a fresh conversation for a NEW role in that stopped worker's worktree,
+                on a new branch (the old branch and commits stay). What git ignores (node_modules,
+                build output) is kept, so install and build are not repeated
     teamctl stop <role>                               close the pane; worktree, branch and record stay
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else
@@ -54,7 +57,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
-    teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team
+    teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
+                                                      CONTEXT: what each agent's conversation holds (tokens, share of the window)
     teamctl teams                                     the short list: state, lead, agents and disk per team
     teamctl panes                                     what tmux reports per pane
     teamctl capture <role> [-n|--lines <count>] [--all]    recent terminal output

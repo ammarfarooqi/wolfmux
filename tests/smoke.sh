@@ -25,12 +25,15 @@ export WOLFMUX_LAUNCHER_CLAUDE="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_CODEX="
 export WOLFMUX_LAUNCHER_KIMI="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_MOONSHOT="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_DEEPSEEK="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_MINIMAX="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_QWEN="$REPO/tests/stub-agent" # also for <provider>:<id>
 export WOLFMUX_CLAUDE_PROJECTS="$WORK/claude-projects" # where a purge looks for the agents' transcripts
+export WOLFMUX_CODEX_SESSIONS="$WORK/codex-sessions"   # where status looks for a codex agent's rollout
 export ECC_DISABLED_HOOKS="post:example" # a hook the user already disables; teamctl must keep it
 # Run from an agent's pane (a teammate testing its change), the environment carries that agent's
 # team, worktree and session: all of it is dropped, or every command would act as that agent.
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH WOLFMUX_METERED TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL WOLFMUX_EXTRA_SETTINGS
 teamctl() { "$REPO/bin/teamctl" "$@"; }
+# transcripts_of <dir> — where the CLIs put the transcripts of an agent that ran there
+transcripts_of() { printf '%s/%s\n' "$WOLFMUX_CLAUDE_PROJECTS" "$(cd "$1" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"; }
 
 passed=0
 failed=0
@@ -391,6 +394,70 @@ check "diff: uncommitted leftovers visible" 'teamctl diff backend --working | gr
 check "isolation: main checkout untouched by worker commits" '[ ! -e "$PROJECT/work.txt" ] && [ -z "$(git -C "$PROJECT" status --porcelain)" ]'
 check "worktrees: lists lead + workers" '[ "$(teamctl worktrees | grep -cE "^(lead|backend|qa) ")" = 3 ]'
 
+echo "== context use in status (issue #5)"
+BACKEND_TRANS="$(transcripts_of "$BACKEND_DIR")"
+/bin/mkdir -p "$BACKEND_TRANS"
+{
+  echo 'this line is not json'
+  echo '{"type":"user","message":{"content":"hi"}}'
+  echo '{"type":"assistant","message":{"usage":{"input_tokens":50000,"cache_read_input_tokens":20000,"cache_creation_input_tokens":5000}}}'
+  echo '{"type":"assistant","message":{"usage":{"input_tokens":100000,"cache_read_input_tokens":30000,"cache_creation_input_tokens":12000}}}'
+} >"$BACKEND_TRANS/session-a.jsonl"
+check "status: context in use is what the last assistant turn saw (input plus both caches), every counted turn is a request" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"backend\")][0] | .context_tokens == 142000 and .requests == 2 and .context_window == 200000"'
+check "status: the CONTEXT column shows the tokens and the share of the window" 'teamctl status | grep -E "backend .*142k +71%"'
+check "status: nothing readable shows as -, in json as null and 0" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"qa\")][0] | .context_tokens == null and .requests == 0" && teamctl status | grep "🐶 qa " | grep -Eq "0 +- "'
+{
+  for i in $(seq 1 500); do echo '{"type":"user","message":{"content":"filler"}}'; done
+  echo 'garbage again, inside the tail'
+  echo '{"type":"assistant","message":{"usage":{"input_tokens":100000,"cache_read_input_tokens":30000,"cache_creation_input_tokens":12000}}}'
+} >"$BACKEND_TRANS/session-b.jsonl"
+touch -t 202609230900 "$BACKEND_TRANS/session-a.jsonl" && touch -t 202609230905 "$BACKEND_TRANS/session-b.jsonl"
+check "status: only the tail of a long transcript is read, the newest transcript wins, and a malformed line never breaks it" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"backend\")][0] | .context_tokens == 142000 and .requests == 1"'
+CODEX_TREE="$WORK/codex-worker-tree"
+/bin/mkdir -p "$CODEX_TREE" "$WOLFMUX_CODEX_SESSIONS/2026/09/23"
+codex_meta() { printf '{"type":"session_meta","payload":{"cwd":"%s"}}\n' "$1"; }
+codex_tok() { printf '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":%s},"last_token_usage":{"total_tokens":%s},"model_context_window":%s}}}\n' "$1" "$1" "$2"; }
+CODEX_ROLLOUT="$WOLFMUX_CODEX_SESSIONS/2026/09/23/rollout-a.jsonl"
+{ codex_meta "$CODEX_TREE"; codex_tok 40000 258400; codex_tok 80000 258400; codex_tok 129200 258400; } >"$CODEX_ROLLOUT"
+{ codex_meta "/somewhere/else"; codex_tok 900000 400000; } >"$WOLFMUX_CODEX_SESSIONS/2026/09/23/rollout-b.jsonl"
+touch -t 202609230900 "$CODEX_ROLLOUT" && touch -t 202609230905 "$WOLFMUX_CODEX_SESSIONS/2026/09/23/rollout-b.jsonl"
+CTX_AGENTS="$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)"
+plant_ctx() { # <role> <model> <family> <workdir> — a record made by hand, as "plant" does below
+  jq -n --arg role "$1" --arg model "$2" --arg family "$3" --arg dir "$4" \
+    '{role: $role, kind: "worker", model: $model, model_id: "", label: $model, family: $family, billing: "plan", launcher: "/bin/true",
+      workdir: $dir, branch: ("ai/" + $role + "-1"), base_ref: "main", base_commit: "", kickoff: "0", spawned_by: "operator",
+      permissions: "skip", pane_id: "", state: "stopped", created_at: "2099-01-01T00:00:00Z"}' >"$CTX_AGENTS/$1.json"
+}
+plant_ctx ctx-codex astra codex "$CODEX_TREE"
+check "status: a codex agent is read from the rollout whose session cwd is its worktree: last token_count event, its window, its request count" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-codex\")][0] | .context_tokens == 129200 and .requests == 3 and .context_window == 258400"'
+check "status: the codex agent's column" 'teamctl status | grep -E "ctx-codex .*129k +50%"'
+plant_ctx ctx-1m "claude:claude-opus-4-1[1m]" claude "/nonexistent/ctx"
+plant_ctx ctx-kimi kimi claude "/nonexistent/ctx"
+plant_ctx ctx-ds "deepseek:deepseek-v4-flash" claude "/nonexistent/ctx"
+check "status: the window is declared by the provider table, 1M for a model id that ends in [1m], 200k for the rest" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-1m\")][0].context_window == 1048576) and ([.agents[] | select(.role == \"ctx-kimi\")][0].context_window == 262144) and ([.agents[] | select(.role == \"ctx-ds\")][0].context_window == 786432) and ([.agents[] | select(.role == \"ctx-1m\")][0].context_tokens == null)"'
+/bin/rm -f "$CTX_AGENTS/ctx-codex.json" "$CTX_AGENTS/ctx-1m.json" "$CTX_AGENTS/ctx-kimi.json" "$CTX_AGENTS/ctx-ds.json"
+
+echo "== a fresh conversation in an existing built worktree (spawn --from-worktree, issue #5)"
+teamctl spawn builder glm53 --no-kickoff >/dev/null 2>&1
+sleep 2
+BUILDER_DIR="$(teamctl status --json | jq -r '.agents[] | select(.role == "builder") | .workdir')"
+(cd "$BUILDER_DIR" && echo "node_modules/" >.gitignore && git add .gitignore && git -c user.name=builder -c user.email=b@example.invalid commit -qm "chore: ignore node_modules" && mkdir -p node_modules && echo x >node_modules/x)
+check "spawn: --from-worktree refuses a running worker, and creates nothing" 'teamctl spawn x1 glm53 --from-worktree builder; [ $? -eq 1 ] && [ -z "$(git branch --list "ai/x1-*")" ]'
+check "spawn: --from-worktree refuses the lead (it has no worktree to hand over)" 'teamctl spawn x2 glm53 --from-worktree lead; [ $? -eq 1 ]'
+teamctl stop builder >/dev/null 2>&1
+echo "half done" >"$BUILDER_DIR/wip.txt"
+check "spawn: --from-worktree refuses a worktree with uncommitted changes, and lists them" 'out="$(teamctl spawn builder2 flash --from-worktree builder 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "wip.txt" && ! teamctl status --json | jq -e ".agents[] | select(.role == \"builder2\")" && [ -z "$(git branch --list "ai/builder2-*")" ]'
+/bin/rm "$BUILDER_DIR/wip.txt"
+BUILDER_OLD_BRANCH="$(git -C "$BUILDER_DIR" branch --show-current)"
+check "spawn: --from-worktree starts a fresh worker in the same worktree, on a new branch, and the old record is gone" 'teamctl spawn builder2 flash --from-worktree builder && sleep 2 && teamctl status --json | jq -e --arg dir "$BUILDER_DIR" "([.agents[] | select(.role == \"builder2\")][0] | .state == \"running\" and .workdir == \$dir and (.branch | startswith(\"ai/builder2-\"))) and ([.agents[] | select(.role == \"builder\")]) == []"'
+check "spawn: --from-worktree bases the new branch on the project's current HEAD" 'teamctl diff builder2 | grep -q "base:    main @ $(git rev-parse --short=12 HEAD)"'
+check "spawn: the old branch and its commits stay" '[ "$(git show "$BUILDER_OLD_BRANCH:.gitignore" 2>/dev/null)" = "node_modules/" ] && [ "$(git -C "$BUILDER_DIR" branch --show-current)" != "$BUILDER_OLD_BRANCH" ]'
+check "spawn: what git ignores (node_modules) is still there, so no install is repeated, and the fresh pane runs" '[ -f "$BUILDER_DIR/node_modules/x" ] && teamctl capture builder2 -n 8 | grep -q "STUB role=builder2" && teamctl capture builder2 -n 8 | grep -q "STUB kickoff_in_progress=yes"'
+check "spawn: the event log says the worktree changed hands" 'grep -q "\"type\":\"from-worktree\"" "$(ls -d "$WOLFMUX_DATA"/state/*/events.jsonl | head -1)"'
+teamctl stop builder2 >/dev/null 2>&1
+teamctl remove builder2 --yes >/dev/null 2>&1
+git branch -D "$BUILDER_OLD_BRANCH" >/dev/null 2>&1
+
 echo "== stop / restart / destroy"
 check "stop: pane closed, record kept" 'teamctl stop qa && teamctl status --json | jq -e ".agents[] | select(.role == \"qa\") | .state == \"stopped\""'
 check "restart: same worktree and branch" 'before="$(git branch --list "ai/qa-*")" && teamctl restart qa && [ "$(git branch --list "ai/qa-*")" = "$before" ] && teamctl status --json | jq -e ".agents[] | select(.role == \"qa\") | .state == \"running\""'
@@ -528,7 +595,6 @@ many_commits() { # <worktree> <count>: that many empty commits on the branch it 
 many_commits "$BUSY_TREE" 3000
 (cd "$BUSY_TREE" && git add kept.txt && git -c user.name=busy -c user.email=b@example.invalid commit -qm "feat: only on this branch")
 for i in $(seq 1 20); do echo "$i" >"$BUSY_TREE/loose-$i.txt"; done
-transcripts_of() { printf '%s/%s\n' "$WOLFMUX_CLAUDE_PROJECTS" "$(cd "$1" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"; }
 /bin/mkdir -p "$(transcripts_of "$BUSY_TREE")" "$(transcripts_of "$TIDY_TREE")" "$WOLFMUX_CLAUDE_PROJECTS/-somebody-elses-project"
 echo '{"turn":1}' >"$(transcripts_of "$BUSY_TREE")/session.jsonl"
 SCRAP_STATE="$(ls -d "$WOLFMUX_DATA"/state/*/teams/scrap)"

@@ -246,6 +246,7 @@ cmd_start() {
 # --- teamctl spawn <role> <model> -----------------------------------------------
 cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
+  local from_tree="" old_record="" old_branch="" old_pane dirty
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -254,13 +255,18 @@ cmd_spawn() {
         base="$2"
         shift
         ;;
+      --from-worktree)
+        [ "$#" -ge 2 ] || die_usage "--from-worktree needs the role whose worktree is handed over"
+        from_tree="$2"
+        shift
+        ;;
       --no-kickoff) kickoff=0 ;;
       -*) die_usage "unknown option for spawn: $1" ;;
       *) if [ -z "$role" ]; then role="$1"; elif [ -z "$model" ]; then model="$1"; else die_usage "unexpected argument: $1"; fi ;;
     esac
     shift
   done
-  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
+  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--from-worktree <role>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
   require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
@@ -278,6 +284,22 @@ cmd_spawn() {
   if reg_exists "$role"; then
     die "role '$role' already exists ($(agent_state "$role")). Use: teamctl restart $role — or choose another role name."
   fi
+  # A worktree handed over is checked completely before anything is changed.
+  if [ -n "$from_tree" ]; then
+    known_role_name "$from_tree" || die_usage "invalid role '$from_tree'"
+    reg_exists "$from_tree" || die "no such agent: $from_tree  (see: teamctl status)"
+    [ "$(reg_field "$from_tree" kind)" = "worker" ] || die "'$from_tree' is the lead; only a worker's worktree can be handed over"
+    old_pane="$(tm_pane_for_role "$SESSION" "$from_tree" 2>/dev/null || true)"
+    [ "$(tm_pane_state "$old_pane")" != "running" ] || die "'$from_tree' is still running; stop it first: teamctl stop $from_tree"
+    path="$(reg_field "$from_tree" workdir)"
+    [ -d "$path" ] || die "cannot hand over '$from_tree': its working directory is gone ($path)"
+    dirty="$(wt_dirty_count "$path")"
+    if [ "$dirty" != "0" ]; then
+      say "'$from_tree' has uncommitted work in $(short_path "$path"); nothing was changed:"
+      report_files "$path" '  ' "$dirty" 10
+      exit 1
+    fi
+  fi
   wt_require_commit
   base_commit="$(gitr rev-parse --verify -q "$base^{commit}")" || die "cannot resolve base ref: $base"
   base_ref="$base"
@@ -287,7 +309,21 @@ cmd_spawn() {
 
   stamp="$(now_stamp)"
   branch="$(wt_branch_name "$role" "$stamp")"
-  path="$(wt_create "$role" "$stamp" "$base_commit")"
+  if [ -n "$from_tree" ]; then
+    # A fresh conversation in the worktree that already exists: the same directory, so
+    # everything git ignores (node_modules, build output) survives and no install or
+    # build is repeated. The old branch and its commits stay; the record moves to the
+    # new role. If the pane cannot be made, the old worker is put back exactly as it was.
+    old_record="$(reg_get "$from_tree")"
+    old_branch="$(reg_field "$from_tree" branch)"
+    if ! "$GIT_BIN" -C "$path" switch -q -c "$branch" "$base_commit" >/dev/null 2>&1; then
+      die "could not create branch $branch in $(short_path "$path") (is that directory still a git worktree of this repository?)"
+    fi
+    reg_delete "$from_tree"
+    /bin/rm -f "$STATE_DIR/settings/$from_tree.json"
+  else
+    path="$(wt_create "$role" "$stamp" "$base_commit")"
+  fi
   new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}"
 
   target="$(tm_split_target "$SESSION")" || target=""
@@ -297,13 +333,22 @@ cmd_spawn() {
     pane="$(tm_split "$target" "$path" "${AGENT_CMD[@]}" || true)"
   fi
   if [ -z "$pane" ]; then
-    wt_discard_new "$path" "$branch"
+    if [ -n "$from_tree" ]; then
+      "$GIT_BIN" -C "$path" switch -q "$old_branch" >/dev/null 2>&1 || true
+      gitr branch -D "$branch" >/dev/null 2>&1 || true
+      printf '%s\n' "$old_record" | reg_put "$from_tree"
+    else
+      wt_discard_new "$path" "$branch"
+    fi
     reg_delete "$role"
     die "could not create a tmux pane for '$role' (window too small? attach and enlarge the terminal, then retry)."
   fi
   tm_tag "$pane" "$role" "$MODEL_LABEL"
   reg_set "$role" pane_id "$pane" state running
   layout_apply
+  if [ -n "$from_tree" ]; then
+    event_log from-worktree "$role" "$from_tree handed its worktree over; branch $old_branch kept"
+  fi
   event_log spawn "$role" "$model $branch by ${spawner:-operator}"
   lock_release
   # The manager always knows who is on the team, whoever did the spawning.
@@ -315,6 +360,9 @@ cmd_spawn() {
   say "pane:      $pane"
   say "branch:    $branch  (base: $base_ref @ $(printf '%s' "$base_commit" | cut -c1-12))"
   say "worktree:  $(short_path "$path")"
+  if [ -n "$from_tree" ]; then
+    say "handed over: the worktree of $from_tree (its branch $old_branch and its commits are kept)"
+  fi
 }
 
 # --- internal: the process that a pane runs -----------------------------------------
@@ -775,6 +823,99 @@ transcripts_dir() {
   local base="${WOLFMUX_CLAUDE_PROJECTS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}" real
   real="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
   printf '%s/%s\n' "$base" "$(printf '%s' "$real" | LC_ALL=C sed 's|[^A-Za-z0-9]|-|g')"
+}
+
+# --- context use (status shows it; a lead reads it to decide reuse against respawn) ---
+# Read from what the CLI wrote next to the worktree, never from a live process, and only
+# the tail of a transcript: status must stay fast, and a half-written line must never
+# break it. Every failure means "unknown", not an error.
+
+# _ctx_of_claude <workdir> — sets CTX_TOKENS ("" when nothing is readable) and CTX_REQUESTS
+# from the agent's newest *.jsonl transcript: what the last assistant turn saw (its input
+# plus what the prompt cache holds), and how many assistant turns with usage the tail holds.
+_ctx_of_claude() {
+  local tdir file f m newest="" newest_m=0 stats last="" reqs=0 line
+  CTX_TOKENS="" CTX_REQUESTS=""
+  tdir="$(transcripts_dir "$1" 2>/dev/null)" || return 0
+  [ -d "$tdir" ] || return 0
+  for f in "$tdir"/*.jsonl; do
+    [ -f "$f" ] || continue
+    m="$(stat -f %m "$f" 2>/dev/null || printf 0)"
+    if [ "$m" -gt "$newest_m" ]; then newest_m="$m" newest="$f"; fi
+  done
+  [ -n "$newest" ] || return 0
+  # -R first: jq's own parser must never see a raw line, a half-written one included;
+  # fromjson? then decodes what parses and yields nothing for what does not.
+  stats="$(tail -n 400 "$newest" 2>/dev/null | "$JQ_BIN" -Rr '
+    fromjson? | select(.type == "assistant" and (.message.usage != null)) |
+    [(.message.usage.input_tokens // 0),
+     (.message.usage.cache_read_input_tokens // 0),
+     (.message.usage.cache_creation_input_tokens // 0)] | @tsv' 2>/dev/null)" || stats=""
+  while IFS="$(printf '\t')" read -r line; do
+    [ -n "$line" ] || continue
+    reqs=$((reqs + 1))
+    last="$line"
+  done <<EOF
+$stats
+EOF
+  [ -n "$last" ] || return 0
+  CTX_TOKENS="$(printf '%s' "$last" | awk -F'\t' '{ print $1 + $2 + $3 }')"
+  CTX_REQUESTS="$reqs"
+  return 0
+}
+
+# _ctx_of_codex <workdir> — sets CTX_TOKENS, CTX_REQUESTS and CTX_WINDOW from the newest
+# rollout under the codex sessions directory (WOLFMUX_CODEX_SESSIONS, else Codex's own
+# location) whose session was started with cwd = this worktree: the last token_count event
+# in it, which also states the window Codex actually serves. The 25 newest rollouts are
+# looked at; none of them matches, or the event shape is unknown, and nothing is reported.
+_ctx_of_codex() {
+  local base="${WOLFMUX_CODEX_SESSIONS:-${CODEX_HOME:-$HOME/.codex}/sessions}" f real cands stats last="" reqs=0 line meta
+  CTX_TOKENS="" CTX_REQUESTS="" CTX_WINDOW=""
+  [ -d "$base" ] || return 0
+  real="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
+  cands="$(find "$base" -type f -name 'rollout-*.jsonl' -exec stat -f '%m%t%N' {} + 2>/dev/null | sort -rn | cut -f2- | sed -n '1,25p')" || cands=""
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$f" ] || continue
+    meta="$(head -n 1 "$f" 2>/dev/null | "$JQ_BIN" -Rr 'fromjson? | select(.type == "session_meta") | .payload.cwd // empty' 2>/dev/null)" || meta=""
+    if [ "$meta" != "$1" ] && [ "$meta" != "$real" ]; then continue; fi
+    stats="$(tail -n 400 "$f" 2>/dev/null | "$JQ_BIN" -Rr '
+      fromjson? | select(.type == "event_msg" and .payload.type == "token_count" and (.payload.info != null)) |
+      [(.payload.info.last_token_usage.total_tokens // .payload.info.total_token_usage.total_tokens // 0),
+       (.payload.info.model_context_window // 0)] | @tsv' 2>/dev/null)" || stats=""
+    while IFS="$(printf '\t')" read -r line; do
+      [ -n "$line" ] || continue
+      reqs=$((reqs + 1))
+      last="$line"
+    done <<EOF
+$stats
+EOF
+    break # the newest rollout of this worktree is the one
+  done <<EOF
+$cands
+EOF
+  [ -n "$last" ] || return 0
+  CTX_TOKENS="$(printf '%s' "$last" | cut -f1)"
+  CTX_WINDOW="$(printf '%s' "$last" | cut -f2)"
+  CTX_REQUESTS="$reqs"
+  return 0
+}
+
+# agent_context <workdir> <model-key> <family> — sets CTX_TOKENS ("" = unknown),
+# CTX_REQUESTS and CTX_WINDOW for one agent. The window is declared by the model's
+# provider, is 1M for a model id that ends in [1m], else 200k; for codex the token_count
+# event's own window wins, since that is the one Codex actually serves.
+agent_context() {
+  local computed
+  CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0"
+  if [ "$3" = "codex" ]; then
+    _ctx_of_codex "$1"
+  else
+    _ctx_of_claude "$1"
+  fi
+  computed="$(model_context_window "$2" 2>/dev/null)" || computed=""
+  [ -n "$CTX_WINDOW" ] || CTX_WINDOW="${computed:-200000}"
+  return 0
 }
 
 # _purge_report — what deleting this team means, worker by worker. Sets PURGE_AT_RISK (roles
