@@ -91,10 +91,13 @@ start_permitted() {
     allowed="$(policy_get lead-teams)"
     team_paths "$keep_team"
     if [ -n "$exists" ]; then
-      warn "team '$TEAM' already exists and has its own lead ($(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")). Message it; you do not manage it."
-      return 1
-    fi
-    if [ "$allowed" != "on" ]; then
+      # A team that has a lead is that lead's. Once that lead is not running, whoever founded the team may bring
+      # it back: that is recovery, not founding, so the lead-teams policy (which is about founding) does not apply.
+      if ! founder_may_act; then
+        warn "team '$TEAM' already exists and has its own lead ($(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")). Message it; you do not manage it$(is_founder && printf ' (%s)' "$FOUNDER_HINT" || true)."
+        return 1
+      fi
+    elif [ "$allowed" != "on" ]; then
       warn "founding teams is switched off for your team (teamctl policy lead-teams). Ask the human."
       return 1
     fi
@@ -102,9 +105,21 @@ start_permitted() {
   team_identity "$own" "$role"
 }
 
+# lead_restore <created_at> <handover> <spawned_by>: a lead record that is written again for a team that
+# already had one (the session is gone, or another model is asked for) keeps what says since when the team
+# exists, which handover it was founded with and who founded it. Empty = there was none: nothing is set.
+lead_restore() {
+  local fields=()
+  [ -z "$1" ] || fields+=(created_at "$1")
+  [ -z "$2" ] || fields+=(handover "$2")
+  [ -z "$3" ] || fields+=(spawned_by "$3")
+  if [ "${#fields[@]}" -gt 0 ]; then reg_set "$WOLFMUX_LEAD_ROLE" "${fields[@]}"; fi
+}
+
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
   local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" handover="" founder="operator"
+  local prior_created="" prior_handover="" prior_by=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-attach | -d) attach=0 ;;
@@ -140,10 +155,20 @@ cmd_start() {
   WOLFMUX_TEAM_ARG="${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
   load_project
   founder="$(start_permitted)" || exit 77
+  # An agent acting on a team it did not found today is a founder bringing one back: it is announced and logged as that.
+  if [ "$founder" != "operator" ]; then EVENT_BY="$founder"; fi
+  if [ "$founder" != "operator" ] && founder_may_act; then FOUNDER_ACTING="$founder"; fi
   wt_require_commit
   ensure_state_dirs
   beads_ensure "$beads"
   lock_acquire
+  # What the lead record says about the team's beginnings, before anything below rewrites it.
+  if reg_exists "$WOLFMUX_LEAD_ROLE"; then
+    prior_created="$(reg_field "$WOLFMUX_LEAD_ROLE" created_at || true)"
+    prior_handover="$(reg_field "$WOLFMUX_LEAD_ROLE" handover || true)"
+  fi
+  prior_by="$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by 2>/dev/null || true)"
+  [ -n "$prior_by" ] || prior_by="$(meta_get founder 2>/dev/null || true)"
   if [ -n "$opt_lead" ]; then policy_set lead-permissions "$opt_lead"; fi
   if [ -n "$opt_worker" ]; then policy_set worker-permissions "$opt_worker"; fi
   if [ -n "$opt_spawn" ]; then policy_set worker-spawn "$opt_spawn"; fi
@@ -176,6 +201,7 @@ cmd_start() {
         previous_model="$(meta_get lead_model 2>/dev/null || true)"
         branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
         new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
+        lead_restore "$prior_created" "$prior_handover" "$prior_by"
         meta_put lead_model "$model"
       fi
       lock_release
@@ -207,6 +233,7 @@ cmd_start() {
 
   branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
   new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 "$founder"
+  lead_restore "$prior_created" "$prior_handover" "$prior_by"
   if [ -n "$handover" ]; then reg_set "$WOLFMUX_LEAD_ROLE" handover "$handover"; fi
   if [ "$resume" -eq 1 ]; then agent_command "$WOLFMUX_LEAD_ROLE" --continue; else agent_command "$WOLFMUX_LEAD_ROLE"; fi
   pane="$(tm_new_session "$SESSION" "$ROOT" "${AGENT_CMD[@]}")" || {
@@ -220,13 +247,16 @@ cmd_start() {
     die "could not configure tmux session '$SESSION'; it was rolled back"
   fi
   reg_set "$WOLFMUX_LEAD_ROLE" pane_id "$pane" state running
-  meta_put root "$ROOT" session "$SESSION" lead_model "$model" team "$TEAM"
+  # founder: kept beside the records, because a plain `teamctl destroy` deletes the lead's (team_founder)
+  meta_put root "$ROOT" session "$SESSION" lead_model "$model" team "$TEAM" founder "$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by)"
   event_log start "$WOLFMUX_LEAD_ROLE" "$model"
   lock_release
   tm_set_splash "$SESSION"
   layout_apply
-  # A team that an agent founded is news for you.
-  if [ "$founder" != "operator" ]; then
+  # A team that an agent founded, or brought back, is news for you.
+  if [ -n "${FOUNDER_ACTING:-}" ]; then
+    founder_announce restarted
+  elif [ "$founder" != "operator" ]; then
     (WOLFMUX_TEAM="$TEAM" notify_deliver "$WOLFMUX_LEAD_MARK $founder started team '$TEAM' ($MODEL_LABEL). Open it: teamctl attach --team $TEAM" >/dev/null 2>&1) || true
   fi
 
@@ -360,7 +390,7 @@ build_role_prompt() {
   fi
   printf -- '- Other teams of this project share this Beads database (list them: `teamctl teams`). Reach another team through its lead: -a <team>.lead (the first team'"'"'s lead is plain "lead"). Their tasks are theirs; hand work across with a message.\n'
   if [ "$kind" = "lead" ] && [ "$(policy_get lead-teams)" = "on" ]; then
-    printf -- '- You may found a further team and hand work over to it: write the handover as a Beads message or task first, then `teamctl start <model> --team <new-name> --no-attach --handover <bead-id>`. The human is told. You do not manage that team afterwards; its lead does.\n'
+    printf -- '- You may found a further team and hand work over to it: write the handover as a Beads message or task first, then `teamctl start <model> --team <new-name> --no-attach --handover <bead-id>`. The human is told. You do not manage that team afterwards; its lead does. If that lead is not running (teamctl teams says orphaned) you may restart it (teamctl restart lead --team <new-name> --continue), stop, remove or destroy the team (teamctl destroy --team <new-name> --purge); the human is told each time.\n'
   fi
   printf -- '- Your permission mode: %s\n\n' "$(reg_field "$role" permissions)"
   printf 'The %s section of the protocol below is binding for you.\n\n---\n\n' "$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')"
@@ -549,6 +579,7 @@ cmd_stop() {
   event_log stop "$role"
   lock_release
   say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then founder_announce "stopped the lead of"; else founder_announce "stopped $role of"; fi
 }
 
 # restart_without_session <role> <resume 0|1> — the tmux session is gone (it was ended, or the
@@ -565,8 +596,9 @@ restart_without_session() {
   info "team '$TEAM' has no session (it was ended, or the machine restarted); starting it again."
   start_args=("$model")
   if [ "$resume" -eq 1 ]; then start_args+=(--continue); fi
-  # A team that ran without Beads is not asked about Beads again.
-  if ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
+  # A team that ran without Beads is not asked about Beads again: a project with no Beads workspace is started with
+  # --skip-beads. A bd that is not installed is not that: start dies about it, as a manual start does.
+  if [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
   WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
   cmd_start "${start_args[@]}"
 }
@@ -616,6 +648,7 @@ cmd_restart() {
     say "restarted: $role in pane $pane"
   fi
   lock_release
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then founder_announce restarted; else founder_announce "restarted $role of"; fi
 }
 
 # --- teamctl destroy [--worktrees] [--yes] --------------------------------------------------
@@ -725,6 +758,7 @@ cmd_remove() {
   layout_apply
   lock_release
   [ -z "$holding" ] || die "nothing was removed:$holding still hold$([ "$(printf '%s' "$holding" | wc -w | tr -d ' ')" = "1" ] && printf s) work."
+  founder_announce "removed $(printf '%s' "$roles" | sed 's/^ //; s/ /, /g') from"
 }
 
 _destroy_worker_artifacts() {
@@ -897,6 +931,8 @@ cmd_destroy() {
     if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then /bin/rmdir "$STATE_DIR" 2>/dev/null || true; fi # only when empty
     say "team '$TEAM' is gone. Freed about $(human_size "$PURGE_KB")."
     say "(commits of the deleted ai/ branches leave .git when git next collects garbage; now: git gc --prune=now)"
+    founder_record_purge
+    founder_announce destroyed
     return 0
   fi
   say "About to stop every agent of this project's team ($SESSION)."
@@ -929,6 +965,16 @@ cmd_destroy() {
   reg_delete "$WOLFMUX_LEAD_ROLE"
   event_log destroy "" "worktrees=$remove_worktrees"
   lock_release
+  founder_announce ended
+}
+
+# founder_record_purge: the log of a team that was purged went with it. An agent that deleted a team it
+# founded leaves that in the log of its own team.
+founder_record_purge() {
+  local victim="$TEAM" own
+  [ -n "${FOUNDER_ACTING:-}" ] || return 0
+  own="$(caller_team)"
+  (team_paths "${own:-$WOLFMUX_DEFAULT_TEAM}" && event_log destroy "" "purged team $victim, which it founded") || true
 }
 
 # notify_lead <spawn|approval|policy> <args...> — a fixed one-line notice in the lead's

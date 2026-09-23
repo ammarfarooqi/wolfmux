@@ -203,11 +203,19 @@ bd create "Handover: payments" -t message -a next.lead --body-file handover.md  
 teamctl start fable --team next --no-attach --handover <that-id>
 ```
 
-The new lead starts by reading that bead and you get a notification. The founder does not
-manage the new team, can never take over a team that already has a lead, and a worker can
-never found one. `teamctl policy lead-teams off` keeps founding teams to yourself, for that
-team (`WOLFMUX_LEAD_TEAMS=off` for every team). Like all of the policy it is cooperative: a
-lead can change its own team's policy.
+The new lead starts by reading that bead and you get a notification. While that lead runs
+the founder does not manage the new team; it can never take over a team that already has a
+lead, and a worker can never found one. `teamctl policy lead-teams off` keeps founding teams
+to yourself, for that team (`WOLFMUX_LEAD_TEAMS=off` for every team). Like all of the policy
+it is cooperative: a lead can change its own team's policy.
+
+When the lead of a founded team is not running (a session restart, a reboot, a lead that is
+finished), `teamctl teams` marks the team `orphaned` and says who may act on it: you, and its
+founder. The founder may then bring it back or clean it up without you:
+`teamctl restart lead --team <name> --continue`, `teamctl stop`, `teamctl remove` and
+`teamctl destroy --team <name> --purge`, or `teamctl start <model> --team <name> --continue`.
+You are told each time, and the event log records it with the founder's Beads name. It never
+includes `policy`, `approve` or `deny`, and it ends the moment that team's lead runs again.
 
 ## Deleting a team
 

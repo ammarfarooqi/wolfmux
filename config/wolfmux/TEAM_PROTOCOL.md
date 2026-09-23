@@ -29,6 +29,10 @@ lead — including a worker that was spawned by another worker.
   reserved for the lead. `teamctl spawn` is too, unless the session header above says
   worker spawning is ON; then a worker may spawn a helper, and the lead is told
   automatically. If it is OFF and you need a helper, message the lead.
+- A lead that founded a team does not manage it while that team's lead runs. When that lead
+  is not running (`teamctl teams` shows the team as `orphaned`), the founder, and only the
+  founder, may `teamctl restart lead --team <name> --continue`, `stop`, `remove` and
+  `destroy --team <name> --purge`; the human is told each time. Not `policy`, `approve`, `deny`.
 
 ## Beads in 60 seconds
 

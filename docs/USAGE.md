@@ -124,8 +124,32 @@ teamctl start fable --team next --no-attach --handover shop-41
 ```
 
 The new lead starts by reading that bead, you get a notification, and the founder does not
-manage the new team. `teamctl policy lead-teams off` keeps founding teams to yourself. A
-lead can never take over a team that already has a lead; a worker can never found one.
+manage the new team while that team's lead runs. `teamctl policy lead-teams off` keeps
+founding teams to yourself. A lead can never take over a team that already has a lead; a
+worker can never found one.
+
+### When the lead of a founded team is gone
+
+A founded team whose lead died (a session restart, a reboot, a lead that is finished) has
+nobody to manage it. `teamctl teams` marks it `orphaned` and says who may act on it: you,
+and the lead that founded it. The founder does not need you for this:
+
+```bash
+teamctl teams                                            # review: orphaned; may act: you, lead (its founder)
+teamctl restart lead --team review --continue            # bring the lead back in its last conversation
+teamctl stop lead --team review                          # or park it
+teamctl remove tidy --team review --force --yes          # take a stopped teammate off the books
+teamctl destroy --team review --purge --force            # or delete the whole team
+```
+
+That is `restart`, `stop`, `remove` and `destroy` in every form, and `teamctl start <model>
+--team review --continue`; never `policy`, `approve` or `deny`. It holds only while the
+team's lead is not running (its pane exited or is gone, or there is no tmux session at all);
+while that lead runs, the founder is refused (exit 77) and told so. Every time the founder
+acts you get a notification, and the event log records it with the founder's Beads name
+(`by`). Another team's lead and any worker stay refused. A team you started yourself has no
+founder but you. A restart without a session keeps the founder, the handover and the
+creation time in the lead's record, so the founder keeps its authority after one.
 
 ## teamctl
 
@@ -141,7 +165,7 @@ lead can never take over a team that already has a lead; a worker can never foun
 | `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files |
-| `teamctl teams` | the short list per team: state, lead, number of agents, the disk its teammates' worktrees take, session |
+| `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
 | `teamctl panes` | tmux's view: command, pid, cwd |
 | `teamctl capture <role> [-n\|--lines N] [--all]`, `teamctl log <role>` | recent / full terminal output — for diagnosing a stuck agent, never for task state |
 | `teamctl focus <role>`, `teamctl attach` (alias `open`) | move your terminal |

@@ -231,7 +231,11 @@ start` is yours and, for its own team, the lead's. One thing more: a lead may st
 that does not exist yet (`start_permitted`; policy `lead-teams` of the founder's team,
 default on), and `--handover <bead-id>` is stored in the new lead's record and becomes its
 first prompt. The founder is
-recorded as `spawned_by`, you are notified, and the founder does not manage the new team.
+recorded as `spawned_by`, you are notified, and the founder does not manage the new team
+while that team's lead runs. When it does not (`team_lead_running` asks tmux: no session,
+a dead pane or none), `require_manager` and `start_permitted` let the founder run `restart`,
+`stop`, `remove`, `destroy` and `start --continue` on it, announce each one to you and log it
+with the founder's Beads name ([ADR-0023](adr/0023-founder-recovers-an-orphaned-team.md)).
 `teamctl destroy --purge` is the reverse: `_purge_report` measures and lists first (size per
 worktree, uncommitted files, commits the checked-out branch does not have, transcripts).
 Nothing is touched until the answer is yes, `--force` was given, or `--yes` with nothing at

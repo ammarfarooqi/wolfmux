@@ -107,9 +107,94 @@ is_manager() {
   [ "${team:-$WOLFMUX_DEFAULT_TEAM}" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ]
 }
 
+# --- the founder of a team ---------------------------------------------------------------
+# A lead that founds a team (teamctl start <model> --team <new>) does not manage it while its own
+# lead runs. When that lead is not running (its pane exited or is gone, or there is no session at
+# all) nobody would be left to restart, stop or delete the team, so its founder may: restart, stop,
+# remove and destroy, and start --continue. Never policy, approve or deny. The founder is the Beads
+# identity in the lead's spawned_by ("lead", "review.lead"), written when the team was started.
+FOUNDER_COMMANDS="restart stop remove destroy"
+
+# caller_identity: what the calling agent is called in Beads ("lead", "review.backend"); empty for you
+caller_identity() {
+  local role team
+  role="$(caller_role)"
+  [ -n "$role" ] || return 1
+  team="$(caller_team)"
+  team_identity "${team:-$WOLFMUX_DEFAULT_TEAM}" "$role"
+}
+
+# team_founder: who started the loaded team: the Beads identity of the lead that founded it, else
+# "operator" (you). The lead's record says; meta.json keeps it for when that record is gone
+# (a plain `teamctl destroy` deletes the lead's record and keeps the workers').
+team_founder() {
+  local founder
+  founder="$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by 2>/dev/null || true)"
+  [ -n "$founder" ] || founder="$(meta_get founder 2>/dev/null || true)"
+  printf '%s\n' "${founder:-operator}"
+}
+
+# team_lead_running: is the lead of the loaded team running right now? Asks tmux.
+team_lead_running() {
+  local session pane
+  session="$(session_name_for_project)"
+  tm_session_exists "$session" || return 1
+  pane="$(tm_pane_for_role "$session" "$WOLFMUX_LEAD_ROLE" 2>/dev/null || true)"
+  [ "$(tm_pane_state "$pane")" = "running" ]
+}
+
+# team_orphaned: the loaded team exists (records or a session) and has no running lead
+team_orphaned() {
+  [ -n "$(reg_list 2>/dev/null)" ] || tm_session_exists "$(session_name_for_project)" || return 1
+  ! team_lead_running
+}
+
+# is_founder: the caller is a lead, and the lead that founded the loaded team
+is_founder() {
+  local founder
+  [ "$(caller_role)" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  founder="$(team_founder)"
+  [ "$founder" != "operator" ] && [ "$founder" = "$(caller_identity)" ]
+}
+
+# founder_may_act: is_founder, and the loaded team has no running lead to conflict with
+founder_may_act() {
+  is_founder && ! team_lead_running
+}
+
+FOUNDER_HINT="you founded it: once its lead has stopped you may restart or destroy it"
+
+# founder_announce <what it did>: set by require_manager / cmd_start when a founder acts: you are told, the way
+# founding a team is told, and the event log says who acted (event_log: by is the founder's identity)
+founder_announce() {
+  [ -n "${FOUNDER_ACTING:-}" ] || return 0
+  (WOLFMUX_TEAM="$TEAM" notify_deliver "$WOLFMUX_LEAD_MARK $FOUNDER_ACTING $1 team '$TEAM', which it founded (its lead was not running)." >/dev/null 2>&1) || true
+}
+
 require_manager() { # <command name>
+  local hint=""
   is_manager && return 0
-  die "'teamctl $1' is reserved for the lead of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}'. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")'. Ask that lead: bd create \"<what you need>\" -t message -a $(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE") -d \"<why>\"" 77
+  case " $FOUNDER_COMMANDS " in
+    *" $1 "*)
+      if is_founder; then
+        if ! team_lead_running; then
+          FOUNDER_ACTING="$(caller_identity)"
+          EVENT_BY="$FOUNDER_ACTING"
+          return 0
+        fi
+        hint="; $FOUNDER_HINT"
+      fi
+      ;;
+  esac
+  die "'teamctl $1' is reserved for the lead of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}'. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")'$hint. Ask that lead: bd create \"<what you need>\" -t message -a $(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE") -d \"<why>\"" 77
+}
+
+# team_orphaned_note: who may act on the loaded team while its lead is not running
+team_orphaned_note() {
+  local founder note="you"
+  founder="$(team_founder)"
+  if [ "$founder" != "operator" ]; then note="you, $founder (its founder)"; fi
+  printf 'orphaned: its lead is not running. May act on it: %s.' "$note"
 }
 
 policy_summary() {
