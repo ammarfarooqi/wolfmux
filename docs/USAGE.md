@@ -126,6 +126,31 @@ Rules worth knowing:
   branch it did not create is named in the output and left alone.
 - `WOLFMUX_BRANCH_TEMPLATE` in `~/.config/wolfmux/config` is the default for every team.
 
+## A worker in another repository
+
+Work that spans repositories does not need the guard switched off. A spawn can put a worker's
+worktree and branch in another git repository:
+
+```bash
+teamctl spawn srv glm53 --repo ../fanpro-studio-server
+teamctl spawn srv glm53 --repo ../fanpro-studio-server --base release/2026-09
+```
+
+What that changes, and what it does not:
+
+| | |
+|---|---|
+| worktree | `~/.wolfmux/worktrees/<that repository>/teams/<team>/<role>-<stamp>` |
+| branch | created in **that** repository, from its `HEAD` or the `--base` you name, resolved there |
+| isolation | stays **on**. The worker may change only its own worktree; your project's checkout *and* that repository's own checkout are read-only for it |
+| status | a `REPO` column appears (only while some worker has one), and `--json` carries `repo` |
+| diff, worktrees, remove, destroy | all run git in that worker's repository, so what wolfmux made there is what wolfmux removes there |
+| team, Beads, lead, policy, panes | unchanged: it is an ordinary teammate of this team, and its inbox is this project's Beads |
+
+Not covered, on purpose: switching isolation off for one worker, an allow-list of extra
+writable paths, and founding a whole team in another repository. A team still belongs to
+one project; only a worker's worktree moves.
+
 ## Deleting a team, and what a team costs
 
 | What | Disk |
@@ -174,7 +199,7 @@ lead can never take over a team that already has a lead; a worker can never foun
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
 | `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
-| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--no-kickoff]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) |
+| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path>] [--no-kickoff]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository) |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |

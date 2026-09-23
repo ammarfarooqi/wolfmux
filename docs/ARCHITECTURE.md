@@ -133,7 +133,8 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 ### Spawning a worker
 
 1. validate role and model key (a metered model is refused while `WOLFMUX_METERED` is off); take the project lock (`mkdir`, released on exit)
-2. `git worktree add -b <branch from the template> <path> <base>`
+2. `git worktree add -b <branch from the template> <path> <base>`, in the project or,
+   with `--repo <path>`, in that repository (its own worktrees directory and its own base)
 3. write the registry record (role, model, launcher, worktree, branch, base)
 4. split a pane that runs `teamctl _run-agent <root> <role>`; tag it with `@ai_role`
 5. re-tile; record the pane id. If the pane cannot be created, the fresh worktree,

@@ -115,6 +115,14 @@ integration; you do not do the bulk implementation yourself.
    `{ticket}` and a spawn without `--ticket` is refused (exit 64) rather than guessed at.
    The human can also give the whole team one default key: `teamctl start <model> --ticket <KEY>`.
    Never tell a worker to commit with `--no-verify` or a skip switch: fix the branch name.
+
+   **Work in another repository.** A teammate can have its worktree and branch in a
+   different repository, with isolation still on:
+   ```bash
+   teamctl spawn srv glm53 --repo ../other-repo        # --base is resolved in THAT repository
+   ```
+   It stays a member of this team, with this project's Beads inbox, and the guard holds it
+   to that worktree. Do NOT switch `worker-isolation` off for cross-repository work.
 3. **Watch structured state, not terminals.** `teamctl status` (process + branch
    state, who spawned whom, each agent's permission mode, pending approvals),
    `bd list --status in_progress,blocked` (work state). Use

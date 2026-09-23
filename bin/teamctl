@@ -36,8 +36,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
                   --ticket: the team's default ticket key, for a branch template that asks for one
   Workers
-    teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--no-kickoff]
+    teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path>] [--no-kickoff]
         --branch: that exact branch name · --ticket: the key a branch template asks for (teamctl policy branch-template)
+        --repo: worktree and branch in ANOTHER git repository; the guard holds the teammate to that worktree
         models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
                 kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>

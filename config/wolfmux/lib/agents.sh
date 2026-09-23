@@ -49,7 +49,7 @@ agent_state() {
 
 # new_record <role> <kind> <model-key> <workdir> <branch> <base-ref> <base-commit> <kickoff>
 #            <spawned-by> [<repo>] [<branch-created 0|1>]
-# repo: the repository this agent's worktree and branch live in; empty, meaning this project.
+# repo: the repository this agent's worktree and branch live in, empty for this project.
 # branch_created: 1 when teamctl made that branch, and only then is it ever deleted again.
 new_record() {
   local launcher permissions
@@ -256,12 +256,12 @@ cmd_start() {
 }
 
 # --- teamctl spawn <role> <model> -----------------------------------------------
-# The branch comes from the team's template, or is exactly what --branch says. Everything is
-# resolved and refused before a worktree, a branch, a record or a pane exists, so a spawn that
-# is turned down leaves nothing behind.
+# The branch: the team's template, or exactly what --branch says. The repository: this
+# project, or the one --repo names. Everything is resolved and refused before a worktree,
+# a branch, a record or a pane exists, so a spawn that is turned down leaves nothing behind.
 cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
-  local want_branch="" ticket="" spawn_repo trees
+  local want_branch="" ticket="" repo_arg="" repo="" spawn_repo trees repo_note=""
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -281,13 +281,18 @@ cmd_spawn() {
         ticket="$2"
         shift
         ;;
+      --repo)
+        [ "$#" -ge 2 ] || die_usage "--repo needs the path of a git repository"
+        repo_arg="$2"
+        shift
+        ;;
       --no-kickoff) kickoff=0 ;;
       -*) die_usage "unknown option for spawn: $1" ;;
       *) if [ -z "$role" ]; then role="$1"; elif [ -z "$model" ]; then model="$1"; else die_usage "unexpected argument: $1"; fi ;;
     esac
     shift
   done
-  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
+  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
   require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
@@ -306,9 +311,24 @@ cmd_spawn() {
     die "role '$role' already exists ($(agent_state "$role")). Use: teamctl restart $role — or choose another role name."
   fi
 
-  wt_require_commit "$ROOT"
-  spawn_repo="$ROOT"
-  trees="$WORKTREES_DIR"
+  # Which repository this teammate works in. Without --repo it is the project, which is
+  # also what --repo pointing back at the project means.
+  if [ -n "$repo_arg" ]; then
+    [ -d "$repo_arg" ] || die_usage "--repo: no such directory: $repo_arg"
+    repo="$(repo_root_of "$repo_arg")" || die_usage "--repo: $repo_arg is not inside a git repository"
+    [ "$repo" != "$ROOT" ] || repo=""
+  fi
+  if [ -n "$repo" ]; then
+    git_in "$repo" rev-parse --verify -q 'HEAD^{commit}' >/dev/null ||
+      die_usage "--repo: $(short_path "$repo") has no commits yet; a worktree needs one"
+    spawn_repo="$repo"
+    trees="$WOLFMUX_DATA/worktrees/$(project_key "$repo")/teams/$TEAM"
+    repo_note=" in $(short_path "$repo")"
+  else
+    wt_require_commit "$ROOT"
+    spawn_repo="$ROOT"
+    trees="$WORKTREES_DIR"
+  fi
   /bin/mkdir -p "$trees"
 
   base_commit="$(git_in "$spawn_repo" rev-parse --verify -q "$base^{commit}")" || die "cannot resolve base ref '$base' in $(short_path "$spawn_repo")"
@@ -330,7 +350,7 @@ cmd_spawn() {
     die "branch '$branch' already exists in $(short_path "$spawn_repo"). teamctl never adopts a branch it did not create (teamctl remove deletes a teammate's branch), so pick another name."
   fi
   path="$(wt_create "$spawn_repo" "$trees/$role-$stamp" "$branch" "$base_commit")"
-  new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}" "" 1
+  new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}" "$repo" 1
 
   target="$(tm_split_target "$SESSION")" || target=""
   pane=""
@@ -346,7 +366,7 @@ cmd_spawn() {
   tm_tag "$pane" "$role" "$MODEL_LABEL"
   reg_set "$role" pane_id "$pane" state running
   layout_apply
-  event_log spawn "$role" "$model $branch by ${spawner:-operator}"
+  event_log spawn "$role" "$model $branch by ${spawner:-operator}${repo_note}"
   lock_release
   # The manager always knows who is on the team, whoever did the spawning.
   if [ -n "$spawner" ] && [ "$spawner" != "$WOLFMUX_LEAD_ROLE" ]; then
@@ -355,6 +375,7 @@ cmd_spawn() {
 
   say "spawned:   $role  ($MODEL_LABEL via $MODEL_LAUNCHER)  permissions: $(reg_field "$role" permissions)"
   say "pane:      $pane"
+  if [ -n "$repo" ]; then say "repo:      $(short_path "$repo")   (another repository; the guard holds this teammate to the worktree below)"; fi
   say "branch:    $branch  (base: $base_ref @ $(printf '%s' "$base_commit" | cut -c1-12))"
   say "worktree:  $(short_path "$path")"
 }
@@ -368,9 +389,10 @@ path_prepend() {
 }
 
 build_role_prompt() {
-  local role="$1" kind workdir me lead
+  local role="$1" kind workdir me lead repo
   kind="$(reg_field "$role" kind)"
   workdir="$(reg_field "$role" workdir)"
+  repo="$(reg_field "$role" repo)"
   me="$(team_identity "$TEAM" "$role")"
   lead="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   printf '# Wolfmux session context\n\n'
@@ -380,6 +402,9 @@ build_role_prompt() {
   if [ "$kind" = "worker" ]; then
     printf -- '- Your private worktree (work ONLY here): %s\n' "$workdir"
     printf -- '- Your branch: %s   (base: %s @ %s)\n' "$(reg_field "$role" branch)" "$(reg_field "$role" base_ref)" "$(reg_field "$role" base_commit | cut -c1-12)"
+    if [ -n "$repo" ]; then
+      printf -- '- Your worktree is a worktree of ANOTHER repository: %s. Your branch lives there, and your work belongs there. The project root above is your lead'"'"'s repository: you may read it, you may not change it. Your team, your Beads inbox and your lead are unchanged.\n' "$repo"
+    fi
   fi
   printf -- '- Your team: %s\n' "$TEAM"
   printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported). Your inbox: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$me" "$me"
@@ -475,7 +500,7 @@ write_agent_settings() {
 }
 
 cmd_run_agent() {
-  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id
+  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id beads_workspace
   [ -n "$root" ] && [ -n "$role" ] || die_usage "internal use: _run-agent <root> <role> [--continue]"
   if [ "${3:-}" = "--continue" ]; then resume=1; fi
   export WOLFMUX_ROOT="$root"
@@ -494,7 +519,15 @@ cmd_run_agent() {
   if [ "$(reg_field "$role" kind)" = "worker" ]; then
     WOLFMUX_WORKTREE="$workdir" # what the worktree guard (lib/guard.sh) holds this agent to
     WOLFMUX_BRANCH="$(reg_field "$role" branch)"
-    export WOLFMUX_WORKTREE WOLFMUX_BRANCH
+    WOLFMUX_REPO="$(reg_field "$role" repo)" # set only with --repo: that repository's own checkout is read-only too
+    export WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_REPO
+    # A teammate spawned with --repo sits in another repository, and bd resolves its workspace
+    # through git: without this it would look for Beads in THAT repository and find none or the
+    # wrong one. The team's tasks and messages live in the project's workspace, so name it.
+    if [ -n "$(reg_field "$role" repo)" ] && [ -z "${BEADS_DIR:-}" ]; then
+      beads_workspace="$(beads_dir 2>/dev/null || true)"
+      if [ -n "$beads_workspace" ]; then export BEADS_DIR="$beads_workspace"; fi
+    fi
   fi
   WOLFMUX_SESSION="$(meta_get session || true)"
   WOLFMUX_MODEL="$(reg_field "$role" model)"

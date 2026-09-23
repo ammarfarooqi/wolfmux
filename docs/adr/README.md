@@ -26,3 +26,4 @@ build; superseded decisions will link to their replacement.
 | [0019](0019-deleting-a-team-and-founding-one.md) | Deleting a whole team, and a lead founding a new one | accepted | 2026-09-20 |
 | [0020](0020-providers-beyond-the-three-subscriptions.md) | Providers beyond the three subscriptions: one table, one launcher, metered off until the owner says on | accepted | 2026-09-20 |
 | [0021](0021-branch-names-from-a-template.md) | Worker branch names come from a template, and only branches teamctl created are deleted | accepted | 2026-09-23 |
+| [0022](0022-a-worker-in-another-repository.md) | A worker's worktree can live in another repository, with isolation still on | accepted | 2026-09-23 |

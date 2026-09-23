@@ -82,7 +82,7 @@ Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
 `ai/<team>/<role>-<timestamp>`, Beads name `<team>.<role>`). The lead stays the large pane
 on the left; teammates stack on the right. A worker reads its Beads inbox as soon as it
 boots, so assign work first, then spawn. Options: `--base <ref>`, `--branch <name>`,
-`--ticket <KEY>`, `--no-kickoff`.
+`--ticket <KEY>`, `--repo <path>`, `--no-kickoff`.
 
 **Branch names.** That shape is a template, and a team can set its own when the repository
 enforces one (a ticket key, a prefix), so no teammate ever has to commit past a hook:
@@ -99,6 +99,15 @@ Placeholders: `{team}` `{role}` `{ts}` `{ticket}`. `{ts}` is required — it is 
 teammates of one role on two branches — so a template without it is refused, and so is a
 template with `{ticket}` when the spawn has no ticket key. teamctl deletes a teammate's
 branch only when teamctl created it, whatever it is called.
+
+**Another repository.** `teamctl spawn srv glm53 --repo ../other-repo` creates the worktree
+and the branch **there** (base: that repository's `HEAD`, or the `--base` you name, resolved
+there), under `~/.wolfmux/worktrees/<that repo>/teams/<team>/`. Isolation stays on: the
+teammate may change only its own worktree, and both your project's checkout and that
+repository's own checkout are read-only for it. `teamctl status` grows a `REPO` column while
+some teammate has one, and `diff`, `worktrees`, `remove` and `destroy` run git where that
+teammate's work actually is. It stays an ordinary member of this team, with this project's
+Beads inbox.
 
 A provider worker needs that provider's key in the Keychain first (one-time setup above);
 `teamctl doctor` says which are set up. `spawn` and `start` refuse a metered key until

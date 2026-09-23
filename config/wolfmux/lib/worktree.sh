@@ -9,8 +9,10 @@
 # ticket key, a prefix) and a worker that cannot satisfy it commits with the project's
 # skip switch instead. The default template is the shape wolfmux has always produced.
 #
-# Every git command about a worker goes through git_for_role, which reads that worker's
-# record for the repository its worktree belongs to. Today that is always this project.
+# The REPOSITORY is this project by default, and any other git repository when a spawn
+# says --repo <path>: worktree, branch and base are then created there, and the record
+# says so. Every git command about a worker therefore runs in that worker's repository
+# (git_for_role), never blindly in the project (gitr).
 
 gitr() { "$GIT_BIN" -C "$ROOT" "$@"; }
 
@@ -22,7 +24,8 @@ git_in() {
 }
 
 # worker_repo <role> — the repository this worker's worktree and branch live in.
-# An empty 'repo' field means this project.
+# An empty 'repo' field means this project (a spawn without --repo), which is the
+# only thing a record from before --repo existed can mean.
 worker_repo() {
   local repo
   repo="$(reg_field "$1" repo 2>/dev/null || true)"
@@ -37,7 +40,8 @@ git_for_role() {
   "$GIT_BIN" -C "$(worker_repo "$role")" "$@"
 }
 
-# worker_trees_dir <role> — the directory this worker's worktree must lie in.
+# worker_trees_dir <role> — the directory this worker's worktree must lie in. A foreign
+# repository gets its own key, so two projects never share a worktree directory.
 worker_trees_dir() {
   local repo
   repo="$(reg_field "$1" repo 2>/dev/null || true)"
@@ -210,7 +214,10 @@ wt_delete_branch_if_merged() {
 }
 
 cmd_worktrees() {
-  local role kind path branch base ahead dirty present
+  local role kind path branch base ahead dirty present repo repos=""
+  local newline='
+'
+
   require_tools
   load_project
   printf '%-14s %-32s %-7s %-7s %s\n' "ROLE" "BRANCH" "AHEAD" "DIRTY" "WORKTREE"
@@ -226,6 +233,11 @@ cmd_worktrees() {
     branch="$(reg_field "$role" branch)"
     base="$(reg_field "$role" base_commit)"
     ahead="$(wt_ahead "$role" "$base" "$branch")"
+    repo="$(reg_field "$role" repo)"
+    # A repository path may contain spaces, so the list is kept one per line.
+    if [ -n "$repo" ]; then
+      case "$newline$repos" in *"$newline$repo$newline"*) ;; *) repos="$repos$repo$newline" ;; esac
+    fi
     if [ -d "$path" ]; then
       dirty="$(wt_dirty_count "$path")"
       present="$(short_path "$path")"
@@ -236,13 +248,21 @@ cmd_worktrees() {
     printf '%-14s %-32s %-7s %-7s %s\n' "$role" "$branch" "$ahead" "$dirty" "$present"
   done
   say ""
-  say "git worktree list:"
+  say "git worktree list in $(short_path "$ROOT"):"
   gitr worktree list | sed 's/^/  /'
+  # A teammate spawned with --repo has its worktree in another repository; that repository's
+  # own worktrees are what git knows about it, so they are listed where they are.
+  printf '%s' "$repos" | while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    say ""
+    say "git worktree list in $(short_path "$repo"):"
+    git_in "$repo" worktree list 2>/dev/null | sed 's/^/  /' || say "  (that repository cannot be read any more)"
+  done
 }
 
 # teamctl diff <role> [--stat|--names|--commits|--working]
 cmd_diff() {
-  local role="${1:-}" mode="full" branch base path pager=()
+  local role="${1:-}" mode="full" branch base path repo pager=()
   require_role_arg "$role"
   shift
   while [ "$#" -gt 0 ]; do
@@ -262,6 +282,7 @@ cmd_diff() {
   branch="$(reg_field "$role" branch)"
   base="$(reg_field "$role" base_commit)"
   path="$(reg_field "$role" workdir)"
+  repo="$(reg_field "$role" repo)"
   wt_branch_exists "$role" "$branch" || die "branch $branch no longer exists in $(short_path "$(worker_repo "$role")")"
   [ -t 1 ] || pager=(--no-pager)
 
@@ -277,6 +298,7 @@ cmd_diff() {
     full)
       say "# role:    $role"
       say "# branch:  $branch"
+      if [ -n "$repo" ]; then say "# repo:    $(short_path "$repo")   (this teammate works in another repository)"; fi
       say "# base:    $(reg_field "$role" base_ref) @ $(printf '%s' "$base" | cut -c1-12)"
       say "# commits: $(wt_ahead "$role" "$base" "$branch") ahead of base, uncommitted entries in worktree: $(wt_dirty_count "$path")"
       say "#"

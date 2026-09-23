@@ -255,25 +255,30 @@ launcher_path() {
 }
 
 # --- project + state resolution -------------------------------------------------
-# resolve_root — main checkout of the current repository, also when called from a
-# linked worktree that lives outside it (every worker does).
-resolve_root() {
-  local common top
-  if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then
-    printf '%s\n' "$WOLFMUX_ROOT"
-    return 0
-  fi
-  [ -n "$GIT_BIN" ] || return 1
-  common="$("$GIT_BIN" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+# repo_root_of <directory> — main checkout of the repository that holds it, also when
+# the directory is a linked worktree that lives outside that checkout (every worker's is).
+repo_root_of() {
+  local dir="$1" common top
+  [ -n "$GIT_BIN" ] && [ -d "$dir" ] || return 1
+  common="$("$GIT_BIN" -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
   case "$common" in
     */.git)
       printf '%s\n' "${common%/.git}"
       ;;
     *)
-      top="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)" || return 1
+      top="$("$GIT_BIN" -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
       printf '%s\n' "$top"
       ;;
   esac
+}
+
+# resolve_root — main checkout of the current repository.
+resolve_root() {
+  if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then
+    printf '%s\n' "$WOLFMUX_ROOT"
+    return 0
+  fi
+  repo_root_of "$PWD"
 }
 
 sanitize_name() {
@@ -300,6 +305,10 @@ project_key() {
 #   branches    ai/<role>-<stamp>  ·  ai/<team>/<role>-<stamp>   (the default branch template;
 #               a team can name its workers' branches differently: teamctl policy branch-template)
 #   Beads name  <role>             ·  <team>.<role>       (all teams share the project's Beads)
+#
+# A worker can also be given a worktree in ANOTHER repository (teamctl spawn --repo <path>):
+# its worktree, branch and base live there, under ~/.wolfmux/worktrees/<that repo>/teams/<team>/,
+# and its record says which repository that is. Everything else about the team is unchanged.
 WOLFMUX_DEFAULT_TEAM="default"
 
 # A team's name is part of its tmux session, its branches and its Beads names, so it is kept

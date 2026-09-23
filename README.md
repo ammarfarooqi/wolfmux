@@ -71,7 +71,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--no-kickoff]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads. `--branch` names the branch exactly; `--ticket` supplies the key a [branch template](#branch-names) asks for |
+| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path>] [--no-kickoff]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads. `--branch` names the branch exactly; `--ticket` supplies the key a [branch template](#branch-names-and-other-repositories) asks for; `--repo` puts the worktree and the branch in **another** git repository, with the guard still on |
 | `teamctl stop <role>` | close its pane; worktree, branch and commits stay |
 | `teamctl restart <role> [--continue]` | start it again in the same worktree; `--continue` keeps its conversation. When the team's tmux session is gone (a reboot), `restart lead` starts the team again |
 | `teamctl remove <role>… [--force] [--yes]` | take a stopped teammate off the books: worktree, branch, record. Refuses while it holds work that exists nowhere else, and lists it; `--force` discards it after one question |
@@ -108,7 +108,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
 are for you and for the team's lead; a teammate that tries them is refused (exit 77).
 
-### Branch names
+### Branch names and other repositories
 
 A teammate's branch is named by the team's **branch template**. The default reproduces the
 names wolfmux has always used, `ai/<role>-<timestamp>` and `ai/<team>/<role>-<timestamp>`,
@@ -130,6 +130,19 @@ switch. `WOLFMUX_BRANCH_TEMPLATE` in `~/.config/wolfmux/config` is the default f
 
 teamctl deletes a teammate's branch (`teamctl remove`, `teamctl destroy --purge`) **only when
 teamctl created it**, whatever it is called. A branch you made yourself is named and left alone.
+
+A teammate can also work in a **different repository**:
+
+```bash
+teamctl spawn srv glm53 --repo ../fanpro-studio-server
+```
+
+Its worktree and branch are created there, from that repository's `HEAD` (or its `--base`),
+under `~/.wolfmux/worktrees/<that repo>/teams/<team>/`. Worker isolation stays on and holds
+that teammate to that worktree: both your project's checkout and the other repository's own
+checkout are read-only for it. `teamctl status` (a `REPO` column, and `repo` in `--json`),
+`diff`, `worktrees`, `remove` and `destroy` all run git in that repository, so what wolfmux
+created there is also what wolfmux cleans up there.
 
 ### Models
 

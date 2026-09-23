@@ -552,6 +552,47 @@ check "branch names: the guard holds a worker to its own branch whatever that br
 teamctl destroy --team naming --purge --force >/dev/null 2>&1
 teamctl destroy --team ticketed --purge --force >/dev/null 2>&1
 
+echo "== a teammate in a sibling repository (issue #4)"
+SIBLING="$WORK/sibling repo" # the space is deliberate here too
+/bin/mkdir -p "$SIBLING"
+(cd "$SIBLING" && git init -q -b main && echo "b" >b.txt &&
+  git add -A && git -c user.name=smoke -c user.email=smoke@example.invalid commit -qm "initial commit of the sibling" &&
+  git branch release-b && git branch keep-me) >/dev/null 2>&1
+SIBLING_REAL="$(cd "$SIBLING" && pwd -P)"
+teamctl start flash --team cross --no-attach --skip-beads >/dev/null 2>&1
+teamctl spawn srv flash --team cross --repo "$SIBLING" --base release-b --no-kickoff >/dev/null 2>&1
+sleep 2
+cross_field() { teamctl status --json --team cross | jq -r --arg role "$1" --arg f "$2" '.agents[] | select(.role == $role) | .[$f]'; }
+SRV_TREE="$(cross_field srv workdir)"
+SRV_BRANCH="$(cross_field srv branch)"
+check "cross-repo: the branch and the worktree are created in the sibling repository, from a ref of that repository, and the pane opens there" '[ -n "$SRV_BRANCH" ] && git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV_BRANCH" >/dev/null && ! git -C "$PROJECT" rev-parse -q --verify "refs/heads/$SRV_BRANCH" >/dev/null && [ -f "$SRV_TREE/b.txt" ] && [ ! -e "$SRV_TREE/README.md" ] && teamctl diff srv --team cross | grep -q "base:    release-b" && teamctl capture srv --team cross --all | grep -q "STUB cwd=.*/teams/cross/srv-"'
+check "cross-repo: the worktree lives under that repository's own key, and status names the repository (column and JSON)" 'case "$SRV_TREE" in *"/worktrees/sibling-repo-"*"/teams/cross/srv-"*) true ;; *) false ;; esac && [ "$(cross_field srv repo)" = "$SIBLING_REAL" ] && [ "$(cross_field lead repo)" = "" ] && teamctl status --team cross | grep -q "REPO" && teamctl status --team cross | grep -q "sibling repo" && ! teamctl status --team default | grep -q "REPO"'
+check "cross-repo: --repo refuses a path that is no directory, no git repository, or a repository without a commit (exit 64); nothing is created" '/bin/mkdir -p "$WORK/notarepo" "$WORK/emptyrepo" && (cd "$WORK/emptyrepo" && git init -q -b main) && ( for p in "$WORK/nosuchdir" "$WORK/notarepo" "$WORK/emptyrepo"; do teamctl spawn nope flash --team cross --repo "$p" --no-kickoff; [ $? -eq 64 ] || exit 1; done ) && ! teamctl status --json --team cross | jq -e ".agents[] | select(.role == \"nope\")"'
+guard_srv() { # <tool> <json tool_input> — the guard's answer for the cross-repo worker
+  local answer
+  answer="$(jq -cn --arg tool "$1" --argjson input "$2" --arg cwd "$SRV_TREE" '{hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $input, cwd: $cwd}' |
+    TEAM_ROLE=srv WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$SRV_TREE" WOLFMUX_BRANCH="$SRV_BRANCH" WOLFMUX_REPO="$SIBLING_REAL" "$REPO/bin/teamctl" _guard)"
+  if [ -z "$answer" ]; then printf 'allow\n'; else printf '%s' "$answer" | jq -r '.hookSpecificOutput.permissionDecision // "allow"'; fi
+}
+at() { jq -cn --arg p "$1" '{file_path: $p}'; }
+check "cross-repo: isolation stays on and holds that worker to its worktree in the sibling repository; the lead's project and the sibling's own checkout are both read-only" '[ "$(guard_srv Write "$(at "$SRV_TREE/b.txt")")" = allow ] && [ "$(guard_srv Write "$(at "$ROOT_REAL/README.md")")" = deny ] && [ "$(guard_srv Write "$(at "$SIBLING_REAL/b.txt")")" = deny ] && [ "$(guard_srv Read "$(at "$SRV_TREE/b.txt")")" = allow ] && teamctl capture srv --team cross --all | grep -q "STUB guard=true" && teamctl _prompt srv --team cross | grep -qF "ANOTHER repository: $SIBLING_REAL"'
+# bd resolves its workspace through git, so a teammate in another repository would look for
+# Beads THERE. Its inbox is the team's, wherever its worktree is.
+if [ "${HAVE_BD:-0}" -eq 1 ]; then
+  check "cross-repo: the teammate still reads the team's own Beads workspace, not the sibling repository's" 'teamctl capture srv --team cross --all | grep -q "STUB beadsdir=.*/\.beads" && ! teamctl capture srv --team cross --all | grep -q "STUB beadsdir=$SIBLING_REAL"'
+fi
+(cd "$SRV_TREE" && echo x >x.txt && git add -A && git -c user.name=srv -c user.email=srv@example.invalid commit -qm "feat: only in the sibling repo") >/dev/null 2>&1
+echo "loose" >"$SRV_TREE/loose.txt"
+check "cross-repo: diff, status and worktrees read that repository, not the project" 'teamctl diff srv --team cross --commits | grep -q "feat: only in the sibling repo" && [ "$(cross_field srv commits_ahead)" = "1" ] && [ "$(cross_field srv uncommitted)" = "1" ] && teamctl worktrees --team cross | grep -q "sibling-repo-" && teamctl worktrees --team cross | grep -qF "$SIBLING_REAL"'
+check "cross-repo: remove without --force still refuses to discard work, and names the commit and the file that exist nowhere else" 'teamctl stop srv --team cross && out="$(teamctl remove srv --team cross 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "feat: only in the sibling repo" && printf "%s" "$out" | grep -q "loose.txt" && [ -d "$SRV_TREE" ]'
+check "cross-repo: remove --force takes the worktree and the branch in the sibling repository; every other branch of both repositories stays" 'teamctl remove srv --team cross --force --yes && [ ! -e "$SRV_TREE" ] && ! git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV_BRANCH" >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/keep-me >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/release-b >/dev/null && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && ! git -C "$SIBLING_REAL" worktree list | grep -q "/teams/cross/"'
+teamctl spawn srv2 flash --team cross --repo "$SIBLING" --no-kickoff >/dev/null 2>&1
+sleep 2
+SRV2_TREE="$(cross_field srv2 workdir)"
+SRV2_BRANCH="$(cross_field srv2 branch)"
+check "cross-repo: destroy --purge deletes that worktree and branch in the sibling repository and leaves the rest of it alone" '[ -n "$SRV2_BRANCH" ] && [ -d "$SRV2_TREE" ] && teamctl destroy --team cross --purge --force && [ ! -e "$SRV2_TREE" ] && ! git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV2_BRANCH" >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/keep-me >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/main >/dev/null && ! git -C "$SIBLING_REAL" worktree list | grep -q "/teams/cross/"'
+
+
 echo "== deleting a whole team (destroy --purge)"
 teamctl start fable --team scrap --no-attach --skip-beads >/dev/null 2>&1
 teamctl spawn tidy flash --team scrap --no-kickoff >/dev/null 2>&1
