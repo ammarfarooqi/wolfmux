@@ -36,11 +36,12 @@ die() {
 }
 # teamctl_on_exit — the EXIT trap. Releases the project lock, and never lets a crash pass in
 # silence: set -e ends teamctl on the first failing command, and when that command was killed
-# by a signal (SIGPIPE: exit 141) nothing had printed a word (issue #6). Ctrl-C (130) is you.
+# by a signal (SIGPIPE: exit 141) nothing had printed a word (issue #6). Ctrl-C (130) is you,
+# a hangup (129) is a closed terminal: `destroy` run inside the team it ends closes its own pane.
 teamctl_on_exit() {
   local rc=$?
   lock_release 2>/dev/null || true
-  if [ "$rc" -gt 128 ] && [ "$rc" -ne 130 ]; then
+  if [ "$rc" -gt 128 ] && [ "$rc" -ne 130 ] && [ "$rc" -ne 129 ]; then
     printf '%steamctl:%s stopped unexpectedly (exit %s: signal %s) in: teamctl %s\nIt ended before it finished: check what it had done (teamctl status), then report this line.\n' \
       "$_C_RED" "$_C_OFF" "$rc" "$((rc - 128))" "${TEAMCTL_ARGS:-}" >&2 2>/dev/null || true
   fi
