@@ -393,6 +393,34 @@ and nothing deleted, when a worker had more than ten unmerged commits: `git log 
 under `pipefail`. git now limits its own output, the reports say how much they left out, and a
 teamctl ended by a signal says so and names the command. `tests/smoke.sh`: 181 → 184.
 
+## 24. Five issues from a day of real use (v1.11)
+
+The issues came from a long day on another project: seven short-lived workers in one repository,
+work across three repositories, a hook that wants a ticket key in every branch name, a founded
+team whose lead died, and an hour lost to a Kimi key of the wrong kind. Four teammates took one
+issue each (#3 and #4 together); the lead merged them and settled where they met.
+
+- **#2, a founded team with no lead.** Its founder may now restart, stop, remove and destroy it,
+  but only while that team's lead is not running; you are told each time, and `teamctl teams`
+  marks the team `orphaned`. A restart keeps the lead record's founder and handover, or the
+  founder would lose that right after one restart ([ADR-0023](adr/0023-founder-recovers-an-orphaned-team.md)).
+- **#1, a rejected key that doctor called ok.** `teamctl doctor --probe` asks each endpoint once,
+  with a request no vendor bills (POST `/v1/messages` with an empty body; the key is checked
+  first, measured at all six), and names the console a key comes from. The key reaches curl on
+  its stdin only ([ADR-0024](adr/0024-doctor-probe-and-key-sources.md)).
+- **#3, branch names.** A team template (`teamctl policy branch-template`), `--ticket` and
+  `--branch`; teamctl deletes only the branches it created ([ADR-0021](adr/0021-branch-names-from-a-template.md)).
+- **#4, a sibling repository.** `teamctl spawn <role> <model> --repo <path>`: worktree and branch
+  there, the guard still on, that repository's own checkout read-only too ([ADR-0022](adr/0022-a-worker-in-another-repository.md)).
+- **#5, cold starts.** A CONTEXT column in `status`, and `spawn --from-worktree` for a fresh
+  conversation in a built worktree ([ADR-0025](adr/0025-context-use-and-worktree-handover.md)).
+
+Where two of them met, the lead decided: a worktree handed over stays in its own repository
+(so `--from-worktree` and `--repo` do not combine), and its new branch follows the team's
+template like any other. Left out on purpose: a warm idle worker, isolation per worker.
+
+`tests/smoke.sh`: 184 → 249. `tests/providers.sh`: 116 → 134. `tests/docs.sh`: 28 → 32. v1.11.0.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
