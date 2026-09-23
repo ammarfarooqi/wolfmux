@@ -18,8 +18,10 @@
 #                     subprocesses, transcripts and tmux scrollback cannot hold it.
 #   env               the variable the vendor documents (ANTHROPIC_AUTH_TOKEN, or
 #                     ANTHROPIC_API_KEY for Kimi Code); set
-#                     WOLFMUX_<PROVIDER>_AUTH_MODE=env in ~/.config/wolfmux/config if
-#                     workers report an authentication error in helper mode.
+#                     WOLFMUX_<PROVIDER>_AUTH_MODE=env in ~/.config/wolfmux/config only as a
+#                     last resort, for an endpoint that refuses helper-mode headers: it cannot
+#                     fix a wrong key (teamctl doctor --probe says whether the key is accepted),
+#                     and for ANTHROPIC_API_KEY Claude Code asks interactively before using it.
 # In both modes an inert guard value keeps your claude.ai login away from anything
 # the worker spawns (see WOLFMUX_GLM_GUARD_TOKEN in lib/provider-env.sh). This
 # launcher refuses to start without it.

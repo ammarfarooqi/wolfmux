@@ -12,7 +12,8 @@ set -u
 
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/wolfmux-providers.XXXXXX")"
-trap '/bin/rm -rf "$WORK"' EXIT
+PROBE_MOCK_PID=""
+trap '[ -z "$PROBE_MOCK_PID" ] || kill "$PROBE_MOCK_PID" 2>/dev/null; /bin/rm -rf "$WORK"' EXIT
 export HOME="$WORK/home" # no login keychain here, so every provider's key is missing
 /bin/mkdir -p "$HOME"
 export WOLFMUX_HOME="$REPO/config/wolfmux"
@@ -135,6 +136,7 @@ check "every row sets every field, billing is plan or metered, label is 14 chara
        [ -n "${!f}" ] || exit 1
      done
      [ -n "${PROVIDER_EXTRA_ENV+x}" ] && [ -n "${PROVIDER_KEY_URL+x}" ] || exit 1
+     [ -n "${PROVIDER_KEY_PREFIX+x}" ] && [ -n "${PROVIDER_KEY_SOURCE+x}" ] || exit 1
      case "$PROVIDER_BILLING" in plan | metered) ;; *) exit 1 ;; esac
      case "$PROVIDER_AUTH_VAR" in ANTHROPIC_AUTH_TOKEN | ANTHROPIC_API_KEY) ;; *) exit 1 ;; esac
      case "$PROVIDER_CONTEXT" in "" | *[!0-9]*) exit 1 ;; esac
@@ -427,6 +429,215 @@ check "the overlay and the per-agent settings file reach every provider" \
      E="$(field "$(dry "claude-$p" WOLFMUX_EXTRA_SETTINGS="$WORK/agent.json")" "agent settings")"
      [ "$E" = "$WORK/agent.json" ] || exit 1
    done'
+
+echo
+echo "== key shape and source (the table's PROVIDER_KEY_PREFIX and PROVIDER_KEY_SOURCE)"
+check "only kimi (sk-kim) and qwen (sk-sp-) have a key prefix; the others are empty, meaning no check" \
+  'for p in $WOLFMUX_PROVIDERS; do
+     wolfmux_provider_info "$p"
+     case "$p" in
+       kimi) [ "$PROVIDER_KEY_PREFIX" = "sk-kim" ] || exit 1 ;;
+       qwen) [ "$PROVIDER_KEY_PREFIX" = "sk-sp-" ] || exit 1 ;;
+       *) [ -z "$PROVIDER_KEY_PREFIX" ] || exit 1 ;;
+     esac
+     case "$PROVIDER_KEY_PREFIX" in *[!A-Za-z0-9._-]*) exit 1 ;; esac # a literal prefix: no glob, no space, no quote
+   done'
+check "kimi and moonshot say which console each key comes from, and that the two are not interchangeable" \
+  'wolfmux_provider_info kimi; K="$PROVIDER_KEY_SOURCE"
+   wolfmux_provider_info moonshot; M="$PROVIDER_KEY_SOURCE"
+   case "$K" in *"Kimi Code"*"kimi.com/code"*"platform.kimi.ai"*"moonshot"*) ;; *) exit 1 ;; esac
+   case "$M" in *"platform.kimi.ai"*"Kimi Code"*"kimi provider"*) ;; *) exit 1 ;; esac'
+check "wolfmux_provider_of_model: the provider a model key runs on, nothing for a subscription model" \
+  '[ "$(wolfmux_provider_of_model glm53)" = glm ] && [ "$(wolfmux_provider_of_model flash)" = glm ] &&
+   [ "$(wolfmux_provider_of_model kimi)" = kimi ] && [ "$(wolfmux_provider_of_model qwen:qwen3.7-max)" = qwen ] &&
+   [ "$(wolfmux_provider_of_model moonshot)" = moonshot ] &&
+   ! wolfmux_provider_of_model fable && ! wolfmux_provider_of_model astra && ! wolfmux_provider_of_model claude:kimi &&
+   ! wolfmux_provider_of_model codex:glm && ! wolfmux_provider_of_model "" && ! wolfmux_provider_of_model nosuchmodel'
+
+echo
+echo "== teamctl doctor --probe: one incomplete request per key, only the status shown"
+# Nothing here touches your Keychain or the network. The Keychain is a function that answers a
+# fake key (bash lets a function be called /usr/bin/security, as the checks above did for
+# /usr/bin/id), curl is a stand-in that records how it was called, and the one check that runs
+# the real curl talks to tests/mock_probe.py on 127.0.0.1.
+DOCTOR_LIB="$REPO/config/wolfmux/lib/doctor.sh"
+PROBE_BIN="$WORK/probe-bin"
+PROBE_LOG="$WORK/probe-log"
+/bin/mkdir -p "$PROBE_BIN"
+/bin/cat >"$PROBE_BIN/curl" <<'STUB'
+#!/bin/bash
+# Stand-in for curl: records how it was called, answers with the status in $PROBE_STUB_CODE.
+echo call >>"$PROBE_STUB_LOG.calls"
+printf '%s\n' "$@" >"$PROBE_STUB_LOG.argv"
+env >"$PROBE_STUB_LOG.env"
+/bin/cat >"$PROBE_STUB_LOG.stdin"
+printf '%s' "${PROBE_STUB_CODE:-000}"
+STUB
+/bin/chmod +x "$PROBE_BIN/curl"
+
+SQ="'" # a single quote, for the patterns below (they live inside single-quoted check strings)
+KEY_KIMI="sk-kimi-DoNotPrintMe0123456789"          # fake, the shape of a Kimi Code key
+KEY_PLATFORM="sk-PlatformKeyDoNotPrint0123456789"  # fake, the shape of a Moonshot platform key
+# probe <provider> <what the Keychain answers> <status curl answers> [<base url> [<keychain exit status>]]
+# prints the probe's report and, last, the warning and failure counts. The Keychain answer is a
+# plain variable, never exported, so a leak into the environment of curl would show.
+probe() {
+  local provider="$1" key="$2" code="$3" base="${4:-}" rc="${5:-0}"
+  /bin/rm -f "$PROBE_LOG".*
+  (
+    FAKE_KEYCHAIN_VALUE="$key"
+    FAKE_KEYCHAIN_RC="$rc"
+    PROBE_BASE_URL="$base"
+    PATH="$PROBE_BIN:$PATH"
+    export PATH
+    export PROBE_STUB_LOG="$PROBE_LOG" PROBE_STUB_CODE="$code"
+    . "$REPO/config/wolfmux/lib/common.sh"
+    . "$DOCTOR_LIB"
+    eval '/usr/bin/security() { printf "%s\n" "$FAKE_KEYCHAIN_VALUE"; return "$FAKE_KEYCHAIN_RC"; }'
+    if [ -n "$PROBE_BASE_URL" ]; then # a base URL the table does not have, to see what the probe refuses
+      eval "$(declare -f wolfmux_provider_info | /usr/bin/sed '1s/^wolfmux_provider_info/_probe_orig_info/')"
+      wolfmux_provider_info() { _probe_orig_info "$1" || return 1; PROVIDER_BASE_URL="$PROBE_BASE_URL"; }
+    fi
+    _doc_probe_provider "$provider"
+    printf 'counts: warn=%s fail=%s\n' "$DOC_WARN" "$DOC_FAIL"
+  ) 2>&1
+}
+counts() { printf '%s\n' "$1" | /usr/bin/sed -n 's/^counts: //p'; }
+curl_calls() { [ -f "$PROBE_LOG.calls" ] && /usr/bin/wc -l <"$PROBE_LOG.calls" | tr -d ' ' || echo 0; }
+
+check "probe: 200, 400, 422 and 429 mean the key was accepted, and the raw status is printed next to it" \
+  'for c in 200 400 422 429; do
+     R="$(probe kimi "$KEY_KIMI" $c)"
+     case "$R" in *"probe: key accepted by https://api.kimi.com/coding/ (HTTP $c"*) ;; *) exit 1 ;; esac
+     [ "$(counts "$R")" = "warn=0 fail=0" ] || exit 1
+   done'
+check "probe: 401 and 403 are a FAIL naming the Keychain slot, the endpoint and the console the key comes from" \
+  'for c in 401 403; do
+     R="$(probe kimi "$KEY_KIMI" $c)"
+     printf "%s\n" "$R" | /usr/bin/grep -q "^  FAIL  probe: the key in .wolfmux-kimi. is rejected by https://api.kimi.com/coding/ (HTTP $c)" || exit 1
+     case "$R" in *"kimi.com/code/console"*) ;; *) exit 1 ;; esac
+     [ "$(counts "$R")" = "warn=0 fail=1" ] || exit 1
+   done'
+check "probe: no answer and any other status are a warning that says the key was not checked" \
+  'R="$(probe kimi "$KEY_KIMI" 000)"
+   case "$R" in *"probe: no answer from https://api.kimi.com/coding/"*"not checked"*) ;; *) exit 1 ;; esac
+   [ "$(counts "$R")" = "warn=1 fail=0" ] || exit 1
+   for c in 302 404 500 503; do
+     R="$(probe kimi "$KEY_KIMI" $c)"
+     case "$R" in *"https://api.kimi.com/coding/ answered HTTP $c"*) ;; *) exit 1 ;; esac
+     [ "$(counts "$R")" = "warn=1 fail=0" ] || exit 1
+   done'
+check "probe: a kimi key that does not start with sk-kim is called what it looks like, and the endpoint still decides" \
+  'R="$(probe kimi "$KEY_PLATFORM" 401)"
+   case "$R" in *"the key in ${SQ}wolfmux-kimi$SQ does not start with ${SQ}sk-kim$SQ"*"Moonshot platform key"*"moonshot provider"*) ;; *) exit 1 ;; esac
+   case "$R" in *"is rejected by https://api.kimi.com/coding/ (HTTP 401)"*) ;; *) exit 1 ;; esac
+   [ "$(counts "$R")" = "warn=1 fail=1" ] || exit 1
+   R="$(probe kimi "$KEY_KIMI" 400)"
+   case "$R" in *"does not start with"*) exit 1 ;; esac'
+check "probe: qwen wants sk-sp-, every provider without a prefix in the table gets no shape warning" \
+  'R="$(probe qwen "sk-abcdefghijkl0123456789" 401)"
+   case "$R" in *"does not start with ${SQ}sk-sp-$SQ"*) ;; *) exit 1 ;; esac
+   R="$(probe qwen "sk-sp-abcdefghijkl0123456789" 400)"
+   case "$R" in *"does not start with"*) exit 1 ;; esac
+   for p in glm moonshot deepseek minimax; do
+     R="$(probe "$p" "whatever-shape-0123456789" 400)"
+     case "$R" in *"does not start with"*) exit 1 ;; esac
+     [ "$(counts "$R")" = "warn=0 fail=0" ] || exit 1
+   done'
+check "probe: the key is never printed, whatever the status or the shape" \
+  'for combo in "kimi $KEY_KIMI 400" "kimi $KEY_KIMI 401" "kimi $KEY_KIMI 000" "kimi $KEY_PLATFORM 401" "kimi $KEY_PLATFORM 500" "qwen $KEY_PLATFORM 403" "moonshot $KEY_PLATFORM 429"; do
+     # shellcheck disable=SC2086
+     R="$(probe $combo)"
+     case "$R" in *DoNotPrint*) exit 1 ;; esac
+   done'
+check "probe: curl gets exactly the fixed flags, no redirect is followed, and the key is on stdin only (not argv, not the environment)" \
+  'probe kimi "$KEY_KIMI" 400 >/dev/null
+   [ "$(/bin/cat "$PROBE_LOG.argv")" = "$(printf "%s\n" -q -s -o /dev/null -w "%{http_code}" --max-time 15 --config -)" ] || exit 1
+   ! /usr/bin/grep -qE "^(-L|--location|--location-trusted|-H|--header|-d|--data)\$" "$PROBE_LOG.argv" || exit 1
+   ! /usr/bin/grep -q DoNotPrint "$PROBE_LOG.argv" "$PROBE_LOG.env" || exit 1
+   [ "$(/usr/bin/grep -c "^header = \"x-api-key: $KEY_KIMI\"\$" "$PROBE_LOG.stdin")" = 1 ] &&
+   [ "$(/usr/bin/grep -c "^header = \"authorization: Bearer $KEY_KIMI\"\$" "$PROBE_LOG.stdin")" = 1 ] &&
+   /usr/bin/grep -q "^header = \"anthropic-version: 2023-06-01\"\$" "$PROBE_LOG.stdin" &&
+   /usr/bin/grep -q "^data = \"{}\"\$" "$PROBE_LOG.stdin"'
+check "probe: the request goes to <table endpoint>/v1/messages for every provider, with one slash between" \
+  'for p in $WOLFMUX_PROVIDERS; do
+     wolfmux_provider_info "$p"
+     E="${PROVIDER_BASE_URL%/}/v1/messages"
+     probe "$p" "sk-any-key-0123456789" 400 >/dev/null
+     /usr/bin/grep -qxF "url = \"$E\"" "$PROBE_LOG.stdin" || exit 1
+     [ "$(curl_calls)" = 1 ] || exit 1
+   done'
+check "probe: an endpoint that is not https, or has a character that could end a config line, is refused before the key is read, and curl is never started" \
+  'for base in "http://127.0.0.1:9/anthropic" "ftp://x.example/" "file:///etc/passwd" "HTTPS://api.kimi.com/coding/" "https://x.example/a\"b" "https://x.example/a b" "https://x.example/a\\b"; do
+     R="$(probe kimi "$KEY_KIMI" 400 "$base")"
+     case "$R" in *"probe: refusing to send a key to"*"https"*) ;; *) exit 1 ;; esac
+     [ "$(counts "$R")" = "warn=0 fail=1" ] || exit 1
+     [ "$(curl_calls)" = 0 ] || exit 1
+     case "$R" in *DoNotPrint*) exit 1 ;; esac
+   done'
+check "probe: a key with a space, quote, backslash, newline or control character is not sent (it could add a line to curl's config)" \
+  'for key in "sk-abc def" "sk-abc\"def" "sk-abc\\def" "$(printf "sk-abc\nurl = \"https://evil.invalid/\"")" "$(printf "sk-abc\rdef")" "$(printf "sk-abc\tdef")"; do
+     R="$(probe kimi "$key" 400)"
+     case "$R" in *"nothing was sent"*) ;; *) exit 1 ;; esac
+     case "$R" in *evil.invalid*) exit 1 ;; esac
+     [ "$(counts "$R")" = "warn=1 fail=0" ] || exit 1
+     [ "$(curl_calls)" = 0 ] || exit 1
+   done'
+check "probe: a Keychain that will not answer, or an empty item, is a warning and nothing is sent" \
+  'R="$(probe kimi "" 400 "" 44)"
+   case "$R" in *"could not read the key from ${SQ}wolfmux-kimi$SQ"*) ;; *) exit 1 ;; esac
+   [ "$(counts "$R")" = "warn=1 fail=0" ] && [ "$(curl_calls)" = 0 ] || exit 1
+   R="$(probe kimi "" 400)"
+   case "$R" in *"the Keychain item ${SQ}wolfmux-kimi$SQ is empty"*) ;; *) exit 1 ;; esac
+   [ "$(counts "$R")" = "warn=1 fail=0" ] && [ "$(curl_calls)" = 0 ] || exit 1'
+check "probe: a metered provider is probed the same way, and the report has no word about the metered gate (nothing is billed)" \
+  'for p in moonshot deepseek; do
+     R="$(probe "$p" "sk-any-key-0123456789" 401)"
+     case "$R" in *"is rejected by"*) ;; *) exit 1 ;; esac
+     case "$R" in *WOLFMUX_METERED*) exit 1 ;; esac
+     [ "$(curl_calls)" = 1 ] || exit 1
+   done'
+check "doctor.sh: one curl call, its config from stdin; no header, data or redirect option on it, no here-string, the Keychain value read in one place" \
+  '[ "$(/usr/bin/grep -c "curl_bin\" -" "$DOCTOR_LIB")" = 1 ] &&
+   /usr/bin/grep "curl_bin\" -" "$DOCTOR_LIB" | /usr/bin/grep -q -- "--config -" &&
+   ! /usr/bin/grep "curl_bin\" -" "$DOCTOR_LIB" | /usr/bin/grep -qE -- " (-H|--header|-L|--location|--location-trusted|-d|--data)( |\$)" &&
+   ! /usr/bin/grep -n "<<<" "$DOCTOR_LIB" &&
+   [ "$(/usr/bin/grep -c "find-generic-password.* -w" "$DOCTOR_LIB")" = 1 ]'
+
+if command -v python3 >/dev/null 2>&1; then
+  python3 "$REPO/tests/mock_probe.py" "$WORK/mock.log" "$WORK/mock.port" >/dev/null 2>&1 &
+  PROBE_MOCK_PID=$!
+  disown "$PROBE_MOCK_PID" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    [ -s "$WORK/mock.port" ] && break
+    sleep 0.1
+  done
+fi
+if [ -n "$PROBE_MOCK_PID" ] && [ -s "$WORK/mock.port" ]; then
+  MOCK="http://127.0.0.1:$(/bin/cat "$WORK/mock.port")"
+  # The config the probe builds, given to the real curl with the flags the probe uses (the
+  # check above pins them): what arrives at a server is what a vendor would see.
+  mock_status() { # <path> <key>
+    ( . "$REPO/config/wolfmux/lib/common.sh"; . "$DOCTOR_LIB"; _doc_probe_config "$MOCK$1" "$2" ) |
+      /usr/bin/curl -q -s -o /dev/null -w '%{http_code}' --max-time 15 --config -
+  }
+  check "real curl: the probe's config makes one POST with both credential headers, the same value in each, and an empty JSON body" \
+    '/bin/rm -f "$WORK/mock.log"
+     [ "$(mock_status /anthropic/v1/messages sk-good-0123456789abcdef)" = 400 ] &&
+     [ "$(mock_status /anthropic/v1/messages sk-bad-0123456789abcdef)" = 401 ] &&
+     [ "$(/usr/bin/wc -l <"$WORK/mock.log" | tr -d " ")" = 2 ] &&
+     for frag in "\"method\": \"POST\"" "\"path\": \"/anthropic/v1/messages\"" "\"x_api_key\": true" "\"bearer\": true" \
+       "\"same_value\": true" "\"content_type\": \"application/json\"" "\"anthropic_version\": \"2023-06-01\"" "\"body\": \"{}\""; do
+       /usr/bin/head -1 "$WORK/mock.log" | /usr/bin/grep -qF "$frag" || exit 1
+     done'
+  check "real curl: a redirect is not followed, so the key goes to one address and no other" \
+    '/bin/rm -f "$WORK/mock.log"
+     [ "$(mock_status /redirect/v1/messages sk-good-0123456789abcdef)" = 302 ] &&
+     [ "$(/usr/bin/wc -l <"$WORK/mock.log" | tr -d " ")" = 1 ]'
+else
+  skip "real curl: the probe's config makes one POST with both credential headers and an empty body" "python3 is not available, or the mock did not start"
+  skip "real curl: a redirect is not followed" "python3 is not available, or the mock did not start"
+fi
 
 echo
 echo "result: $passed passed, $failed failed, $skipped skipped"

@@ -229,6 +229,41 @@ for script in "$REPO"/*.sh; do
 done
 report "docs/SETUP.md says what the installer builds and links" "$(missing_words "$SETUP" Wolfmux.app "~/bin/codex")"
 
+echo "== provider keys and auth modes"
+TROUBLE="$(/bin/cat "$REPO/docs/TROUBLESHOOTING.md")"
+# What the provider table says about a key: how it starts, and the consoles it names. The README and
+# docs/SETUP.md must say the same, or a Kimi Code key and a platform.kimi.ai key look alike again (issue #1).
+KEY_FACTS="$( . "$LIB/provider-env.sh"
+  for provider in $WOLFMUX_PROVIDERS; do
+    wolfmux_provider_info "$provider" || continue
+    [ -z "$PROVIDER_KEY_PREFIX" ] || printf '%s\n' "$PROVIDER_KEY_PREFIX"
+    printf '%s\n' "$PROVIDER_KEY_SOURCE" | LC_ALL=C /usr/bin/grep -o 'https://[^ )]*' | /usr/bin/sed 's/[.,;:]*$//'
+  done | /usr/bin/sort -u)"
+[ -n "$KEY_FACTS" ] || { echo "cannot read the key prefixes and key sources out of the provider table" >&2; exit 1; }
+# missing_facts <text>: the facts the text does not contain, as fixed strings
+missing_facts() {
+  local fact out=""
+  while IFS= read -r fact; do
+    printf '%s\n' "$1" | LC_ALL=C /usr/bin/grep -Fq -- "$fact" || out="$out $fact"
+  done <<FACTS
+$KEY_FACTS
+FACTS
+  printf '%s' "$out"
+}
+report "README.md gives the key prefix and the console URL of every key the provider table describes" "$(missing_facts "$README")"
+report "docs/SETUP.md gives the key prefix and the console URL of every key the provider table describes" "$(missing_facts "$SETUP")"
+out=""
+for pattern in "teamctl doctor --probe" "Detected a custom API key" "Both CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set" "sk-kim"; do
+  has "$TROUBLE" "$pattern" || out="$out $pattern"
+done
+report "docs/TROUBLESHOOTING.md has rows for a 401 (doctor --probe), the wrong Kimi key, the login-guard warning and the env-mode prompt" "$out"
+out=""
+has "$README" "^### Auth modes" || out="$out README.md:Auth-modes"
+has "$MANUAL" "^## Auth modes and the key probe" || out="$out manual:Auth-modes"
+has "$README" "CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set" || out="$out README.md:login-guard-warning"
+has "$README" "Do you want to use this API key" || out="$out README.md:env-mode-prompt"
+report "the README and the user manual explain the auth modes: the expected login-guard warning and the env-mode prompt" "$out"
+
 echo "== indexes and links"
 out=""
 for file in "$REPO"/docs/*.md; do

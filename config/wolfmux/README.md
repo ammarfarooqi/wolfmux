@@ -42,6 +42,7 @@ security add-generic-password -U -s wolfmux-minimax  -a "$USER" -l "MiniMax Codi
 security add-generic-password -U -s wolfmux-qwen     -a "$USER" -l "Alibaba Model Studio API key" -w
 
 teamctl doctor        # must show no "!! WARNING !!" lines; says which providers are set up
+teamctl doctor --probe   # optional: asks each endpoint whether it accepts the key you stored (nothing is billed)
 ```
 
 ## Starting with Fable
@@ -91,10 +92,10 @@ A provider worker needs that provider's key in the Keychain first (one-time setu
 | Model key | Runs | Pays with |
 |-----------|------|-----------|
 | `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan |
-| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription |
+| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription; the key is a Kimi Code membership key (starts `sk-kim`), not one from platform.kimi.ai |
 | `minimax` | Claude Code + MiniMax M3 | MiniMax Coding Plan |
-| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan |
-| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API, metered: refused until `WOLFMUX_METERED=on` |
+| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan; the key starts `sk-sp-` |
+| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API, metered: refused until `WOLFMUX_METERED=on`; the key comes from platform.kimi.ai, not from the Kimi Code console |
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API, metered: refused until `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
@@ -292,6 +293,7 @@ credentials or Beads data, and always asks first (`--yes` to skip).
 
 ```bash
 teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins
+teamctl doctor --probe                          # the same, plus one incomplete request per stored provider key: is it accepted?
 WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
 WOLFMUX_DRY_RUN=1 claude-kimi                   # any provider name works; shows billing and the metered gate too
 ```
@@ -331,10 +333,10 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |
 | `WOLFMUX_NOTIFY` | `all` | whose finished turns notify you: `all`, `lead`, `off`. A team founded by a lead is announced in every case |
 | `WOLFMUX_TERMINAL` | the one you last attached from, else iTerm2 when installed, else Terminal | `iterm` or `terminal`: what a click on a notification opens |
-| `WOLFMUX_GLM_AUTH_MODE` | `helper` | `env` hands the Z.ai key over as `ANTHROPIC_AUTH_TOKEN` instead (if workers report an authentication error) |
+| `WOLFMUX_GLM_AUTH_MODE` | `helper` | `env` hands the Z.ai key over as `ANTHROPIC_AUTH_TOKEN` instead: a last resort that cannot fix a wrong key ([Auth modes](#auth-modes-and-the-key-probe)) |
 | `WOLFMUX_GLM_CONTEXT` | 200000 tokens | `1m`, or a number: the context window GLM workers declare |
 | `WOLFMUX_METERED` | `off` | `on` lets the metered providers start. Which those are, and what that can cost: [Metered providers](#metered-providers) |
-| `WOLFMUX_KIMI_AUTH_MODE` · `WOLFMUX_MOONSHOT_AUTH_MODE` · `WOLFMUX_DEEPSEEK_AUTH_MODE` · `WOLFMUX_MINIMAX_AUTH_MODE` · `WOLFMUX_QWEN_AUTH_MODE` | `helper` | per provider, the same two modes as `WOLFMUX_GLM_AUTH_MODE`; `env` exports the vendor's documented variable (`ANTHROPIC_API_KEY` for Kimi, `ANTHROPIC_AUTH_TOKEN` for the others) |
+| `WOLFMUX_KIMI_AUTH_MODE` · `WOLFMUX_MOONSHOT_AUTH_MODE` · `WOLFMUX_DEEPSEEK_AUTH_MODE` · `WOLFMUX_MINIMAX_AUTH_MODE` · `WOLFMUX_QWEN_AUTH_MODE` | `helper` | per provider, the same two modes as `WOLFMUX_GLM_AUTH_MODE`; `env` exports the vendor's documented variable (`ANTHROPIC_API_KEY` for Kimi, `ANTHROPIC_AUTH_TOKEN` for the others); a last resort, and Kimi's makes Claude Code ask "use this API key?" in the pane ([Auth modes](#auth-modes-and-the-key-probe)) |
 | `WOLFMUX_KIMI_CONTEXT` · `WOLFMUX_MOONSHOT_CONTEXT` · `WOLFMUX_DEEPSEEK_CONTEXT` · `WOLFMUX_MINIMAX_CONTEXT` · `WOLFMUX_QWEN_CONTEXT` | the table value | a number: the context window that provider's workers declare to Claude Code |
 | `WOLFMUX_KIMI_MODEL` · `WOLFMUX_MOONSHOT_MODEL` · `WOLFMUX_DEEPSEEK_MODEL` · `WOLFMUX_MINIMAX_MODEL` · `WOLFMUX_QWEN_MODEL` · `WOLFMUX_KIMI_FAST_MODEL` · `WOLFMUX_MOONSHOT_FAST_MODEL` · `WOLFMUX_DEEPSEEK_FAST_MODEL` · `WOLFMUX_MINIMAX_FAST_MODEL` · `WOLFMUX_QWEN_FAST_MODEL` | the ids in `lib/providers.sh` | model pins per provider, for when a vendor changes its ids. GLM is not pinnable |
 | `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | the current ids | which model id each key means |
@@ -369,7 +371,7 @@ the same name wins for a launcher you start by hand.
 Launcher knobs are read from `~/.config/wolfmux/config` (a pane's environment comes from
 the tmux server, not from the shell you typed `teamctl spawn` in):
 `WOLFMUX_GLM_AUTH_MODE=env` switches workers to Z.ai's documented `ANTHROPIC_AUTH_TOKEN`
-variable — use it if workers report an authentication error in the default helper mode;
+variable, a last resort that cannot fix a wrong key ([below](#auth-modes-and-the-key-probe));
 `WOLFMUX_GLM_CONTEXT=1m` opts into the 1M window (uses quota faster); by default the
 launcher declares a 200k window, which is what keeps Claude Code from printing its
 "isn't described by this version's model catalog" notice in worker panes.
@@ -385,6 +387,30 @@ to that provider. Delete the file to make workers identical to your normal sessi
 
 What no local tool can prove: account-side switches. Keep claude.ai "extra usage" off,
 do not buy Codex credits, and keep the Z.ai cash balance at zero.
+
+## Auth modes and the key probe
+
+A provider worker gets its key one of two ways (`WOLFMUX_<PROVIDER>_AUTH_MODE`):
+
+- `helper` (default): Claude Code is given a Keychain-reading command, so the key is never in an
+  environment. Every provider worker also carries the inert login guard
+  (`CLAUDE_CODE_OAUTH_TOKEN`), so Claude Code prints `Both CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set`.
+  That warning is expected and harmless, and it is not the cause of a 401 next to it.
+- `env`: the vendor's own variable, a last resort for an endpoint that refuses helper-mode headers.
+  It cannot fix a wrong key. With `ANTHROPIC_API_KEY` (Kimi Code) Claude Code asks "Do you want to use
+  this API key?" (default No) and remembers the answer, so an unattended worker waits at that prompt.
+  Claude Code documents no setting that pre-approves the key, and Wolfmux never edits your
+  `~/.claude.json`, so the prompt stays.
+
+`teamctl doctor --probe` answers "is the key accepted?" for every provider whose Keychain item exists.
+Per provider it sends ONE request over https: `POST <endpoint>/v1/messages` with an empty body. That asks
+for no completion, so nothing is generated or billed (the metered providers too), and it is not a model
+listing because `GET /v1/models` does not check the key (Z.ai answers it without one, Moonshot and Qwen
+have no such route). 200, 400, 422 and 429 mean accepted (the raw status is printed beside it), 401 and
+403 are a FAIL naming the Keychain slot and the console the key comes from, anything else is a warning.
+The key goes to curl on its stdin only, never into an argument, an environment, a file or the screen,
+and no redirect is followed. A `kimi` key that does not start with `sk-kim`, or a `qwen` key without
+`sk-sp-`, gets a warning of its own. Plain `teamctl doctor` stays offline and never reads a key value.
 
 ## Metered providers
 
