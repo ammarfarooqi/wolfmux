@@ -507,6 +507,51 @@ teamctl policy lead-teams off --team default >/dev/null 2>&1
 check "teams: teamctl policy lead-teams off keeps founding teams to you" 'as_lead start fable --team another --no-attach --skip-beads; [ $? -eq 77 ] && ! teamctl teams | grep -q "^another "'
 teamctl policy lead-teams on --team default >/dev/null 2>&1
 teamctl destroy --team fresh --purge --yes >/dev/null 2>&1
+echo "== branch names that fit a project's rules (issue #3)"
+teamctl start fable --team naming --no-attach --skip-beads >/dev/null 2>&1
+teamctl spawn plain flash --team naming --no-kickoff >/dev/null 2>&1
+sleep 2
+NAMING_AGENTS="$(ls -d "$WOLFMUX_DATA"/state/*/teams/naming/agents)"
+naming_branch() { teamctl status --json --team naming | jq -r --arg role "$1" '.agents[] | select(.role == $role) | .branch'; }
+check "branch names: with no template the shape is the one wolfmux has always used, and the record says teamctl created that branch" 'case "$(naming_branch plain)" in ai/naming/plain-*) true ;; *) false ;; esac && git rev-parse -q --verify "refs/heads/$(naming_branch plain)" >/dev/null && [ "$(jq -r .branch_created "$NAMING_AGENTS/plain.json")" = "1" ]'
+teamctl spawn sam flash --team naming --branch feature-AFD-1844-sam --no-kickoff >/dev/null 2>&1
+sleep 2
+SAM_TREE="$(teamctl status --json --team naming | jq -r '.agents[] | select(.role == "sam") | .workdir')"
+check "branch names: --branch gives the worker exactly that branch, and its pane opens on it" '[ "$(naming_branch sam)" = "feature-AFD-1844-sam" ] && git rev-parse -q --verify refs/heads/feature-AFD-1844-sam >/dev/null && [ "$(git -C "$SAM_TREE" branch --show-current)" = "feature-AFD-1844-sam" ] && teamctl capture sam --team naming --all | grep -q "STUB cwd=.* branch=feature-AFD-1844-sam"'
+check "branch names: --branch refuses a name git would not take (64) and one that exists already (1); neither leaves a record, a worktree or a branch behind" 'teamctl spawn bad1 flash --team naming --branch "no spaces" --no-kickoff; [ $? -eq 64 ] && { teamctl spawn bad2 flash --team naming --branch main --no-kickoff; [ $? -eq 1 ]; } && ! teamctl status --json --team naming | jq -e ".agents[] | select(.role == \"bad1\" or .role == \"bad2\")" && git rev-parse -q --verify refs/heads/main >/dev/null && [ "$(git rev-parse refs/heads/main)" = "$(git rev-parse HEAD)" ]'
+check "branch names: a template with no {ts}, an unknown placeholder, an unclosed brace or nothing at all is refused (exit 64) and nothing is stored" '( for t in "feature-{ticket}-{role}" "ai/{role}-{ts}-{author}" "ai/{role}-{ts" ""; do teamctl policy branch-template "$t" --team naming; [ $? -eq 64 ] || exit 1; done ) && teamctl policy --team naming | grep -q "ai/{team}/{role}-{ts}"'
+teamctl policy branch-template 'feature-{ticket}-{role}-{ts}' --team naming >/dev/null 2>&1
+check "branch names: a template with {ticket} and no ticket is a usage error that names the flag (exit 64); nothing is created" 'out="$(teamctl spawn dev flash --team naming --no-kickoff 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "--ticket" && ! teamctl status --json --team naming | jq -e ".agents[] | select(.role == \"dev\")" && [ -z "$(git branch --list "feature-*-dev-*")" ]'
+check "branch names: an invalid ticket key is refused before anything is created (exit 64)" '( for k in "AFD 1844" "AFD/1844" "-AFD" ""; do teamctl spawn dev flash --team naming --ticket "$k" --no-kickoff; [ $? -eq 64 ] || exit 1; done ) && ! teamctl status --json --team naming | jq -e ".agents[] | select(.role == \"dev\")"'
+teamctl spawn dev flash --team naming --ticket AFD-1844 --no-kickoff >/dev/null 2>&1
+sleep 2
+check "branch names: the template plus --ticket gives a conforming name, with the uniqueness stamp kept" 'printf "%s" "$(naming_branch dev)" | grep -Eq "^feature-AFD-1844-dev-[0-9]{8}-[0-9]{6}$" && git rev-parse -q --verify "refs/heads/$(naming_branch dev)" >/dev/null'
+teamctl start flash --team ticketed --no-attach --skip-beads --ticket TEAM-7 >/dev/null 2>&1
+teamctl policy branch-template 'feature-{ticket}-{role}-{ts}' --team ticketed >/dev/null 2>&1
+teamctl spawn one flash --team ticketed --no-kickoff >/dev/null 2>&1
+teamctl spawn two flash --team ticketed --ticket OTHER-9 --no-kickoff >/dev/null 2>&1
+sleep 2
+ticketed_branch() { teamctl status --json --team ticketed | jq -r --arg role "$1" '.agents[] | select(.role == $role) | .branch'; }
+check "branch names: teamctl start --ticket is the team's default ticket, and a spawn's own --ticket wins over it" 'printf "%s" "$(ticketed_branch one)" | grep -q "^feature-TEAM-7-one-" && printf "%s" "$(ticketed_branch two)" | grep -q "^feature-OTHER-9-two-"'
+check "branch names: teamctl policy shows the team's template, and 'default' puts the built-in shape back" 'teamctl policy --team ticketed | grep -q "feature-{ticket}-{role}-{ts}" && teamctl policy branch-template default --team ticketed && teamctl policy --team ticketed | grep -q "ai/{team}/{role}-{ts}"'
+git branch made-by-teamctl
+git branch legacy-keep
+git branch ai/old-style
+plant_branch() { # <role> <branch> [<branch_created>]
+  jq -n --arg role "$1" --arg branch "$2" --arg created "${3:-}" \
+    '{role: $role, kind: "worker", model: "glm53", label: "GLM-5.3", family: "claude", launcher: "/bin/true",
+      workdir: "/nonexistent/wolfmux", branch: $branch, base_ref: "main", base_commit: "", kickoff: "0",
+      spawned_by: "operator", permissions: "skip", pane_id: "", state: "stopped"}
+     + (if $created == "" then {} else {branch_created: $created} end)' >"$NAMING_AGENTS/$1.json"
+}
+plant_branch mine made-by-teamctl 1
+plant_branch theirs legacy-keep 0
+plant_branch older ai/old-style
+check "branch names: only a branch teamctl created is ever deleted, whatever it is called; a record from before the field keeps the old ai/ rule, and a branch teamctl did not make is named and left alone" 'out="$(teamctl remove mine theirs older --team naming --yes 2>&1)"; ! git rev-parse -q --verify refs/heads/made-by-teamctl >/dev/null && git rev-parse -q --verify refs/heads/legacy-keep >/dev/null && ! git rev-parse -q --verify refs/heads/ai/old-style >/dev/null && printf "%s" "$out" | grep -q "legacy-keep"'
+check "branch names: the guard holds a worker to its own branch whatever that branch is called" 'ans="$(jq -cn --arg c "git checkout main" --arg d "$SAM_TREE" "{hook_event_name: \"PreToolUse\", tool_name: \"Bash\", tool_input: {command: \$c}, cwd: \$d}" | TEAM_ROLE=sam WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$SAM_TREE" WOLFMUX_BRANCH=feature-AFD-1844-sam "$REPO/bin/teamctl" _guard)"; printf "%s" "$ans" | jq -e ".hookSpecificOutput.permissionDecision == \"deny\"" >/dev/null && printf "%s" "$ans" | grep -q "feature-AFD-1844-sam"'
+teamctl destroy --team naming --purge --force >/dev/null 2>&1
+teamctl destroy --team ticketed --purge --force >/dev/null 2>&1
+
 echo "== deleting a whole team (destroy --purge)"
 teamctl start fable --team scrap --no-attach --skip-beads >/dev/null 2>&1
 teamctl spawn tidy flash --team scrap --no-kickoff >/dev/null 2>&1

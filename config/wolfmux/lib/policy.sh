@@ -13,10 +13,14 @@
 #                                           <model> --team <new>) and hand work over to them?
 #   worker-isolation    on | off            refuse a worker's tool calls that reach outside its
 #                                           own worktree and branch (lib/guard.sh)
+#   branch-template     <template>          how this team names its workers' branches, with the
+#                                           placeholders {team} {role} {ts} {ticket}. Empty = the
+#                                           built-in shape (lib/worktree.sh). The only key whose
+#                                           value is free text, so it is handled apart below.
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation lead-teams"
+POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation lead-teams branch-template"
 
 policy_default() {
   case "$1" in
@@ -25,11 +29,17 @@ policy_default() {
     worker-spawn) printf '%s\n' "${WOLFMUX_WORKER_SPAWN:-off}" ;;
     worker-isolation) printf '%s\n' "${WOLFMUX_WORKER_ISOLATION:-on}" ;;
     lead-teams) printf '%s\n' "${WOLFMUX_LEAD_TEAMS:-on}" ;;
+    branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     *) return 1 ;;
   esac
 }
 
 policy_valid() { # <key> <value>
+  # The one key that is not a choice out of a fixed set.
+  if [ "$1" = "branch-template" ]; then
+    branch_template_valid "$2"
+    return
+  fi
   case "$1:$2" in
     lead-permissions:skip | lead-permissions:ask) return 0 ;;
     worker-permissions:skip | worker-permissions:lead | worker-permissions:ask) return 0 ;;
@@ -45,6 +55,7 @@ policy_choices() {
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
     worker-spawn | worker-isolation | lead-teams) printf 'on|off\n' ;;
+    branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
   esac
 }
 
@@ -54,6 +65,12 @@ policy_get() {
   local key="$1" value
   value="$(meta_get "policy_${key//-/_}" 2>/dev/null || true)"
   [ -n "$value" ] || value="$(policy_default "$key")"
+  if [ "$key" = "branch-template" ]; then
+    # Empty, or anything unusable, means the built-in shape: a stored template that can no
+    # longer be expanded must never stop a spawn.
+    if [ -n "$value" ] && branch_template_valid "$value"; then printf '%s\n' "$value"; fi
+    return 0
+  fi
   if policy_valid "$key" "$value"; then
     printf '%s\n' "$value"
   elif [ "$key" = "worker-spawn" ]; then
@@ -68,6 +85,18 @@ policy_get() {
 }
 
 policy_set() { # <key> <value>
+  local why
+  if [ "$1" = "branch-template" ]; then
+    # "default" is how you go back to the built-in shape; it is stored as no template at all.
+    if [ "$2" = "default" ]; then
+      meta_put policy_branch_template ""
+      return 0
+    fi
+    why="$(branch_template_error "$2")"
+    [ -z "$why" ] || die_usage "branch-template '$2': $why"
+    meta_put policy_branch_template "$2"
+    return 0
+  fi
   policy_valid "$1" "$2" || die_usage "$1 must be one of: $(policy_choices "$1")"
   meta_put "policy_${1//-/_}" "$2"
 }
@@ -119,7 +148,7 @@ policy_summary() {
 
 # teamctl policy [<key> <value>]
 cmd_policy() {
-  local key="${1:-}" value="${2:-}"
+  local key="${1:-}" value="${2:-}" template
   require_tools
   load_project
   if [ -z "$key" ]; then
@@ -129,6 +158,15 @@ cmd_policy() {
     say "  worker-spawn        $(policy_get worker-spawn)     (on|off)          may workers run 'teamctl spawn'?"
     say "  worker-isolation    $(policy_get worker-isolation)      (on|off)          refuse a worker's tool calls outside its own worktree and branch"
     say "  lead-teams          $(policy_get lead-teams)      (on|off)          may the lead found further teams and hand work over?"
+    template="$(policy_get branch-template)"
+    if [ -n "$template" ]; then
+      say "  branch-template     $template     how this team names its workers' branches"
+    else
+      say "  branch-template     $(wt_default_template)   (the built-in shape)   how this team names its workers' branches"
+    fi
+    say "                      placeholders {team} {role} {ts} {ticket}; {ts} is required. A template with {ticket}"
+    say "                      needs teamctl spawn --ticket <KEY>, or a team default: teamctl start <model> --ticket <KEY>"
+    say "                      back to the built-in shape: teamctl policy branch-template default"
     say ""
     say "change:  teamctl policy <key> <value>     permission changes apply at the next start/restart of an agent"
     return 0
@@ -139,7 +177,11 @@ cmd_policy() {
   ensure_state_dirs
   policy_set "$key" "$value"
   event_log policy "" "$key=$value"
-  say "policy: $key = $value"
+  if [ "$key" = "branch-template" ] && [ "$value" = "default" ]; then
+    say "policy: branch-template = $(wt_default_template)   (the built-in shape)"
+  else
+    say "policy: $key = $value"
+  fi
   case "$key" in
     worker-spawn) ;;
     *) say "applies to agents started or restarted from now on (teamctl restart <role>)" ;;

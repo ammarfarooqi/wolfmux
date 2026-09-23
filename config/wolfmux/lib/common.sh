@@ -124,6 +124,15 @@ require_new_role_arg() {
   valid_role "$1" || die_usage "invalid role '$1' (use lowercase letters, digits and '-', max 32 chars)"
 }
 
+# A ticket key ends up in a branch name (teamctl spawn --ticket AFD-1844), so it is kept
+# to an alphabet git and every hook we know of accept. Capitals are the norm for Jira keys.
+valid_ticket() {
+  case "$1" in
+    "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}_-]* | -* | *-) return 1 ;;
+  esac
+  [ "${#1}" -le 64 ]
+}
+
 # Bead ids are echoed into a pane, so keep them to a harmless alphabet.
 valid_bead_id() {
   case "$1" in
@@ -288,7 +297,8 @@ project_key() {
 #               ~/.wolfmux/state/<project>/teams/<team>/        named
 #   worktrees   ~/.wolfmux/worktrees/<project>/<role>-<stamp>   default
 #               ~/.wolfmux/worktrees/<project>/teams/<team>/<role>-<stamp>
-#   branches    ai/<role>-<stamp>  ·  ai/<team>/<role>-<stamp>
+#   branches    ai/<role>-<stamp>  ·  ai/<team>/<role>-<stamp>   (the default branch template;
+#               a team can name its workers' branches differently: teamctl policy branch-template)
 #   Beads name  <role>             ·  <team>.<role>       (all teams share the project's Beads)
 WOLFMUX_DEFAULT_TEAM="default"
 

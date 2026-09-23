@@ -31,7 +31,7 @@ _status_rows() { # emits one JSON object per agent
       ahead="-"
     else
       branch="$(reg_field "$role" branch)"
-      ahead="$(wt_ahead "$(reg_field "$role" base_commit)" "$branch")"
+      ahead="$(wt_ahead "$role" "$(reg_field "$role" base_commit)" "$branch")"
     fi
     dirty="$(wt_dirty_count "$workdir")"
     "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$(reg_field "$role" model)" \

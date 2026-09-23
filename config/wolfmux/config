@@ -74,6 +74,13 @@
 #WOLFMUX_LEAD_TEAMS=on
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
+# How workers' branches are named, for every team that does not set its own
+# (`teamctl policy branch-template`). Placeholders: {team} {role} {ts} {ticket}. {ts} is the
+# timestamp and is required: it is what keeps two workers of one role on two branches. With
+# {ticket} in it, a spawn needs `--ticket <KEY>` (or the team's default: `teamctl start <model>
+# --ticket <KEY>`). Unset means the built-in shape, ai/{role}-{ts} and ai/{team}/{role}-{ts}.
+# Set this when your repository's hooks require a shape, e.g. a Jira key in every branch name.
+#WOLFMUX_BRANCH_TEMPLATE=feature-{ticket}-{role}-{ts}
 
 # How the panes are arranged (per team: `teamctl layout <name>`).
 #   lead-left (default)  the lead large on the left, workers stacked on the right

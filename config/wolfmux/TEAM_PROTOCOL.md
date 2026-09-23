@@ -100,6 +100,21 @@ integration; you do not do the bulk implementation yourself.
    task for it, and nothing else: not a subagent, not a new terminal.
    Create and assign the beads first, then spawn: a new worker reads its inbox on start.
    Give workers disjoint files where you can; say so in the task.
+
+   **Branch names, before you spawn.** If this repository enforces a shape for branch
+   names (a ticket key, a prefix), set it FIRST: a worker whose branch breaks a commit
+   hook will reach for the project's skip switch, and a skip switch used on every commit
+   protects nothing.
+   ```bash
+   teamctl policy                                                 # what this team uses now
+   teamctl policy branch-template 'feature-{ticket}-{role}-{ts}'  # set it once, for the team
+   teamctl spawn sam glm53 --ticket AFD-1844                      # the key for this worker
+   teamctl spawn sam glm53 --branch feature-AFD-1844-sam          # or the exact name
+   ```
+   Placeholders: `{team}` `{role}` `{ts}` `{ticket}`; `{ts}` is required. A template with
+   `{ticket}` and a spawn without `--ticket` is refused (exit 64) rather than guessed at.
+   The human can also give the whole team one default key: `teamctl start <model> --ticket <KEY>`.
+   Never tell a worker to commit with `--no-verify` or a skip switch: fix the branch name.
 3. **Watch structured state, not terminals.** `teamctl status` (process + branch
    state, who spawned whom, each agent's permission mode, pending approvals),
    `bd list --status in_progress,blocked` (work state). Use
