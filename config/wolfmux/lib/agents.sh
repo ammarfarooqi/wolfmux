@@ -376,10 +376,17 @@ build_role_prompt() {
   fi
 }
 
-# kickoff_text <role> <beads-identity> — the inbox is addressed by identity (<team>.<role> in a
-# named team, the plain role in the first one); teamctl takes the plain role and knows the team.
+# kickoff_text <role> <beads-identity> [<provider>] — the inbox is addressed by identity (<team>.<role>
+# in a named team, the plain role in the first one); teamctl takes the plain role and knows the team.
+# A worker on a provider of the table (not a subscription model) also learns what a 401 means and who
+# checks it (issue #1): the key in its Keychain slot is rejected by that endpoint, and doctor --probe
+# says so. Only a request that got through can carry this, so it is for a key that fails later.
 kickoff_text() {
-  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.' "$1" "${2:-$1}" "$1"
+  local hint=""
+  if [ -n "${3:-}" ] && wolfmux_provider_info "$3"; then
+    hint=" If your requests fail with 401 or an authentication error, tell the lead: the key in '$PROVIDER_KEYCHAIN' is rejected by $PROVIDER_BASE_URL; the lead or the human runs \`teamctl doctor --probe\` to check the key."
+  fi
+  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.%s' "$1" "${2:-$1}" "$1" "$hint"
 }
 
 # handover_text — what the lead of a team founded by another lead is started with
@@ -433,7 +440,7 @@ write_agent_settings() {
 }
 
 cmd_run_agent() {
-  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id
+  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id provider
   [ -n "$root" ] && [ -n "$role" ] || die_usage "internal use: _run-agent <root> <role> [--continue]"
   if [ "${3:-}" = "--continue" ]; then resume=1; fi
   export WOLFMUX_ROOT="$root"
@@ -473,6 +480,11 @@ cmd_run_agent() {
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then brand_wolf 2; fi # the manager's pane opens with the wolf
   printf '[wolfmux] role=%s  model=%s  launcher=%s  permissions=%s\n[wolfmux] cwd=%s\n' \
     "$role" "$(reg_field "$role" label)" "$(basename "$launcher")" "${permissions:-ask}" "$workdir"
+  # A provider agent's first failure is usually its key. The line stays above the CLI's own screen.
+  provider="$(wolfmux_provider_of_model "$WOLFMUX_MODEL" || true)"
+  if [ -n "$provider" ] && wolfmux_provider_info "$provider"; then
+    printf "[wolfmux] key: '%s' -> %s   (a 401 in this pane means the key is rejected: teamctl doctor --probe)\n" "$PROVIDER_KEYCHAIN" "$PROVIDER_BASE_URL"
+  fi
 
   case "$family" in
     codex)
@@ -502,7 +514,7 @@ $prompt
       if [ "$resume" -eq 1 ]; then
         args+=(--continue)
       elif [ "$(reg_field "$role" kickoff)" = "1" ]; then
-        args+=("$(kickoff_text "$role" "$BEADS_ACTOR")")
+        args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider")")
       fi
       ;;
   esac

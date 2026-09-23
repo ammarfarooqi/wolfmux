@@ -105,6 +105,9 @@ integration; you do not do the bulk implementation yourself.
    `bd list --status in_progress,blocked` (work state). Use
    `teamctl capture <role>` only to diagnose a stuck or crashed agent.
    `teamctl restart <role>` revives one; `teamctl stop <role>` parks one.
+   A worker on another provider (kimi, moonshot, deepseek, minimax, qwen, glm) that reports 401 or an
+   authentication error: `teamctl doctor --probe` says whether that provider's key is accepted. A FAIL
+   means the key in its Keychain slot is wrong or of the wrong kind; only the human can replace it.
 4. **Decide permission requests** when `teamctl policy` shows
    `worker-permissions lead`. A notice `[wolfmux] Permission request A7 from backend`
    means a worker is blocked until you answer:

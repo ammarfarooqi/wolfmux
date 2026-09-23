@@ -102,7 +102,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 |---------|------|
 | `teamctl destroy [--worktrees] [--yes]` | end the team. Every worktree is kept; `--worktrees` also removes teammates that hold nothing |
 | `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and give its disk space back: shows sizes and any uncommitted or unmerged work, asks, then removes the session, worktrees, `ai/…` branches, records and its teammates' Claude Code transcripts. `--force` deletes that work too. Never touched: your checkout, other branches, Beads, other teams, the lead's own conversations |
-| `teamctl doctor` | billing and credential isolation report: launchers, inherited keys, settings overrides, Keychain, logins |
+| `teamctl doctor [--probe]` | billing and credential isolation report: launchers, inherited keys, settings overrides, Keychain, logins. `--probe` also asks each provider whose key is set up whether its endpoint accepts it: one incomplete request each, nothing billed, only the HTTP status shown |
 | `teamctl version` · `teamctl help` | |
 
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
@@ -115,10 +115,10 @@ For `teamctl start` and `teamctl spawn`:
 | Key | Runs | Pays with |
 |-----|------|-----------|
 | `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan |
-| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription |
+| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription; the key is a Kimi Code membership key (Kimi Code console, starts `sk-kim`) |
 | `minimax` | Claude Code + MiniMax M3 | MiniMax Coding Plan |
-| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan |
-| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on` |
+| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan; the key starts `sk-sp-` |
+| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on`; the key comes from platform.kimi.ai |
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
@@ -131,6 +131,37 @@ read it ([ADR-0020](docs/adr/0020-providers-beyond-the-three-subscriptions.md)).
 provider's key lives in its own Keychain service (`wolfmux-kimi`, …; Z.ai keeps
 `zai-coding-plan`); `WOLFMUX_<PROVIDER>_MODEL` / `_FAST_MODEL` pin a model id when a
 vendor changes it. `teamctl status` marks a metered agent with `$` after its label.
+
+The two Kimi keys are not interchangeable, and both say "Kimi" and start with `sk-`. A
+**Kimi Code membership key** (from the Kimi Code console,
+[kimi.com/code/console](https://www.kimi.com/code/console), starts `sk-kim`) belongs to `kimi`.
+A key created at [platform.kimi.ai](https://platform.kimi.ai/console/api-keys) belongs to
+`moonshot`. Put one in the other's slot and the endpoint answers 401 while everything on your
+side looks right. `teamctl doctor --probe` finds that in a minute: it sends one incomplete
+request per key you stored (nothing is generated, nothing is billed), shows only the HTTP
+status, and says `the key in 'wolfmux-kimi' is rejected by <endpoint>`. It also warns when a
+`kimi` key does not start with `sk-kim` or a `qwen` key with `sk-sp-`. Plain `teamctl doctor`
+stays offline and never reads a key.
+
+### Auth modes
+
+A provider worker gets its key one of two ways (`WOLFMUX_<PROVIDER>_AUTH_MODE` in
+`~/.config/wolfmux/config`):
+
+- `helper` (the default): Claude Code is given a command that reads the Keychain on demand, so the
+  key is never in an environment. Every provider worker also carries an inert
+  `CLAUDE_CODE_OAUTH_TOKEN` (the login guard), so Claude Code prints
+  `Both CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set: auth may not work as expected`. That warning is
+  expected and harmless (the helper's key is what is sent). It is not the cause of a 401 next to it.
+- `env`: the vendor's own variable (`ANTHROPIC_API_KEY` for Kimi Code, `ANTHROPIC_AUTH_TOKEN` for the
+  others). A last resort, for an endpoint that refuses helper-mode headers. It cannot fix a wrong key.
+  With `ANTHROPIC_API_KEY` set, Claude Code's own documentation says it asks whether to use the key
+  ("Do you want to use this API key?", default No) and remembers the answer, so an unattended worker
+  waits at that prompt until a human answers it in the pane. Claude Code documents no setting that
+  pre-approves the key, and Wolfmux does not edit your `~/.claude.json` to answer for you, so there
+  is nothing to switch on.
+
+A 401 means the key first: run `teamctl doctor --probe` before changing the mode.
 
 Behind the keys are launchers you can also run by hand: `claude-fable`, `claude-opus`,
 `claude-sonnet`, `claude-haiku`, `codex-astra`, `claude-glm`, `claude-glm-flash`,

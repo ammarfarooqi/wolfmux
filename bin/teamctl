@@ -65,7 +65,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl worktrees
     teamctl diff <role> [--stat|--names|--commits|--working]
   Housekeeping
-    teamctl doctor                                    provider / billing isolation report
+    teamctl doctor [--probe]                          provider / billing isolation report; --probe also asks each provider whose
+                                                      key is set up if its endpoint accepts it (one incomplete request each,
+                                                      nothing billed, only the HTTP status is shown)
     teamctl destroy [--worktrees] [--yes]             end the team; --worktrees also removes workers that hold nothing
     teamctl destroy --purge [--force] [--keep-transcripts] [--yes]
                                                       DELETE the team: session, every worktree, ai/ branches, records,

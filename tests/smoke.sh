@@ -131,6 +131,20 @@ doctor_other() { env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME2" WOL
 check "doctor: every provider has a section with its own Keychain service; a missing key of an optional one is a note, only Z.ai's is a warning" 'for p in kimi moonshot deepseek minimax qwen; do doctor_utf8 | grep -q "no Keychain item .wolfmux-$p." || exit 1; done && [ "$(doctor_utf8 | grep -c "optional, not set up: no Keychain item")" = 5 ] && doctor_utf8 | grep -q "WARNING.*no Keychain item .zai-coding-plan." && ! doctor_utf8 | grep "WARNING" | grep -q "wolfmux-"'
 closed_check "doctor: a metered provider says so, and that teamctl refuses it (the environment does not count)" 'doctor_utf8 | grep -q "billing: METERED (.*prepaid balance.*); teamctl refuses" && WOLFMUX_METERED=on doctor_utf8 | grep -q "teamctl refuses" && doctor_utf8 | grep -q "billing: plan (Kimi for Coding"'
 check "doctor: a settings file that names the host of any provider (not only Z.ai) is reported" 'doctor_other | grep -q "settings.local.json mentions api.deepseek.com" && ! doctor_utf8 | grep -q "mentions api.deepseek.com"'
+# doctor --probe reads a key and sends it, so plain doctor must not, and with no key set up (as here:
+# the throwaway HOME has no Keychain) not even --probe may start curl. A stand-in curl on the PATH
+# writes a line to a file when it is started, and that file must not appear. The checks that do send
+# (against a stand-in curl and against a localhost mock) are in tests/providers.sh.
+PROBE_STUB="$WORK/probe-stub"
+/bin/mkdir -p "$PROBE_STUB"
+printf '#!/bin/bash\necho call >>"%s/calls"\ncat >/dev/null\nprintf 000\n' "$PROBE_STUB" >"$PROBE_STUB/curl"
+/bin/chmod 755 "$PROBE_STUB/curl"
+doctor_probe() { PATH="$PROBE_STUB:$PATH" env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME" LC_ALL=en_US.UTF-8 WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor --probe 2>&1 </dev/null; }
+check "doctor --probe: says what it sends (one incomplete request, nothing billed, key on stdin), and with no key set up sends nothing" '/bin/rm -f "$PROBE_STUB/calls"; out="$(doctor_probe)"; printf "%s" "$out" | grep -q "POST /v1/messages with an empty body" && printf "%s" "$out" | grep -q "nothing is billed" && printf "%s" "$out" | grep -q "probe: nothing was sent" && [ ! -e "$PROBE_STUB/calls" ]'
+check "doctor: without --probe no key is read and curl is never started, and no probe line is printed" '/bin/rm -f "$PROBE_STUB/calls"; out="$(PATH="$PROBE_STUB:$PATH" doctor_utf8)"; ! printf "%s" "$out" | grep -q "probe" && [ ! -e "$PROBE_STUB/calls" ]'
+check "doctor --probe: the exit status is the same as plain doctor when nothing could be sent, and an unknown option is a usage error (64)" 'doctor_utf8 >/dev/null; a=$?; doctor_probe >/dev/null; b=$?; [ "$a" = "$b" ] && env HOME="$DOCTOR_HOME" "$REPO/bin/teamctl" doctor --bogus >/dev/null 2>&1; [ $? -eq 64 ]'
+check "doctor: the kimi and moonshot blocks say which console each key comes from, without --probe" 'out="$(doctor_utf8)"; printf "%s" "$out" | grep -q "key: A Kimi Code membership key comes from the Kimi Code console" && printf "%s" "$out" | grep -q "key: A Moonshot key comes from the Kimi API platform" && printf "%s" "$out" | grep -q "belongs to the moonshot provider" && printf "%s" "$out" | grep -q "belongs to the kimi provider"'
+check "help: teamctl help lists doctor --probe" 'teamctl help | grep -q "teamctl doctor \[--probe\]"'
 check "doctor: no variable in any script is followed directly by a non-ASCII character" '! LC_ALL=C grep -nE "\\\$[A-Za-z_][A-Za-z0-9_]*[^ -~]" "$REPO"/bin/* "$REPO"/config/wolfmux/lib/*.sh "$REPO"/config/wolfmux/hooks/* "$REPO"/*.sh "$REPO"/tests/*.sh "$REPO"/tests/stub-agent'
 # `bd update --claim` sets in_progress: an inbox that lists only `open` hides the task a
 # restarted worker is in the middle of, and it would answer "ready" and wait for ever.
@@ -184,10 +198,14 @@ echo "== other providers (Kimi, Moonshot, DeepSeek, MiniMax, Qwen) through the s
 teamctl spawn kimi-w kimi --no-kickoff >/dev/null 2>&1
 teamctl spawn mm-w minimax --no-kickoff >/dev/null 2>&1
 teamctl spawn qw-w qwen:qwen3.7-max --no-kickoff >/dev/null 2>&1
+teamctl spawn hint-k kimi >/dev/null 2>&1 # with the kickoff prompt, unlike the three above
+teamctl spawn hint-s sonnet >/dev/null 2>&1
 sleep 2
 check "providers: a plain provider key starts an agent, labelled from the table, through its own launcher name" '[ "$(agent kimi-w)" = "{\"label\":\"Kimi Code\",\"family\":\"claude\",\"state\":\"running\"}" ] && teamctl capture kimi-w --all | grep -q "STUB role=kimi-w actor=kimi-w model=kimi " && [ "$(jq -r .launcher "$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/kimi-w.json" | xargs basename)" = "stub-agent" ] && [ "$(agent mm-w)" = "{\"label\":\"MiniMax M3\",\"family\":\"claude\",\"state\":\"running\"}" ]'
 check "providers: <provider>:<model-id> pins a model of that provider, as claude:<id> does" 'teamctl capture qw-w --all | grep -q "STUB modelarg=qwen3.7-max" && [ "$(agent qw-w)" = "{\"label\":\"qwen3.7-max\",\"family\":\"claude\",\"state\":\"running\"}" ]'
 check "providers: a provider agent is a Claude Code agent (bypass flag, worker settings, guard) and never sees a credential in its pane" 'teamctl capture kimi-w --all | grep -q "STUB flags=--dangerously-skip-permissions" && teamctl capture kimi-w --all | grep -q "STUB guard=true" && teamctl capture kimi-w --all | grep -Eq "^STUB leaked= *$"'
+check "providers: the kickoff of a provider worker names its Keychain slot and endpoint and says the lead or the human runs doctor --probe on a 401 (GLM workers too, a subscription model gets no such line)" 'teamctl capture hint-k --all | grep -q "STUB kickoff_probe_hint=yes" && teamctl capture hint-k --all | grep -q "STUB kickoff_probe_slot=wolfmux-kimi" && teamctl capture hint-k --all | grep -q "STUB kickoff_probe_endpoint=https://api.kimi.com/coding/" && teamctl capture backend --all | grep -q "STUB kickoff_probe_slot=zai-coding-plan" && teamctl capture hint-s --all | grep -q "STUB kickoff_probe_hint=no" && teamctl capture hint-s --all | grep -q "STUB kickoff_in_progress=yes"'
+check "providers: the pane of a provider agent prints, above the CLI, the Keychain slot it uses and the command for a 401; a subscription model prints no such line" 'teamctl capture hint-k --all | grep -q "^\[wolfmux\] key: .wolfmux-kimi. -> https://api.kimi.com/coding/.*teamctl doctor --probe" && ! teamctl capture hint-s --all | grep -q "\[wolfmux\] key:" && teamctl capture backend --all | grep -q "^\[wolfmux\] key: .zai-coding-plan."'
 check "providers: status --json says how each one is billed (a plan for Kimi Code, none for a subscription model)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"kimi-w\")][0].billing == \"plan\") and ([.agents[] | select(.role == \"backend\")][0].billing == \"plan\") and ([.agents[] | select(.role == \"lead\")][0].billing == \"subscription\")"'
 check "providers: the status table marks nothing while nothing is metered" '! teamctl status | grep -q "metered"'
 # the metered gate: a provider that bills per token is off until the owner says otherwise
@@ -217,7 +235,7 @@ plant "$PAID_TEAM_DIR/agents" lead lead deepseek "DeepSeek V4" metered
 check "metered: a metered lead shows its \$ in its own team, and --json says metered" 'teamctl status --team paid | grep -q "🐺 lead .*DeepSeek V4\\$ " && teamctl status --json --team paid | jq -e ".agents[0].billing == \"metered\""'
 /bin/rm -rf "$PAID_TEAM_DIR"
 check "providers: teamctl help, the usage line and the unknown-model error list every provider key" 'for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do teamctl help | grep -qF -- "$k" || exit 1; teamctl spawn 2>&1 | grep -qF -- "$k" || exit 1; teamctl spawn x nosuchmodel 2>&1 | grep -qF -- "$k" || exit 1; teamctl start 2>&1 | grep -qF -- "$k" || exit 1; done'
-for role in kimi-w mm-w qw-w meter-1 meter-2; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
+for role in kimi-w mm-w qw-w hint-k hint-s meter-1 meter-2; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
 
 echo "== the wolf (cosmetic: it may never break a command)"
 SESSION_NAME="$(teamctl status --json | jq -r .session)"

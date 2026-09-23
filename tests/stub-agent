@@ -32,6 +32,19 @@ case "$last" in *open,in_progress,blocked*"do not start over"*) echo "STUB kicko
 assignee="none" # whose inbox the kickoff names: in a named team that is <team>.<role>
 case "$last" in *"--assignee "*) assignee="${last#*--assignee }" && assignee="${assignee%% *}" ;; esac
 echo "STUB kickoff_assignee=$assignee"
+hint="no" # the 401 line a provider worker's kickoff carries: which Keychain slot, which endpoint, and the doctor command
+slot="none"
+endpoint="none"
+case "$last" in
+  *"doctor --probe"*)
+    hint="yes"
+    slot="${last#*the key in \'}" && slot="${slot%%\'*}"
+    endpoint="${last#*is rejected by }" && endpoint="${endpoint%%;*}"
+    ;;
+esac
+echo "STUB kickoff_probe_hint=$hint"
+echo "STUB kickoff_probe_slot=$slot"
+echo "STUB kickoff_probe_endpoint=$endpoint"
 if [ -n "${WOLFMUX_EXTRA_SETTINGS:-}" ] && [ -r "$WOLFMUX_EXTRA_SETTINGS" ]; then
   echo "STUB settings=$(jq -c '{teams: .env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, mode: .teammateMode, hook: (.hooks.PermissionRequest != null)}' "$WOLFMUX_EXTRA_SETTINGS")"
   echo "STUB guard=$(jq -c '(.hooks.PreToolUse // []) | map(.hooks[].command) | join(" ") | test("_guard")' "$WOLFMUX_EXTRA_SETTINGS")"

@@ -150,7 +150,7 @@ lead can never take over a team that already has a lead; a worker can never foun
 | `teamctl diff <role> [--stat\|--names\|--commits\|--working]` | the worker's changes since its base |
 | `teamctl destroy [--worktrees] [--yes]` | end the session; never deletes dirty worktrees, unmerged branches, source, credentials or Beads data |
 | `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and free its disk space: reports first, asks, then removes session, worktrees, `ai/…` branches, records and its teammates' Claude Code transcripts ([deleting a team](#deleting-a-team-and-what-a-team-costs)) |
-| `teamctl doctor` | launcher, credential, settings and login checks |
+| `teamctl doctor [--probe]` | launcher, credential, settings and login checks; `--probe` also asks each provider whose key is set up whether its endpoint accepts it |
 
 Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
@@ -185,6 +185,17 @@ A provider worker needs its key in the Keychain first
 `start` refuse a metered key (exit 77, and the launcher exit 78) until the owner has set
 `WOLFMUX_METERED=on`; `teamctl status` marks a running metered agent with `$` after its
 label, with a legend line under the table.
+
+`teamctl doctor --probe` is the check for a provider worker that answers 401. For every provider
+whose Keychain item exists it sends one request to that provider's endpoint over https: `POST
+/v1/messages` with an empty body. That asks for no completion, so nothing is generated and
+nothing is billed, metered providers included. Only the HTTP status is shown. 200, 400, 422 and
+429 mean the key was accepted (the raw status is printed next to it; a good key is expected to get
+400 or 422, which was inferred from the rejected side, measured with a fake key); 401 and 403 are a
+FAIL naming the Keychain slot, the endpoint and the console the key comes from; no answer, or any
+other status, is a warning. The key travels on curl's stdin only: not in its arguments, not in any
+environment, not in a file, not on screen, and no redirect is followed. Plain `teamctl doctor` stays
+offline and never reads a key value.
 
 ## Beads cheat sheet
 

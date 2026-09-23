@@ -6,8 +6,8 @@
 # How GLM workers receive the Z.ai Coding Plan key (always read from the Keychain):
 #   helper  the key is handed to Claude Code through apiKeyHelper and never enters
 #           the environment, so a worker's subprocesses cannot see or leak it (default)
-#   env     Z.ai's documented ANTHROPIC_AUTH_TOKEN variable. Use this if workers
-#           report an authentication error in helper mode.
+#   env     Z.ai's documented ANTHROPIC_AUTH_TOKEN variable. A last resort, for an endpoint that
+#           refuses helper mode: it cannot fix a wrong key (teamctl doctor --probe checks the key).
 #WOLFMUX_GLM_AUTH_MODE=helper
 
 # GLM context window. Default: 200000 tokens, declared to Claude Code so it does not print
@@ -26,7 +26,9 @@
 # How each provider's key reaches its workers, the same two modes as GLM above:
 #   helper  through apiKeyHelper, never in the environment (default)
 #   env     the vendor's documented variable (ANTHROPIC_API_KEY for Kimi, ANTHROPIC_AUTH_TOKEN
-#           for the others). Use this if a provider reports an authentication error in helper mode.
+#           for the others). A last resort: it cannot fix a wrong key (teamctl doctor --probe checks
+#           it), and for ANTHROPIC_API_KEY Claude Code asks 'use this API key?' in the pane, where an
+#           unattended worker waits.
 #WOLFMUX_KIMI_AUTH_MODE=helper
 #WOLFMUX_MOONSHOT_AUTH_MODE=helper
 #WOLFMUX_DEEPSEEK_AUTH_MODE=helper
