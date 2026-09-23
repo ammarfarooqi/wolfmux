@@ -60,7 +60,7 @@ End of day:
 
 ```bash
 teamctl destroy                      # stops the panes; branches, commits and Beads stay
-teamctl destroy --worktrees          # later: drops clean worktrees and fully merged ai/* branches
+teamctl destroy --worktrees          # later: drops clean worktrees and fully merged branches teamctl created
 ```
 
 ## Several teams in one project
@@ -82,10 +82,74 @@ teamctl destroy --team review --worktrees
 | naming | lowercase letters, digits, `-`, 50 characters at most; `--team <name>` may stand before or after the command |
 | which team a command means | inside a pane: the agent's own team. At your terminal: the only team there is; with several, the command lists them and asks (`status` and `teams` show all) |
 | `teamctl start <model>` without `--team` | the first team. If that is running under another model it is not opened for you; you are shown `teamctl attach` and `teamctl start <model> --team <name>` |
-| roles | per team: two teams can each have a `backend`. Branches are `ai/<team>/<role>-…`, worktrees live under `…/teams/<team>/` |
+| roles | per team: two teams can each have a `backend`. Branches are `ai/<team>/<role>-…` by default, worktrees live under `…/teams/<team>/` |
 | Beads | all teams share the project's Beads. The first team's agents are `lead`, `backend`, …; a named team's are `review.lead`, `review.backend`. Hand work across teams with `-a review.lead` |
 | management | a lead manages its own team only; you manage all |
 | your checkout | teammates are apart in worktrees, leads are not: every lead works in your checkout, on the branch that is checked out there. Let one lead integrate at a time |
+
+## Branch names that fit your repository
+
+A worker's branch name comes from the team's **branch template**. The built-in one produces
+exactly the names wolfmux has always produced (`ai/<role>-<ts>`, `ai/<team>/<role>-<ts>`), so
+a project that never touches this sees no change.
+
+Set it when your repository enforces a shape, for example a ticket key in every branch name.
+Without it every worker commit fails that rule and workers reach for the project's skip switch:
+
+```bash
+teamctl policy branch-template 'feature-{ticket}-{role}-{ts}'
+teamctl start fable --ticket AFD-1844          # the whole team's default ticket key
+teamctl spawn sam glm53                        # feature-AFD-1844-sam-20260923-112233
+teamctl spawn kim glm53 --ticket AFD-1902      # this worker's own key wins
+teamctl spawn one glm53 --branch release-hotfix-one   # or name the branch outright
+teamctl policy branch-template default         # back to the built-in shape
+teamctl policy                                 # shows the team's current template
+```
+
+| Placeholder | Is |
+|-------------|-----|
+| `{team}` | the team's name |
+| `{role}` | the worker's role |
+| `{ts}` | the timestamp, `20260923-112233`. **Required in every template** |
+| `{ticket}` | the key from `--ticket`, or the team's default from `teamctl start --ticket` |
+
+Rules worth knowing:
+
+- `{ts}` is what keeps two workers of the same role on two branches, so a template without it
+  is refused (exit 64), and so is an unknown placeholder.
+- A template with `{ticket}` and a spawn that has no ticket key is refused, naming `--ticket`.
+  It never guesses a name, because a wrong name is what the setting exists to prevent.
+- `--branch <name>` skips the template and uses that name; git decides whether it is a legal
+  branch name, and a branch that already exists is refused: wolfmux never adopts a branch it
+  did not create, because `teamctl remove` deletes a worker's branch.
+- teamctl deletes a worker's branch only when teamctl created it, whatever it is called. A
+  branch it did not create is named in the output and left alone.
+- `WOLFMUX_BRANCH_TEMPLATE` in `~/.config/wolfmux/config` is the default for every team.
+
+## A worker in another repository
+
+Work that spans repositories does not need the guard switched off. A spawn can put a worker's
+worktree and branch in another git repository:
+
+```bash
+teamctl spawn srv glm53 --repo ../fanpro-studio-server
+teamctl spawn srv glm53 --repo ../fanpro-studio-server --base release/2026-09
+```
+
+What that changes, and what it does not:
+
+| | |
+|---|---|
+| worktree | `~/.wolfmux/worktrees/<that repository>/teams/<team>/<role>-<stamp>` |
+| branch | created in **that** repository, from its `HEAD` or the `--base` you name, resolved there |
+| isolation | stays **on**. The worker may change only its own worktree; your project's checkout *and* that repository's own checkout are read-only for it |
+| status | a `REPO` column appears (only while some worker has one), and `--json` carries `repo` |
+| diff, worktrees, remove, destroy | all run git in that worker's repository, so what wolfmux made there is what wolfmux removes there |
+| team, Beads, lead, policy, panes | unchanged: it is an ordinary teammate of this team, and its inbox is this project's Beads |
+
+Not covered, on purpose: switching isolation off for one worker, an allow-list of extra
+writable paths, and founding a whole team in another repository. A team still belongs to
+one project; only a worker's worktree moves.
 
 ## Deleting a team, and what a team costs
 
@@ -155,11 +219,11 @@ creation time in the lead's record, so the founder keeps its authority after one
 
 | Command | Does |
 |---------|------|
-| `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's last conversation. With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
+| `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. `--ticket` sets the team's default ticket key ([branch names](#branch-names-that-fit-your-repository)). Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's last conversation. With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
-| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams) |
+| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
-| `teamctl spawn <role> <model> [--base <ref>] [--from-worktree <role>] [--no-kickoff]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated. Refuses a running worker, and a worktree with uncommitted changes (lists them) |
+| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated. Refuses a running worker, and a worktree with uncommitted changes (lists them) (`--repo` does not combine with it: the worktree stays in its own repository) |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
@@ -174,7 +238,7 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl worktrees` | branch, commits ahead, dirty count per worker |
 | `teamctl diff <role> [--stat\|--names\|--commits\|--working]` | the worker's changes since its base |
 | `teamctl destroy [--worktrees] [--yes]` | end the session; never deletes dirty worktrees, unmerged branches, source, credentials or Beads data |
-| `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and free its disk space: reports first, asks, then removes session, worktrees, `ai/…` branches, records and its teammates' Claude Code transcripts ([deleting a team](#deleting-a-team-and-what-a-team-costs)) |
+| `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and free its disk space: reports first, asks, then removes session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts ([deleting a team](#deleting-a-team-and-what-a-team-costs)) |
 | `teamctl doctor [--probe]` | launcher, credential, settings and login checks; `--probe` also asks each provider whose key is set up whether its endpoint accepts it |
 
 Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.

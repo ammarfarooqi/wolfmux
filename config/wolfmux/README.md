@@ -82,11 +82,37 @@ Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
 `TEAM_ROLE` / `BEADS_ACTOR` set to its role (in a named team: branch
 `ai/<team>/<role>-<timestamp>`, Beads name `<team>.<role>`). The lead stays the large pane
 on the left; teammates stack on the right. A worker reads its Beads inbox as soon as it
-boots, so assign work first, then spawn. Options: `--base <ref>`, `--no-kickoff`,
+boots, so assign work first, then spawn. Options: `--base <ref>`, `--branch <name>`,
+`--ticket <KEY>`, `--repo <path>`, `--no-kickoff`, and
 `--from-worktree <role>`: a fresh conversation in a stopped worker's built worktree, on a
 new branch (its branch and commits stay; node_modules and build output survive). The lead
 reads each agent's CONTEXT in `teamctl status` (tokens, share of the window) to choose
 between `restart` (keep the conversation) and a fresh worker.
+
+**Branch names.** That shape is a template, and a team can set its own when the repository
+enforces one (a ticket key, a prefix), so no teammate ever has to commit past a hook:
+
+```bash
+teamctl policy branch-template 'feature-{ticket}-{role}-{ts}'   # this team, from now on
+teamctl start fable --ticket AFD-1844            # the team's default ticket key
+teamctl spawn sam glm53 --ticket AFD-1844        # feature-AFD-1844-sam-20260923-112233
+teamctl spawn sam glm53 --branch my-exact-name   # or name the branch yourself
+teamctl policy branch-template default           # back to the built-in shape
+```
+
+Placeholders: `{team}` `{role}` `{ts}` `{ticket}`. `{ts}` is required — it is what keeps two
+teammates of one role on two branches — so a template without it is refused, and so is a
+template with `{ticket}` when the spawn has no ticket key. teamctl deletes a teammate's
+branch only when teamctl created it, whatever it is called.
+
+**Another repository.** `teamctl spawn srv glm53 --repo ../other-repo` creates the worktree
+and the branch **there** (base: that repository's `HEAD`, or the `--base` you name, resolved
+there), under `~/.wolfmux/worktrees/<that repo>/teams/<team>/`. Isolation stays on: the
+teammate may change only its own worktree, and both your project's checkout and that
+repository's own checkout are read-only for it. `teamctl status` grows a `REPO` column while
+some teammate has one, and `diff`, `worktrees`, `remove` and `destroy` run git where that
+teammate's work actually is. It stays an ordinary member of this team, with this project's
+Beads inbox.
 
 A provider worker needs that provider's key in the Keychain first (one-time setup above);
 `teamctl doctor` says which are set up. `spawn` and `start` refuse a metered key until
@@ -122,6 +148,8 @@ teamctl policy worker-permissions skip|lead|ask # default skip
 teamctl policy lead-permissions skip|ask        # default skip
 teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
 teamctl policy lead-teams on|off                # may the lead found further teams?  default on
+teamctl policy branch-template '<template>'     # how this team names workers' branches (above)
+teamctl policy branch-template default          # …back to ai/{role}-{ts} · ai/{team}/{role}-{ts}
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -231,7 +259,7 @@ teamctl destroy --team review --purge --force    # …even with uncommitted or u
 ```
 
 A worker costs a checkout of your tracked files plus whatever it installs or builds; the
-lead costs nothing. Purge removes the session, every worktree, the team's `ai/…` branches,
+lead costs nothing. Purge removes the session, every worktree, the branches teamctl created,
 records and its teammates' Claude Code transcripts; never your checkout, other branches,
 Beads, other teams, or the lead's own conversations (they live in your checkout's folder).
 
@@ -287,7 +315,7 @@ work with `git merge <branch>`, or discard it with `--force`.
 teamctl stop backend               # close one pane; worktree, branch, commits stay
 teamctl restart backend            # same worktree + branch   (--continue resumes its conversation)
 teamctl destroy                    # end the tmux session; keeps everything else
-teamctl destroy --worktrees        # also removes CLEAN worktrees and FULLY MERGED ai/* branches
+teamctl destroy --worktrees        # also removes CLEAN worktrees and FULLY MERGED branches teamctl created
 ```
 
 `destroy` never deletes source files, commits, unmerged branches, dirty worktrees,
@@ -329,6 +357,7 @@ the same name wins for a launcher you start by hand.
 | Setting | Default | Means |
 |---------|---------|-------|
 | `WOLFMUX_LEAD_PERMISSIONS` · `WOLFMUX_WORKER_PERMISSIONS` | `skip` | permission mode of every team that has not set its own (`teamctl policy`) |
+| `WOLFMUX_BRANCH_TEMPLATE` | unset | how workers' branches are named in every team that has not set its own (`teamctl policy branch-template`); unset = `ai/{role}-{ts}` and `ai/{team}/{role}-{ts}` |
 | `WOLFMUX_WORKER_SPAWN` | `off` | may workers spawn teammates (same rule: a team's own policy wins) |
 | `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
@@ -494,7 +523,7 @@ security delete-generic-password -s zai-coding-plan
 tmux -L wolfmux ls                          # sessions on the team server
 tmux -L wolfmux kill-server                 # stop every team at once
 git worktree list && git worktree prune     # in a project
-git branch --list 'ai/*'                    # leftover worker branches (delete merged ones: git branch -d)
+git branch --list 'ai/*'                    # leftover worker branches, default template (delete merged ones: git branch -d)
 ls ~/.wolfmux/state ~/.wolfmux/worktrees    # per-project state and worktrees
 ```
 

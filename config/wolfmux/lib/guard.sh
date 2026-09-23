@@ -8,9 +8,13 @@
 #
 #   changing files   only inside the worker's own worktree (and temporary directories)
 #   reading files    anywhere except other teammates' worktrees and teamctl's state
-#   shell commands   refused when they name another worktree, write into the lead's
-#                    checkout, move or delete branches, switch to another branch,
-#                    touch git worktrees, push to main, or drive tmux
+#   shell commands   refused when they name another worktree, write into a checkout the
+#                    worker may only read, move or delete branches, switch to another
+#                    branch, touch git worktrees, push to main, or drive tmux
+#
+# Two checkouts are read-only for a worker: the lead's (the project, WOLFMUX_ROOT) and,
+# for a teammate spawned with --repo, the main checkout of the repository its worktree
+# belongs to (WOLFMUX_REPO). Its own worktree is neither of those.
 #
 # What it is: a guard against mistakes and role confusion, precise for the file tools,
 # a set of heuristics for the shell. What it is not: a sandbox. Every agent is your
@@ -100,7 +104,7 @@ guard_shell() {
   c="$(guard_tokenize "$c" @OWN@ "$GUARD_OWN" "${WOLFMUX_WORKTREE:-}")"
   c="$(guard_tokenize "$c" @TREES@ "$GUARD_TREES" "$WOLFMUX_DATA/worktrees")"
   c="$(guard_tokenize "$c" @STATE@ "$GUARD_STATE" "$WOLFMUX_DATA/state")"
-  c="$(guard_tokenize "$c" @ROOT@ "$GUARD_ROOT" "${WOLFMUX_ROOT:-}")"
+  c="$(guard_tokenize "$c" @ROOT@ "$GUARD_ROOT" "${WOLFMUX_ROOT:-}" "$GUARD_REPO")"
   c="$(guard_strip_prose "$c")"
   local edge='(^|[;&|(){}[:space:]])' git='git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:]]*)?)*[[:space:]]+'
 
@@ -137,7 +141,7 @@ guard_shell() {
         printf '%s' "$c" | grep -Eq ">[>|]?[[:space:]]*[\"']?@ROOT@" ||
         printf '%s' "$c" | grep -Eq "${edge}(rm|mv|rmdir|chmod|chown|ln|truncate|dd|tee|install|sed[[:space:]]+-[a-zA-Z]*i[^[:space:];&|]*|perl[[:space:]]+-[a-zA-Z]*i[^[:space:];&|]*)[[:space:]][^;&|]*@ROOT@" ||
         printf '%s' "$c" | grep -Eq "${edge}(cp|rsync|ditto)[[:space:]][^;&|]*@ROOT@[^[:space:];&|]*[\"']?[[:space:]]*(\$|[;&|])"; then
-        printf "the lead's checkout (%s) is read-only for you; that command would change it." "$GUARD_ROOT" && return 0
+        printf 'that command would change a checkout that is read-only for you (%s). Your work belongs in your own worktree.' "$GUARD_READONLY" && return 0
       fi
       ;;
   esac
@@ -156,6 +160,13 @@ cmd_guard() {
   GUARD_STATE="$(guard_abspath "$WOLFMUX_DATA/state" /)"
   GUARD_ROOT=""
   if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then GUARD_ROOT="$(cd "$WOLFMUX_ROOT" && pwd -P)"; fi
+  # A teammate spawned with --repo has its worktree in another repository: that repository's
+  # own checkout is read-only for it, exactly as the lead's is.
+  GUARD_REPO=""
+  if [ -n "${WOLFMUX_REPO:-}" ] && [ -d "$WOLFMUX_REPO" ]; then GUARD_REPO="$(cd "$WOLFMUX_REPO" && pwd -P)"; fi
+  if [ "$GUARD_REPO" = "$GUARD_ROOT" ]; then GUARD_REPO=""; fi
+  GUARD_READONLY="$GUARD_ROOT"
+  if [ -n "$GUARD_REPO" ]; then GUARD_READONLY="$GUARD_ROOT and $GUARD_REPO"; fi
   GUARD_BRANCH="${WOLFMUX_BRANCH:-}"
 
   tool="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_name // ""' 2>/dev/null || true)"
@@ -173,6 +184,9 @@ cmd_guard() {
       fi
       if [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT"; then
         guard_deny "'$target' is in the lead's checkout, which is read-only for you." && return 0
+      fi
+      if [ -n "$GUARD_REPO" ] && guard_inside "$path" "$GUARD_REPO"; then
+        guard_deny "'$target' is in the main checkout of $GUARD_REPO. Your worktree of that repository is where your work goes; the checkout itself is read-only for you." && return 0
       fi
       for allowed in /private/tmp /tmp /private/var/folders /var/folders "$HOME/.claude"; do
         if guard_inside "$path" "$allowed"; then return 0; fi
@@ -200,9 +214,10 @@ cmd_guard() {
         if guard_inside "$path" "$GUARD_TREES" || guard_inside "$path" "$GUARD_STATE"; then
           guard_deny "'$target' is another teammate's worktree or teamctl's state." && return 0
         fi
-        if [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT" &&
+        if { { [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT"; } ||
+          { [ -n "$GUARD_REPO" ] && guard_inside "$path" "$GUARD_REPO"; }; } &&
           printf '%s' "$tool" | grep -Eiq '(write|edit|create|delete|remove|move|rename|patch|apply|append|insert|replace|mkdir|upload|save)'; then
-          guard_deny "'$target' is in the lead's checkout, which is read-only for you." && return 0
+          guard_deny "'$target' is in a checkout that is read-only for you ($GUARD_READONLY)." && return 0
         fi
       done < <(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input | [.. | strings] | .[]' 2>/dev/null | head -100)
       ;;

@@ -97,7 +97,9 @@ current-directory inheritance for new panes. One extra key: `prefix T` re-tiles.
 
 ### Git worktrees
 
-`teamctl spawn <role> <model>` creates branch `ai/<role>-<timestamp>` from the
+`teamctl spawn <role> <model>` creates a branch named by the team's branch template
+(by default `ai/<role>-<timestamp>`, `ai/<team>/<role>-<timestamp>`; `teamctl policy
+branch-template`, `--branch`, `--ticket`) from the
 lead's current `HEAD` (or `--base <ref>`) in a worktree at
 `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/` — outside the
 repository, so nothing is nested in the project. Git itself refuses to check one
@@ -131,7 +133,8 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 ### Spawning a worker
 
 1. validate role and model key (a metered model is refused while `WOLFMUX_METERED` is off); take the project lock (`mkdir`, released on exit)
-2. `git worktree add -b ai/<role>-<stamp> <path> <base>`
+2. `git worktree add -b <branch from the template> <path> <base>`, in the project or,
+   with `--repo <path>`, in that repository (its own worktrees directory and its own base)
 3. write the registry record (role, model, launcher, worktree, branch, base)
 4. split a pane that runs `teamctl _run-agent <root> <role>`; tag it with `@ai_role`
 5. re-tile; record the pane id. If the pane cannot be created, the fresh worktree,
@@ -217,7 +220,7 @@ needed no team logic of their own.
 | tmux session | `team-<project>` | `team-<project>-<team>` |
 | state | `~/.wolfmux/state/<project>/` | `…/<project>/teams/<team>/` |
 | worktrees | `~/.wolfmux/worktrees/<project>/<role>-<stamp>` | `…/<project>/teams/<team>/<role>-<stamp>` |
-| branches | `ai/<role>-<stamp>` | `ai/<team>/<role>-<stamp>` |
+| branches | `ai/<role>-<stamp>` | `ai/<team>/<role>-<stamp>` |   (the default template; `teamctl policy branch-template` sets another)
 | Beads name | `<role>` | `<team>.<role>` |
 
 The Beads hook reads the team out of the assignee's name (`review.backend`) and the lead to
@@ -241,7 +244,9 @@ worktree, uncommitted files, commits the checked-out branch does not have, trans
 Nothing is touched until the answer is yes, `--force` was given, or `--yes` with nothing at
 risk. `_purge_team` then ends the session and removes the team's own state files; a
 worktree named in a record only when it lies inside the team's worktree directory (with
-the transcript folder derived from its path); a branch only when it is `ai/…` and not the
+the transcript folder derived from its path); a branch only when teamctl created it
+(`branch_created` in the record; a record from before that field counts its `ai/…` branch as
+teamctl's) and it is not the
 one checked out in your checkout.
 
 What teams do not have apart: your checkout. Every lead works in the project root.

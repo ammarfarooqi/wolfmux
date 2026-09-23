@@ -674,6 +674,92 @@ end_agent "$(lead_pane_of fresh)"
 sleep 1
 check "founder: a plain destroy does not cost the founder its authority (the founder is kept with the team, not only in the lead's record): it can still delete the team afterwards" 'as_agent default lead destroy --team fresh --yes </dev/null && [ ! -e "$(ls -d "$WOLFMUX_DATA"/state/*/teams/fresh)/agents/lead.json" ] && teamctl status --json --team fresh | jq -e ".founder == \"lead\" and .orphaned == true" && teamctl teams | grep -E "^fresh +orphaned " | grep -q " lead " && as_agent default lead destroy --team fresh --purge --force && ! teamctl teams | grep -q "^fresh " && [ -z "$(git branch --list "ai/fresh/*")" ]'
 teamctl destroy --team fresh --purge --yes >/dev/null 2>&1
+echo "== branch names that fit a project's rules (issue #3)"
+teamctl start fable --team naming --no-attach --skip-beads >/dev/null 2>&1
+teamctl spawn plain flash --team naming --no-kickoff >/dev/null 2>&1
+sleep 2
+NAMING_AGENTS="$(ls -d "$WOLFMUX_DATA"/state/*/teams/naming/agents)"
+naming_branch() { teamctl status --json --team naming | jq -r --arg role "$1" '.agents[] | select(.role == $role) | .branch'; }
+check "branch names: with no template the shape is the one wolfmux has always used, and the record says teamctl created that branch" 'case "$(naming_branch plain)" in ai/naming/plain-*) true ;; *) false ;; esac && git rev-parse -q --verify "refs/heads/$(naming_branch plain)" >/dev/null && [ "$(jq -r .branch_created "$NAMING_AGENTS/plain.json")" = "1" ]'
+teamctl spawn sam flash --team naming --branch feature-AFD-1844-sam --no-kickoff >/dev/null 2>&1
+sleep 2
+SAM_TREE="$(teamctl status --json --team naming | jq -r '.agents[] | select(.role == "sam") | .workdir')"
+check "branch names: --branch gives the worker exactly that branch, and its pane opens on it" '[ "$(naming_branch sam)" = "feature-AFD-1844-sam" ] && git rev-parse -q --verify refs/heads/feature-AFD-1844-sam >/dev/null && [ "$(git -C "$SAM_TREE" branch --show-current)" = "feature-AFD-1844-sam" ] && teamctl capture sam --team naming --all | grep -q "STUB cwd=.* branch=feature-AFD-1844-sam"'
+check "branch names: --branch refuses a name git would not take (64) and one that exists already (1); neither leaves a record, a worktree or a branch behind" 'teamctl spawn bad1 flash --team naming --branch "no spaces" --no-kickoff; [ $? -eq 64 ] && { teamctl spawn bad2 flash --team naming --branch main --no-kickoff; [ $? -eq 1 ]; } && ! teamctl status --json --team naming | jq -e ".agents[] | select(.role == \"bad1\" or .role == \"bad2\")" && git rev-parse -q --verify refs/heads/main >/dev/null && [ "$(git rev-parse refs/heads/main)" = "$(git rev-parse HEAD)" ]'
+check "branch names: a template with no {ts}, an unknown placeholder, an unclosed brace or nothing at all is refused (exit 64) and nothing is stored" '( for t in "feature-{ticket}-{role}" "ai/{role}-{ts}-{author}" "ai/{role}-{ts" ""; do teamctl policy branch-template "$t" --team naming; [ $? -eq 64 ] || exit 1; done ) && teamctl policy --team naming | grep -q "ai/{team}/{role}-{ts}"'
+teamctl policy branch-template 'feature-{ticket}-{role}-{ts}' --team naming >/dev/null 2>&1
+check "branch names: a template with {ticket} and no ticket is a usage error that names the flag (exit 64); nothing is created" 'out="$(teamctl spawn dev flash --team naming --no-kickoff 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "--ticket" && ! teamctl status --json --team naming | jq -e ".agents[] | select(.role == \"dev\")" && [ -z "$(git branch --list "feature-*-dev-*")" ]'
+check "branch names: an invalid ticket key is refused before anything is created (exit 64)" '( for k in "AFD 1844" "AFD/1844" "-AFD" ""; do teamctl spawn dev flash --team naming --ticket "$k" --no-kickoff; [ $? -eq 64 ] || exit 1; done ) && ! teamctl status --json --team naming | jq -e ".agents[] | select(.role == \"dev\")"'
+teamctl spawn dev flash --team naming --ticket AFD-1844 --no-kickoff >/dev/null 2>&1
+sleep 2
+check "branch names: the template plus --ticket gives a conforming name, with the uniqueness stamp kept" 'printf "%s" "$(naming_branch dev)" | grep -Eq "^feature-AFD-1844-dev-[0-9]{8}-[0-9]{6}$" && git rev-parse -q --verify "refs/heads/$(naming_branch dev)" >/dev/null'
+teamctl start flash --team ticketed --no-attach --skip-beads --ticket TEAM-7 >/dev/null 2>&1
+teamctl policy branch-template 'feature-{ticket}-{role}-{ts}' --team ticketed >/dev/null 2>&1
+teamctl spawn one flash --team ticketed --no-kickoff >/dev/null 2>&1
+teamctl spawn two flash --team ticketed --ticket OTHER-9 --no-kickoff >/dev/null 2>&1
+sleep 2
+ticketed_branch() { teamctl status --json --team ticketed | jq -r --arg role "$1" '.agents[] | select(.role == $role) | .branch'; }
+check "branch names: teamctl start --ticket is the team's default ticket, and a spawn's own --ticket wins over it" 'printf "%s" "$(ticketed_branch one)" | grep -q "^feature-TEAM-7-one-" && printf "%s" "$(ticketed_branch two)" | grep -q "^feature-OTHER-9-two-"'
+check "branch names: teamctl policy shows the team's template, and 'default' puts the built-in shape back" 'teamctl policy --team ticketed | grep -q "feature-{ticket}-{role}-{ts}" && teamctl policy branch-template default --team ticketed && teamctl policy --team ticketed | grep -q "ai/{team}/{role}-{ts}"'
+git branch made-by-teamctl
+git branch legacy-keep
+git branch ai/old-style
+plant_branch() { # <role> <branch> [<branch_created>]
+  jq -n --arg role "$1" --arg branch "$2" --arg created "${3:-}" \
+    '{role: $role, kind: "worker", model: "glm53", label: "GLM-5.3", family: "claude", launcher: "/bin/true",
+      workdir: "/nonexistent/wolfmux", branch: $branch, base_ref: "main", base_commit: "", kickoff: "0",
+      spawned_by: "operator", permissions: "skip", pane_id: "", state: "stopped"}
+     + (if $created == "" then {} else {branch_created: $created} end)' >"$NAMING_AGENTS/$1.json"
+}
+plant_branch mine made-by-teamctl 1
+plant_branch theirs legacy-keep 0
+plant_branch older ai/old-style
+check "branch names: only a branch teamctl created is ever deleted, whatever it is called; a record from before the field keeps the old ai/ rule, and a branch teamctl did not make is named and left alone" 'out="$(teamctl remove mine theirs older --team naming --yes 2>&1)"; ! git rev-parse -q --verify refs/heads/made-by-teamctl >/dev/null && git rev-parse -q --verify refs/heads/legacy-keep >/dev/null && ! git rev-parse -q --verify refs/heads/ai/old-style >/dev/null && printf "%s" "$out" | grep -q "legacy-keep"'
+check "branch names: the guard holds a worker to its own branch whatever that branch is called" 'ans="$(jq -cn --arg c "git checkout main" --arg d "$SAM_TREE" "{hook_event_name: \"PreToolUse\", tool_name: \"Bash\", tool_input: {command: \$c}, cwd: \$d}" | TEAM_ROLE=sam WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$SAM_TREE" WOLFMUX_BRANCH=feature-AFD-1844-sam "$REPO/bin/teamctl" _guard)"; printf "%s" "$ans" | jq -e ".hookSpecificOutput.permissionDecision == \"deny\"" >/dev/null && printf "%s" "$ans" | grep -q "feature-AFD-1844-sam"'
+teamctl destroy --team naming --purge --force >/dev/null 2>&1
+teamctl destroy --team ticketed --purge --force >/dev/null 2>&1
+
+echo "== a teammate in a sibling repository (issue #4)"
+SIBLING="$WORK/sibling repo" # the space is deliberate here too
+/bin/mkdir -p "$SIBLING"
+(cd "$SIBLING" && git init -q -b main && echo "b" >b.txt &&
+  git add -A && git -c user.name=smoke -c user.email=smoke@example.invalid commit -qm "initial commit of the sibling" &&
+  git branch release-b && git branch keep-me) >/dev/null 2>&1
+SIBLING_REAL="$(cd "$SIBLING" && pwd -P)"
+teamctl start flash --team cross --no-attach --skip-beads >/dev/null 2>&1
+teamctl spawn srv flash --team cross --repo "$SIBLING" --base release-b --no-kickoff >/dev/null 2>&1
+sleep 2
+cross_field() { teamctl status --json --team cross | jq -r --arg role "$1" --arg f "$2" '.agents[] | select(.role == $role) | .[$f]'; }
+SRV_TREE="$(cross_field srv workdir)"
+SRV_BRANCH="$(cross_field srv branch)"
+check "cross-repo: the branch and the worktree are created in the sibling repository, from a ref of that repository, and the pane opens there" '[ -n "$SRV_BRANCH" ] && git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV_BRANCH" >/dev/null && ! git -C "$PROJECT" rev-parse -q --verify "refs/heads/$SRV_BRANCH" >/dev/null && [ -f "$SRV_TREE/b.txt" ] && [ ! -e "$SRV_TREE/README.md" ] && teamctl diff srv --team cross | grep -q "base:    release-b" && teamctl capture srv --team cross --all | grep -q "STUB cwd=.*/teams/cross/srv-"'
+check "cross-repo: the worktree lives under that repository's own key, and status names the repository (column and JSON)" 'case "$SRV_TREE" in *"/worktrees/sibling-repo-"*"/teams/cross/srv-"*) true ;; *) false ;; esac && [ "$(cross_field srv repo)" = "$SIBLING_REAL" ] && [ "$(cross_field lead repo)" = "" ] && teamctl status --team cross | grep -q "REPO" && teamctl status --team cross | grep -q "sibling repo" && ! teamctl status --team default | grep -q "REPO"'
+check "cross-repo: --repo refuses a path that is no directory, no git repository, or a repository without a commit (exit 64); nothing is created" '/bin/mkdir -p "$WORK/notarepo" "$WORK/emptyrepo" && (cd "$WORK/emptyrepo" && git init -q -b main) && ( for p in "$WORK/nosuchdir" "$WORK/notarepo" "$WORK/emptyrepo"; do teamctl spawn nope flash --team cross --repo "$p" --no-kickoff; [ $? -eq 64 ] || exit 1; done ) && ! teamctl status --json --team cross | jq -e ".agents[] | select(.role == \"nope\")"'
+guard_srv() { # <tool> <json tool_input> — the guard's answer for the cross-repo worker
+  local answer
+  answer="$(jq -cn --arg tool "$1" --argjson input "$2" --arg cwd "$SRV_TREE" '{hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $input, cwd: $cwd}' |
+    TEAM_ROLE=srv WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$SRV_TREE" WOLFMUX_BRANCH="$SRV_BRANCH" WOLFMUX_REPO="$SIBLING_REAL" "$REPO/bin/teamctl" _guard)"
+  if [ -z "$answer" ]; then printf 'allow\n'; else printf '%s' "$answer" | jq -r '.hookSpecificOutput.permissionDecision // "allow"'; fi
+}
+at() { jq -cn --arg p "$1" '{file_path: $p}'; }
+check "cross-repo: isolation stays on and holds that worker to its worktree in the sibling repository; the lead's project and the sibling's own checkout are both read-only" '[ "$(guard_srv Write "$(at "$SRV_TREE/b.txt")")" = allow ] && [ "$(guard_srv Write "$(at "$ROOT_REAL/README.md")")" = deny ] && [ "$(guard_srv Write "$(at "$SIBLING_REAL/b.txt")")" = deny ] && [ "$(guard_srv Read "$(at "$SRV_TREE/b.txt")")" = allow ] && teamctl capture srv --team cross --all | grep -q "STUB guard=true" && teamctl _prompt srv --team cross | grep -qF "ANOTHER repository: $SIBLING_REAL"'
+# bd resolves its workspace through git, so a teammate in another repository would look for
+# Beads THERE. Its inbox is the team's, wherever its worktree is.
+if [ "${HAVE_BD:-0}" -eq 1 ]; then
+  check "cross-repo: the teammate still reads the team's own Beads workspace, not the sibling repository's" 'teamctl capture srv --team cross --all | grep -q "STUB beadsdir=.*/\.beads" && ! teamctl capture srv --team cross --all | grep -q "STUB beadsdir=$SIBLING_REAL"'
+fi
+(cd "$SRV_TREE" && echo x >x.txt && git add -A && git -c user.name=srv -c user.email=srv@example.invalid commit -qm "feat: only in the sibling repo") >/dev/null 2>&1
+echo "loose" >"$SRV_TREE/loose.txt"
+check "cross-repo: diff, status and worktrees read that repository, not the project" 'teamctl diff srv --team cross --commits | grep -q "feat: only in the sibling repo" && [ "$(cross_field srv commits_ahead)" = "1" ] && [ "$(cross_field srv uncommitted)" = "1" ] && teamctl worktrees --team cross | grep -q "sibling-repo-" && teamctl worktrees --team cross | grep -qF "$SIBLING_REAL"'
+check "cross-repo: remove without --force still refuses to discard work, and names the commit and the file that exist nowhere else" 'teamctl stop srv --team cross && out="$(teamctl remove srv --team cross 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "feat: only in the sibling repo" && printf "%s" "$out" | grep -q "loose.txt" && [ -d "$SRV_TREE" ]'
+check "cross-repo: remove --force takes the worktree and the branch in the sibling repository; every other branch of both repositories stays" 'teamctl remove srv --team cross --force --yes && [ ! -e "$SRV_TREE" ] && ! git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV_BRANCH" >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/keep-me >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/release-b >/dev/null && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && ! git -C "$SIBLING_REAL" worktree list | grep -q "/teams/cross/"'
+teamctl spawn srv2 flash --team cross --repo "$SIBLING" --no-kickoff >/dev/null 2>&1
+sleep 2
+SRV2_TREE="$(cross_field srv2 workdir)"
+SRV2_BRANCH="$(cross_field srv2 branch)"
+check "cross-repo: destroy --purge deletes that worktree and branch in the sibling repository and leaves the rest of it alone" '[ -n "$SRV2_BRANCH" ] && [ -d "$SRV2_TREE" ] && teamctl destroy --team cross --purge --force && [ ! -e "$SRV2_TREE" ] && ! git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV2_BRANCH" >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/keep-me >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/main >/dev/null && ! git -C "$SIBLING_REAL" worktree list | grep -q "/teams/cross/"'
+
+
 echo "== deleting a whole team (destroy --purge)"
 teamctl start fable --team scrap --no-attach --skip-beads >/dev/null 2>&1
 teamctl spawn tidy flash --team scrap --no-kickoff >/dev/null 2>&1

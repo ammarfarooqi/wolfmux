@@ -19,6 +19,7 @@ echo "STUB role=${TEAM_ROLE:-} actor=${BEADS_ACTOR:-} model=${WOLFMUX_MODEL:-} a
 echo "STUB cwd=$PWD branch=$(git branch --show-current 2>/dev/null)"
 echo "STUB leaked=$(env | cut -d= -f1 | grep -E '^(ANTHROPIC_|OPENAI_|CLAUDECODE$|CLAUDE_CODE_CHILD_SESSION$)' | tr '\n' ' ')"
 echo "STUB flags=${flags:-none}"
+echo "STUB beadsdir=${BEADS_DIR:-none}"
 echo "STUB name=${name:-none}"
 last=""
 for arg in "$@"; do last="$arg"; done

@@ -15,7 +15,7 @@ _billing_of() {
 }
 
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir model cctx
+  local role kind pane state branch ahead dirty workdir model cctx repo
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
     reg_exists "$role" || continue
     kind="$(reg_field "$role" kind)"
@@ -31,8 +31,9 @@ _status_rows() { # emits one JSON object per agent
       ahead="-"
     else
       branch="$(reg_field "$role" branch)"
-      ahead="$(wt_ahead "$(reg_field "$role" base_commit)" "$branch")"
+      ahead="$(wt_ahead "$role" "$(reg_field "$role" base_commit)" "$branch")"
     fi
+    repo="$(reg_field "$role" repo)" # empty: this project. A teammate spawned with --repo: that repository.
     dirty="$(wt_dirty_count "$workdir")"
     model="$(reg_field "$role" model)"
     agent_context "$workdir" "$model" "$(reg_field "$role" family)"
@@ -43,13 +44,13 @@ _status_rows() { # emits one JSON object per agent
     fi
     "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$model" \
       --arg label "$(reg_field "$role" label)" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
-      --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" \
+      --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
       --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
       '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
-        branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir,
+        branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir, repo: $repo,
         context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
         context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}'
   done
@@ -95,7 +96,7 @@ _status_team_json() {
 
 # _status_team_text — one team as a small tree: the team, its wolf, its dogs
 _status_team_text() {
-  local rows width state hint=""
+  local rows width state hint="" repo_col="" role
   SESSION="$(session_name_for_project)"
   SESSION_LIVE=""
   if tm_session_exists "$SESSION"; then SESSION_LIVE=1; fi
@@ -118,20 +119,39 @@ _status_team_text() {
     return 0
   fi
   width="$(role_column_width)"
-  printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
+  # The REPO column costs a whole column on every team, and almost every team has none:
+  # it appears only when a teammate really works in another repository (teamctl spawn --repo).
+  for role in $(reg_list); do
+    if [ -n "$(reg_field "$role" repo 2>/dev/null || true)" ]; then
+      repo_col=1
+      break
+    fi
+  done
+  if [ -n "$repo_col" ]; then
+    printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" REPO BRANCH AHEAD DIRTY CONTEXT WORKDIR
+  else
+    printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
+  fi
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
   # A metered agent is marked with a $ after its label (every token it uses is billed).
   # CONTEXT is what the agent's transcript says the conversation holds: tokens, and the
   # share of the window. A stopped worker's line is the reuse-or-respawn signal.
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir] | join("|")' |
-    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir; do
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // "")] | join("|")' |
+    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
       else
         printf '    %s %-*s' "$WOLFMUX_WORKER_MARK" "$width" "$role"
       fi
-      printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+      if [ -n "$repo_col" ]; then
+        printf ' %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+      else
+        printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+      fi
     done
+  if [ -n "$repo_col" ]; then
+    say "  REPO: the repository a teammate's worktree and branch live in ('-' = this project). teamctl spawn <role> <model> --repo <path>"
+  fi
   if [ -n "$(printf '%s\n' "$rows" | "$JQ_BIN" -r 'select(.billing == "metered") | .role' | head -1)" ]; then
     say '  $ = metered: every token is billed to a prepaid balance, not to a plan or subscription (WOLFMUX_METERED=on, the owner'"'"'s decision)'
   fi

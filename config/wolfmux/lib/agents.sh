@@ -47,7 +47,10 @@ agent_state() {
   esac
 }
 
-# new_record <role> <kind> <model-key> <workdir> <branch> <base-ref> <base-commit> <kickoff> <spawned-by>
+# new_record <role> <kind> <model-key> <workdir> <branch> <base-ref> <base-commit> <kickoff>
+#            <spawned-by> [<repo>] [<branch-created 0|1>]
+# repo: the repository this agent's worktree and branch live in, empty for this project.
+# branch_created: 1 when teamctl made that branch, and only then is it ever deleted again.
 new_record() {
   local launcher permissions
   # model_info must run in THIS shell: launcher_path runs in a substitution
@@ -60,8 +63,9 @@ new_record() {
     --arg family "$MODEL_FAMILY" --arg launcher "$launcher" --arg workdir "$4" --arg branch "$5" \
     --arg base_ref "$6" --arg base_commit "$7" --arg kickoff "$8" --arg now "$(now_iso)" \
     --arg spawned_by "${9:-operator}" --arg permissions "$permissions" --arg model_id "$MODEL_ID" --arg billing "$MODEL_BILLING" \
+    --arg repo "${10:-}" --arg branch_created "${11:-0}" \
     '{role: $role, kind: $kind, model: $model, model_id: $model_id, label: $label, family: $family, billing: $billing, launcher: $launcher,
-      workdir: $workdir, branch: $branch, base_ref: $base_ref, base_commit: $base_commit,
+      workdir: $workdir, repo: $repo, branch: $branch, branch_created: $branch_created, base_ref: $base_ref, base_commit: $base_commit,
       kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions,
       pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
     reg_put "$1"
@@ -118,7 +122,7 @@ lead_restore() {
 
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
-  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" handover="" founder="operator"
+  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" handover="" founder="operator" ticket=""
   local prior_created="" prior_handover="" prior_by=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -128,6 +132,12 @@ cmd_start() {
         [ "$#" -ge 2 ] || die_usage "--handover needs the id of the bead that holds the handover"
         valid_bead_id "$2" || die_usage "--handover: '$2' is not a bead id"
         handover="$2"
+        shift
+        ;;
+      --ticket)
+        [ "$#" -ge 2 ] || die_usage "--ticket needs a ticket key, e.g. --ticket AFD-1844"
+        valid_ticket "$2" || die_usage "invalid ticket key '$2' (letters, digits, '-' and '_', not at either end, max 64)"
+        ticket="$2"
         shift
         ;;
       --init-beads) beads="yes" ;;
@@ -158,7 +168,7 @@ cmd_start() {
   # An agent acting on a team it did not found today is a founder bringing one back: it is announced and logged as that.
   if [ "$founder" != "operator" ]; then EVENT_BY="$founder"; fi
   if [ "$founder" != "operator" ] && founder_may_act; then FOUNDER_ACTING="$founder"; fi
-  wt_require_commit
+  wt_require_commit "$ROOT"
   ensure_state_dirs
   beads_ensure "$beads"
   lock_acquire
@@ -172,6 +182,8 @@ cmd_start() {
   if [ -n "$opt_lead" ]; then policy_set lead-permissions "$opt_lead"; fi
   if [ -n "$opt_worker" ]; then policy_set worker-permissions "$opt_worker"; fi
   if [ -n "$opt_spawn" ]; then policy_set worker-spawn "$opt_spawn"; fi
+  # The team's default ticket key: every spawn whose branch template asks for one uses it.
+  if [ -n "$ticket" ]; then meta_put ticket "$ticket"; fi
 
   SESSION="$(session_name_for_project)"
   if tm_session_exists "$SESSION"; then
@@ -200,7 +212,7 @@ cmd_start() {
         previous="$(reg_get "$WOLFMUX_LEAD_ROLE" 2>/dev/null || true)"
         previous_model="$(meta_get lead_model 2>/dev/null || true)"
         branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
-        new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
+        new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator "" 0
         lead_restore "$prior_created" "$prior_handover" "$prior_by"
         meta_put lead_model "$model"
       fi
@@ -232,7 +244,7 @@ cmd_start() {
   fi
 
   branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
-  new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 "$founder"
+  new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 "$founder" "" 0
   lead_restore "$prior_created" "$prior_handover" "$prior_by"
   if [ -n "$handover" ]; then reg_set "$WOLFMUX_LEAD_ROLE" handover "$handover"; fi
   if [ "$resume" -eq 1 ]; then agent_command "$WOLFMUX_LEAD_ROLE" --continue; else agent_command "$WOLFMUX_LEAD_ROLE"; fi
@@ -274,9 +286,13 @@ cmd_start() {
 }
 
 # --- teamctl spawn <role> <model> -----------------------------------------------
+# The branch: the team's template, or exactly what --branch says. The repository: this
+# project, or the one --repo names. Everything is resolved and refused before a worktree,
+# a branch, a record or a pane exists, so a spawn that is turned down leaves nothing behind.
 cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
   local from_tree="" old_record="" old_branch="" old_pane dirty
+  local want_branch="" ticket="" repo_arg="" repo="" spawn_repo trees repo_note=""
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -290,13 +306,30 @@ cmd_spawn() {
         from_tree="$2"
         shift
         ;;
+      --branch)
+        [ "$#" -ge 2 ] || die_usage "--branch needs a branch name"
+        want_branch="$2"
+        shift
+        ;;
+      --ticket)
+        [ "$#" -ge 2 ] || die_usage "--ticket needs a ticket key, e.g. --ticket AFD-1844"
+        valid_ticket "$2" || die_usage "invalid ticket key '$2' (letters, digits, '-' and '_', not at either end, max 64)"
+        ticket="$2"
+        shift
+        ;;
+      --repo)
+        [ "$#" -ge 2 ] || die_usage "--repo needs the path of a git repository"
+        repo_arg="$2"
+        shift
+        ;;
       --no-kickoff) kickoff=0 ;;
       -*) die_usage "unknown option for spawn: $1" ;;
       *) if [ -z "$role" ]; then role="$1"; elif [ -z "$model" ]; then model="$1"; else die_usage "unexpected argument: $1"; fi ;;
     esac
     shift
   done
-  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--from-worktree <role>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
+  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
+  if [ -n "$from_tree" ] && [ -n "$repo_arg" ]; then die_usage "--repo and --from-worktree do not go together: a handed-over worktree stays in the repository it belongs to"; fi
   require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
@@ -330,15 +363,47 @@ cmd_spawn() {
       exit 1
     fi
   fi
-  wt_require_commit
-  base_commit="$(gitr rev-parse --verify -q "$base^{commit}")" || die "cannot resolve base ref: $base"
+  # A handed-over worktree stays where it is, in its own repository.
+  if [ -n "$from_tree" ]; then repo="$(reg_field "$from_tree" repo 2>/dev/null || true)"; fi
+
+  # Which repository this teammate works in. Without --repo it is the project, which is
+  # also what --repo pointing back at the project means.
+  if [ -n "$repo_arg" ]; then
+    [ -d "$repo_arg" ] || die_usage "--repo: no such directory: $repo_arg"
+    repo="$(repo_root_of "$repo_arg")" || die_usage "--repo: $repo_arg is not inside a git repository"
+    [ "$repo" != "$ROOT" ] || repo=""
+  fi
+  if [ -n "$repo" ]; then
+    git_in "$repo" rev-parse --verify -q 'HEAD^{commit}' >/dev/null ||
+      die_usage "--repo: $(short_path "$repo") has no commits yet; a worktree needs one"
+    spawn_repo="$repo"
+    trees="$WOLFMUX_DATA/worktrees/$(project_key "$repo")/teams/$TEAM"
+    repo_note=" in $(short_path "$repo")"
+  else
+    wt_require_commit "$ROOT"
+    spawn_repo="$ROOT"
+    trees="$WORKTREES_DIR"
+  fi
+  /bin/mkdir -p "$trees"
+
+  base_commit="$(git_in "$spawn_repo" rev-parse --verify -q "$base^{commit}")" || die "cannot resolve base ref '$base' in $(short_path "$spawn_repo")"
   base_ref="$base"
   if [ "$base" = "HEAD" ]; then
-    base_ref="$(gitr symbolic-ref --short -q HEAD || printf '%s' "$base_commit" | cut -c1-12)"
+    base_ref="$(git_in "$spawn_repo" symbolic-ref --short -q HEAD || printf '%s' "$base_commit" | cut -c1-12)"
   fi
 
   stamp="$(now_stamp)"
-  branch="$(wt_branch_name "$role" "$stamp")"
+  if [ -n "$want_branch" ]; then
+    branch="$want_branch"
+  else
+    # A ticket on the command line wins over the team's default (teamctl start --ticket).
+    [ -n "$ticket" ] || ticket="$(meta_get ticket 2>/dev/null || true)"
+    branch="$(wt_branch_name "$role" "$stamp" "$ticket")"
+  fi
+  wt_require_branch_name "$spawn_repo" "$branch"
+  if wt_branch_exists_in "$spawn_repo" "$branch"; then
+    die "branch '$branch' already exists in $(short_path "$spawn_repo"). teamctl never adopts a branch it did not create (teamctl remove deletes a teammate's branch), so pick another name."
+  fi
   if [ -n "$from_tree" ]; then
     # A fresh conversation in the worktree that already exists: the same directory, so
     # everything git ignores (node_modules, build output) survives and no install or
@@ -347,14 +412,14 @@ cmd_spawn() {
     old_record="$(reg_get "$from_tree")"
     old_branch="$(reg_field "$from_tree" branch)"
     if ! "$GIT_BIN" -C "$path" switch -q -c "$branch" "$base_commit" >/dev/null 2>&1; then
-      die "could not create branch $branch in $(short_path "$path") (is that directory still a git worktree of this repository?)"
+      die "could not create branch $branch in $(short_path "$path") (is that directory still a git worktree of $(short_path "$spawn_repo")?)"
     fi
     reg_delete "$from_tree"
     /bin/rm -f "$STATE_DIR/settings/$from_tree.json"
   else
-    path="$(wt_create "$role" "$stamp" "$base_commit")"
+    path="$(wt_create "$spawn_repo" "$trees/$role-$stamp" "$branch" "$base_commit")"
   fi
-  new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}"
+  new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}" "$repo" 1
 
   target="$(tm_split_target "$SESSION")" || target=""
   pane=""
@@ -365,10 +430,10 @@ cmd_spawn() {
   if [ -z "$pane" ]; then
     if [ -n "$from_tree" ]; then
       "$GIT_BIN" -C "$path" switch -q "$old_branch" >/dev/null 2>&1 || true
-      gitr branch -D "$branch" >/dev/null 2>&1 || true
+      git_in "$spawn_repo" branch -D "$branch" >/dev/null 2>&1 || true
       printf '%s\n' "$old_record" | reg_put "$from_tree"
     else
-      wt_discard_new "$path" "$branch"
+      wt_discard_new "$spawn_repo" "$path" "$branch"
     fi
     reg_delete "$role"
     die "could not create a tmux pane for '$role' (window too small? attach and enlarge the terminal, then retry)."
@@ -379,7 +444,7 @@ cmd_spawn() {
   if [ -n "$from_tree" ]; then
     event_log from-worktree "$role" "$from_tree handed its worktree over; branch $old_branch kept"
   fi
-  event_log spawn "$role" "$model $branch by ${spawner:-operator}"
+  event_log spawn "$role" "$model $branch by ${spawner:-operator}${repo_note}"
   lock_release
   # The manager always knows who is on the team, whoever did the spawning.
   if [ -n "$spawner" ] && [ "$spawner" != "$WOLFMUX_LEAD_ROLE" ]; then
@@ -388,6 +453,7 @@ cmd_spawn() {
 
   say "spawned:   $role  ($MODEL_LABEL via $MODEL_LAUNCHER)  permissions: $(reg_field "$role" permissions)"
   say "pane:      $pane"
+  if [ -n "$repo" ]; then say "repo:      $(short_path "$repo")   (another repository; the guard holds this teammate to the worktree below)"; fi
   say "branch:    $branch  (base: $base_ref @ $(printf '%s' "$base_commit" | cut -c1-12))"
   say "worktree:  $(short_path "$path")"
   if [ -n "$from_tree" ]; then
@@ -404,9 +470,10 @@ path_prepend() {
 }
 
 build_role_prompt() {
-  local role="$1" kind workdir me lead
+  local role="$1" kind workdir me lead repo
   kind="$(reg_field "$role" kind)"
   workdir="$(reg_field "$role" workdir)"
+  repo="$(reg_field "$role" repo)"
   me="$(team_identity "$TEAM" "$role")"
   lead="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   printf '# Wolfmux session context\n\n'
@@ -416,6 +483,9 @@ build_role_prompt() {
   if [ "$kind" = "worker" ]; then
     printf -- '- Your private worktree (work ONLY here): %s\n' "$workdir"
     printf -- '- Your branch: %s   (base: %s @ %s)\n' "$(reg_field "$role" branch)" "$(reg_field "$role" base_ref)" "$(reg_field "$role" base_commit | cut -c1-12)"
+    if [ -n "$repo" ]; then
+      printf -- '- Your worktree is a worktree of ANOTHER repository: %s. Your branch lives there, and your work belongs there. The project root above is your lead'"'"'s repository: you may read it, you may not change it. Your team, your Beads inbox and your lead are unchanged.\n' "$repo"
+    fi
   fi
   printf -- '- Your team: %s\n' "$TEAM"
   printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported). Your inbox: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$me" "$me"
@@ -518,7 +588,7 @@ write_agent_settings() {
 }
 
 cmd_run_agent() {
-  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id provider
+  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id provider beads_workspace
   [ -n "$root" ] && [ -n "$role" ] || die_usage "internal use: _run-agent <root> <role> [--continue]"
   if [ "${3:-}" = "--continue" ]; then resume=1; fi
   export WOLFMUX_ROOT="$root"
@@ -537,7 +607,15 @@ cmd_run_agent() {
   if [ "$(reg_field "$role" kind)" = "worker" ]; then
     WOLFMUX_WORKTREE="$workdir" # what the worktree guard (lib/guard.sh) holds this agent to
     WOLFMUX_BRANCH="$(reg_field "$role" branch)"
-    export WOLFMUX_WORKTREE WOLFMUX_BRANCH
+    WOLFMUX_REPO="$(reg_field "$role" repo)" # set only with --repo: that repository's own checkout is read-only too
+    export WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_REPO
+    # A teammate spawned with --repo sits in another repository, and bd resolves its workspace
+    # through git: without this it would look for Beads in THAT repository and find none or the
+    # wrong one. The team's tasks and messages live in the project's workspace, so name it.
+    if [ -n "$(reg_field "$role" repo)" ] && [ -z "${BEADS_DIR:-}" ]; then
+      beads_workspace="$(beads_dir 2>/dev/null || true)"
+      if [ -n "$beads_workspace" ]; then export BEADS_DIR="$beads_workspace"; fi
+    fi
   fi
   WOLFMUX_SESSION="$(meta_get session || true)"
   WOLFMUX_MODEL="$(reg_field "$role" model)"
@@ -607,10 +685,11 @@ $prompt
 # A report shows the first lines of a list and says how many it left out. It never lets `head`
 # close a pipe under git: git flushes into a pipe line by line, the next write gets SIGPIPE,
 # and with pipefail and set -e the command died silently with exit 141 (issue #6).
-# report_commits <branch> <indent> <count> — the newest ten commits HEAD does not have
+# report_commits <role> <branch> <indent> <count> — the newest ten commits that the HEAD of
+# THAT WORKER'S repository does not have (its own, when it was spawned with --repo)
 report_commits() {
-  gitr log -n 10 --format="$2%h %s" "HEAD..$1" || true
-  if [ "$3" -gt 10 ]; then printf '%s… and %s more commits\n' "$2" "$(($3 - 10))"; fi
+  git_for_role "$1" log -n 10 --format="$3%h %s" "HEAD..$2" || true
+  if [ "$4" -gt 10 ]; then printf '%s… and %s more commits\n' "$3" "$(($4 - 10))"; fi
 }
 # report_files <worktree> <indent> <count> <shown> — the first <shown> changed files of a worktree
 report_files() {
@@ -712,11 +791,13 @@ cmd_restart() {
 }
 
 # --- teamctl destroy [--worktrees] [--yes] --------------------------------------------------
-# _inside_worktrees <path> — really inside this project's worktree directory (symlinks resolved)
+# _inside_worktrees <path> <worktrees dir> — really inside that worktree directory (symlinks
+# resolved). The directory is the team's own, or, for a teammate spawned with --repo, the one
+# that belongs to its repository: worker_trees_dir <role> says which.
 _inside_worktrees() {
   local real base
   real="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
-  base="$(cd "$WORKTREES_DIR" 2>/dev/null && pwd -P)" || return 1
+  base="$(cd "$2" 2>/dev/null && pwd -P)" || return 1
   case "$real/" in "$base"/?*/) return 0 ;; esac
   return 1
 }
@@ -758,7 +839,7 @@ cmd_remove() {
       path="$(reg_field "$role" workdir)"
       branch="$(reg_field "$role" branch)"
       unmerged=0
-      if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
+      if wt_branch_exists "$role" "$branch"; then unmerged="$(git_for_role "$role" rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
       if [ "$(wt_dirty_count "$path")" != "0" ] || [ "$unmerged" != "0" ]; then holding="$holding $role"; fi
     done
   fi
@@ -767,13 +848,13 @@ cmd_remove() {
     branch="$(reg_field "$role" branch)"
     dirty="$(wt_dirty_count "$path")"
     unmerged=0
-    if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
+    if wt_branch_exists "$role" "$branch"; then unmerged="$(git_for_role "$role" rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
     if [ -n "$holding" ] && [ "$dirty" = "0" ] && [ "$unmerged" = "0" ]; then continue; fi # reported below, removed never
     if [ "$dirty" != "0" ] || [ "$unmerged" != "0" ]; then
       say "$role still holds work that is nowhere else:"
       if [ "$unmerged" != "0" ]; then
-        say "  $unmerged commit$([ "$unmerged" = "1" ] || printf s) on $branch that your current branch does not have:"
-        report_commits "$branch" '    ' "$unmerged"
+        say "  $unmerged commit$([ "$unmerged" = "1" ] || printf s) on $branch that the current branch of $(short_path "$(worker_repo "$role")") does not have:"
+        report_commits "$role" "$branch" '    ' "$unmerged"
       fi
       if [ "$dirty" != "0" ]; then
         say "  $dirty uncommitted file$([ "$dirty" = "1" ] || printf s) in $(short_path "$path"):"
@@ -788,32 +869,31 @@ cmd_remove() {
         confirm "Discard all of that and remove '$role'?" || { lock_release; die "aborted; nothing was removed (pass --yes to skip this question)"; }
       fi
     fi
-    # A record is a file anyone can edit. Whatever it says, only a directory inside this
-    # project's worktrees is ever deleted, and only an ai/* branch that is not checked out
-    # in your own checkout.
+    # A record is a file anyone can edit. Whatever it says, only a directory inside the
+    # worktree directory of this teammate's own repository is ever deleted, and only a
+    # branch teamctl created that is not checked out in that repository itself.
     if [ -d "$path" ]; then
-      if _inside_worktrees "$path"; then
-        gitr worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"
+      if _inside_worktrees "$path" "$(worker_trees_dir "$role")"; then
+        git_for_role "$role" worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"
       else
-        warn "$role: its record points outside $(short_path "$WORKTREES_DIR") ($(short_path "$path")); that directory was left alone"
+        warn "$role: its record points outside $(short_path "$(worker_trees_dir "$role")") ($(short_path "$path")); that directory was left alone"
       fi
     fi
-    gitr worktree prune
+    git_for_role "$role" worktree prune 2>/dev/null || true
     # -D only here: the refusal above, or your yes, is what makes discarding it deliberate.
-    case "$branch" in
-      ai/*)
-        if wt_branch_exists "$branch" && [ "$branch" != "$(gitr symbolic-ref --short -q HEAD || true)" ]; then
-          gitr branch -D "$branch" >/dev/null 2>&1 || warn "could not delete branch $branch"
-        fi
-        ;;
-      *) [ -z "$branch" ] || warn "$role: branch '$branch' is not an ai/* branch; left alone" ;;
-    esac
+    if branch_is_ours "$role"; then
+      if wt_branch_exists "$role" "$branch" && [ "$branch" != "$(git_for_role "$role" symbolic-ref --short -q HEAD || true)" ]; then
+        git_for_role "$role" branch -D "$branch" >/dev/null 2>&1 || warn "could not delete branch $branch"
+      fi
+    else
+      [ -z "$branch" ] || warn "$role: teamctl did not create branch '$branch'; it was left alone"
+    fi
     pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
     if [ -n "$pane" ]; then tmx kill-pane -t "$pane" 2>/dev/null || true; fi
     /bin/rm -f "$STATE_DIR/settings/$role.json"
     reg_delete "$role"
     event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged"
-    say "removed: $role  (worktree, branch $branch and record)"
+    say "removed: $role  (worktree, branch $branch and record)$(repo="$(reg_field "$role" repo)"; [ -z "$repo" ] || printf ' in %s' "$(short_path "$repo")")"
   done
   layout_apply
   lock_release
@@ -826,7 +906,7 @@ _destroy_worker_artifacts() {
   path="$(reg_field "$role" workdir)"
   branch="$(reg_field "$role" branch)"
   result=0
-  wt_remove_if_clean "$path" || result=$?
+  wt_remove_if_clean "$role" "$path" || result=$?
   case "$result" in
     0) say "  $role: removed clean worktree $(short_path "$path")" ;;
     1)
@@ -836,15 +916,18 @@ _destroy_worker_artifacts() {
       ;;
     *) : ;;
   esac
-  if ! wt_branch_exists "$branch"; then
+  if ! wt_branch_exists "$role" "$branch"; then
     reg_delete "$role"
-  elif wt_delete_branch_if_merged "$branch"; then
+  elif wt_delete_branch_if_merged "$role" "$branch"; then
     say "  $role: deleted fully merged branch $branch"
     reg_delete "$role"
+  elif ! branch_is_ours "$role"; then
+    say "  $role: KEPT branch $branch (teamctl did not create it)"
   else
     say "  $role: KEPT branch $branch (has unmerged commits; review with: teamctl diff $role)"
     say "      keep its work: git merge $branch · discard it: teamctl remove $role --force"
   fi
+  git_for_role "$role" worktree prune 2>/dev/null || true
 }
 
 # human_size <kilobytes>
@@ -967,7 +1050,7 @@ agent_context() {
 # _purge_report — what deleting this team means, worker by worker. Sets PURGE_AT_RISK (roles
 # that hold work which exists nowhere else) and PURGE_KB.
 _purge_report() {
-  local role path branch dirty unmerged kb notes tdir alive
+  local role path branch dirty unmerged kb notes tdir alive repo
   PURGE_AT_RISK=""
   PURGE_KB=0
   alive=0
@@ -978,9 +1061,10 @@ _purge_report() {
     [ "$(reg_field "$role" kind)" = "worker" ] || continue
     path="$(reg_field "$role" workdir)"
     branch="$(reg_field "$role" branch)"
+    repo="$(reg_field "$role" repo)"
     dirty="$(wt_dirty_count "$path")"
     unmerged=0
-    if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
+    if wt_branch_exists "$role" "$branch"; then unmerged="$(git_for_role "$role" rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
     kb="$(disk_kb "$path")"
     tdir="$(transcripts_dir "$path" 2>/dev/null || true)"
     if [ "$PURGE_TRANSCRIPTS" -eq 1 ] && [ -n "$tdir" ]; then kb=$((kb + $(disk_kb "$tdir"))); fi
@@ -991,10 +1075,10 @@ _purge_report() {
       notes="HOLDS WORK THAT EXISTS NOWHERE ELSE"
     fi
     printf '  %s %-18s %9s   %s\n' "$WOLFMUX_WORKER_MARK" "$role" "$(human_size "$kb")" "$notes"
-    printf '        %s   (branch %s)\n' "$(short_path "$path")" "$branch"
+    printf '        %s   (branch %s%s)\n' "$(short_path "$path")" "$branch" "$([ -z "$repo" ] || printf ' in %s' "$(short_path "$repo")")"
     if [ "$unmerged" != "0" ]; then
-      printf '        %s commit%s that your current branch does not have:\n' "$unmerged" "$([ "$unmerged" = "1" ] || printf s)"
-      report_commits "$branch" '          ' "$unmerged"
+      printf '        %s commit%s that the current branch of %s does not have:\n' "$unmerged" "$([ "$unmerged" = "1" ] || printf s)" "$(short_path "$(worker_repo "$role")")"
+      report_commits "$role" "$branch" '          ' "$unmerged"
     fi
     if [ "$dirty" != "0" ]; then
       printf '        %s uncommitted file%s:\n' "$dirty" "$([ "$dirty" = "1" ] || printf s)"
@@ -1006,7 +1090,7 @@ _purge_report() {
   printf '  %-21s %9s   records, approvals, event log\n' "teamctl's state" "$(human_size "$kb")"
   say ""
   printf '  %-21s %9s   is what this frees%s\n' "total" "$(human_size "$PURGE_KB")" "$([ "$PURGE_TRANSCRIPTS" -eq 1 ] && printf ' (worktrees, and the agents'"'"' Claude Code transcripts)' || printf ' (transcripts are kept)')"
-  say "  Not touched: your checkout and its branch, every branch that is not ai/…, Beads, other teams."
+  say "  Not touched: your checkout and its branch, every branch teamctl did not create, Beads, other teams."
 }
 
 # _purge_team — the deleting itself. Every path comes from a record, so every path is checked.
@@ -1021,21 +1105,22 @@ _purge_team() {
       path="$(reg_field "$role" workdir)"
       branch="$(reg_field "$role" branch)"
       if [ -d "$path" ]; then
-        if _inside_worktrees "$path"; then
+        if _inside_worktrees "$path" "$(worker_trees_dir "$role")"; then
           tdir="$(transcripts_dir "$path" 2>/dev/null || true)"
-          gitr worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"
+          git_for_role "$role" worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"
           if [ "$PURGE_TRANSCRIPTS" -eq 1 ] && [ -n "$tdir" ] && [ -d "$tdir" ]; then /bin/rm -rf "$tdir"; fi
         else
-          warn "$role: its record points outside $(short_path "$WORKTREES_DIR") ($(short_path "$path")); that directory was left alone"
+          warn "$role: its record points outside $(short_path "$(worker_trees_dir "$role")") ($(short_path "$path")); that directory was left alone"
         fi
       fi
-      case "$branch" in
-        ai/*)
-          if wt_branch_exists "$branch" && [ "$branch" != "$(gitr symbolic-ref --short -q HEAD || true)" ]; then
-            gitr branch -D "$branch" >/dev/null 2>&1 || warn "could not delete branch $branch"
-          fi
-          ;;
-      esac
+      if branch_is_ours "$role"; then
+        if wt_branch_exists "$role" "$branch" && [ "$branch" != "$(git_for_role "$role" symbolic-ref --short -q HEAD || true)" ]; then
+          git_for_role "$role" branch -D "$branch" >/dev/null 2>&1 || warn "could not delete branch $branch"
+        fi
+      fi
+      git_for_role "$role" worktree prune 2>/dev/null || true
+      # A teammate in another repository leaves an empty teams/<team> directory behind there.
+      /bin/rmdir "$(worker_trees_dir "$role")" 2>/dev/null || true
     fi
     reg_delete "$role"
   done
@@ -1067,7 +1152,7 @@ cmd_destroy() {
   SESSION="$(session_name_for_project)"
   if [ "$purge" -eq 1 ]; then
     # Look first, ask, and only then touch anything: a refusal leaves the team running.
-    say "DELETE a whole team: its session, every worker's worktree and ai/ branch, its records."
+    say "DELETE a whole team: its session, every worker's worktree and its branch, its records."
     _purge_report
     if [ -n "$PURGE_AT_RISK" ] && [ "$force" -ne 1 ]; then
       say ""
@@ -1083,7 +1168,7 @@ cmd_destroy() {
     lock_release
     if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then /bin/rmdir "$STATE_DIR" 2>/dev/null || true; fi # only when empty
     say "team '$TEAM' is gone. Freed about $(human_size "$PURGE_KB")."
-    say "(commits of the deleted ai/ branches leave .git when git next collects garbage; now: git gc --prune=now)"
+    say "(commits of the deleted branches leave .git when git next collects garbage; now: git gc --prune=now)"
     founder_record_purge
     founder_announce destroyed
     return 0
@@ -1091,7 +1176,7 @@ cmd_destroy() {
   say "About to stop every agent of this project's team ($SESSION)."
   say "Kept in all cases: your source files, every commit, unmerged branches, credentials, Beads data."
   if [ "$remove_worktrees" -eq 1 ]; then
-    say "--worktrees: clean worker worktrees are removed; fully merged ai/* branches are deleted."
+    say "--worktrees: clean worker worktrees are removed; fully merged branches teamctl created are deleted."
   fi
   if [ "$assume_yes" -ne 1 ]; then
     confirm "Continue?" || die "aborted (pass --yes to skip this question)"
@@ -1147,8 +1232,13 @@ notify_lead() {
       text="[wolfmux] Permission request $2 from $3. Run: teamctl approvals"
       ;;
     policy)
-      policy_valid "$2" "$3" || return 1
-      text="[wolfmux] Policy changed: $2 = $3. Run: teamctl policy"
+      # branch-template's value is free text, so only its name is ever typed.
+      if [ "$2" = "branch-template" ]; then
+        text="[wolfmux] Policy changed: branch-template. Run: teamctl policy"
+      else
+        policy_valid "$2" "$3" || return 1
+        text="[wolfmux] Policy changed: $2 = $3. Run: teamctl policy"
+      fi
       ;;
     *) return 1 ;;
   esac

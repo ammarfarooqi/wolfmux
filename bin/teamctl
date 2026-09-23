@@ -35,10 +35,14 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          as you may: teamctl restart lead --team <name> --continue · stop · remove · destroy --team <name> --purge. You are told.
   Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you,
          and start/restart/stop/remove/destroy for the founder of a team whose lead is not running)
-    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--init-beads|--skip-beads]
+    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--ticket <KEY>] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
+                  --ticket: the team's default ticket key, for a branch template that asks for one
   Workers
-    teamctl spawn <role> <model> [--base <ref>] [--from-worktree <role>] [--no-kickoff]
+    teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff]
+        --branch: that exact branch name · --ticket: the key a branch template asks for (teamctl policy branch-template)
+        --repo: worktree and branch in ANOTHER git repository; the guard holds the teammate to that worktree
+        --from-worktree: a fresh conversation in a stopped worker's built worktree, on a new branch
         models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
                 kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
@@ -56,7 +60,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
   Policy and permissions
     teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · worker-spawn ·
-                                                      worker-isolation (the worktree guard) · lead-teams (may the lead found teams)
+                                                      worker-isolation (the worktree guard) · lead-teams (may the lead found teams) ·
+                                                      branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
@@ -77,8 +82,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       nothing billed, only the HTTP status is shown)
     teamctl destroy [--worktrees] [--yes]             end the team; --worktrees also removes workers that hold nothing
     teamctl destroy --purge [--force] [--keep-transcripts] [--yes]
-                                                      DELETE the team: session, every worktree, ai/ branches, records,
-                                                      transcripts. Lists uncommitted and unmerged work and asks first;
+                                                      DELETE the team: session, every worktree, the branches teamctl
+                                                      created, records, transcripts. Lists uncommitted and unmerged work and asks first;
                                                       --force deletes it anyway. teamctl teams shows what a team takes on disk
     teamctl version | help
 
