@@ -514,6 +514,22 @@ $prompt
   exec "$launcher" "${args[@]}"
 }
 
+# A report shows the first lines of a list and says how many it left out. It never lets `head`
+# close a pipe under git: git flushes into a pipe line by line, the next write gets SIGPIPE,
+# and with pipefail and set -e the command died silently with exit 141 (issue #6).
+# report_commits <branch> <indent> <count> — the newest ten commits HEAD does not have
+report_commits() {
+  gitr log -n 10 --format="$2%h %s" "HEAD..$1" || true
+  if [ "$3" -gt 10 ]; then printf '%s… and %s more commits\n' "$2" "$(($3 - 10))"; fi
+}
+# report_files <worktree> <indent> <count> <shown> — the first <shown> changed files of a worktree
+report_files() {
+  local listing
+  listing="$("$GIT_BIN" -C "$1" status --short 2>/dev/null || true)" # whole, in a variable: no pipe to close
+  printf '%s\n' "$listing" | sed -n "1,$4p" | sed "s/^/$2/"
+  if [ "$3" -gt "$4" ]; then printf '%s… and %s more files\n' "$2" "$(($3 - $4))"; fi
+}
+
 # --- teamctl stop / restart ------------------------------------------------------------
 cmd_stop() {
   local role="${1:-}" pane
@@ -664,11 +680,11 @@ cmd_remove() {
       say "$role still holds work that is nowhere else:"
       if [ "$unmerged" != "0" ]; then
         say "  $unmerged commit$([ "$unmerged" = "1" ] || printf s) on $branch that your current branch does not have:"
-        gitr log --format='    %h %s' "HEAD..$branch" | head -10
+        report_commits "$branch" '    ' "$unmerged"
       fi
       if [ "$dirty" != "0" ]; then
         say "  $dirty uncommitted file$([ "$dirty" = "1" ] || printf s) in $(short_path "$path"):"
-        "$GIT_BIN" -C "$path" status --short | head -10 | sed 's/^/    /'
+        report_files "$path" '    ' "$dirty" 10
       fi
       if [ "$force" -ne 1 ]; then
         say "  keep it:    commit in that worktree, then: git merge $branch"
@@ -791,11 +807,11 @@ _purge_report() {
     printf '        %s   (branch %s)\n' "$(short_path "$path")" "$branch"
     if [ "$unmerged" != "0" ]; then
       printf '        %s commit%s that your current branch does not have:\n' "$unmerged" "$([ "$unmerged" = "1" ] || printf s)"
-      gitr log --format='          %h %s' "HEAD..$branch" | head -10
+      report_commits "$branch" '          ' "$unmerged"
     fi
     if [ "$dirty" != "0" ]; then
       printf '        %s uncommitted file%s:\n' "$dirty" "$([ "$dirty" = "1" ] || printf s)"
-      "$GIT_BIN" -C "$path" status --short | head -15 | sed 's/^/          /'
+      report_files "$path" '          ' "$dirty" 15
     fi
   done
   kb="$(disk_kb "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json")"

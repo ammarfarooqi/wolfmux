@@ -516,7 +516,18 @@ BUSY_TREE="$(teamctl status --json --team scrap | jq -r '.agents[] | select(.rol
 TIDY_TREE="$(teamctl status --json --team scrap | jq -r '.agents[] | select(.role == "tidy") | .workdir')"
 echo "half done" >"$BUSY_TREE/draft.txt"
 echo "committed" >"$BUSY_TREE/kept.txt"
+# More than a report shows (10 commits, 15 files): the report is cut, the command must not be
+# (issue #6). git flushes each commit into the pipe, so with enough commits `| head` closed it
+# under git every time: SIGPIPE, exit 141, and nothing deleted. fast-import makes 3000 in a blink.
+many_commits() { # <worktree> <count>: that many empty commits on the branch it has checked out
+  local ref i
+  ref="$(git -C "$1" symbolic-ref HEAD)"
+  { printf 'commit %s\ncommitter smoke <s@example.invalid> 1 +0000\ndata 4\nstep\nfrom %s^0\n\n' "$ref" "$ref"
+    for i in $(seq 2 "$2"); do printf 'commit %s\ncommitter smoke <s@example.invalid> 1 +0000\ndata 4\nstep\n\n' "$ref"; done; } | git -C "$1" fast-import --quiet
+}
+many_commits "$BUSY_TREE" 3000
 (cd "$BUSY_TREE" && git add kept.txt && git -c user.name=busy -c user.email=b@example.invalid commit -qm "feat: only on this branch")
+for i in $(seq 1 20); do echo "$i" >"$BUSY_TREE/loose-$i.txt"; done
 transcripts_of() { printf '%s/%s\n' "$WOLFMUX_CLAUDE_PROJECTS" "$(cd "$1" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"; }
 /bin/mkdir -p "$(transcripts_of "$BUSY_TREE")" "$(transcripts_of "$TIDY_TREE")" "$WOLFMUX_CLAUDE_PROJECTS/-somebody-elses-project"
 echo '{"turn":1}' >"$(transcripts_of "$BUSY_TREE")/session.jsonl"
@@ -525,6 +536,14 @@ BUSY_TRANSCRIPTS="$(transcripts_of "$BUSY_TREE")"
 check "purge: a worker may not delete a team (exit 77)" 'TEAM_ROLE=busy WOLFMUX_TEAM=scrap teamctl destroy --purge --force; [ $? -eq 77 ] && [ -d "$BUSY_TREE" ]'
 check "purge: work that exists nowhere else is listed, and without an answer nothing at all is touched" 'out="$(teamctl destroy --team scrap --purge 2>&1 </dev/null)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "draft.txt" && printf "%s" "$out" | grep -q "feat: only on this branch" && printf "%s" "$out" | grep -q -- "--force" && [ -d "$BUSY_TREE" ] && tmux -L "$WOLFMUX_TMUX_SOCKET" has-session -t "=$FIRST_SESSION-scrap" && teamctl status --json --team scrap | jq -e "[.agents[] | select(.state == \"running\")] | length == 3"'
 check "purge: it says how much space the team takes" 'teamctl destroy --team scrap --purge 2>&1 </dev/null | grep -Eq "total +[0-9.]+ ?(KB|MB|GB)"'
+check "purge: a worker with more commits and files than the report shows is still reported in full: the list is cut, the command is not (exit 1 waiting for an answer, never 141)" 'out="$(teamctl destroy --team scrap --purge 2>&1 </dev/null)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "3001 commits" && printf "%s" "$out" | grep -q "and 2991 more commits" && printf "%s" "$out" | grep -q "and 6 more files"'
+teamctl stop tidy --team scrap >/dev/null 2>&1
+many_commits "$TIDY_TREE" 3000
+# teamctl guards its own tool calls, so no command crashes on demand: the handler that bin/teamctl
+# installs is run with the libraries, over a child killed by SIGPIPE (what `| head` did, issue #6).
+crash_with() { bash -c 'set -euo pipefail; for m in provider-env common registry; do . "$1/config/wolfmux/lib/$m.sh"; done; TEAMCTL_ARGS="destroy --team x --purge"; trap teamctl_on_exit EXIT; bash -c "$2"; echo finished' _ "$REPO" "$1" 2>&1; }
+check "a crash is never silent: bin/teamctl installs the exit handler, and it names the signal and the command; a plain failure or Ctrl-C adds nothing (issue #6)" 'grep -q "^trap .teamctl_on_exit. EXIT" "$REPO/bin/teamctl" && out="$(crash_with "kill -PIPE \$\$")"; [ $? -eq 141 ] && printf "%s" "$out" | grep -q "stopped unexpectedly (exit 141: signal 13) in: teamctl destroy --team x --purge" && out="$(crash_with "exit 3")"; [ $? -eq 3 ] && [ -z "$out" ] && out="$(crash_with "kill -INT \$\$")"; ! printf "%s" "$out" | grep -q "stopped unexpectedly"'
+check "remove --force: a worker with thousands of unmerged commits is removed, not left behind by a silent exit 141" 'teamctl remove tidy --team scrap --force --yes && [ ! -e "$TIDY_TREE" ] && [ -z "$(git branch --list "ai/scrap/tidy-*")" ]'
 check "purge --force: session, worktrees, ai/ branches, records and transcripts of that team are gone" 'teamctl destroy --team scrap --purge --force && ! tmux -L "$WOLFMUX_TMUX_SOCKET" has-session -t "=$FIRST_SESSION-scrap" 2>/dev/null && [ ! -e "$BUSY_TREE" ] && [ ! -e "$TIDY_TREE" ] && [ -z "$(git branch --list "ai/scrap/*")" ] && [ ! -e "$SCRAP_STATE" ] && [ ! -e "$BUSY_TRANSCRIPTS" ] && [ -d "$WOLFMUX_CLAUDE_PROJECTS" ] && ! git worktree list | grep -q "/scrap/"'
 check "purge: nothing else is touched — other teams, their branches, your checkout, other transcripts" 'teamctl status --json --team review | jq -e ".session_running" && teamctl status --json --team default | jq -e ".session_running" && [ -n "$(git branch --list "ai/review/*")" ] && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && [ -d "$WOLFMUX_CLAUDE_PROJECTS/-somebody-elses-project" ] && ! teamctl teams | grep -q "^scrap "'
 check "purge: with nothing at risk it still wants a yes when nobody can be asked" 'teamctl start fable --team scrap2 --no-attach --skip-beads && ! teamctl destroy --team scrap2 --purge </dev/null && teamctl destroy --team scrap2 --purge --yes && ! teamctl teams | grep -q "^scrap2 "'

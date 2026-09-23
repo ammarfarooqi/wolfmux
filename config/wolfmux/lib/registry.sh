@@ -137,7 +137,7 @@ lock_acquire() {
   done
   printf '%s\n' "$$" >"$lock/pid"
   LOCK_HELD="$lock"
-  trap 'lock_release' EXIT
+  trap 'teamctl_on_exit' EXIT # releases the lock, reports a crash (common.sh)
 }
 
 lock_release() {

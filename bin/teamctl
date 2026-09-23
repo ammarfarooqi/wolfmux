@@ -18,6 +18,8 @@ for module in provider-env common registry tmuxctl worktree beads policy approva
   # shellcheck source=/dev/null
   . "$WOLFMUX_HOME/lib/$module.sh"
 done
+TEAMCTL_ARGS="$*"
+trap 'teamctl_on_exit' EXIT
 wolfmux_load_config # ~/.config/wolfmux/config supplies defaults; the environment wins
 tm_adopt_legacy_server
 
