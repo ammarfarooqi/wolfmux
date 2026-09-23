@@ -453,10 +453,23 @@ follow start astra --team night --no-attach --skip-beads >/dev/null 2>&1
 follow spawn qa flash --team night --no-kickoff >/dev/null 2>&1
 tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
 sleep 1
-check "restart without a session: a worker's refusal names the exact commands, with the team and --continue" 'out="$(follow restart qa --continue --team night 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start astra --team night --continue" && printf "%s" "$out" | grep -q -- "teamctl restart qa --team night --continue" && out="$(follow restart docs --team default 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start fable --continue" && ! printf "%s" "$out" | grep -q -- "--team"'
+check "restart without a session: a worker's refusal in a named team names the exact commands, with the team and --continue" 'out="$(follow restart qa --continue --team night 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start astra --team night --continue" && printf "%s" "$out" | grep -q -- "teamctl restart qa --team night --continue"'
+check "restart without a session: a worker's refusal in the first team names them without --team" 'out="$(follow restart docs --team default 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start fable --continue" && ! printf "%s" "$out" | grep -q -- "--team"'
 check "restart without a session: restart lead --continue starts the team again in the lead's last conversation" 'follow restart lead --continue --team default </dev/null && sleep 1 && follow status --json --team default | jq -e "([.agents[] | select(.role == \"lead\")][0] | .state == \"running\" and .model == \"fable\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")" && teamctl capture lead --team default --all | grep -q "STUB flags=.*--continue"'
 check "restart without a session: the same in a named team, as the model that led it (Codex resumes with: resume --last)" 'follow restart lead --continue --team night </dev/null && sleep 1 && follow status --json --team night | jq -e "[.agents[] | select(.role == \"lead\")][0] | .state == \"running\" and .model == \"astra\"" && teamctl capture lead --team night --all | grep -q "STUB lastarg=--last"'
 check "restart without a session: a plain restart of the lead starts a fresh conversation" 'tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server; sleep 1; follow restart lead --team default </dev/null && sleep 1 && teamctl capture lead --team default --all | grep "STUB flags=" | grep -vq -- "--continue"'
+# What restart_without_session hands to cmd_start, with the libraries loaded and cmd_start replaced by a
+# printer: <BD_BIN> is "" (bd is not installed) or a program that finds no workspace (bd is there, this project has none).
+restart_args() {
+  /bin/mkdir -p "$WORK/rws"
+  bash -c 'set -euo pipefail; for m in provider-env common registry beads agents; do . "$1/config/wolfmux/lib/$m.sh"; done
+    BD_BIN="$2"; ROOT="$3"; TEAM=default; STATE_DIR="$3/state"; mkdir -p "$STATE_DIR/agents"
+    printf "%s\n" "{\"role\":\"lead\",\"kind\":\"lead\",\"model\":\"fable\"}" >"$STATE_DIR/agents/lead.json"
+    cmd_start() { printf "START %s\n" "$*"; }
+    restart_without_session lead 0' _ "$REPO" "$1" "$WORK/rws" 2>&1
+}
+check "restart without a session: bd not installed is left to start, which dies loudly as a manual start does (no --skip-beads)" 'out="$(restart_args "")"; printf "%s" "$out" | grep -q "^START fable$" && ! printf "%s" "$out" | grep -q -- "--skip-beads"'
+check "restart without a session: bd installed but no Beads workspace in this project is skipped, as before" 'restart_args /usr/bin/false | grep -q "^START fable --skip-beads$"'
 teamctl destroy --team night --purge --yes >/dev/null 2>&1
 teamctl destroy --worktrees --yes >/dev/null 2>&1
 
@@ -506,6 +519,75 @@ check "teams: a lead cannot take over a team that already has a lead, and a work
 teamctl policy lead-teams off --team default >/dev/null 2>&1
 check "teams: teamctl policy lead-teams off keeps founding teams to you" 'as_lead start fable --team another --no-attach --skip-beads; [ $? -eq 77 ] && ! teamctl teams | grep -q "^another "'
 teamctl policy lead-teams on --team default >/dev/null 2>&1
+
+echo "== a lead recovers and cleans up a team it founded (issue #2)"
+# review founds "child" with a handover, then child's lead dies. Its founder, review.lead, must be able to
+# bring it back or delete it without you and without founding a replacement. The first team's lead
+# ("lead" in Beads) is a third party to child, and so is every worker.
+as_agent() { # <team> <role> <teamctl args…>: what that agent's own pane runs (a pane exports both variables)
+  local team="$1" role="$2"
+  shift 2
+  TEAM_ROLE="$role" WOLFMUX_TEAM="$team" WOLFMUX_NOTIFY_TTY="$WORK/tty-founder" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" "$@"
+}
+lead_pane_of() { teamctl status --json --team "$1" | jq -r '.agents[] | select(.role == "lead") | .pane'; }
+# refused_for "<team> <role>" <yes|no> <command>...: each is refused with exit 77 (on team child); yes/no: with the founder's hint or without it
+FOUNDER_HINT="you founded it: once its lead has stopped you may restart or destroy it"
+refused_for() {
+  local who="$1" hint="$2" command out
+  shift 2
+  for command in "$@"; do
+    out="$(as_agent $who $command --team child 2>&1)"
+    [ $? -eq 77 ] || { echo "not refused (77): $who $command" >&2; return 1; }
+    if [ "$hint" = yes ]; then
+      printf '%s' "$out" | grep -q "$FOUNDER_HINT" || { echo "no hint: $who $command" >&2; return 1; }
+    elif printf '%s' "$out" | grep -q "you founded it"; then
+      echo "unexpected hint: $who $command" >&2
+      return 1
+    fi
+  done
+}
+as_agent review lead start fable --team child --no-attach --skip-beads --handover abc-88 >/dev/null 2>&1
+teamctl spawn kid flash --team child --no-kickoff >/dev/null 2>&1
+sleep 2
+CHILD_DIR="$(ls -d "$WOLFMUX_DATA"/state/*/teams/child)"
+CHILD_SESSION="$FIRST_SESSION-child"
+CHILD_LEAD_RECORD="$CHILD_DIR/agents/lead.json"
+CHILD_CREATED="$(jq -r .created_at "$CHILD_LEAD_RECORD")"
+check "founder: status --json names the founder, and a running team is not orphaned" 'teamctl status --json --team child | jq -e ".founder == \"review.lead\" and .orphaned == false and .agents[0].spawned_by == \"review.lead\"" && teamctl status --json --team review | jq -e ".founder == \"operator\" and .orphaned == false"'
+check "founder: while the founded team's lead runs, its founder is refused (exit 77) and the refusal says it may act once that lead has stopped" 'refused_for "review lead" yes "restart lead" "restart kid --continue" "stop lead" "destroy --yes" "destroy --purge --force" "remove kid --force --yes" "start fable --continue" && teamctl status --json --team child | jq -e ".session_running and .orphaned == false"'
+check "founder: the lead of another team and any worker are refused (exit 77) as before, with no such hint" 'refused_for "default lead" no "stop lead" "restart lead" "destroy --purge --force" "start fable --continue" && refused_for "review backend" no "stop lead" "restart lead" "destroy --purge --force" "start fable --continue" && refused_for "child kid" no "stop lead" "restart lead" "destroy --purge --force"'
+end_agent "$(lead_pane_of child)"
+sleep 1
+check "founder: once its lead has exited the team is orphaned: teams and status say so, and who may act on it" 'teamctl teams | grep -E "^child +orphaned " | grep -q "review.lead" && teamctl teams | grep -q "child is orphaned: its lead is not running. May act on it: you, review.lead (its founder)" && teamctl status --json --team child | jq -e ".orphaned == true and .founder == \"review.lead\"" && teamctl status --team child | grep -q "orphaned: its lead is not running. May act on it: you, review.lead (its founder)" && teamctl status --json --team review | jq -e ".orphaned == false"'
+check "founder: teams --json carries founder and orphaned as well" 'teamctl teams --json | jq -e "([.[] | select(.team == \"child\")][0] | .orphaned == true and .founder == \"review.lead\" and .state == \"orphaned\") and ([.[] | select(.team == \"review\")][0] | .orphaned == false and .founder == \"operator\")"'
+check "founder: an orphaned team is still closed to a third party (exit 77), and the founder gets no more than restart, stop, remove and destroy (policy stays with the lead)" 'refused_for "default lead" no "stop lead" "restart lead" "destroy --purge --force" "start fable --continue" && refused_for "review backend" no "stop lead" "restart lead --continue" && refused_for "review lead" no "policy worker-spawn on"'
+check "founder: it restarts the orphaned lead in its last conversation (exit 0), you are told, and it stays the founder" ': >"$WORK/tty-founder"; as_agent review lead restart lead --continue --team child </dev/null && sleep 1 && teamctl status --json --team child | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and .founder == \"review.lead\" and .orphaned == false" && teamctl capture lead --team child --all | grep -q "STUB flags=.*--continue" && grep -q "review.lead restarted team .child., which it founded" "$WORK/tty-founder"'
+check "founder: the event log says who acted (by is the founder's Beads identity, not the plain role)" 'jq -e "select(.type == \"restart\" and .role == \"lead\" and .by == \"review.lead\")" "$CHILD_DIR/events.jsonl"'
+tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$CHILD_SESSION" >/dev/null 2>&1
+sleep 1
+check "founder: with no session at all it is orphaned too, and restart lead brings it back: a fresh start still gets its handover, and the founder and creation time are kept" ': >"$WORK/tty-founder"; teamctl teams | grep -Eq "^child +orphaned " && as_agent review lead restart lead --team child </dev/null && sleep 2 && teamctl status --json --team child | jq -e ".founder == \"review.lead\" and .agents[0].spawned_by == \"review.lead\" and .orphaned == false" && teamctl capture lead --team child --all | grep -q "STUB lastarg=.*abc-88" && [ "$(jq -r .handover "$CHILD_LEAD_RECORD")" = abc-88 ] && [ "$(jq -r .created_at "$CHILD_LEAD_RECORD")" = "$CHILD_CREATED" ] && grep -q "review.lead restarted team .child., which it founded" "$WORK/tty-founder"'
+tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$CHILD_SESSION" >/dev/null 2>&1
+sleep 1
+check "restart without a session: a plain restart by you keeps the founder, the handover and the creation time as well (wolfmux-a65)" 'teamctl restart lead --team child </dev/null && sleep 2 && teamctl status --json --team child | jq -e ".founder == \"review.lead\" and .agents[0].spawned_by == \"review.lead\"" && teamctl capture lead --team child --all | grep -q "STUB lastarg=.*abc-88" && [ "$(jq -r .created_at "$CHILD_LEAD_RECORD")" = "$CHILD_CREATED" ]'
+tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$CHILD_SESSION" >/dev/null 2>&1
+sleep 1
+check "founder: start <model> --team <team> --continue works for the founder of a team whose lead is not running" 'as_agent review lead start fable --team child --continue --no-attach --skip-beads && sleep 2 && teamctl status --json --team child | jq -e ".founder == \"review.lead\" and .orphaned == false" && teamctl capture lead --team child --all | grep -q "STUB flags=.*--continue" && [ "$(jq -r .handover "$CHILD_LEAD_RECORD")" = abc-88 ]'
+end_agent "$(lead_pane_of child)"
+sleep 1
+check "founder: it stops the founded team's lead while that lead is not running (exit 0), and you are told" ': >"$WORK/tty-founder"; as_agent review lead stop lead --team child && teamctl status --json --team child | jq -e "[.agents[] | select(.role == \"lead\")][0].state == \"stopped\"" && grep -q "review.lead stopped the lead of team .child., which it founded" "$WORK/tty-founder"'
+check "founder: it takes a stopped worker of the founded team off the books (exit 0), and you are told" ': >"$WORK/tty-founder"; as_agent review lead remove kid --force --yes --team child && ! teamctl status --json --team child | jq -e ".agents[] | select(.role == \"kid\")" && grep -q "review.lead removed kid from team .child., which it founded" "$WORK/tty-founder"'
+check "founder: it deletes the founded team (destroy --purge --force, exit 0): its records and branches are gone, and you are told" ': >"$WORK/tty-founder"; as_agent review lead destroy --team child --purge --force && ! teamctl teams | grep -q "^child " && [ ! -e "$CHILD_DIR" ] && [ -z "$(git branch --list "ai/child/*")" ] && grep -q "review.lead destroyed team .child., which it founded" "$WORK/tty-founder"'
+check "founder: the purge is written to the founder's own event log, by the founder (the deleted team's log went with it)" 'jq -e "select(.type == \"destroy\" and .by == \"review.lead\" and (.detail | contains(\"child\")))" "$(ls -d "$WOLFMUX_DATA"/state/*/teams/review)/events.jsonl"'
+# The first team's lead is "lead" in Beads. Ending the team with a plain destroy deletes the lead's record
+# (the workers' stay), and the founder must not lose its authority with it.
+teamctl spawn w1 flash --team fresh --no-kickoff >/dev/null 2>&1
+sleep 1
+end_agent "$(lead_pane_of fresh)"
+sleep 1
+check "founder: the first team's lead (plain 'lead' in Beads) restarts the team it founded just the same (exit 0)" ': >"$WORK/tty-founder"; as_agent default lead restart lead --team fresh --continue </dev/null && sleep 1 && teamctl status --json --team fresh | jq -e ".founder == \"lead\" and .orphaned == false" && grep -q "lead restarted team .fresh., which it founded" "$WORK/tty-founder"'
+end_agent "$(lead_pane_of fresh)"
+sleep 1
+check "founder: a plain destroy does not cost the founder its authority (the founder is kept with the team, not only in the lead's record): it can still delete the team afterwards" 'as_agent default lead destroy --team fresh --yes </dev/null && [ ! -e "$(ls -d "$WOLFMUX_DATA"/state/*/teams/fresh)/agents/lead.json" ] && teamctl status --json --team fresh | jq -e ".founder == \"lead\" and .orphaned == true" && teamctl teams | grep -E "^fresh +orphaned " | grep -q " lead " && as_agent default lead destroy --team fresh --purge --force && ! teamctl teams | grep -q "^fresh " && [ -z "$(git branch --list "ai/fresh/*")" ]'
 teamctl destroy --team fresh --purge --yes >/dev/null 2>&1
 echo "== deleting a whole team (destroy --purge)"
 teamctl start fable --team scrap --no-attach --skip-beads >/dev/null 2>&1

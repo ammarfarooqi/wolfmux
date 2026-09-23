@@ -57,14 +57,17 @@ role_column_width() {
 
 # _status_team_json — one team as an object (needs team_paths to have run)
 _status_team_json() {
+  local orphaned=0
   SESSION="$(session_name_for_project)"
   SESSION_LIVE=""
   if tm_session_exists "$SESSION"; then SESSION_LIVE=1; fi
+  if team_orphaned; then orphaned=1; fi
   _status_rows | "$JQ_BIN" -s --arg team "$TEAM" --arg root "$ROOT" --arg session "$SESSION" \
-    --arg running "${SESSION_LIVE:-0}" --arg lp "$(policy_get lead-permissions)" \
+    --arg running "${SESSION_LIVE:-0}" --arg founder "$(team_founder)" --arg orphaned "$orphaned" --arg lp "$(policy_get lead-permissions)" \
     --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
+      founder: $founder, orphaned: ($orphaned == "1"),
       policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt},
       approvals_pending: ($pending | tonumber), agents: .}'
 }
@@ -84,6 +87,9 @@ _status_team_text() {
     state="running"
   fi
   say "TEAM $TEAM · $SESSION · $state"
+  if team_orphaned; then
+    say "  $(team_orphaned_note) Bring it back: teamctl restart lead$hint --continue · delete it: teamctl destroy$hint --purge"
+  fi
   say "  policy  $(policy_summary) · approvals pending: $(approvals_pending_count)"
   rows="$(_status_rows)"
   if [ -z "$rows" ]; then
@@ -140,31 +146,58 @@ cmd_status() {
   say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
 }
 
-# teamctl teams — the short list
+# _teams_facts: for the loaded team: TEAMS_STATE, TEAMS_FOUNDER, TEAMS_LEAD, TEAMS_COUNT, TEAMS_KB
+_teams_facts() {
+  local role
+  SESSION="$(session_name_for_project)"
+  TEAMS_STATE="running"
+  if team_orphaned; then TEAMS_STATE="orphaned"; fi
+  TEAMS_FOUNDER="$(team_founder)"
+  TEAMS_LEAD="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
+  TEAMS_COUNT="$(reg_list | wc -l | tr -d ' ')"
+  # worktrees of this team's workers (the lead works in your own checkout and adds nothing)
+  TEAMS_KB=0
+  for role in $(reg_list); do
+    if [ "$(reg_field "$role" kind)" = "worker" ]; then TEAMS_KB=$((TEAMS_KB + $(disk_kb "$(reg_field "$role" workdir)"))); fi
+  done
+}
+
+# teamctl teams [--json]: the short list. STATE: running, or orphaned when the team's lead is not running
+# (its pane exited or is gone, or there is no session): nobody manages it then, and the note under the table
+# says who may act on it.
 cmd_teams() {
-  local team lead state count role kb
+  local json=0 team orphans="" hint
+  if [ "${1:-}" = "--json" ]; then json=1; fi
   require_tools
   load_project any
-  printf '%-16s %-12s %-16s %-7s %-8s %s\n' TEAM STATE LEAD AGENTS DISK SESSION
+  if [ "$json" -eq 1 ]; then
+    for team in $(team_list); do
+      team_paths "$team"
+      _teams_facts
+      "$JQ_BIN" -cn --arg team "$team" --arg state "$TEAMS_STATE" --arg lead "$TEAMS_LEAD" --arg agents "$TEAMS_COUNT" --arg kb "$TEAMS_KB" \
+        --arg founder "$TEAMS_FOUNDER" --arg session "$SESSION" \
+        '{team: $team, state: $state, orphaned: ($state == "orphaned"), founder: $founder, lead: $lead, agents: ($agents | tonumber),
+          disk_kb: ($kb | tonumber), session: $session}'
+    done | "$JQ_BIN" -s .
+    return 0
+  fi
+  printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' TEAM STATE LEAD AGENTS DISK FOUNDER SESSION
   for team in $(team_list); do
     team_paths "$team"
-    SESSION="$(session_name_for_project)"
-    if ! tm_session_exists "$SESSION"; then
-      state="not running"
-    elif [ "$(tm_alive_count "$SESSION")" -eq 0 ]; then
-      state="ended"
-    else
-      state="running"
+    _teams_facts
+    printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' "$team" "$TEAMS_STATE" "${TEAMS_LEAD:--}" "$TEAMS_COUNT" "$(human_size "$TEAMS_KB")" \
+      "$([ "$TEAMS_FOUNDER" = "operator" ] && printf you || printf '%s' "$TEAMS_FOUNDER")" "$SESSION"
+    if [ "$TEAMS_STATE" = "orphaned" ]; then
+      hint=""
+      if [ "$team" != "$WOLFMUX_DEFAULT_TEAM" ]; then hint=" --team $team"; fi
+      orphans="$orphans$team is $(team_orphaned_note) Bring it back: teamctl restart lead$hint --continue · delete it: teamctl destroy$hint --purge
+"
     fi
-    lead="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
-    count="$(reg_list | wc -l | tr -d ' ')"
-    # worktrees of this team's workers (the lead works in your own checkout and adds nothing)
-    kb=0
-    for role in $(reg_list); do
-      if [ "$(reg_field "$role" kind)" = "worker" ]; then kb=$((kb + $(disk_kb "$(reg_field "$role" workdir)"))); fi
-    done
-    printf '%-16s %-12s %-16s %-7s %-8s %s\n' "$team" "$state" "${lead:--}" "$count" "$(human_size "$kb")" "$SESSION"
   done
+  if [ -n "$orphans" ]; then
+    say ""
+    printf '%s' "$orphans"
+  fi
 }
 
 cmd_panes() {

@@ -31,7 +31,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          With one team you never need it. teamctl status shows them all; teamctl teams is the short list.
     teamctl start fable --team review               a second team, named by you, with its own session
     teamctl start fable --team next --handover <bead-id>    (a lead may do this too) the new lead starts by reading that bead
-  Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you)
+         A team whose lead is not running is orphaned (teamctl teams). Then the lead that founded it may recover or clean it up,
+         as you may: teamctl restart lead --team <name> --continue · stop · remove · destroy --team <name> --purge. You are told.
+  Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you,
+         and start/restart/stop/remove/destroy for the founder of a team whose lead is not running)
     teamctl start <fable|astra|any model> [--no-attach] [--continue] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
   Workers
@@ -55,7 +58,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team
-    teamctl teams                                     the short list: state, lead, agents and disk per team
+    teamctl teams [--json]                            the short list: state (running or orphaned), lead, agents, disk and founder per team
     teamctl panes                                     what tmux reports per pane
     teamctl capture <role> [-n|--lines <count>] [--all]    recent terminal output
     teamctl log <role>                                full scrollback
