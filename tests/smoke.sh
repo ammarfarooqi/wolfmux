@@ -753,6 +753,16 @@ echo "loose" >"$SRV_TREE/loose.txt"
 check "cross-repo: diff, status and worktrees read that repository, not the project" 'teamctl diff srv --team cross --commits | grep -q "feat: only in the sibling repo" && [ "$(cross_field srv commits_ahead)" = "1" ] && [ "$(cross_field srv uncommitted)" = "1" ] && teamctl worktrees --team cross | grep -q "sibling-repo-" && teamctl worktrees --team cross | grep -qF "$SIBLING_REAL"'
 check "cross-repo: remove without --force still refuses to discard work, and names the commit and the file that exist nowhere else" 'teamctl stop srv --team cross && out="$(teamctl remove srv --team cross 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "feat: only in the sibling repo" && printf "%s" "$out" | grep -q "loose.txt" && [ -d "$SRV_TREE" ]'
 check "cross-repo: remove --force takes the worktree and the branch in the sibling repository; every other branch of both repositories stays" 'teamctl remove srv --team cross --force --yes && [ ! -e "$SRV_TREE" ] && ! git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV_BRANCH" >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/keep-me >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/release-b >/dev/null && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && ! git -C "$SIBLING_REAL" worktree list | grep -q "/teams/cross/"'
+# The two features together (integration of issues #4 and #5): a worktree handed over stays in its own repository.
+teamctl spawn srv3 flash --team cross --repo "$SIBLING" --no-kickoff >/dev/null 2>&1
+sleep 2
+SRV3_TREE="$(cross_field srv3 workdir)"
+SRV3_BRANCH="$(cross_field srv3 branch)"
+teamctl stop srv3 --team cross >/dev/null 2>&1
+check "cross-repo and --from-worktree: --repo does not combine with --from-worktree (exit 64), and nothing changes" 'teamctl spawn srv4 flash --team cross --from-worktree srv3 --repo "$SIBLING" --no-kickoff; [ $? -eq 64 ] && [ "$(cross_field srv3 workdir)" = "$SRV3_TREE" ] && [ "$(git -C "$SRV3_TREE" branch --show-current)" = "$SRV3_BRANCH" ]'
+check "cross-repo and --from-worktree: the worktree of a teammate in another repository is handed over there: repo kept, new branch in that repository and not in the project, named by the team template" 'teamctl spawn srv4 flash --team cross --from-worktree srv3 --no-kickoff && sleep 1 && [ "$(cross_field srv4 repo)" = "$SIBLING_REAL" ] && [ "$(cross_field srv4 workdir)" = "$SRV3_TREE" ] && b="$(cross_field srv4 branch)" && case "$b" in ai/cross/srv4-*) true ;; *) false ;; esac && git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$b" >/dev/null && ! git rev-parse -q --verify "refs/heads/$b" >/dev/null'
+check "cross-repo and --from-worktree: remove --force takes the new branch in that repository; the old branch of the handed-over worktree stays" 'b="$(cross_field srv4 branch)" && teamctl stop srv4 --team cross && teamctl remove srv4 --team cross --force --yes && [ ! -e "$SRV3_TREE" ] && ! git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$b" >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV3_BRANCH" >/dev/null'
+git -C "$SIBLING_REAL" branch -D "$SRV3_BRANCH" >/dev/null 2>&1
 teamctl spawn srv2 flash --team cross --repo "$SIBLING" --no-kickoff >/dev/null 2>&1
 sleep 2
 SRV2_TREE="$(cross_field srv2 workdir)"
