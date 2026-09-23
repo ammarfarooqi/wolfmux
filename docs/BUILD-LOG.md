@@ -388,6 +388,11 @@ answered `no team session. Start one first: teamctl start fable`. That line drop
 `restart` of the lead without a session starts the team again, as the model that led it, and
 `--continue` goes with it; a worker's refusal names the exact two commands. `tests/smoke.sh`: 177 → 181.
 
+v1.10.2 (issue #6): `destroy --purge --force` and `remove --force` ended with exit 141, no message
+and nothing deleted, when a worker had more than ten unmerged commits: `git log | head -10`
+under `pipefail`. git now limits its own output, the reports say how much they left out, and a
+teamctl ended by a signal says so and names the command. `tests/smoke.sh`: 181 → 184.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

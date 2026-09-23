@@ -6,7 +6,7 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 2 to 4 minutes, 181 checks, isolated from any running team
+tests/smoke.sh                 # 2 to 4 minutes, 184 checks, isolated from any running team
 tests/providers.sh             # the provider table, 116 checks
 tests/docs.sh                  # ~2 seconds, 28 checks, starts nothing
 tests/migration.sh             # ~30 seconds, 24 checks, in a throwaway HOME
@@ -20,7 +20,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 181 of 181 pass (v1.10.1)
+## smoke.sh: 184 of 184 pass (v1.10.2)
 
 | Area | Checks |
 |------|--------|
@@ -34,7 +34,7 @@ real team was live on the same machine; the real team was unaffected.
 | teams together | teams talk through Beads in both directions · every agent is told that other teams exist and how to reach them · a lead can found a fresh team and hand over (`--handover`), the founder is recorded, the new lead's first words name the bead · you are told when an agent founds a team · a lead cannot take over a team that has a lead, a worker cannot found one (exit 77) · `lead-teams off` keeps founding teams to you |
 | teams, approvals | a permission request in a named team is filed with, and announced to, its own lead, never the first team's · another team's lead cannot decide it (exit 77), its own lead can, and the worker's CLI receives allow · the waiting time is also read from the config file, not only from the environment |
 | lanes | words are not commands: prose in quotes and heredocs never triggers the guard, a quoted path still does · MCP tools are held to the same lanes · every worker has the guard, the lead does not · a worker may change files in its own worktree (absolute, relative, new) and in temporary directories · not the lead's checkout, a teammate's worktree, `~/.zshrc`, or anything reached with `..` · it may read the lead's checkout, never a teammate's worktree or teamctl's state · ordinary shell work passes (tests, commits, `git checkout -- file`, `git push -u origin HEAD`, copying `.env` from the lead's checkout, `teamctl`, `bd`, rebase) · reaching into another worktree or writing into the lead's checkout is refused, in either spelling of the path · switching, creating or deleting branches, `git worktree`, `tmux`, pushes to main are refused · the lead is not guarded and an agent the guard cannot place is allowed · `worker-isolation off` removes it at the next start |
-| clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error |
+| clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error · a worker with thousands of unmerged commits and more changed files than a report shows: the report is cut and says how much it left out, `remove --force` and `destroy --purge --force` finish (never a silent exit 141) · a teamctl ended by a signal names the signal and the command; Ctrl-C and a closed terminal add nothing |
 | one manager | default policy is skip / skip / spawning off / isolation on · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |
 | approvals | lead mode starts a worker without bypass and with the hook · a request is filed and the lead is told · status shows it pending · a worker cannot approve its own request · approve → the CLI receives `allow` · deny → the CLI receives `deny` with the reason · no answer → no decision, so the normal prompt appears · ask mode has neither flag nor hook |
 | notifications | fixed line typed into the pane · debounced inside the window · hostile bead id (`x;rm -rf ~`) dropped, never typed |
