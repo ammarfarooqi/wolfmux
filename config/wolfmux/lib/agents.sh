@@ -342,6 +342,9 @@ cmd_spawn() {
   if ! is_manager && [ "$(policy_get worker-spawn)" != "on" ]; then
     die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: bd create \"Need a helper: <for what>\" -t message -a lead -d \"<why, which model>\"" 77
   fi
+  # Handing a worktree over deletes another agent's record: that is the lead's call (or yours),
+  # never a worker's, even with worker-spawn on (review of issues #4/#5).
+  if [ -n "$from_tree" ]; then require_manager "spawn --from-worktree"; fi
   lock_acquire
 
   if reg_exists "$role"; then
@@ -429,8 +432,13 @@ cmd_spawn() {
   fi
   if [ -z "$pane" ]; then
     if [ -n "$from_tree" ]; then
-      "$GIT_BIN" -C "$path" switch -q "$old_branch" >/dev/null 2>&1 || true
-      git_in "$spawn_repo" branch -D "$branch" >/dev/null 2>&1 || true
+      # Only a worktree that is back on its old branch lets go of the new one; otherwise the
+      # new branch stays (it is what is checked out there) and you are told.
+      if "$GIT_BIN" -C "$path" switch -q "$old_branch" >/dev/null 2>&1; then
+        git_in "$spawn_repo" branch -D "$branch" >/dev/null 2>&1 || true
+      else
+        warn "could not switch $(short_path "$path") back to $old_branch; it is still on $branch. Switch it yourself: git -C \"$path\" switch $old_branch"
+      fi
       printf '%s\n' "$old_record" | reg_put "$from_tree"
     else
       wt_discard_new "$spawn_repo" "$path" "$branch"

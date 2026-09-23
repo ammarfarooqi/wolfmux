@@ -466,6 +466,9 @@ teamctl stop builder >/dev/null 2>&1
 echo "half done" >"$BUILDER_DIR/wip.txt"
 check "spawn: --from-worktree refuses a worktree with uncommitted changes, and lists them" 'out="$(teamctl spawn builder2 flash --from-worktree builder 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "wip.txt" && ! teamctl status --json | jq -e ".agents[] | select(.role == \"builder2\")" && [ -z "$(git branch --list "ai/builder2-*")" ]'
 /bin/rm "$BUILDER_DIR/wip.txt"
+teamctl policy worker-spawn on >/dev/null 2>&1
+check "spawn: --from-worktree is the lead's decision: a worker may not take another worker's worktree, even with worker-spawn on (exit 77), and nothing changes" 'TEAM_ROLE=qa teamctl spawn thief flash --from-worktree builder --no-kickoff; [ $? -eq 77 ] && teamctl status --json | jq -e "([.agents[] | select(.role == \"builder\")] | length == 1) and ([.agents[] | select(.role == \"thief\")] | length == 0)" && [ -z "$(git branch --list "ai/thief-*")" ]'
+teamctl policy worker-spawn off >/dev/null 2>&1
 BUILDER_OLD_BRANCH="$(git -C "$BUILDER_DIR" branch --show-current)"
 check "spawn: --from-worktree starts a fresh worker in the same worktree, on a new branch, and the old record is gone" 'teamctl spawn builder2 flash --from-worktree builder && sleep 2 && teamctl status --json | jq -e --arg dir "$BUILDER_DIR" "([.agents[] | select(.role == \"builder2\")][0] | .state == \"running\" and .workdir == \$dir and (.branch | startswith(\"ai/builder2-\"))) and ([.agents[] | select(.role == \"builder\")]) == []"'
 check "spawn: --from-worktree bases the new branch on the project's current HEAD" 'teamctl diff builder2 | grep -q "base:    main @ $(git rev-parse --short=12 HEAD)"'
