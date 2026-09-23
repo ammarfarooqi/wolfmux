@@ -200,6 +200,33 @@ model_info() {
   esac
 }
 
+# model_context_window <model-key> — the context window, in tokens, that status shows a share of.
+# A provider of the table declares its own (PROVIDER_CONTEXT); a model id that ends in [1m]
+# means 1M; everything else is counted as 200k. Never fails: the fallback is 200000.
+model_context_window() {
+  local key="$1" provider="${1%%:*}"
+  case " $WOLFMUX_PROVIDERS " in
+    *" $provider "*)
+      # The row's declared window holds for every id of that provider, pinned or not
+      # (glm has no pinned ids; its keys are glm53 and flash, handled below).
+      if [ "$key" = "$provider" ] || _model_info_provider "$key" 2>/dev/null; then
+        if wolfmux_provider_info "$provider" 2>/dev/null; then
+          printf '%s\n' "$PROVIDER_CONTEXT"
+          return 0
+        fi
+      fi
+      ;;
+  esac
+  if model_info "$key" 2>/dev/null; then
+    case "${MODEL_ID:-}" in
+      *\[1m\]) printf '1048576\n' ;;
+      *) printf '200000\n' ;;
+    esac
+  else
+    printf '200000\n'
+  fi
+}
+
 # What usage lines and "unknown model" errors list: the fixed keys, then whatever the provider
 # table holds (so a new provider is named everywhere without editing a string).
 WOLFMUX_MODEL_KEYS="glm53 flash fable opus sonnet haiku astra"

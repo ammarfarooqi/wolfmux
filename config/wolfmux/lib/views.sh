@@ -15,7 +15,7 @@ _billing_of() {
 }
 
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir
+  local role kind pane state branch ahead dirty workdir model cctx
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
     reg_exists "$role" || continue
     kind="$(reg_field "$role" kind)"
@@ -34,15 +34,36 @@ _status_rows() { # emits one JSON object per agent
       ahead="$(wt_ahead "$(reg_field "$role" base_commit)" "$branch")"
     fi
     dirty="$(wt_dirty_count "$workdir")"
-    "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$(reg_field "$role" model)" \
+    model="$(reg_field "$role" model)"
+    agent_context "$workdir" "$model" "$(reg_field "$role" family)"
+    if [ -n "$CTX_TOKENS" ]; then
+      cctx="$(ctx_display "$CTX_TOKENS" "$CTX_WINDOW")"
+    else
+      cctx="-"
+    fi
+    "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$model" \
       --arg label "$(reg_field "$role" label)" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
+      --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
       '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
-        branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir}'
+        branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir,
+        context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
+        context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}'
   done
+}
+
+# ctx_display <tokens> <window> — "142k 71%": what the CONTEXT column shows. When the
+# window is unknown the share is 0% and the tokens still mean something on their own.
+ctx_display() {
+  awk -v t="$1" -v w="$2" 'BEGIN {
+    if (t >= 1000000) s = sprintf("%.1fM", t / 1000000);
+    else if (t >= 10000) s = sprintf("%.0fk", t / 1000);
+    else s = sprintf("%.1fk", t / 1000);
+    printf "%s %d%%\n", s, (w + 0 > 0 ? int(t * 100 / w) : 0)
+  }'
 }
 
 # teamctl status [--json]   (alias: workers)
@@ -97,17 +118,19 @@ _status_team_text() {
     return 0
   fi
   width="$(role_column_width)"
-  printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY WORKDIR
+  printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
   # A metered agent is marked with a $ after its label (every token it uses is billed).
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
-    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty workdir; do
+  # CONTEXT is what the agent's transcript says the conversation holds: tokens, and the
+  # share of the window. A stopped worker's line is the reuse-or-respawn signal.
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir] | join("|")' |
+    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
       else
         printf '    %s %-*s' "$WOLFMUX_WORKER_MARK" "$width" "$role"
       fi
-      printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
+      printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
     done
   if [ -n "$(printf '%s\n' "$rows" | "$JQ_BIN" -r 'select(.billing == "metered") | .role' | head -1)" ]; then
     say '  $ = metered: every token is billed to a prepaid balance, not to a plan or subscription (WOLFMUX_METERED=on, the owner'"'"'s decision)'

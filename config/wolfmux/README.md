@@ -82,7 +82,11 @@ Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
 `TEAM_ROLE` / `BEADS_ACTOR` set to its role (in a named team: branch
 `ai/<team>/<role>-<timestamp>`, Beads name `<team>.<role>`). The lead stays the large pane
 on the left; teammates stack on the right. A worker reads its Beads inbox as soon as it
-boots, so assign work first, then spawn. Options: `--base <ref>`, `--no-kickoff`.
+boots, so assign work first, then spawn. Options: `--base <ref>`, `--no-kickoff`,
+`--from-worktree <role>`: a fresh conversation in a stopped worker's built worktree, on a
+new branch (its branch and commits stay; node_modules and build output survive). The lead
+reads each agent's CONTEXT in `teamctl status` (tokens, share of the window) to choose
+between `restart` (keep the conversation) and a fresh worker.
 
 A provider worker needs that provider's key in the Keychain first (one-time setup above);
 `teamctl doctor` says which are set up. `spawn` and `start` refuse a metered key until

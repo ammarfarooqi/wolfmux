@@ -61,7 +61,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 | `teamctl start <model> [--team <name>] [--no-attach] [--continue]` | start a team with that model as its 🐺 lead, and open it. `--team` names a further team in the same project; `--continue` resumes the lead's last conversation; after the lead quit, the same command brings it back |
 | `teamctl start … [--init-beads\|--skip-beads] [--lead-permissions skip\|ask] [--worker-permissions skip\|lead\|ask] [--worker-spawn on\|off]` | `--init-beads` or `--skip-beads` answers the first start's question about Beads; the other three set the team's policy, at any start |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead. A lead may run this too; you are notified. While that lead runs, the founder does not manage the team; once it is not running the founder may `restart`, `stop`, `remove` or `destroy` it, and `start <model> --team <it> --continue`; you are told each time |
-| `teamctl status [--json]` (alias `workers`) | every team as a tree (one team with `--team`, or from inside a pane): 🐺 lead, 🐶 teammates, model, running or stopped, branch, commits ahead, uncommitted files. A team without a running lead says it is orphaned and who may act on it; `--json` has `founder` and `orphaned` |
+| `teamctl status [--json]` (alias `workers`) | every team as a tree (one team with `--team`, or from inside a pane): 🐺 lead, 🐶 teammates, model, running or stopped, branch, commits ahead, uncommitted files, and CONTEXT: what each agent's conversation holds (tokens, share of the window, from its newest transcript). A team without a running lead says it is orphaned and who may act on it; `--json` has `founder`, `orphaned`, `context_tokens`, `context_window` and `requests` |
 | `teamctl teams [--json]` | the short list: state (`running`, or `orphaned` when its lead is not running), lead, number of agents, the disk its teammates' worktrees take, and who founded it. Under the table, each orphaned team says who may act on it: you, and the lead that founded it |
 | `teamctl attach` (alias `open`) | open the team in this terminal (`Ctrl-b d` leaves it running) |
 | `teamctl focus <role>` | jump to one pane |
@@ -71,7 +71,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads |
+| `teamctl spawn <role> <model> [--base <ref>] [--from-worktree <role>] [--no-kickoff]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads. `--from-worktree <role>` gives the fresh teammate the stopped worker's built worktree, on a new branch (its branch and commits stay), so node_modules and build output survive and no install or build is repeated. The worktree must be clean; the work is refused and listed otherwise |
 | `teamctl stop <role>` | close its pane; worktree, branch and commits stay |
 | `teamctl restart <role> [--continue]` | start it again in the same worktree; `--continue` keeps its conversation. When the team's tmux session is gone (a reboot), `restart lead` starts the team again |
 | `teamctl remove <role>… [--force] [--yes]` | take a stopped teammate off the books: worktree, branch, record. Refuses while it holds work that exists nowhere else, and lists it; `--force` discards it after one question |
