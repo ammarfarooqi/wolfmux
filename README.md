@@ -58,7 +58,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl start <model> [--team <name>] [--no-attach] [--continue]` | start a team with that model as its 🐺 lead, and open it. `--team` names a further team in the same project; `--continue` resumes the lead's last conversation; after the lead quit, the same command brings it back |
+| `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>]` | start a team with that model as its 🐺 lead, and open it. `--team` names a further team in the same project; `--continue` resumes the lead's **own** conversation (the id stored with it), `--resume` reopens the one you name; after the lead quit, the same command brings it back |
 | `teamctl start … [--init-beads\|--skip-beads] [--lead-permissions skip\|ask] [--worker-permissions skip\|lead\|ask] [--worker-spawn on\|off]` | `--init-beads` or `--skip-beads` answers the first start's question about Beads; the other three set the team's policy, at any start |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead. A lead may run this too; you are notified |
 | `teamctl status [--json]` (alias `workers`) | every team as a tree (one team with `--team`, or from inside a pane): 🐺 lead, 🐶 teammates, model, running or stopped, branch, commits ahead, uncommitted files |
@@ -71,9 +71,9 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads |
+| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff] [--resume <session-id>]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads. `--resume` puts it back into an existing conversation instead of starting a new one |
 | `teamctl stop <role>` | close its pane; worktree, branch and commits stay |
-| `teamctl restart <role> [--continue]` | start it again in the same worktree; `--continue` keeps its conversation. When the team's tmux session is gone (a reboot), `restart lead` starts the team again |
+| `teamctl restart <role> [--continue] [--resume <session-id>]` | start it again in the same worktree; `--continue` keeps its own conversation, `--resume` reopens the one you name (`teamctl status --json` prints each agent's `session_id`). When the team's tmux session is gone (a reboot), `restart lead` starts the team again |
 | `teamctl remove <role>… [--force] [--yes]` | take a stopped teammate off the books: worktree, branch, record. Refuses while it holds work that exists nowhere else, and lists it; `--force` discards it after one question |
 | `teamctl nudge <role>\|--all [--id <bead-id>] [--quiet]` | re-send the one-line notification into a pane. The Beads hook does this by itself |
 
@@ -151,7 +151,7 @@ nothing global points anywhere.
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (181 isolated lifecycle checks, no model calls), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tests/` | `smoke.sh` (190 isolated lifecycle checks, no model calls), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 

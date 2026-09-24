@@ -30,6 +30,32 @@ agent_command() {
   if [ "${2:-}" = "--continue" ]; then AGENT_CMD+=(--continue); fi
 }
 
+# --- conversation ids ------------------------------------------------------------
+# Every lead of a project works in the same folder, so `claude --continue` (the newest
+# transcript there) cannot tell two leads apart: with several teams they all land in one
+# conversation. Each agent therefore gets its own id at birth and resumes exactly that.
+
+# valid_session_id <id> — the shape a CLI conversation id has: uuid, 8-4-4-4-12 hex
+valid_session_id() {
+  [ "${#1}" -eq 36 ] || return 1
+  case "$1" in *[!0-9a-fA-F-]*) return 1 ;; esac
+  [ "${1:8:1}" = "-" ] && [ "${1:13:1}" = "-" ] && [ "${1:18:1}" = "-" ] && [ "${1:23:1}" = "-" ]
+}
+
+# new_session_id [<workdir>] — a conversation id for a fresh agent. The CLI refuses an id it
+# has already used, so when a transcript of that name is already in the folder we try once
+# more; a second collision is not a thing uuids do.
+new_session_id() {
+  local id dir="" try
+  if [ -n "${1:-}" ]; then dir="$(transcripts_dir "$1" 2>/dev/null || true)"; fi
+  for try in 1 2; do
+    id="$(uuidgen 2>/dev/null | LC_ALL=C tr 'A-Z' 'a-z')"
+    [ -n "$id" ] || return 1
+    [ -n "$dir" ] && [ -e "$dir/$id.jsonl" ] || break
+  done
+  printf '%s\n' "$id"
+}
+
 require_session() {
   SESSION="$(session_name_for_project)"
   tm_session_exists "$SESSION" || die "team '$TEAM' has no session running. Start it: teamctl start <fable|astra>$([ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ] || printf ' --team %s' "$TEAM")"
@@ -49,20 +75,23 @@ agent_state() {
 
 # new_record <role> <kind> <model-key> <workdir> <branch> <base-ref> <base-commit> <kickoff> <spawned-by>
 new_record() {
-  local launcher permissions
+  local launcher permissions session_id=""
   # model_info must run in THIS shell: launcher_path runs in a substitution
   # subshell, so the MODEL_* variables it sets there never reach us.
   model_info "$3" || die "unknown model '$3' (known: $WOLFMUX_MODEL_KEYS)"
   launcher="$(launcher_path "$3")"
   [ -x "$launcher" ] || die "launcher missing or not executable: $launcher  (run: teamctl doctor)"
   permissions="$(effective_permissions "$2" "$MODEL_FAMILY")"
+  # Codex takes no conversation id; it resumes its own last one (resume --last).
+  if [ "$MODEL_FAMILY" != "codex" ]; then session_id="$(new_session_id "$4" || true)"; fi
   "$JQ_BIN" -n --arg role "$1" --arg kind "$2" --arg model "$3" --arg label "$MODEL_LABEL" \
     --arg family "$MODEL_FAMILY" --arg launcher "$launcher" --arg workdir "$4" --arg branch "$5" \
     --arg base_ref "$6" --arg base_commit "$7" --arg kickoff "$8" --arg now "$(now_iso)" \
     --arg spawned_by "${9:-operator}" --arg permissions "$permissions" --arg model_id "$MODEL_ID" --arg billing "$MODEL_BILLING" \
+    --arg session_id "$session_id" \
     '{role: $role, kind: $kind, model: $model, model_id: $model_id, label: $label, family: $family, billing: $billing, launcher: $launcher,
       workdir: $workdir, branch: $branch, base_ref: $base_ref, base_commit: $base_commit,
-      kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions,
+      kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions, session_id: $session_id,
       pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
     reg_put "$1"
 }
@@ -104,11 +133,18 @@ start_permitted() {
 
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
-  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" handover="" founder="operator"
+  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" previous_session="" handover="" founder="operator" pin=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --no-attach | -d) attach=0 ;;
       --continue) resume=1 ;;
+      --resume)
+        [ "$#" -ge 2 ] || die_usage "--resume needs the conversation id to reopen (teamctl status --json shows the stored one)"
+        valid_session_id "$2" || die_usage "--resume: '$2' is not a conversation id (a uuid, 8-4-4-4-12 hex)"
+        pin="$2"
+        resume=1
+        shift
+        ;;
       --handover)
         [ "$#" -ge 2 ] || die_usage "--handover needs the id of the bead that holds the handover"
         valid_bead_id "$2" || die_usage "--handover: '$2' is not a bead id"
@@ -133,7 +169,7 @@ cmd_start() {
     shift
   done
   [ -n "$model" ] && model_info "$model" ||
-    die_usage "usage: teamctl start <fable|astra|…> [--no-attach] [--continue] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]   (models: $WOLFMUX_MODEL_KEYS)"
+    die_usage "usage: teamctl start <fable|astra|…> [--no-attach] [--continue] [--resume <session-id>] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]   (models: $WOLFMUX_MODEL_KEYS)"
   require_metered_ok
   require_tools
   # start never guesses between teams: the one you name, else the first one.
@@ -174,13 +210,18 @@ cmd_start() {
       if [ "$(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || true)" != "$model" ]; then
         previous="$(reg_get "$WOLFMUX_LEAD_ROLE" 2>/dev/null || true)"
         previous_model="$(meta_get lead_model 2>/dev/null || true)"
+        previous_session="$(reg_field "$WOLFMUX_LEAD_ROLE" session_id 2>/dev/null || true)"
         branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
         new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator
         meta_put lead_model "$model"
+        # Another model, the same conversation: --continue asked for that one, not a new one.
+        if [ "$resume" -eq 1 ] && [ -n "$previous_session" ]; then reg_set "$WOLFMUX_LEAD_ROLE" session_id "$previous_session"; fi
       fi
       lock_release
       # In a subshell: a `die` in there ends only the attempt, not this command.
-      if ! (if [ "$resume" -eq 1 ]; then cmd_restart "$WOLFMUX_LEAD_ROLE" --continue; else cmd_restart "$WOLFMUX_LEAD_ROLE"; fi); then
+      if ! (if [ -n "$pin" ]; then
+        cmd_restart "$WOLFMUX_LEAD_ROLE" --resume "$pin"
+      elif [ "$resume" -eq 1 ]; then cmd_restart "$WOLFMUX_LEAD_ROLE" --continue; else cmd_restart "$WOLFMUX_LEAD_ROLE"; fi); then
         if [ -n "$previous" ]; then
           printf '%s\n' "$previous" | reg_put "$WOLFMUX_LEAD_ROLE"
           meta_put lead_model "$previous_model"
@@ -206,8 +247,16 @@ cmd_start() {
   fi
 
   branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
+  # A new record is written even where one was there (the last session had ended). With
+  # --continue the conversation of that lead is what was asked for: keep its id.
+  previous_session=""
+  if [ "$resume" -eq 1 ]; then previous_session="$(reg_field "$WOLFMUX_LEAD_ROLE" session_id 2>/dev/null || true)"; fi
   new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 "$founder"
   if [ -n "$handover" ]; then reg_set "$WOLFMUX_LEAD_ROLE" handover "$handover"; fi
+  # A pinned conversation wins over the one it had, and over the fresh one it was born with.
+  if [ -n "$pin" ]; then
+    reg_set "$WOLFMUX_LEAD_ROLE" session_id "$pin"
+  elif [ -n "$previous_session" ]; then reg_set "$WOLFMUX_LEAD_ROLE" session_id "$previous_session"; fi
   if [ "$resume" -eq 1 ]; then agent_command "$WOLFMUX_LEAD_ROLE" --continue; else agent_command "$WOLFMUX_LEAD_ROLE"; fi
   pane="$(tm_new_session "$SESSION" "$ROOT" "${AGENT_CMD[@]}")" || {
     reg_delete "$WOLFMUX_LEAD_ROLE"
@@ -245,7 +294,7 @@ cmd_start() {
 
 # --- teamctl spawn <role> <model> -----------------------------------------------
 cmd_spawn() {
-  local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
+  local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner pin=""
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -254,13 +303,20 @@ cmd_spawn() {
         base="$2"
         shift
         ;;
+      --resume)
+        [ "$#" -ge 2 ] || die_usage "--resume needs the conversation id to reopen"
+        valid_session_id "$2" || die_usage "--resume: '$2' is not a conversation id (a uuid, 8-4-4-4-12 hex)"
+        pin="$2"
+        kickoff=0 # that conversation has its own history; a kickoff prompt would talk past it
+        shift
+        ;;
       --no-kickoff) kickoff=0 ;;
       -*) die_usage "unknown option for spawn: $1" ;;
       *) if [ -z "$role" ]; then role="$1"; elif [ -z "$model" ]; then model="$1"; else die_usage "unexpected argument: $1"; fi ;;
     esac
     shift
   done
-  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
+  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--no-kickoff] [--resume <session-id>]   (models: $WOLFMUX_MODEL_KEYS)"
   require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
@@ -289,11 +345,12 @@ cmd_spawn() {
   branch="$(wt_branch_name "$role" "$stamp")"
   path="$(wt_create "$role" "$stamp" "$base_commit")"
   new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}"
+  if [ -n "$pin" ]; then reg_set "$role" session_id "$pin"; fi
 
   target="$(tm_split_target "$SESSION")" || target=""
   pane=""
   if [ -n "$target" ]; then
-    agent_command "$role"
+    if [ -n "$pin" ]; then agent_command "$role" --continue; else agent_command "$role"; fi
     pane="$(tm_split "$target" "$path" "${AGENT_CMD[@]}" || true)"
   fi
   if [ -z "$pane" ]; then
@@ -433,7 +490,7 @@ write_agent_settings() {
 }
 
 cmd_run_agent() {
-  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id
+  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id session_id
   [ -n "$root" ] && [ -n "$role" ] || die_usage "internal use: _run-agent <root> <role> [--continue]"
   if [ "${3:-}" = "--continue" ]; then resume=1; fi
   export WOLFMUX_ROOT="$root"
@@ -499,10 +556,21 @@ $prompt
       args=(--append-system-prompt "$prompt" --name "$name")
       if [ -n "$model_id" ]; then args+=(--model "$model_id"); fi
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
+      session_id="$(reg_field "$role" session_id)"
       if [ "$resume" -eq 1 ]; then
-        args+=(--continue)
-      elif [ "$(reg_field "$role" kickoff)" = "1" ]; then
-        args+=("$(kickoff_text "$role" "$BEADS_ACTOR")")
+        if [ -n "$session_id" ]; then
+          # This agent's own conversation, whoever else works in the same folder.
+          args+=(--resume "$session_id")
+        else
+          # A record from before conversation ids were stored.
+          warn "no stored conversation id for '$role': resuming the newest transcript in $workdir. With another agent working in the same folder that may be its conversation, not this one. Pin one: teamctl restart $role --resume <session-id>"
+          args+=(--continue)
+        fi
+      else
+        if [ -n "$session_id" ]; then args+=(--session-id "$session_id"); fi
+        if [ "$(reg_field "$role" kickoff)" = "1" ]; then
+          args+=("$(kickoff_text "$role" "$BEADS_ACTOR")")
+        fi
       fi
       ;;
   esac
@@ -539,7 +607,7 @@ cmd_stop() {
 # machine restarted) and the records remain. Restarting the lead is starting the team again, as
 # the model that led it; a worker needs that session first, and is told the exact commands.
 restart_without_session() {
-  local role="$1" resume="$2" model team_flag="" continue_flag="" start_args
+  local role="$1" resume="$2" pin="${3:-}" model team_flag="" continue_flag="" start_args
   model="$(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || true)"
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then team_flag=" --team $TEAM"; fi
   if [ "$resume" -eq 1 ]; then continue_flag=" --continue"; fi
@@ -548,7 +616,9 @@ restart_without_session() {
   fi
   info "team '$TEAM' has no session (it was ended, or the machine restarted); starting it again."
   start_args=("$model")
-  if [ "$resume" -eq 1 ]; then start_args+=(--continue); fi
+  if [ -n "$pin" ]; then
+    start_args+=(--resume "$pin")
+  elif [ "$resume" -eq 1 ]; then start_args+=(--continue); fi
   # A team that ran without Beads is not asked about Beads again.
   if ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
   WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
@@ -556,10 +626,17 @@ restart_without_session() {
 }
 
 cmd_restart() {
-  local role="" resume=0 pane workdir target
+  local role="" resume=0 pin="" pane workdir target conversation
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --continue) resume=1 ;;
+      --resume)
+        [ "$#" -ge 2 ] || die_usage "--resume needs the conversation id to reopen (teamctl status --json shows the stored one)"
+        valid_session_id "$2" || die_usage "--resume: '$2' is not a conversation id (a uuid, 8-4-4-4-12 hex)"
+        pin="$2"
+        resume=1
+        shift
+        ;;
       -*) die_usage "unknown option for restart: $1" ;;
       *) role="$1" ;;
     esac
@@ -573,13 +650,22 @@ cmd_restart() {
   [ -d "$workdir" ] || die "cannot restart '$role': its working directory is gone ($workdir)"
   SESSION="$(session_name_for_project)"
   if ! tm_session_exists "$SESSION"; then
-    restart_without_session "$role" "$resume"
+    restart_without_session "$role" "$resume" "$pin"
     return
   fi
   require_manager restart
   lock_acquire
   # A restart picks up the current policy.
   reg_set "$role" permissions "$(effective_permissions "$(reg_field "$role" kind)" "$(reg_field "$role" family)")"
+  # Which conversation this pane comes back in: the one you named, the one it had, or a new
+  # one. Codex has no id to store; it resumes its own last conversation.
+  if [ "$(reg_field "$role" family)" != "codex" ]; then
+    if [ -n "$pin" ]; then
+      reg_set "$role" session_id "$pin"
+    elif [ "$resume" -eq 0 ]; then
+      reg_set "$role" session_id "$(new_session_id "$workdir" || true)"
+    fi
+  fi
 
   if [ "$resume" -eq 1 ]; then agent_command "$role" --continue; else agent_command "$role"; fi
   pane="$(tm_pane_for_role "$SESSION" "$role")"
@@ -593,8 +679,9 @@ cmd_restart() {
   reg_set "$role" pane_id "$pane" state running
   layout_apply
   if [ "$resume" -eq 1 ]; then
-    event_log restart "$role" continue
-    say "restarted: $role in pane $pane (continuing its previous conversation)"
+    conversation="$(reg_field "$role" session_id)"
+    event_log restart "$role" "continue ${conversation:-newest}"
+    say "restarted: $role in pane $pane (continuing ${conversation:-its previous conversation})"
   else
     event_log restart "$role" fresh
     say "restarted: $role in pane $pane"

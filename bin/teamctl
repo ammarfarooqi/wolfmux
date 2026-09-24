@@ -30,10 +30,11 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl start fable --team review               a second team, named by you, with its own session
     teamctl start fable --team next --handover <bead-id>    (a lead may do this too) the new lead starts by reading that bead
   Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you)
-    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--init-beads|--skip-beads]
+    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--resume <session-id>] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
+                  --continue reopens this agent's own conversation (its stored id); --resume names one instead
   Workers
-    teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]
+    teamctl spawn <role> <model> [--base <ref>] [--no-kickoff] [--resume <session-id>]
         models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
                 kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
@@ -43,7 +44,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl stop <role>                               close the pane; worktree, branch and record stay
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else
-    teamctl restart <role> [--continue]
+    teamctl restart <role> [--continue] [--resume <session-id>]    its own conversation, or the one you name
+                                                      (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
   Policy and permissions

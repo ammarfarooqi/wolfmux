@@ -131,14 +131,14 @@ lead can never take over a team that already has a lead; a worker can never foun
 
 | Command | Does |
 |---------|------|
-| `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's last conversation. With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
+| `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's own conversation (the id stored with it), `--resume` reopens the one you name. With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
 | `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
-| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]` | new worker: branch + worktree + pane. Any model, whoever leads (table below) |
+| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff] [--resume <session-id>]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). `--resume` puts it into an existing conversation instead of a new one (and sends no kickoff) |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
-| `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |
+| `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files |
 | `teamctl teams` | the short list per team: state, lead, number of agents, the disk its teammates' worktrees take, session |
@@ -235,6 +235,16 @@ starts. Workers from before are listed as stopped, with their worktrees — `tea
 the same for the lead. After a reboot no tmux session is left at all: `teamctl restart lead
 --continue` (with `--team <name>` for a named team) starts the team again in the lead's last
 conversation, then `restart` each teammate. To end a team on purpose: `teamctl destroy`.
+
+**Which conversation comes back.** Every Claude-family agent is given its own conversation id
+when it starts, and `--continue` reopens exactly that one — so with several teams in one
+project each lead comes back in its own conversation, not in whichever was written to last.
+`teamctl status --json` prints the stored id per agent (`.agents[].session_id`), and
+`--resume <session-id>` pins a different one; it is stored, and it wins over `--continue`.
+An agent recorded before this existed has no stored id: `--continue` then falls back to the
+newest conversation in that folder and says so in one warning line. Codex-family agents
+(`astra`, `codex:<id>`) have no id flag; they resume their own last conversation, which in a
+shared folder carries the same ambiguity.
 
 Notifications and the session names (`🐺 team/lead`, `🐶 team/<role>`) reach an agent when it starts:
 after an update, `teamctl restart <role> --continue`.

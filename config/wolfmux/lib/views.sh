@@ -38,9 +38,11 @@ _status_rows() { # emits one JSON object per agent
       --arg label "$(reg_field "$role" label)" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
+      --arg session_id "$(reg_field "$role" session_id)" \
       '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
+        session_id: $session_id,
         branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir}'
   done
 }

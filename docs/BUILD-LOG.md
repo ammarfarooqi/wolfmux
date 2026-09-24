@@ -388,6 +388,18 @@ answered `no team session. Start one first: teamctl start fable`. That line drop
 `restart` of the lead without a session starts the team again, as the model that led it, and
 `--continue` goes with it; a worker's refusal names the exact two commands. `tests/smoke.sh`: 177 → 181.
 
+v1.11.0: four teams of one project were restarted with `--continue` and all four leads came
+back on the same conversation. `--continue` meant `claude --continue`, which opens the newest
+transcript **in the working folder** — and every lead of a project works in the same folder,
+so the flag could not tell them apart. A workaround that `touch`ed each team's transcript just
+before its start raced the running copies and lost. Now every Claude-family agent is given its
+own conversation id at birth (`--session-id <uuid>`, stored as `session_id` in its record),
+`--continue` reopens exactly that id, and a new `--resume <session-id>` flag on `start`,
+`restart` and `spawn` pins one by hand — which is what re-seating agents that started before
+this needed. A record without an id keeps the old behaviour and says so in one warning line.
+Codex keeps `resume --last`: that CLI has no id flag, so the ambiguity stays there, documented.
+`teamctl status --json` now carries `session_id` per agent. `tests/smoke.sh`: 181 → 190.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
