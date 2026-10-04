@@ -580,6 +580,8 @@ check "start again: when every agent has exited, start opens a fresh session, no
 check "start again: --continue with no conversation on record (the lead that exited was a Codex one) is what it always was, the newest one in the folder, and the pane says so; no id is invented for the CLI to refuse" '[ -z "$(follow status --json | jq -r "[.agents[] | select(.role == \"lead\")][0].session_id")" ] && teamctl capture lead --all | grep -q "STUB flags=.*--continue" && teamctl capture lead --all | grep -q "STUB resumed=none" && teamctl capture lead --all | grep -q "no stored conversation id for .lead."'
 check "start again: a stopped worker kept its worktree and returns with restart" 'follow restart docs && sleep 1 && follow status --json | jq -e "[.agents[] | select(.role == \"docs\")][0].state == \"running\"" && lead_left'
 # The tmux server is gone (a reboot, or tmux was ended): every record remains, no session does.
+follow restart lead >/dev/null 2>&1 # the lead above came back by the newest-transcript guess and has no id: a plain restart gives it its own conversation
+sleep 1
 follow start astra --team night --no-attach --skip-beads >/dev/null 2>&1
 follow spawn qa flash --team night --no-kickoff >/dev/null 2>&1
 tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
