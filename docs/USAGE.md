@@ -342,15 +342,18 @@ project each lead comes back in its own conversation, not in whichever was writt
 `teamctl status --json` prints the stored id per agent (`.agents[].session_id`), and
 `--resume <session-id>` pins a different one; it is stored, and it wins over `--continue`.
 The lead's id is kept with the team, so `teamctl destroy` in the evening and `teamctl start
-<model> --continue` in the morning is the same conversation. Three cases are worth knowing:
+<model> --continue` in the morning is the same conversation. Four cases are worth knowing:
 
 | Case | What `--continue` does |
 |------|------------------------|
 | the agent never said a word (the CLI wrote no transcript, and refuses to resume an id without one) | starts that conversation fresh, under the same id, and says so in the pane |
 | no id on record: an agent from before 1.12, a first `start --continue`, a team that was purged | what it did before: the newest conversation in that folder, with one warning line. In a shared folder that is a guess; pin one with `--resume <session-id>` |
+| a Claude lead after a Codex lead led the team in between | the last Claude lead's own conversation: the team keeps that id, and a Codex lead does not overwrite it |
 | a Codex-family agent (`astra`, `codex:<id>`) | `resume --last`: Codex takes no conversation id from teamctl, so in a shared folder the ambiguity stays. `--resume` is refused for it (exit 64) |
 
-`--resume` of an id that has no transcript anywhere is refused before anything is restarted.
+`--resume` of an id that has no transcript anywhere is refused before anything is restarted,
+and so is the id another agent of the project has on record: two agents in one conversation
+write over each other. A restart that produces no pane leaves the id as it was.
 `teamctl status` reads CONTEXT from the same conversation, by id, so two leads in one folder
 each show their own.
 

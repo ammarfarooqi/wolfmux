@@ -40,6 +40,9 @@ the transcript on disk which of the two to pass:
 | the pane is run again by hand and the stored id already has a transcript | a new id is minted and stored |
 | `--resume <id>` and no transcript of that id in any folder | refused (exit 1) before anything is restarted |
 | `--resume` for a Codex agent | refused (exit 64) |
+| `--resume <id>` and another agent of the project (any team) has that id on record | refused (exit 1): two agents in one conversation is the fault this ends |
+| a Claude lead with `--continue` after a Codex lead led in between | the last Claude lead's id, which the team kept (a Codex lead does not overwrite it) |
+| a restart that produces no pane | the id on record, and the one the team keeps, are put back |
 
 `teamctl status` reads CONTEXT from the same transcript, by id.
 

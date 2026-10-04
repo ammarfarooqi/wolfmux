@@ -82,16 +82,41 @@ session_transcript() {
   return 0
 }
 
-# require_pin <id> <family>: a conversation named with --resume has to be one the CLI can reopen. A pane
-# that is started on an id nobody ever used dies at once ("No conversation found with session ID"), and a
-# Codex agent takes no id at all: both are refused here, before anything is stopped or rewritten.
+# session_holder <id> [<own-role>]: the Beads name of another agent of this project whose record holds that
+# conversation id, in any team (every lead works in the same folder), or nothing. <own-role> is the agent of
+# the loaded team that may keep it: the one being restarted.
+session_holder() {
+  local file team role own="${2:-}"
+  for file in "$PROJECT_STATE"/agents/*.json "$PROJECT_STATE"/teams/*/agents/*.json; do
+    [ -f "$file" ] || continue
+    [ "$("$JQ_BIN" -r '.session_id // empty' "$file" 2>/dev/null || true)" = "$1" ] || continue
+    role="$(basename "$file" .json)"
+    case "$file" in
+      "$PROJECT_STATE"/agents/*) team="$WOLFMUX_DEFAULT_TEAM" ;;
+      *) team="$(basename "$(dirname "$(dirname "$file")")")" ;;
+    esac
+    if [ -n "$own" ] && [ "$team" = "$TEAM" ] && [ "$role" = "$own" ]; then continue; fi
+    team_identity "$team" "$role"
+    return 0
+  done
+  return 0
+}
+
+# require_pin <id> <family> [<own-role>]: a conversation named with --resume has to be one the CLI can reopen,
+# and nobody else's. A pane that is started on an id nobody ever used dies at once ("No conversation found
+# with session ID"); a Codex agent takes no id at all; and two agents in one conversation is the fault this
+# exists to end. All three are refused here, before anything is stopped or rewritten. Needs the project loaded.
 require_pin() {
+  local holder
   [ -n "$1" ] || return 0
   if [ "$2" = "codex" ]; then
     die_usage "--resume names a Claude Code conversation; a Codex agent resumes its own last one. Use --continue."
   fi
   [ -n "$(session_transcript "$1")" ] ||
     die "--resume: no conversation $1 under $(short_path "$(transcripts_base)") (its transcript would be <folder>/$1.jsonl). teamctl status --json shows each agent's stored id."
+  holder="$(session_holder "$1" "${3:-}")"
+  [ -z "$holder" ] ||
+    die "--resume: conversation $1 is the one '$holder' has on record. Two agents in one conversation write over each other; name another one (teamctl status --json shows each agent's)."
 }
 
 require_session() {
@@ -175,6 +200,17 @@ start_permitted() {
   team_identity "$own" "$role"
 }
 
+# lead_session_remember <role>: the team keeps the conversation of its Claude lead outside the lead's record,
+# which a plain `teamctl destroy` deletes. A Codex lead has none and leaves what is kept alone: when a Claude
+# lead leads again with --continue, it is the last Claude lead's own conversation that comes back, not the
+# newest one in the folder. A lead started on the newest-transcript guess (no id) leaves it alone as well.
+lead_session_remember() {
+  local id
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 0
+  id="$(reg_field "$1" session_id 2>/dev/null || true)"
+  [ -z "$id" ] || meta_put lead_session "$id"
+}
+
 # lead_restore <created_at> <handover> <spawned_by>: a lead record that is written again for a team that
 # already had one (the session is gone, or another model is asked for) keeps what says since when the team
 # exists, which handover it was founded with and who founded it. Empty = there was none: nothing is set.
@@ -188,7 +224,7 @@ lead_restore() {
 
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
-  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" previous_session="" handover="" founder="operator" ticket="" pin=""
+  local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" previous_session="" previous_kept="" handover="" founder="operator" ticket="" pin=""
   local prior_created="" prior_handover="" prior_by=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -234,10 +270,10 @@ cmd_start() {
     die_usage "usage: teamctl start <fable|astra|…> [--no-attach] [--continue] [--resume <session-id>] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]   (models: $WOLFMUX_MODEL_KEYS)"
   require_metered_ok
   require_tools
-  require_pin "$pin" "$MODEL_FAMILY"
   # start never guesses between teams: the one you name, else the first one.
   WOLFMUX_TEAM_ARG="${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
   load_project
+  require_pin "$pin" "$MODEL_FAMILY" "$WOLFMUX_LEAD_ROLE"
   founder="$(start_permitted)" || exit 77
   # An agent acting on a team it did not found today is a founder bringing one back: it is announced and logged as that.
   if [ "$founder" != "operator" ]; then EVENT_BY="$founder"; fi
@@ -286,13 +322,14 @@ cmd_start() {
         previous="$(reg_get "$WOLFMUX_LEAD_ROLE" 2>/dev/null || true)"
         previous_model="$(meta_get lead_model 2>/dev/null || true)"
         previous_session="$(reg_field "$WOLFMUX_LEAD_ROLE" session_id 2>/dev/null || true)"
+        previous_kept="$(meta_get lead_session 2>/dev/null || true)"
         branch="$(gitr symbolic-ref --short -q HEAD || printf 'detached')"
         new_record "$WOLFMUX_LEAD_ROLE" lead "$model" "$ROOT" "$branch" "$branch" "$(gitr rev-parse HEAD)" 0 operator "" 0
         lead_restore "$prior_created" "$prior_handover" "$prior_by"
         meta_put lead_model "$model"
         # Another model, the same conversation: --continue asked for that one, not a new one (and when the
         # record held no id, for the newest one in the folder, as before conversation ids).
-        if [ "$resume" -eq 1 ] && [ "$MODEL_FAMILY" != "codex" ]; then reg_set "$WOLFMUX_LEAD_ROLE" session_id "$previous_session"; fi
+        if [ "$resume" -eq 1 ] && [ "$MODEL_FAMILY" != "codex" ]; then reg_set "$WOLFMUX_LEAD_ROLE" session_id "${previous_session:-$previous_kept}"; fi
       fi
       lock_release
       # In a subshell: a `die` in there ends only the attempt, not this command.
@@ -301,7 +338,7 @@ cmd_start() {
       elif [ "$resume" -eq 1 ]; then cmd_restart "$WOLFMUX_LEAD_ROLE" --continue; else cmd_restart "$WOLFMUX_LEAD_ROLE"; fi); then
         if [ -n "$previous" ]; then
           printf '%s\n' "$previous" | reg_put "$WOLFMUX_LEAD_ROLE"
-          meta_put lead_model "$previous_model"
+          meta_put lead_model "$previous_model" lead_session "$previous_kept"
         fi
         die "the lead could not be restarted; its record is as it was. Try: teamctl restart $WOLFMUX_LEAD_ROLE"
       fi
@@ -359,8 +396,8 @@ cmd_start() {
   fi
   reg_set "$WOLFMUX_LEAD_ROLE" pane_id "$pane" state running
   # founder: kept beside the records, because a plain `teamctl destroy` deletes the lead's (team_founder)
-  meta_put root "$ROOT" session "$SESSION" lead_model "$model" team "$TEAM" founder "$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by)" \
-    lead_session "$(reg_field "$WOLFMUX_LEAD_ROLE" session_id)"
+  meta_put root "$ROOT" session "$SESSION" lead_model "$model" team "$TEAM" founder "$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by)"
+  lead_session_remember "$WOLFMUX_LEAD_ROLE"
   event_log start "$WOLFMUX_LEAD_ROLE" "$model"
   lock_release
   tm_set_splash "$SESSION"
@@ -443,8 +480,8 @@ cmd_spawn() {
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
   require_metered_ok
   require_tools
-  require_pin "$pin" "$MODEL_FAMILY"
   load_project
+  require_pin "$pin" "$MODEL_FAMILY"
   ensure_state_dirs
   require_session
   spawner="$(caller_role)"
@@ -808,7 +845,7 @@ $prompt
           lock_acquire
           session_id="$(new_session_id "$workdir" || true)"
           reg_set "$role" session_id "$session_id"
-          if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then meta_put lead_session "$session_id"; fi
+          lead_session_remember "$role"
           lock_release
         fi
         if [ -n "$session_id" ]; then args+=(--session-id "$session_id"); fi
@@ -873,6 +910,7 @@ restart_without_session() {
   model="$(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || true)"
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then team_flag=" --team $TEAM"; fi
   if [ "$resume" -eq 1 ]; then continue_flag=" --continue"; fi
+  if [ -n "$pin" ]; then continue_flag=" --resume $pin"; fi
   if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
     die "team '$TEAM' has no session (it was ended, or the machine restarted). Bring the lead back in its last conversation: teamctl start ${model:-<fable|astra>}$team_flag --continue   then: teamctl restart $role$team_flag$continue_flag"
   fi
@@ -888,8 +926,16 @@ restart_without_session() {
   cmd_start "${start_args[@]}"
 }
 
+# restart_undone <role> <its id before> <the team's kept id before> <message>: no pane came of a restart, so
+# the conversation it had is the one on record again (for the lead, in the team's meta too), and it ends.
+restart_undone() {
+  reg_set "$1" session_id "$2"
+  if [ "$1" = "$WOLFMUX_LEAD_ROLE" ]; then meta_put lead_session "$3"; fi
+  die "$4"
+}
+
 cmd_restart() {
-  local role="" resume=0 pin="" pane workdir target conversation
+  local role="" resume=0 pin="" pane workdir target conversation was_session was_kept
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --continue) resume=1 ;;
@@ -909,7 +955,7 @@ cmd_restart() {
   require_tools
   load_project
   reg_exists "$role" || die "no such agent: $role  (see: teamctl status)"
-  require_pin "$pin" "$(reg_field "$role" family)"
+  require_pin "$pin" "$(reg_field "$role" family)" "$role"
   workdir="$(reg_field "$role" workdir)"
   [ -d "$workdir" ] || die "cannot restart '$role': its working directory is gone ($workdir)"
   SESSION="$(session_name_for_project)"
@@ -922,7 +968,10 @@ cmd_restart() {
   # A restart picks up the current policy.
   reg_set "$role" permissions "$(effective_permissions "$(reg_field "$role" kind)" "$(reg_field "$role" family)")"
   # Which conversation this pane comes back in: the one you named, the one it had, or a new
-  # one. Codex has no id to store; it resumes its own last conversation.
+  # one. Codex has no id to store; it resumes its own last conversation. The pane reads the id as it
+  # starts, so it is stored first, and put back if no pane comes of it.
+  was_session="$(reg_field "$role" session_id)"
+  was_kept="$(meta_get lead_session 2>/dev/null || true)"
   if [ "$(reg_field "$role" family)" != "codex" ]; then
     if [ -n "$pin" ]; then
       reg_set "$role" session_id "$pin"
@@ -930,17 +979,15 @@ cmd_restart() {
       reg_set "$role" session_id "$(new_session_id "$workdir" || true)"
     fi
   fi
-  # What the team remembers is the conversation of the lead it has now: a Codex lead has none, and the id
-  # of a Claude lead from before it must not come back for the next one.
-  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then meta_put lead_session "$(reg_field "$role" session_id)"; fi
+  lead_session_remember "$role"
 
   if [ "$resume" -eq 1 ]; then agent_command "$role" --continue; else agent_command "$role"; fi
   pane="$(tm_pane_for_role "$SESSION" "$role")"
   if [ -n "$pane" ]; then
-    tm_respawn "$pane" "$workdir" "${AGENT_CMD[@]}" || die "respawn failed for pane $pane"
+    tm_respawn "$pane" "$workdir" "${AGENT_CMD[@]}" || restart_undone "$role" "$was_session" "$was_kept" "respawn failed for pane $pane"
   else
-    target="$(tm_split_target "$SESSION")" || die "no pane to split in session $SESSION"
-    pane="$(tm_split "$target" "$workdir" "${AGENT_CMD[@]}")" || die "could not create a tmux pane for '$role'"
+    target="$(tm_split_target "$SESSION")" || restart_undone "$role" "$was_session" "$was_kept" "no pane to split in session $SESSION"
+    pane="$(tm_split "$target" "$workdir" "${AGENT_CMD[@]}")" || restart_undone "$role" "$was_session" "$was_kept" "could not create a tmux pane for '$role'"
   fi
   tm_tag "$pane" "$role" "$(reg_field "$role" label)"
   reg_set "$role" pane_id "$pane" state running

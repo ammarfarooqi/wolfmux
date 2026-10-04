@@ -28,6 +28,13 @@ has_transcript() {
   for f in "$WOLFMUX_CLAUDE_PROJECTS"/*/"$1".jsonl; do [ -f "$f" ] && return 0; done
   return 1
 }
+case "$newsession" in
+  "" | [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *)
+    echo "Error: Invalid session ID. Must be a valid UUID."
+    exit 1
+    ;;
+esac
 if [ -n "$resumed" ] && ! has_transcript "$resumed"; then
   echo "No conversation found with session ID: $resumed"
   exit 1
