@@ -440,6 +440,17 @@ refuses, so the suite can see these paths ([ADR-0027](adr/0027-every-agent-resum
 The same fault sat in `teamctl status`: CONTEXT was read from the newest transcript of the folder, so
 every lead showed the same number. It reads the agent's own conversation now.
 
+**"teamctl plus Tab brings nothing."** Tab completion came in the same release: one backend inside
+teamctl (`teamctl _complete`, which knows the commands, their options, and the roles, teams, models,
+policy keys, layouts, approvals and branches) and two thin shims for zsh and bash, so nothing is
+written down twice and `tests/docs.sh` can hold the list against the option parsers. The installer
+adds two lines to its block in `~/.zshrc`, and upgrades a block from before; it never switches
+`compinit` on for you ([ADR-0026](adr/0026-tab-completion.md)). A teammate built it; the lead stopped
+it at 255k tokens of context, before it had committed, and finished the last checks at integration:
+outside a git repository it had offered nothing at all, which is where the owner pressed Tab.
+
+`tests/smoke.sh`: 250 → 318. `tests/docs.sh`: 32 → 36. `tests/migration.sh`: 24 → 33. v1.12.0.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

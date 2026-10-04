@@ -6,10 +6,10 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 4 to 6 minutes, 250 checks, isolated from any running team
+tests/smoke.sh                 # 5 to 7 minutes, 318 checks, isolated from any running team
 tests/providers.sh             # the provider table, 134 checks
-tests/docs.sh                  # ~2 seconds, 32 checks, starts nothing
-tests/migration.sh             # ~30 seconds, 24 checks, in a throwaway HOME
+tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
+tests/migration.sh             # ~40 seconds, 33 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
@@ -20,7 +20,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 250 of 250 pass (v1.11.0)
+## smoke.sh: 318 of 318 pass (v1.12.0)
 
 | Area | Checks |
 |------|--------|
@@ -46,6 +46,8 @@ real team was live on the same machine; the real team was unaffected.
 | arrangement | by default the lead is the large pane on the left and workers share one column on the right · `lead-top` puts the lead across the top · `tiled` is available, the choice is remembered, an unknown name is refused (exit 64) · the arrangement survives a spawn and a stop |
 | conversations | a fresh agent is started with its own id and it is stored · two agents of one team never share an id · a Codex agent is given none · a plain restart mints a new id and passes `--session-id`, never `--resume` · `restart --continue` reopens THAT agent's stored id, not the newest transcript in the folder · `--resume <id>` wins, is stored, and comes back after another restart · a malformed id is refused and nothing is restarted · a record from before ids keeps `--continue` and warns which folder it is guessing in |
 | closing and coming back | a lead that exited comes back in place and the worker keeps its pane · asking for the other lead model brings it back as that model · when every agent has exited, `start` opens a fresh session with one pane and marks workers stopped · `--continue` reaches the lead's CLI on its own conversation id · a stopped worker returns with `restart` into the arrangement · with no tmux session left (a reboot), `restart lead [--continue]` starts the team again as the model that led it, in a named team too, and a worker's refusal names the exact two commands, with `--team` and `--continue` · `--resume <id>` reaches the lead through the `start` that restart falls back to · **a pre-rename team whose agents have all exited is replaced by a fresh one on the new socket** |
+| conversations | every Claude-family agent is started with its own id and it is stored; a Codex agent gets none · a plain restart mints a new id · `--continue` reopens the agent's own id · an agent that never said a word starts fresh under the same id · `--resume <id>` wins and is stored; an unknown id, a malformed one, another agent's (any team) and a Codex agent are refused before anything restarts · a pane run again by hand gets a new id · a restart that produces no pane leaves the id as it was, in the record and with the team · two leads in one folder restarted with `--continue` each reopen their own conversation, also after `destroy` and `start --continue` · with a Codex lead in between, the last Claude lead's conversation comes back · a first `start --continue` has none on record and keeps the old behaviour with its warning · `status` shows each lead the context of its own conversation |
+| tab completion | `teamctl _complete` offers every public command with a description, the aliases, `--team`, never an internal command · each command's options · roles of the team the line names (workers only for `remove` and `--from-worktree`), teams after `--team` and `--team=`, models with labels, policy keys and their choices, layouts, pending approval ids, branch names, directories for `--repo` · with several teams and none named no roles are offered · outside a git repository commands, options, models and policy keys are still offered and what belongs to a project is empty · it leaves the state directory, the tmux sessions and stderr untouched · the zsh shim registers only when compinit has run and is silent without it; the bash shim completes commands, values and directories · `teamctl completion <zsh\|bash>` prints them |
 | desktop notifications | every Claude agent gets the `Stop` hook, the plugin notifier is silenced and the user's own disabled hook is kept · OSC 9 to the attached terminal with the first line, markdown dropped · the lead is marked · **an OSC 52 and a clear-screen sequence inside a message never reach the terminal** (exactly two control bytes come out: ours) · long messages are cut · no terminal attached → `osascript` with the text as an argument, never a failure · nobody attached → the message is handed to Wolfmux.app, not to `osascript`, and the project is remembered · the app fetches its message exactly once, so its next start is a click · a message it never fetched is not posted late · a click opens a terminal on the team (script with the project and `teamctl attach`) · `WOLFMUX_NOTIFY=lead` keeps workers quiet |
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
@@ -129,7 +131,7 @@ the added permission rules removed · uninstall refused while a team was running
 Not covered: a rule of yours that is spelled exactly like a retired one cannot be told apart
 from ours and is taken out as well; the installer names it and the backup holds it.
 
-## migration.sh: 24 of 24 pass (v1.10)
+## migration.sh: 33 of 33 pass (v1.12.0)
 
 A throwaway `HOME` gets v1.1 installed from git history, a team started with it (lead +
 one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
@@ -167,7 +169,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
-## docs.sh: 32 of 32 pass (v1.11.0)
+## docs.sh: 36 of 36 pass (v1.12.0)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.
