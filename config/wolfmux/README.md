@@ -270,7 +270,7 @@ Beads, other teams, or the lead's own conversations (they live in your checkout'
   changes it for the project; `Ctrl-b Space` cycles, `Ctrl-b T` puts it back.
 - Quit every agent and run `teamctl start` again: you get a new session, not the finished
   panes. Quit only the lead: `teamctl start` brings it back, workers keep running.
-  Add `--continue` to resume the lead's last conversation.
+  Add `--continue` to resume the lead's own conversation, or `--resume <session-id>` to name one.
 - Opening a team (`teamctl start`, `teamctl attach`) shows the wolf in a popup. Any key
   closes it, or 3 seconds. `WOLFMUX_SPLASH=off` in `~/.config/wolfmux/config` removes it.
 - The manager is the wolf: `🐺 lead · <model>` in its pane border, an amber border
@@ -313,7 +313,8 @@ work with `git merge <branch>`, or discard it with `--force`.
 
 ```bash
 teamctl stop backend               # close one pane; worktree, branch, commits stay
-teamctl restart backend            # same worktree + branch   (--continue resumes its conversation)
+teamctl restart backend            # same worktree + branch   (--continue resumes its own conversation,
+                                   #                           --resume <session-id> reopens the one you name)
 teamctl destroy                    # end the tmux session; keeps everything else
 teamctl destroy --worktrees        # also removes CLEAN worktrees and FULLY MERGED branches teamctl created
 ```
@@ -537,9 +538,14 @@ ls ~/.wolfmux/state ~/.wolfmux/worktrees    # per-project state and worktrees
   mistakes and role confusion, not a deliberately hostile process.
 - With several teams, every lead works in your checkout on the branch that is checked out
   there. Teammates are apart in worktrees; leads are not. Let one lead integrate at a time.
-  For the same reason `--continue` on a lead resumes the most recent conversation of that
-  CLI in your checkout, which with two leads there (or a session of your own) may be
-  another one's. A teammate's `--continue` is its own: nobody else works in its worktree.
+- Each Claude-family agent is given its own conversation id when it starts, and `--continue`
+  reopens that id — so two leads in one folder come back in their own conversations. The
+  stored id is in `teamctl status --json` (`.agents[].session_id`), and
+  `teamctl restart <role> --resume <session-id>` pins a different one. An agent recorded
+  before ids were stored has none: `--continue` then falls back to the newest conversation in
+  the folder (which with two leads there may be the other one's) and warns in one line.
+  Codex-based agents have no id flag: they resume their own last conversation, and in a
+  shared folder that stays ambiguous.
 - Codex-based agents (`astra`, `codex:<id>`) have no worktree guard and no lead-approval
   mode: Codex offers no hook for either. They do send notifications.
 

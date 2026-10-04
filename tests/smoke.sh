@@ -34,6 +34,20 @@ unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRA
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 # transcripts_of <dir> — where the CLIs put the transcripts of an agent that ran there
 transcripts_of() { printf '%s/%s\n' "$WOLFMUX_CLAUDE_PROJECTS" "$(cd "$1" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"; }
+# The real CLI writes a conversation's transcript once something was said in it; it refuses to resume an id
+# that has none, and to start a new conversation under an id that has one. tests/stub-agent refuses the same.
+# fake_conversation <id> [<workdir>] — a transcript for that id: in that directory's folder, else in another one
+fake_conversation() {
+  local dir="$WOLFMUX_CLAUDE_PROJECTS/-somewhere-else"
+  if [ -n "${2:-}" ]; then dir="$(transcripts_of "$2")"; fi
+  /bin/mkdir -p "$dir" && printf '{"type":"user","message":{"content":"hi"}}\n' >"$dir/$1.jsonl"
+}
+# spoke <role> [<team>] — that agent has said something: its own conversation now has a transcript
+spoke() {
+  local row
+  row="$("$REPO/bin/teamctl" status --json ${2:+--team "$2"} | jq -c --arg r "$1" '[.agents[] | select(.role == $r)][0]')"
+  fake_conversation "$(printf '%s' "$row" | jq -r .session_id)" "$(printf '%s' "$row" | jq -r .workdir)"
+}
 
 passed=0
 failed=0
@@ -169,7 +183,29 @@ check "spawn: worktrees live outside the repository" 'teamctl status --json | jq
 check "spawn: --base recorded" 'teamctl diff backend | grep -q "base:    release"'
 check "spawn: role environment set inside the pane" 'teamctl capture backend -n 8 | grep -q "STUB role=backend actor=backend model=glm53"'
 check "spawn: no provider or agent-session variable leaks into a pane" 'teamctl capture backend -n 8 | grep -Eq "^STUB leaked= *$"'
-check "spawn: kickoff prompt passed by default, omitted with --no-kickoff" 'teamctl capture backend -n 8 | grep -q "argc=6" && teamctl capture qa -n 8 | grep -q "argc=5"'
+check "spawn: kickoff prompt passed by default, omitted with --no-kickoff" 'teamctl capture backend -n 8 | grep -q "argc=8" && teamctl capture qa -n 8 | grep -q "argc=7"'
+# Every lead of a project works in the SAME folder, so `claude --continue` (the newest
+# transcript there) cannot tell two leads apart. Each agent gets its own id instead.
+check "conversations: a fresh agent is started with its own id, and it is stored" 'id="$(teamctl status --json | jq -r "[.agents[] | select(.role == \"backend\")][0].session_id")"; [ -n "$id" ] && [ "$id" != "null" ] && teamctl capture backend --all | grep -q "STUB session_id=$id" && teamctl capture backend --all | grep -q "STUB resumed=none"'
+check "conversations: two agents of one team never share an id" '[ "$(teamctl status --json | jq -r "[.agents[] | select(.family != \"codex\") | .session_id] | unique | length")" = "$(teamctl status --json | jq -r "[.agents[] | select(.family != \"codex\")] | length")" ]'
+check "conversations: a Codex agent is given none (it has no id flag; it resumes its own last one)" '[ -z "$(teamctl status --json | jq -r "[.agents[] | select(.family == \"codex\")][0].session_id")" ]'
+check "conversations: a plain restart mints a new id and passes it as --session-id, never --resume" 'was="$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")"; teamctl restart qa && sleep 2 && now="$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")"; [ -n "$now" ] && [ "$now" != "$was" ] && teamctl capture qa --all | grep -q "STUB session_id=$now" && teamctl capture qa --all | grep -q "STUB resumed=none"'
+check "conversations: --continue for an agent that never said a word starts its conversation fresh under the same id (the CLI would refuse to resume it)" 'id="$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")"; teamctl restart qa --continue && sleep 2 && teamctl status --json | jq -e "[.agents[] | select(.role == \"qa\")][0] | .state == \"running\"" && teamctl capture qa --all | grep "STUB session_id=" | tail -1 | grep -q "session_id=$id" && teamctl capture qa --all | grep "STUB resumed=" | tail -1 | grep -q "resumed=none" && teamctl capture qa --all | grep -q "nothing to continue yet"'
+spoke qa
+check "conversations: restart --continue reopens THAT agent's stored id, not the newest transcript" 'id="$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")"; teamctl restart qa --continue && sleep 2 && teamctl capture qa --all | grep -q "STUB resumed=$id" && ! teamctl capture qa --all | grep "STUB flags=" | tail -1 | grep -q -- "--continue"'
+check "conversations: --resume of an id nobody ever used is refused (exit 1) before anything is restarted" 'was="$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")"; out="$(teamctl restart qa --resume 22222222-2222-3333-4444-555555555555 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "no conversation 22222222-2222-3333-4444-555555555555" && [ "$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")" = "$was" ]'
+check "conversations: --resume names a Claude Code conversation: a Codex agent (the lead here) is refused it (exit 64) and told to use --continue" 'out="$(teamctl restart lead --resume 11111111-2222-3333-4444-555555555555 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "--continue"'
+fake_conversation 11111111-2222-3333-4444-555555555555
+check "conversations: --resume <id> wins, is stored, and comes back after another restart" 'teamctl restart qa --resume 11111111-2222-3333-4444-555555555555 && sleep 2 && teamctl capture qa --all | grep -q "STUB resumed=11111111-2222-3333-4444-555555555555" && [ "$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")" = "11111111-2222-3333-4444-555555555555" ] && teamctl restart qa --continue && sleep 2 && teamctl capture qa --all | grep -q "STUB resumed=11111111-2222-3333-4444-555555555555"'
+check "conversations: a malformed id is refused, and nothing is restarted" '! teamctl restart qa --resume not-a-uuid && ! teamctl restart qa --resume "" && [ "$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")" = "11111111-2222-3333-4444-555555555555" ]'
+teamctl restart qa >/dev/null 2>&1 # a fresh conversation: the pane's command carries no --continue
+sleep 2
+spoke qa
+QA_PANE="$(teamctl status --json | jq -r '[.agents[] | select(.role == "qa")][0].pane')"
+check "conversations: a pane that is run again by hand (no teamctl restart) starts a new conversation under a new id, instead of dying on one that is in use" 'was="$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")"; tmux -L "$WOLFMUX_TMUX_SOCKET" respawn-pane -k -t "$QA_PANE" && sleep 2 && now="$(teamctl status --json | jq -r "[.agents[] | select(.role == \"qa\")][0].session_id")" && [ -n "$now" ] && [ "$now" != "$was" ] && teamctl status --json | jq -e "[.agents[] | select(.role == \"qa\")][0].state == \"running\"" && teamctl capture qa --all | grep "STUB session_id=" | tail -1 | grep -q "session_id=$now"'
+check "conversations: a record from before ids keeps --continue and warns which folder it guesses in" 'f="$(ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)/qa.json"; jq "del(.session_id)" "$f" >"$f.x" && mv "$f.x" "$f" && teamctl restart qa --continue && sleep 2 && teamctl capture qa --all | grep -q "STUB flags=.*--continue" && teamctl capture qa --all | grep -q "STUB resumed=none" && teamctl capture qa --all | grep -q "no stored conversation id for .qa."'
+teamctl restart qa >/dev/null 2>&1 # back to a normal record for the checks that follow
+sleep 2
 check "spawn: the kickoff lists claimed work and says to continue it, not start over" 'teamctl capture backend -n 12 | grep -q "STUB kickoff_in_progress=yes"'
 check "spawn: the lead is the first pane" '[ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_index}:#{@ai_role}" | head -1)" = "0:lead" ]'
 check "spawn: pane titles are roles" 'tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F "#{pane_title}" | grep -q "^backend · GLM-5.3$"'
@@ -414,13 +450,14 @@ check "worktrees: lists lead + workers" '[ "$(teamctl worktrees | grep -cE "^(le
 
 echo "== context use in status (issue #5)"
 BACKEND_TRANS="$(transcripts_of "$BACKEND_DIR")"
+BACKEND_ID="$(teamctl status --json | jq -r '[.agents[] | select(.role == "backend")][0].session_id')" # status reads THIS conversation
 /bin/mkdir -p "$BACKEND_TRANS"
 {
   echo 'this line is not json'
   echo '{"type":"user","message":{"content":"hi"}}'
   echo '{"type":"assistant","message":{"usage":{"input_tokens":50000,"cache_read_input_tokens":20000,"cache_creation_input_tokens":5000}}}'
   echo '{"type":"assistant","message":{"usage":{"input_tokens":100000,"cache_read_input_tokens":30000,"cache_creation_input_tokens":12000}}}'
-} >"$BACKEND_TRANS/session-a.jsonl"
+} >"$BACKEND_TRANS/$BACKEND_ID.jsonl"
 check "status: context in use is what the last assistant turn saw (input plus both caches), every counted turn is a request" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"backend\")][0] | .context_tokens == 142000 and .requests == 2 and .context_window == 200000"'
 check "status: the CONTEXT column shows the tokens and the share of the window" 'teamctl status | grep -E "backend .*142k +71%"'
 check "status: nothing readable shows as -, in json as null and 0" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"qa\")][0] | .context_tokens == null and .requests == 0" && teamctl status | grep "🐶 qa " | grep -Eq "0 +- "'
@@ -428,9 +465,12 @@ check "status: nothing readable shows as -, in json as null and 0" 'teamctl stat
   for i in $(seq 1 500); do echo '{"type":"user","message":{"content":"filler"}}'; done
   echo 'garbage again, inside the tail'
   echo '{"type":"assistant","message":{"usage":{"input_tokens":100000,"cache_read_input_tokens":30000,"cache_creation_input_tokens":12000}}}'
-} >"$BACKEND_TRANS/session-b.jsonl"
-touch -t 202609230900 "$BACKEND_TRANS/session-a.jsonl" && touch -t 202609230905 "$BACKEND_TRANS/session-b.jsonl"
-check "status: only the tail of a long transcript is read, the newest transcript wins, and a malformed line never breaks it" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"backend\")][0] | .context_tokens == 142000 and .requests == 1"'
+} >"$BACKEND_TRANS/$BACKEND_ID.jsonl"
+check "status: only the tail of a long transcript is read, and a malformed line never breaks it" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"backend\")][0] | .context_tokens == 142000 and .requests == 1"'
+# Another conversation in the same folder, written to later: another lead of the project, or a session of your own.
+echo '{"type":"assistant","message":{"usage":{"input_tokens":7000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}' >"$BACKEND_TRANS/somebody-elses-session.jsonl"
+touch -t 202609230900 "$BACKEND_TRANS/$BACKEND_ID.jsonl" && touch -t 202609230905 "$BACKEND_TRANS/somebody-elses-session.jsonl"
+check "status: CONTEXT is read from the agent's own conversation (its stored id), not from a newer transcript in the same folder" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"backend\")][0] | .context_tokens == 142000 and .requests == 1"'
 CODEX_TREE="$WORK/codex-worker-tree"
 /bin/mkdir -p "$CODEX_TREE" "$WOLFMUX_CODEX_SESSIONS/2026/09/23"
 codex_meta() { printf '{"type":"session_meta","payload":{"cwd":"%s"}}\n' "$1"; }
@@ -447,13 +487,15 @@ plant_ctx() { # <role> <model> <family> <workdir> — a record made by hand, as 
       permissions: "skip", pane_id: "", state: "stopped", created_at: "2099-01-01T00:00:00Z"}' >"$CTX_AGENTS/$1.json"
 }
 plant_ctx ctx-codex astra codex "$CODEX_TREE"
+plant_ctx ctx-old fable claude "$BACKEND_DIR" # no session_id: a record from before conversation ids
+check "status: a record from before conversation ids still reads the newest transcript of its folder" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-old\")][0] | .context_tokens == 7000 and .session_id == \"\""'
 check "status: a codex agent is read from the rollout whose session cwd is its worktree: last token_count event, its window, its request count" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-codex\")][0] | .context_tokens == 129200 and .requests == 3 and .context_window == 258400"'
 check "status: the codex agent's column" 'teamctl status | grep -E "ctx-codex .*129k +50%"'
 plant_ctx ctx-1m "claude:claude-opus-4-1[1m]" claude "/nonexistent/ctx"
 plant_ctx ctx-kimi kimi claude "/nonexistent/ctx"
 plant_ctx ctx-ds "deepseek:deepseek-v4-flash" claude "/nonexistent/ctx"
 check "status: the window is declared by the provider table, 1M for a model id that ends in [1m], 200k for the rest" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-1m\")][0].context_window == 1048576) and ([.agents[] | select(.role == \"ctx-kimi\")][0].context_window == 262144) and ([.agents[] | select(.role == \"ctx-ds\")][0].context_window == 786432) and ([.agents[] | select(.role == \"ctx-1m\")][0].context_tokens == null)"'
-/bin/rm -f "$CTX_AGENTS/ctx-codex.json" "$CTX_AGENTS/ctx-1m.json" "$CTX_AGENTS/ctx-kimi.json" "$CTX_AGENTS/ctx-ds.json"
+/bin/rm -f "$CTX_AGENTS/ctx-old.json" "$CTX_AGENTS/ctx-codex.json" "$CTX_AGENTS/ctx-1m.json" "$CTX_AGENTS/ctx-kimi.json" "$CTX_AGENTS/ctx-ds.json"
 
 echo "== a fresh conversation in an existing built worktree (spawn --from-worktree, issue #5)"
 teamctl spawn builder glm53 --no-kickoff >/dev/null 2>&1
@@ -533,8 +575,9 @@ check "start again: asking for the other lead model brings the lead back as that
 for pane in $(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F '#{pane_id}'); do end_agent "$pane"; done
 sleep 1
 check "start again: status says the session has ended when every agent has exited" 'follow status | grep -q "ended: every agent has exited"'
+spoke lead
 check "start again: when every agent has exited, start opens a fresh session, not the dead one" 'follow start fable --no-attach --skip-beads --continue && sleep 1 && [ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a | wc -l | tr -d " ")" = 1 ] && follow status --json | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")"'
-check "start again: --continue resumes the lead's last conversation" 'teamctl capture lead --all | grep -q "STUB flags=.*--continue"'
+check "start again: --continue resumes the lead's OWN conversation (its stored id), not the newest transcript" 'id="$(follow status --json | jq -r "[.agents[] | select(.role == \"lead\")][0].session_id")"; [ -n "$id" ] && teamctl capture lead --all | grep -q "STUB resumed=$id"'
 check "start again: a stopped worker kept its worktree and returns with restart" 'follow restart docs && sleep 1 && follow status --json | jq -e "[.agents[] | select(.role == \"docs\")][0].state == \"running\"" && lead_left'
 # The tmux server is gone (a reboot, or tmux was ended): every record remains, no session does.
 follow start astra --team night --no-attach --skip-beads >/dev/null 2>&1
@@ -543,9 +586,12 @@ tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
 sleep 1
 check "restart without a session: a worker's refusal in a named team names the exact commands, with the team and --continue" 'out="$(follow restart qa --continue --team night 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start astra --team night --continue" && printf "%s" "$out" | grep -q -- "teamctl restart qa --team night --continue"'
 check "restart without a session: a worker's refusal in the first team names them without --team" 'out="$(follow restart docs --team default 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start fable --continue" && ! printf "%s" "$out" | grep -q -- "--team"'
-check "restart without a session: restart lead --continue starts the team again in the lead's last conversation" 'follow restart lead --continue --team default </dev/null && sleep 1 && follow status --json --team default | jq -e "([.agents[] | select(.role == \"lead\")][0] | .state == \"running\" and .model == \"fable\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")" && teamctl capture lead --team default --all | grep -q "STUB flags=.*--continue"'
+spoke lead default # the lead said something before the machine went down: there is a conversation to come back to
+check "restart without a session: restart lead --continue starts the team again in the lead's own conversation" 'id="$(follow status --json --team default | jq -r "[.agents[] | select(.role == \"lead\")][0].session_id")"; follow restart lead --continue --team default </dev/null && sleep 1 && follow status --json --team default | jq -e "([.agents[] | select(.role == \"lead\")][0] | .state == \"running\" and .model == \"fable\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")" && [ -n "$id" ] && teamctl capture lead --team default --all | grep -q "STUB resumed=$id"'
+fake_conversation 99999999-8888-7777-6666-555555555555
+check "restart without a session: --resume <id> reaches the lead through the start it falls back to" 'tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server; sleep 1; follow restart lead --resume 99999999-8888-7777-6666-555555555555 --team default </dev/null && sleep 1 && teamctl capture lead --team default --all | grep -q "STUB resumed=99999999-8888-7777-6666-555555555555" && [ "$(follow status --json --team default | jq -r "[.agents[] | select(.role == \"lead\")][0].session_id")" = "99999999-8888-7777-6666-555555555555" ]'
 check "restart without a session: the same in a named team, as the model that led it (Codex resumes with: resume --last)" 'follow restart lead --continue --team night </dev/null && sleep 1 && follow status --json --team night | jq -e "[.agents[] | select(.role == \"lead\")][0] | .state == \"running\" and .model == \"astra\"" && teamctl capture lead --team night --all | grep -q "STUB lastarg=--last"'
-check "restart without a session: a plain restart of the lead starts a fresh conversation" 'tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server; sleep 1; follow restart lead --team default </dev/null && sleep 1 && teamctl capture lead --team default --all | grep "STUB flags=" | grep -vq -- "--continue"'
+check "restart without a session: a plain restart of the lead starts a fresh conversation" 'tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server; sleep 1; follow restart lead --team default </dev/null && sleep 1 && teamctl capture lead --team default --all | grep "STUB flags=" | grep -vq -- "--continue" && teamctl capture lead --team default --all | grep -q "STUB resumed=none" && [ "$(follow status --json --team default | jq -r "[.agents[] | select(.role == \"lead\")][0].session_id")" != "99999999-8888-7777-6666-555555555555" ]'
 # What restart_without_session hands to cmd_start, with the libraries loaded and cmd_start replaced by a
 # printer: <BD_BIN> is "" (bd is not installed) or a program that finds no workspace (bd is there, this project has none).
 restart_args() {
@@ -772,6 +818,23 @@ SRV2_TREE="$(cross_field srv2 workdir)"
 SRV2_BRANCH="$(cross_field srv2 branch)"
 check "cross-repo: destroy --purge deletes that worktree and branch in the sibling repository and leaves the rest of it alone" '[ -n "$SRV2_BRANCH" ] && [ -d "$SRV2_TREE" ] && teamctl destroy --team cross --purge --force && [ ! -e "$SRV2_TREE" ] && ! git -C "$SIBLING_REAL" rev-parse -q --verify "refs/heads/$SRV2_BRANCH" >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/keep-me >/dev/null && git -C "$SIBLING_REAL" rev-parse -q --verify refs/heads/main >/dev/null && ! git -C "$SIBLING_REAL" worktree list | grep -q "/teams/cross/"'
 
+
+echo "== several leads in one folder come back in their own conversations (issue #7)"
+# Every lead works in the project folder, so the newest transcript there belongs to one of them at most.
+teamctl start fable --team twin-a --no-attach --skip-beads >/dev/null 2>&1
+teamctl start opus --team twin-b --no-attach --skip-beads >/dev/null 2>&1
+sleep 2
+spoke lead twin-a
+spoke lead twin-b
+TWIN_A="$(teamctl status --json --team twin-a | jq -r '.agents[0].session_id')"
+TWIN_B="$(teamctl status --json --team twin-b | jq -r '.agents[0].session_id')"
+touch "$(transcripts_of "$PROJECT")/$TWIN_B.jsonl" # twin-b's is the newest transcript in the folder: what claude --continue would open for both
+check "leads in one folder: two leads of one project have two conversation ids, both kept in the same folder" '[ -n "$TWIN_A" ] && [ "$TWIN_A" != "null" ] && [ "$TWIN_A" != "$TWIN_B" ] && [ -f "$(transcripts_of "$PROJECT")/$TWIN_A.jsonl" ] && [ -f "$(transcripts_of "$PROJECT")/$TWIN_B.jsonl" ]'
+check "leads in one folder: restarted with --continue, each lead reopens its own conversation, not the newest one in the folder" 'teamctl restart lead --team twin-a --continue && teamctl restart lead --team twin-b --continue && sleep 2 && teamctl capture lead --team twin-a --all | grep "STUB resumed=" | tail -1 | grep -q "resumed=$TWIN_A" && teamctl capture lead --team twin-b --all | grep "STUB resumed=" | tail -1 | grep -q "resumed=$TWIN_B" && ! teamctl capture lead --team twin-a --all | grep "STUB flags=" | tail -1 | grep -q -- "--continue"'
+check "leads in one folder: the same after a reboot (no tmux session left): start --continue brings each lead back in its own" 'teamctl destroy --team twin-a --yes && teamctl destroy --team twin-b --yes; teamctl start fable --team twin-a --no-attach --skip-beads --continue && teamctl start opus --team twin-b --no-attach --skip-beads --continue && sleep 2 && teamctl capture lead --team twin-a --all | grep -q "STUB resumed=$TWIN_A" && teamctl capture lead --team twin-b --all | grep -q "STUB resumed=$TWIN_B"'
+check "leads in one folder: status shows each lead the context of its own conversation" 'echo "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":11000}}}" >>"$(transcripts_of "$PROJECT")/$TWIN_A.jsonl" && echo "{\"type\":\"assistant\",\"message\":{\"usage\":{\"input_tokens\":22000}}}" >>"$(transcripts_of "$PROJECT")/$TWIN_B.jsonl" && [ "$(teamctl status --json --team twin-a | jq -r ".agents[0].context_tokens")" = 11000 ] && [ "$(teamctl status --json --team twin-b | jq -r ".agents[0].context_tokens")" = 22000 ]'
+teamctl destroy --team twin-a --purge --yes >/dev/null 2>&1
+teamctl destroy --team twin-b --purge --yes >/dev/null 2>&1
 
 echo "== deleting a whole team (destroy --purge)"
 teamctl start fable --team scrap --no-attach --skip-beads >/dev/null 2>&1

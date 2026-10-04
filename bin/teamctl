@@ -35,11 +35,12 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          as you may: teamctl restart lead --team <name> --continue · stop · remove · destroy --team <name> --purge. You are told.
   Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you,
          and start/restart/stop/remove/destroy for the founder of a team whose lead is not running)
-    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--ticket <KEY>] [--init-beads|--skip-beads]
+    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
+                  --continue reopens this agent's own conversation (its stored id); --resume names one instead
                   --ticket: the team's default ticket key, for a branch template that asks for one
   Workers
-    teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff]
+    teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff] [--resume <session-id>]
         --branch: that exact branch name · --ticket: the key a branch template asks for (teamctl policy branch-template)
         --repo: worktree and branch in ANOTHER git repository; the guard holds the teammate to that worktree
         --from-worktree: a fresh conversation in a stopped worker's built worktree, on a new branch
@@ -55,7 +56,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl stop <role>                               close the pane; worktree, branch and record stay
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else
-    teamctl restart <role> [--continue]
+    teamctl restart <role> [--continue] [--resume <session-id>]    its own conversation, or the one you name
+                                                      (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
   Policy and permissions

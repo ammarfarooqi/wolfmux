@@ -15,7 +15,7 @@ _billing_of() {
 }
 
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir model cctx repo
+  local role kind pane state branch ahead dirty workdir model cctx repo session_id
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
     reg_exists "$role" || continue
     kind="$(reg_field "$role" kind)"
@@ -36,7 +36,8 @@ _status_rows() { # emits one JSON object per agent
     repo="$(reg_field "$role" repo)" # empty: this project. A teammate spawned with --repo: that repository.
     dirty="$(wt_dirty_count "$workdir")"
     model="$(reg_field "$role" model)"
-    agent_context "$workdir" "$model" "$(reg_field "$role" family)"
+    session_id="$(reg_field "$role" session_id)" # its own conversation: what --continue reopens, and what CONTEXT reads
+    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id"
     if [ -n "$CTX_TOKENS" ]; then
       cctx="$(ctx_display "$CTX_TOKENS" "$CTX_WINDOW")"
     else
@@ -47,9 +48,11 @@ _status_rows() { # emits one JSON object per agent
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
       --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
+      --arg session_id "$session_id" \
       '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
+        session_id: $session_id,
         branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir, repo: $repo,
         context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
         context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}'
