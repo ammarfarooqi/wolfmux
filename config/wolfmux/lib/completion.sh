@@ -395,7 +395,8 @@ cmd_complete() {
 }
 
 # cmd_completion — teamctl completion <zsh|bash>: print the shim of that shell, so
-# `source <(teamctl completion bash)` works without install.sh having wired ~/.zshrc.
+# `source <(teamctl completion zsh)` works without install.sh having wired ~/.zshrc; in bash it is
+# `eval "$(teamctl completion bash)"` (bash 3.2 cannot source a process substitution).
 cmd_completion() {
   local shell="${1:-}" file
   case "$shell" in
