@@ -298,6 +298,20 @@ status, commit hash, risks) → closes its task → lead reviews the diff → re
 changes, cherry-picks, rejects, or asks another worker to review. The lead owns
 integration. Full rules: `TEAM_PROTOCOL.md` (injected into every agent at launch).
 
+## Tab completion
+
+```bash
+teamctl completion zsh | source /dev/stdin   # or: teamctl completion bash
+```
+
+`./install.sh` puts the shims in `~/.config/wolfmux/completion/` and sources the zsh
+one from the wolfmux block in `~/.zshrc`. The backend is `teamctl _complete` inside
+teamctl; Tab completes commands, options, and the values teamctl knows: roles,
+teams, models, policy keys and choices, layouts, pending approvals, branches. The
+zsh shim registers only when a completion system is already loaded (compinit);
+it never switches one on itself. A shell without compinit:
+`autoload -Uz compinit && compinit` above the wolfmux block.
+
 ## Clearing up
 
 ```bash

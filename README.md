@@ -108,6 +108,29 @@ need it. Tasks and messages are not teamctl's: they are Beads
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
 are for you and for the team's lead; a teammate that tries them is refused (exit 77).
 
+### Tab completion
+
+After `./install.sh`, a new zsh terminal completes `teamctl`: the commands with short
+descriptions, the options of each command, and the values teamctl knows - roles,
+teams, models, policy keys and their choices, layouts, pending approval ids, local
+branch names.
+
+```bash
+teamctl <Tab>                 # the commands (teamctl re<Tab> offers remove and restart)
+teamctl restart <Tab>         # the roles of your team (remove offers workers only)
+teamctl spawn x <Tab>         # the models, with their labels
+teamctl --team <Tab>          # the teams of this project
+teamctl policy <Tab>          # the policy keys; teamctl policy worker-spawn <Tab> the choices
+```
+
+The knowledge lives in one backend inside teamctl (`teamctl _complete`); the zsh and
+bash shims in `~/.config/wolfmux/completion/` are thin and only present what it
+answers ([ADR-0026](docs/adr/0026-tab-completion.md)). The zsh shim registers only
+when a completion system is loaded (compinit): it never switches one on by itself.
+To try it without install.sh, or in bash: `source <(teamctl completion zsh)` or
+`source <(teamctl completion bash)`. Tab offers nothing? See
+[TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#tab-completion).
+
 ### Branch names and other repositories
 
 A teammate's branch is named by the team's **branch template**. The default reproduces the

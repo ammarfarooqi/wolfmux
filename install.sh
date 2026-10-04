@@ -9,7 +9,7 @@
 #   ~/.codex/rules/wolfmux.rules  a separate rule file (default.rules is not touched)
 # It never reads, writes or asks for a credential. Undo everything with ./uninstall.sh.
 #
-#   ./install.sh [--no-path] [--no-claude-permissions] [--no-codex-rules] [--no-notifier-app]
+#   ./install.sh [--no-path] [--no-completion] [--no-claude-permissions] [--no-codex-rules] [--no-notifier-app]
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd -P)"
@@ -17,6 +17,7 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 BIN_DIR="$HOME/bin"
 CONF_DIR="$HOME/.config/wolfmux"
 DO_PATH=1
+DO_COMPLETION=1
 DO_CLAUDE=1
 DO_CODEX=1
 DO_APP=1
@@ -24,6 +25,7 @@ DO_APP=1
 for arg in "$@"; do
   case "$arg" in
     --no-path) DO_PATH=0 ;;
+    --no-completion) DO_COMPLETION=0 ;;
     --no-claude-permissions) DO_CLAUDE=0 ;;
     --no-codex-rules) DO_CODEX=0 ;;
     --no-notifier-app) DO_APP=0 ;;
@@ -107,6 +109,12 @@ done
 for path in "$REPO"/config/wolfmux/lib/*.sh; do
   install_file "$path" "$CONF_DIR/lib/$(basename "$path")" 644
 done
+if [ -d "$REPO/config/wolfmux/completion" ]; then
+  /bin/mkdir -p "$CONF_DIR/completion"
+  for path in "$REPO"/config/wolfmux/completion/*; do
+    install_file "$path" "$CONF_DIR/completion/$(basename "$path")" 644
+  done
+fi
 install_file "$REPO/config/wolfmux/hooks/beads-nudge" "$CONF_DIR/hooks/beads-nudge" 755
 for name in tmux.conf TEAM_PROTOCOL.md README.md; do
   install_file "$REPO/config/wolfmux/$name" "$CONF_DIR/$name" 644
@@ -223,7 +231,24 @@ fi
 if [ "$DO_PATH" -eq 1 ]; then
   say "== PATH (~/.zshrc)"
   if [ -f "$HOME/.zshrc" ] && grep -q '>>> wolfmux >>>' "$HOME/.zshrc"; then
-    note "block already present"
+    # v1.12: the block gains tab completion. Every install before it has the block
+    # without the source line: insert the two lines before the closing marker, after
+    # a backup, and only when they are not there yet (idempotent).
+    if [ "$DO_COMPLETION" -eq 1 ] && ! grep -q 'completion/teamctl.zsh' "$HOME/.zshrc"; then
+      backup "$HOME/.zshrc"
+      tmp="$HOME/.zshrc.tmp.$$"
+      awk '
+        /^# <<< wolfmux <<</ && !inserted {
+          print "# Tab completion for teamctl (zsh). Registered only when the shell has a completion system."
+          print "[[ -r \"$HOME/.config/wolfmux/completion/teamctl.zsh\" ]] && source \"$HOME/.config/wolfmux/completion/teamctl.zsh\""
+          inserted = 1
+        }
+        { print }
+      ' "$HOME/.zshrc" >"$tmp" && /bin/mv -f "$tmp" "$HOME/.zshrc"
+      note "added tab completion to the wolfmux block (open a new terminal, then: teamctl <Tab>)"
+    else
+      note "block already present"
+    fi
   else
     if [ -f "$HOME/.zshrc" ]; then backup "$HOME/.zshrc"; fi
     {
@@ -231,6 +256,10 @@ if [ "$DO_PATH" -eq 1 ]; then
       printf '# teamctl + model launchers live in ~/bin. Appended, not prepended, so nothing\n'
       printf '# in ~/bin can shadow an existing tool.\n'
       printf '[[ -d "$HOME/bin" ]] && path+=("$HOME/bin")\n'
+      if [ "$DO_COMPLETION" -eq 1 ]; then
+        printf '# Tab completion for teamctl (zsh). Registered only when the shell has a completion system.\n'
+        printf '[[ -r "$HOME/.config/wolfmux/completion/teamctl.zsh" ]] && source "$HOME/.config/wolfmux/completion/teamctl.zsh"\n'
+      fi
       printf '# <<< wolfmux <<<\n'
     } >>"$HOME/.zshrc"
     note "appended the wolfmux block to ~/.zshrc (open a new terminal to pick it up)"
@@ -293,6 +322,7 @@ fi
      security add-generic-password -U -s zai-coding-plan -a "$USER" -l "Z.ai Coding Plan API key" -w
 2. Open a new terminal, then:   teamctl doctor
 3. In a project:                teamctl start fable      (or: teamctl start astra)
+4. Tab completion (zsh):        open a new terminal, then: teamctl <Tab>
 
 Other providers are optional; add a key only for one you will use, the same way (Keychain service
 in brackets), then: teamctl spawn <role> <provider>
