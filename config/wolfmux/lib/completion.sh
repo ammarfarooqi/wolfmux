@@ -12,7 +12,8 @@
 #
 # It is silent and harmless by construction: no lock, nothing written to the
 # state directory, no tmux session created, nothing on stderr, exit 0 with no
-# output outside a git repository or when a team does not exist. It never dies.
+# output for what belongs to a project (roles, teams, approvals, branches) outside a
+# git repository or when a team does not exist. It never dies.
 # The knowledge (commands, options, values) lives here and nowhere else, so the
 # shims cannot drift from it; tests/docs.sh guards the drift on the other side,
 # against the option parsers.
@@ -30,7 +31,7 @@ complete_emit() {
 }
 
 # complete_project — point PROJECT_STATE / PROJECT_TREES at the current repository,
-# silently. Failures mean "nothing to offer", never an error.
+# silently. Failure means "not in a project": what belongs to one is then not offered.
 complete_project() {
   [ -n "$GIT_BIN" ] || return 1
   ROOT="$(resolve_root 2>/dev/null)" || return 1
@@ -64,6 +65,7 @@ complete_team() {
 # complete_roles <prefix> [workers-only] — the roles of the team the line is about.
 # workers-only is for remove and spawn --from-worktree, which never take the lead.
 complete_roles() {
+  [ "${COMPLETE_IN_PROJECT:-0}" = 1 ] || return 0
   local prefix="$1" workers_only="${2:-}" team role kind label
   team="$(complete_team)"
   [ -n "$team" ] || return 0
@@ -107,6 +109,7 @@ complete_policy_values() {
 # complete_approvals <prefix> — the ids of the PENDING approval requests of the team
 # the line is about (state files, read-only).
 complete_approvals() {
+  [ "${COMPLETE_IN_PROJECT:-0}" = 1 ] || return 0
   local prefix="$1" team file id role tool
   team="$(complete_team)"
   [ -n "$team" ] || return 0
@@ -124,6 +127,7 @@ complete_approvals() {
 
 # complete_branches <prefix> — local branch names of this repository.
 complete_branches() {
+  [ "${COMPLETE_IN_PROJECT:-0}" = 1 ] || return 0
   local prefix="$1" branch
   while IFS= read -r branch; do
     [ -n "$branch" ] || continue
@@ -215,9 +219,9 @@ complete_value() {
     --base | --branch) complete_branches "$prefix" ;;
     --repo) printf '__files__\n' ;;
     --from-worktree) complete_roles "$prefix" workers-only ;;
-    --lead-permissions) complete_policy_choices skip ask ;;
-    --worker-permissions) complete_policy_choices skip lead ask ;;
-    --worker-spawn) complete_policy_choices on off ;;
+    --lead-permissions) complete_policy_choices "$prefix" skip ask ;;
+    --worker-permissions) complete_policy_choices "$prefix" skip lead ask ;;
+    --worker-spawn) complete_policy_choices "$prefix" on off ;;
     *) ;; # free text (a ticket key, a bead id, a session id, a line count): nothing
   esac
 }
@@ -235,6 +239,7 @@ complete_policy_choices() {
 # second argument is printed in front of each name: empty for "--team <Tab>", the
 # typed "--team=" so the shell can match the word in place.
 complete_teams() {
+  [ "${COMPLETE_IN_PROJECT:-0}" = 1 ] || return 0
   local prefix="$1" reprint="$2" team
   while IFS= read -r team; do
     [ -n "$team" ] || continue
@@ -258,9 +263,11 @@ cmd_complete() {
   set +euo pipefail
   trap - EXIT
   [ "${1:-}" = "--" ] && shift
-  # Outside a git repository there is nothing to complete: exit 0, no output, no
-  # stderr. This one guard covers every candidate function below.
-  complete_project 2>/dev/null || exit 0
+  # Commands, options, models, policy keys and layouts need no project: they are offered
+  # anywhere. Roles, teams, approvals and branches belong to one: outside a git repository
+  # those are empty, and that is all that differs (exit 0, nothing on stderr either way).
+  COMPLETE_IN_PROJECT=1
+  complete_project 2>/dev/null || COMPLETE_IN_PROJECT=0
   local -a words=("$@")
   local count=${#words[@]}
   [ "$count" -gt 0 ] || exit 0

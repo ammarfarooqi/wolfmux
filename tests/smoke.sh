@@ -746,7 +746,12 @@ complete_is "completion: --base completes branch names too" '^release$|^main$' "
 complete_is "completion: --repo hands file completion back to the shell" '^__files__$' "spawn" "x" "--repo" ""
 complete_is "completion: completion completes the shells" '^zsh$|^bash$' "completion" ""
 check "completion: it left the state directory, the tmux sessions and stderr untouched" '[ "$(find "$WOLFMUX_DATA" | sort)" = "$COMP_BEFORE" ] && [ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" ls 2>/dev/null | wc -l | tr -d " ")" = "$COMP_SESSIONS" ] && [ ! -s "$comp_err" ]'
-check "completion: outside a git repository exit is 0 with no output and no stderr" 'cd "$WORK" && out="$("$REPO/bin/teamctl" _complete -- "" 2>"$comp_err")"; rc=$?; cd "$PROJECT"; [ "$rc" -eq 0 ] && [ -z "$out" ] && [ ! -s "$comp_err" ]'
+/bin/rm -f "$APPROVALS/A90.json" # the request planted above: no later check may find it pending
+complete_is "completion: start --lead-permissions completes its choices" '^skip$|^ask$' "start" "fable" "--lead-permissions" ""
+complete_is "completion: spawn --worker-spawn is not an option of spawn, start's is completed with on and off" '^on$|^off$' "start" "fable" "--worker-spawn" ""
+outside() { (cd "$WORK" && "$REPO/bin/teamctl" _complete -- "$@" 2>"$comp_err"); } # $WORK is no git repository
+check "completion: outside a git repository what needs no project is still offered: commands, options, models, policy keys" 'outside "" | grep -q "^restart	" && outside start "--" | grep -q "^--continue" && outside spawn x "" | grep -q "^fable	" && outside policy "" | grep -qx "worker-spawn" && [ ! -s "$comp_err" ]'
+check "completion: outside a git repository what belongs to a project is empty, exit 0, nothing on stderr: roles, teams, branches, approvals" 'for words in "restart|" "--team|" "spawn|x|--base|" "approve|"; do old_ifs="$IFS"; IFS="|"; set -- $words ""; IFS="$old_ifs"; out="$(outside "$@")" || exit 1; [ -z "$out" ] || exit 1; done; [ ! -s "$comp_err" ]'
 
 echo "== tab completion (the shims)"
 SHIM_DIR="$REPO/config/wolfmux/completion"

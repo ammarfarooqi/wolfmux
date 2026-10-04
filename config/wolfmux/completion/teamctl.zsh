@@ -15,7 +15,7 @@ _teamctl() {
   # by the word under the cursor, so the shim only presents.
   out="$(command teamctl _complete -- "${words[@]:1:$((CURRENT-1))}" 2>/dev/null)" || out=""
   if [[ "$out" == "__files__" ]]; then
-    _files
+    _files -/ # --repo takes a directory
     return
   fi
   matches=()
