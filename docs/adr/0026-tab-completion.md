@@ -38,8 +38,10 @@ Consequences:
   the parsers they mirror; `tests/docs.sh` guards it from the other side by asking
   `_complete` for every command and parser option.
 - The backend runs at every Tab. It does nothing but read: no lock, no state write,
-  no tmux session, exit 0 and no output outside a git repository or when a team
-  does not exist. It never dies (`set +euo pipefail`, trap cleared), and it answers
+  no tmux session. Commands, options, models, policy keys and layouts need no project
+  and are offered anywhere; roles, teams, approvals and branches belong to one, and
+  outside a git repository (or for a team that does not exist) they are simply empty,
+  exit 0, nothing on stderr. It never dies (`set +euo pipefail`, trap cleared), and it answers
   in well under the 100 ms a keypress tolerates (measured about 45 ms per call,
   against `teamctl version` at 40 ms on the same machine).
 - `teamctl completion <zsh|bash>` prints a shim, so `source <(teamctl completion zsh)`
