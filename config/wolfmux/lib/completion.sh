@@ -204,7 +204,7 @@ complete_options() {
       --handover) complete_emit "$prefix" "$option" "<bead-id>: the new lead starts by reading it" ;;
       --id) complete_emit "$prefix" "$option" "<bead-id>: the bead this is about" ;;
       --lines) complete_emit "$prefix" "$option" "<count>: how many lines" ;;
-      --resume) complete_emit "$prefix" "$option" "<session-id>: resume a specific session" ;;
+      --resume) complete_emit "$prefix" "$option" "<session-id>: reopen the conversation you name" ;;
       *) complete_emit "$prefix" "$option" ;;
     esac
   done
