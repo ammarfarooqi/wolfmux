@@ -929,8 +929,10 @@ cmd_restart() {
     elif [ "$resume" -eq 0 ]; then
       reg_set "$role" session_id "$(new_session_id "$workdir" || true)"
     fi
-    if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then meta_put lead_session "$(reg_field "$role" session_id)"; fi
   fi
+  # What the team remembers is the conversation of the lead it has now: a Codex lead has none, and the id
+  # of a Claude lead from before it must not come back for the next one.
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then meta_put lead_session "$(reg_field "$role" session_id)"; fi
 
   if [ "$resume" -eq 1 ]; then agent_command "$role" --continue; else agent_command "$role"; fi
   pane="$(tm_pane_for_role "$SESSION" "$role")"
