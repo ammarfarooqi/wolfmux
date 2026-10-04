@@ -449,7 +449,7 @@ adds two lines to its block in `~/.zshrc`, and upgrades a block from before; it 
 it at 255k tokens of context, before it had committed, and finished the last checks at integration:
 outside a git repository it had offered nothing at all, which is where the owner pressed Tab.
 
-`tests/smoke.sh`: 250 → 318. `tests/docs.sh`: 32 → 36. `tests/migration.sh`: 24 → 33. v1.12.0.
+`tests/smoke.sh`: 250 → 327. `tests/docs.sh`: 32 → 36. `tests/migration.sh`: 24 → 36. v1.12.0.
 
 ## Footprint on the machine
 
