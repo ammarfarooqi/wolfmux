@@ -163,6 +163,17 @@ check "completion: --no-completion skips only the completion lines" '"$REPO/inst
 check "completion: a plain install re-adds what --no-completion skipped (the upgrade stays idempotent)" '"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1 && [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ]'
 strip_completion_lines
 check "completion: --no-path leaves ~/.zshrc untouched" 'hash_before="$(shasum -a 256 "$HOME/.zshrc")"; "$REPO/install.sh" --no-path --no-completion --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ "$(shasum -a 256 "$HOME/.zshrc")" = "$hash_before" ]'
+# A ~/.zshrc that is a symlink into a dotfiles folder, readable by its owner only: it is written through, not replaced.
+/bin/mkdir -p "$HOME/dotfiles" && /bin/mv "$HOME/.zshrc" "$HOME/dotfiles/zshrc" && /bin/ln -s "$HOME/dotfiles/zshrc" "$HOME/.zshrc" && /bin/chmod 600 "$HOME/dotfiles/zshrc"
+strip_through() { sed -e '/completion\/teamctl.zsh/d' -e '/Tab completion for teamctl/d' "$HOME/dotfiles/zshrc" >"$WORK/zshrc.stripped" && /bin/cat "$WORK/zshrc.stripped" >"$HOME/dotfiles/zshrc"; }
+strip_through
+check "completion: a symlinked ~/.zshrc stays a symlink, its target gets the lines and keeps its mode (0600)" '"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ -L "$HOME/.zshrc" ] && [ "$(grep -c "completion/teamctl.zsh" "$HOME/dotfiles/zshrc")" = 1 ] && [ "$(stat -f %Lp "$HOME/dotfiles/zshrc")" = 600 ]'
+/bin/cp "$HOME/dotfiles/zshrc" "$WORK/zshrc.whole"
+printf '\n# >>> wolfmux >>> (a block somebody cut the end off)\n[[ -d "$HOME/bin" ]] && path+=("$HOME/bin")\n' >"$HOME/dotfiles/zshrc"
+check "completion: a block without its closing marker is left alone, and the installer says so instead of claiming it added the lines" 'before="$(shasum -a 256 "$HOME/dotfiles/zshrc")"; out="$("$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app 2>&1)"; [ "$(shasum -a 256 "$HOME/dotfiles/zshrc")" = "$before" ] && printf "%s" "$out" | grep -q "closing marker" && ! printf "%s" "$out" | grep -q "added tab completion"'
+/bin/cat "$WORK/zshrc.whole" >"$HOME/dotfiles/zshrc"
+check "completion: uninstall writes through a symlinked ~/.zshrc as well (still a symlink, mode kept)" '"$REPO/uninstall.sh" >/dev/null 2>&1; [ -L "$HOME/.zshrc" ] && [ "$(stat -f %Lp "$HOME/dotfiles/zshrc")" = 600 ] && ! grep -q ">>> wolfmux >>>" "$HOME/dotfiles/zshrc"'
+"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1
 check "completion: uninstall takes the completion files away with the block" '"$REPO/uninstall.sh" >/dev/null 2>&1 && [ ! -e "$HOME/.config/wolfmux" ] && ! grep -q ">>> wolfmux >>>" "$HOME/.zshrc" && ! grep -q "completion/teamctl.zsh" "$HOME/.zshrc"'
 
 echo

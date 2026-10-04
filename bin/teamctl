@@ -80,7 +80,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl diff <role> [--stat|--names|--commits|--working]
   Tab completion
     teamctl completion <zsh|bash>                     print the tab-completion script of that shell, so
-                                                      source <(teamctl completion zsh) works; install.sh
+                                                      source <(teamctl completion zsh) works, and in bash
+                                                      eval "$(teamctl completion bash)"; install.sh
                                                       wires it into ~/.zshrc (then: teamctl <Tab>)
   Housekeeping
     teamctl doctor [--probe]                          provider / billing isolation report; --probe also asks each provider whose

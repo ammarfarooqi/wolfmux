@@ -744,6 +744,11 @@ complete_is "completion: deny offers the ids from their prefix" '^A90$|^A90	' "-
 complete_is "completion: --branch and --base complete local branch names" '^main$|^release$' "spawn" "x" "--branch" ""
 complete_is "completion: --base completes branch names too" '^release$|^main$' "spawn" "x" "--base" ""
 complete_is "completion: --repo hands file completion back to the shell" '^__files__$' "spawn" "x" "--repo" ""
+complete_empty "completion: after an option that takes free text nothing is offered: restart --resume" "--team" "default" "restart" "--resume" ""
+complete_empty "completion: the same for start --handover (no models) and nudge --id (no roles)" "start" "--handover" ""
+complete_empty "completion: and for nudge --id" "--team" "default" "nudge" "--id" ""
+complete_empty "completion: and for capture -n" "--team" "default" "capture" "-n" ""
+complete_is "completion: capture -n 20 <Tab> offers the roles: -n took its value" '^backend	' "--team" "default" "capture" "-n" "20" ""
 complete_is "completion: completion completes the shells" '^zsh$|^bash$' "completion" ""
 check "completion: it left the state directory, the tmux sessions and stderr untouched" '[ "$(find "$WOLFMUX_DATA" | sort)" = "$COMP_BEFORE" ] && [ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" ls 2>/dev/null | wc -l | tr -d " ")" = "$COMP_SESSIONS" ] && [ ! -s "$comp_err" ]'
 /bin/rm -f "$APPROVALS/A90.json" # the request planted above: no later check may find it pending
@@ -760,6 +765,12 @@ check "shims: the zsh shim registers _teamctl with compdef when compinit has run
 check "shims: without compinit the zsh shim is silent, errors nowhere, and registers nothing" 'zsh -f -c "out=\$(source $SHIM_DIR/teamctl.zsh 2>&1); print -r -- \"\$out\${_comps[teamctl]-none}\"" | grep -qx "none"'
 check "shims: a real bash completion for teamctl re<TAB> offers remove and restart" 'PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl re); COMP_CWORD=1; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"" | grep -qx "remove" && PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl re); COMP_CWORD=1; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"" | grep -qx "restart"'
 check "shims: bash completes the values too (models) and falls back to directories on __files__" 'PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl spawn x \"\"); COMP_CWORD=3; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"" | grep -qx "glm53" && ( cd "$WORK" && PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl spawn x --repo \"\"); COMP_CWORD=4; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"" | grep -qx "data" )'
+git branch 'a$(x)' >/dev/null 2>&1 # git takes almost anything as a branch name; a shell must not run it
+check "shims: bash inserts a hostile branch name quoted, never as it is (a\$(x) could run on Enter)" 'out="$(PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl spawn x --base a); COMP_CWORD=4; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"")"; printf "%s\n" "$out" | grep -Fqx "a\\\$\\(x\\)" && ! printf "%s\n" "$out" | grep -Fqx "a\$(x)"'
+git branch -D 'a$(x)' >/dev/null 2>&1
+check "shims: the documented way to load it works in macOS bash 3.2 (eval, not source <(…)) and registers the completer" 'PATH="$REPO/bin:$PATH" /bin/bash --noprofile --norc -c "eval \"\$(teamctl completion bash)\"; complete -p teamctl" | grep -q -- "-F _teamctl_bash teamctl"'
+check "shims: a reader that has gone away before the script is printed is no crash: nothing on stderr (it was: stopped unexpectedly, exit 141)" '{ sleep 1; teamctl completion bash 2>"$WORK/completion.err"; } | true; [ ! -s "$WORK/completion.err" ]'
+check "shims: the documented way to load it in zsh (source <(teamctl completion zsh)) registers the completer" 'PATH="$REPO/bin:$PATH" zsh -f -c "autoload -Uz compinit; compinit -u -d $WORK/zcompdump2; source <(teamctl completion zsh); print -r -- \$_comps[teamctl]" | grep -qx "_teamctl"'
 check "shims: teamctl completion prints them; no argument or an unknown shell is a usage error (exit 64)" 'teamctl completion zsh | grep -q "_teamctl" && teamctl completion bash | grep -q "_teamctl_bash" && { teamctl completion tcsh >/dev/null 2>&1; [ $? -eq 64 ]; } && { teamctl completion >/dev/null 2>&1; [ $? -eq 64 ]; }'
 
 echo "== a lead recovers and cleans up a team it founded (issue #2)"

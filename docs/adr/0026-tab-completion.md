@@ -42,10 +42,12 @@ Consequences:
   and are offered anywhere; roles, teams, approvals and branches belong to one, and
   outside a git repository (or for a team that does not exist) they are simply empty,
   exit 0, nothing on stderr. It never dies (`set +euo pipefail`, trap cleared), and it answers
-  in well under the 100 ms a keypress tolerates (measured about 45 ms per call,
+  in under the 100 ms a keypress tolerates (measured between 45 and 95 ms per call,
   against `teamctl version` at 40 ms on the same machine).
 - `teamctl completion <zsh|bash>` prints a shim, so `source <(teamctl completion zsh)`
-  works wherever the tool is installed. install.sh copies the shims and sources the
+  works wherever the tool is installed; in bash it is `eval "$(teamctl completion bash)"`,
+  because bash 3.2 cannot source a process substitution. The bash shim quotes every
+  candidate before it is inserted (a branch name may hold `$(…)`); zsh does that itself. install.sh copies the shims and sources the
   zsh one from the wolfmux block in `~/.zshrc`; an install from before completion is
   upgraded in place, after a backup, exactly once.
 

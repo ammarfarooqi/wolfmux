@@ -290,7 +290,7 @@ cmd_complete() {
         fi
         ;;
       --team=*) COMPLETE_TEAM="${w#--team=}" ;;
-      --base | --branch | --repo | --from-worktree | --handover | --ticket | --id | --lines | --lead-permissions | --worker-permissions | --worker-spawn | --resume)
+      --base | --branch | --repo | --from-worktree | --handover | --ticket | --id | --lines | -n | --lead-permissions | --worker-permissions | --worker-spawn | --resume)
         # The option's value may stand after it, or be the word under the cursor.
         [ $((i + 1)) -lt $((count - 1)) ] && i=$((i + 1))
         ;;
@@ -320,6 +320,16 @@ cmd_complete() {
           complete_value "$prev" "$cur"
           exit 0
           ;;
+      esac
+      ;;
+  esac
+  # An option that takes free text (a conversation id, a bead id, a ticket key, a line count): nothing
+  # can be offered for it, and above all not the roles or models of the position it stands in.
+  case "$prev" in
+    --resume | --id | --handover | --ticket | --lines | -n)
+      case "$cur" in
+        -*) ;;
+        *) exit 0 ;;
       esac
       ;;
   esac
@@ -394,5 +404,5 @@ cmd_completion() {
   esac
   file="$WOLFMUX_HOME/completion/teamctl.$shell"
   [ -r "$file" ] || die "no completion script for $shell at $(short_path "$file") (install.sh puts it there)"
-  /bin/cat "$file"
+  /bin/cat "$file" 2>/dev/null || true # a reader that went away early is not an error, and not a crash to report
 }

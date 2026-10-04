@@ -235,7 +235,6 @@ if [ "$DO_PATH" -eq 1 ]; then
     # without the source line: insert the two lines before the closing marker, after
     # a backup, and only when they are not there yet (idempotent).
     if [ "$DO_COMPLETION" -eq 1 ] && ! grep -q 'completion/teamctl.zsh' "$HOME/.zshrc"; then
-      backup "$HOME/.zshrc"
       tmp="$HOME/.zshrc.tmp.$$"
       awk '
         /^# <<< wolfmux <<</ && !inserted {
@@ -244,8 +243,17 @@ if [ "$DO_PATH" -eq 1 ]; then
           inserted = 1
         }
         { print }
-      ' "$HOME/.zshrc" >"$tmp" && /bin/mv -f "$tmp" "$HOME/.zshrc"
-      note "added tab completion to the wolfmux block (open a new terminal, then: teamctl <Tab>)"
+      ' "$HOME/.zshrc" >"$tmp"
+      if grep -q 'completion/teamctl.zsh' "$tmp"; then
+        backup "$HOME/.zshrc"
+        # Written through, not moved over it: a ~/.zshrc that is a symlink stays one, and the
+        # file keeps its mode and its owner.
+        /bin/cat "$tmp" >"$HOME/.zshrc"
+        note "added tab completion to the wolfmux block (open a new terminal, then: teamctl <Tab>)"
+      else
+        note "the wolfmux block in ~/.zshrc has no closing marker (# <<< wolfmux <<<), so tab completion was not added and nothing was changed. Put the marker back, or delete the block and run ./install.sh again."
+      fi
+      /bin/rm -f "$tmp"
     else
       note "block already present"
     fi

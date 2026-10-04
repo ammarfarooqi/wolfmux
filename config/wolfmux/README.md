@@ -301,7 +301,8 @@ integration. Full rules: `TEAM_PROTOCOL.md` (injected into every agent at launch
 ## Tab completion
 
 ```bash
-teamctl completion zsh | source /dev/stdin   # or: teamctl completion bash
+source <(teamctl completion zsh)       # zsh, without install.sh
+eval "$(teamctl completion bash)"      # bash (3.2 cannot source a process substitution)
 ```
 
 `./install.sh` puts the shims in `~/.config/wolfmux/completion/` and sources the zsh

@@ -83,7 +83,7 @@ Start with `teamctl doctor`, then `teamctl status`, then `teamctl capture <role>
 |---------|-------|-----|
 | `teamctl <Tab>` offers nothing | the wolfmux block in `~/.zshrc` is read when a terminal opens; an already-open terminal has not sourced it | open a new terminal and try again |
 | `teamctl <Tab>` offers nothing in a new terminal | zsh loads `compinit` late (oh-my-zsh and some frameworks run it inside their init); the completer registers only when a completion system is already loaded | the block sits at the very end of `~/.zshrc`, which is right for oh-my-zsh. A shell that never runs compinit needs `autoload -Uz compinit && compinit` above the wolfmux block |
-| you use bash, not zsh | install.sh wires only the zsh shim into `~/.zshrc` | `echo 'source <(teamctl completion bash)' >> ~/.bashrc` |
+| you use bash, not zsh | install.sh wires only the zsh shim into `~/.zshrc` | `echo 'eval "$(teamctl completion bash)"' >> ~/.bashrc` (not `source <(…)`: macOS bash 3.2 cannot source a process substitution) |
 | Tab offers commands but not roles or teams | the backend resolves the project through the directory you are in | `cd` into the project (the main checkout or any of its worktrees) and try again |
 
 ## Useful one-liners

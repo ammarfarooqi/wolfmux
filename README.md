@@ -127,8 +127,8 @@ The knowledge lives in one backend inside teamctl (`teamctl _complete`); the zsh
 bash shims in `~/.config/wolfmux/completion/` are thin and only present what it
 answers ([ADR-0026](docs/adr/0026-tab-completion.md)). The zsh shim registers only
 when a completion system is loaded (compinit): it never switches one on by itself.
-To try it without install.sh, or in bash: `source <(teamctl completion zsh)` or
-`source <(teamctl completion bash)`. Tab offers nothing? See
+To try it without install.sh: `source <(teamctl completion zsh)`. In bash:
+`eval "$(teamctl completion bash)"` (bash 3.2 cannot source a process substitution). Tab offers nothing? See
 [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#tab-completion).
 
 ### Branch names and other repositories
