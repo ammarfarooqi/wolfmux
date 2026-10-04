@@ -229,7 +229,7 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
-| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use and share of the window, read from the agent's newest transcript; `-` when there is none) |
+| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use and share of the window, read from the transcript of the agent's own conversation; `-` when there is none) |
 | `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
 | `teamctl panes` | tmux's view: command, pid, cwd |
 | `teamctl capture <role> [-n\|--lines N] [--all]`, `teamctl log <role>` | recent / full terminal output — for diagnosing a stuck agent, never for task state |
@@ -337,14 +337,22 @@ the same for the lead. After a reboot no tmux session is left at all: `teamctl r
 conversation, then `restart` each teammate. To end a team on purpose: `teamctl destroy`.
 
 **Which conversation comes back.** Every Claude-family agent is given its own conversation id
-when it starts, and `--continue` reopens exactly that one — so with several teams in one
+when it starts, and `--continue` reopens exactly that one. So with several teams in one
 project each lead comes back in its own conversation, not in whichever was written to last.
 `teamctl status --json` prints the stored id per agent (`.agents[].session_id`), and
 `--resume <session-id>` pins a different one; it is stored, and it wins over `--continue`.
-An agent recorded before this existed has no stored id: `--continue` then falls back to the
-newest conversation in that folder and says so in one warning line. Codex-family agents
-(`astra`, `codex:<id>`) have no id flag; they resume their own last conversation, which in a
-shared folder carries the same ambiguity.
+The lead's id is kept with the team, so `teamctl destroy` in the evening and `teamctl start
+<model> --continue` in the morning is the same conversation. Three cases are worth knowing:
+
+| Case | What `--continue` does |
+|------|------------------------|
+| the agent never said a word (the CLI wrote no transcript, and refuses to resume an id without one) | starts that conversation fresh, under the same id, and says so in the pane |
+| no id on record: an agent from before 1.12, a first `start --continue`, a team that was purged | what it did before: the newest conversation in that folder, with one warning line. In a shared folder that is a guess; pin one with `--resume <session-id>` |
+| a Codex-family agent (`astra`, `codex:<id>`) | `resume --last`: Codex takes no conversation id from teamctl, so in a shared folder the ambiguity stays. `--resume` is refused for it (exit 64) |
+
+`--resume` of an id that has no transcript anywhere is refused before anything is restarted.
+`teamctl status` reads CONTEXT from the same conversation, by id, so two leads in one folder
+each show their own.
 
 Notifications and the session names (`🐺 team/lead`, `🐶 team/<role>`) reach an agent when it starts:
 after an update, `teamctl restart <role> --continue`.

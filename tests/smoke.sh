@@ -46,6 +46,7 @@ fake_conversation() {
 spoke() {
   local row
   row="$("$REPO/bin/teamctl" status --json ${2:+--team "$2"} | jq -c --arg r "$1" '[.agents[] | select(.role == $r)][0]')"
+  [ -n "$(printf '%s' "$row" | jq -r '.session_id // empty')" ] || return 1
   fake_conversation "$(printf '%s' "$row" | jq -r .session_id)" "$(printf '%s' "$row" | jq -r .workdir)"
 }
 
@@ -575,9 +576,8 @@ check "start again: asking for the other lead model brings the lead back as that
 for pane in $(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F '#{pane_id}'); do end_agent "$pane"; done
 sleep 1
 check "start again: status says the session has ended when every agent has exited" 'follow status | grep -q "ended: every agent has exited"'
-spoke lead
 check "start again: when every agent has exited, start opens a fresh session, not the dead one" 'follow start fable --no-attach --skip-beads --continue && sleep 1 && [ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a | wc -l | tr -d " ")" = 1 ] && follow status --json | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and ([.agents[] | select(.role == \"docs\")][0].state == \"stopped\")"'
-check "start again: --continue resumes the lead's OWN conversation (its stored id), not the newest transcript" 'id="$(follow status --json | jq -r "[.agents[] | select(.role == \"lead\")][0].session_id")"; [ -n "$id" ] && teamctl capture lead --all | grep -q "STUB resumed=$id"'
+check "start again: --continue with no conversation on record (the lead that exited was a Codex one) is what it always was, the newest one in the folder, and the pane says so; no id is invented for the CLI to refuse" '[ -z "$(follow status --json | jq -r "[.agents[] | select(.role == \"lead\")][0].session_id")" ] && teamctl capture lead --all | grep -q "STUB flags=.*--continue" && teamctl capture lead --all | grep -q "STUB resumed=none" && teamctl capture lead --all | grep -q "no stored conversation id for .lead."'
 check "start again: a stopped worker kept its worktree and returns with restart" 'follow restart docs && sleep 1 && follow status --json | jq -e "[.agents[] | select(.role == \"docs\")][0].state == \"running\"" && lead_left'
 # The tmux server is gone (a reboot, or tmux was ended): every record remains, no session does.
 follow start astra --team night --no-attach --skip-beads >/dev/null 2>&1
@@ -695,7 +695,9 @@ sleep 1
 check "founder: once its lead has exited the team is orphaned: teams and status say so, and who may act on it" 'teamctl teams | grep -E "^child +orphaned " | grep -q "review.lead" && teamctl teams | grep -q "child is orphaned: its lead is not running. May act on it: you, review.lead (its founder)" && teamctl status --json --team child | jq -e ".orphaned == true and .founder == \"review.lead\"" && teamctl status --team child | grep -q "orphaned: its lead is not running. May act on it: you, review.lead (its founder)" && teamctl status --json --team review | jq -e ".orphaned == false"'
 check "founder: teams --json carries founder and orphaned as well" 'teamctl teams --json | jq -e "([.[] | select(.team == \"child\")][0] | .orphaned == true and .founder == \"review.lead\" and .state == \"orphaned\") and ([.[] | select(.team == \"review\")][0] | .orphaned == false and .founder == \"operator\")"'
 check "founder: an orphaned team is still closed to a third party (exit 77), and the founder gets no more than restart, stop, remove and destroy (policy stays with the lead)" 'refused_for "default lead" no "stop lead" "restart lead" "destroy --purge --force" "start fable --continue" && refused_for "review backend" no "stop lead" "restart lead --continue" && refused_for "review lead" no "policy worker-spawn on"'
-check "founder: it restarts the orphaned lead in its last conversation (exit 0), you are told, and it stays the founder" ': >"$WORK/tty-founder"; as_agent review lead restart lead --continue --team child </dev/null && sleep 1 && teamctl status --json --team child | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and .founder == \"review.lead\" and .orphaned == false" && teamctl capture lead --team child --all | grep -q "STUB flags=.*--continue" && grep -q "review.lead restarted team .child., which it founded" "$WORK/tty-founder"'
+spoke lead child
+CHILD_CONVERSATION="$(teamctl status --json --team child | jq -r '[.agents[] | select(.role == "lead")][0].session_id')"
+check "founder: it restarts the orphaned lead in its last conversation (exit 0), you are told, and it stays the founder" ': >"$WORK/tty-founder"; as_agent review lead restart lead --continue --team child </dev/null && sleep 1 && teamctl status --json --team child | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and .founder == \"review.lead\" and .orphaned == false" && [ -n "$CHILD_CONVERSATION" ] && teamctl capture lead --team child --all | grep -q "STUB resumed=$CHILD_CONVERSATION" && grep -q "review.lead restarted team .child., which it founded" "$WORK/tty-founder"'
 check "founder: the event log says who acted (by is the founder's Beads identity, not the plain role)" 'jq -e "select(.type == \"restart\" and .role == \"lead\" and .by == \"review.lead\")" "$CHILD_DIR/events.jsonl"'
 tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$CHILD_SESSION" >/dev/null 2>&1
 sleep 1
@@ -705,7 +707,9 @@ sleep 1
 check "restart without a session: a plain restart by you keeps the founder, the handover and the creation time as well (wolfmux-a65)" 'teamctl restart lead --team child </dev/null && sleep 2 && teamctl status --json --team child | jq -e ".founder == \"review.lead\" and .agents[0].spawned_by == \"review.lead\"" && teamctl capture lead --team child --all | grep -q "STUB lastarg=.*abc-88" && [ "$(jq -r .created_at "$CHILD_LEAD_RECORD")" = "$CHILD_CREATED" ]'
 tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$CHILD_SESSION" >/dev/null 2>&1
 sleep 1
-check "founder: start <model> --team <team> --continue works for the founder of a team whose lead is not running" 'as_agent review lead start fable --team child --continue --no-attach --skip-beads && sleep 2 && teamctl status --json --team child | jq -e ".founder == \"review.lead\" and .orphaned == false" && teamctl capture lead --team child --all | grep -q "STUB flags=.*--continue" && [ "$(jq -r .handover "$CHILD_LEAD_RECORD")" = abc-88 ]'
+spoke lead child # the plain restart above gave it a new conversation: it said something in that one too
+CHILD_CONVERSATION="$(teamctl status --json --team child | jq -r '[.agents[] | select(.role == "lead")][0].session_id')"
+check "founder: start <model> --team <team> --continue works for the founder of a team whose lead is not running" 'as_agent review lead start fable --team child --continue --no-attach --skip-beads && sleep 2 && teamctl status --json --team child | jq -e ".founder == \"review.lead\" and .orphaned == false" && [ -n "$CHILD_CONVERSATION" ] && teamctl capture lead --team child --all | grep "STUB resumed=" | tail -1 | grep -q "resumed=$CHILD_CONVERSATION" && [ "$(jq -r .handover "$CHILD_LEAD_RECORD")" = abc-88 ]'
 end_agent "$(lead_pane_of child)"
 sleep 1
 check "founder: it stops the founded team's lead while that lead is not running (exit 0), and you are told" ': >"$WORK/tty-founder"; as_agent review lead stop lead --team child && teamctl status --json --team child | jq -e "[.agents[] | select(.role == \"lead\")][0].state == \"stopped\"" && grep -q "review.lead stopped the lead of team .child., which it founded" "$WORK/tty-founder"'

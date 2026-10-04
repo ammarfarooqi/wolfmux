@@ -539,13 +539,15 @@ ls ~/.wolfmux/state ~/.wolfmux/worktrees    # per-project state and worktrees
 - With several teams, every lead works in your checkout on the branch that is checked out
   there. Teammates are apart in worktrees; leads are not. Let one lead integrate at a time.
 - Each Claude-family agent is given its own conversation id when it starts, and `--continue`
-  reopens that id — so two leads in one folder come back in their own conversations. The
-  stored id is in `teamctl status --json` (`.agents[].session_id`), and
-  `teamctl restart <role> --resume <session-id>` pins a different one. An agent recorded
-  before ids were stored has none: `--continue` then falls back to the newest conversation in
-  the folder (which with two leads there may be the other one's) and warns in one line.
-  Codex-based agents have no id flag: they resume their own last conversation, and in a
-  shared folder that stays ambiguous.
+  reopens that id, so two leads in one folder come back in their own conversations. The
+  stored id is in `teamctl status --json` (`.agents[].session_id`), the lead's is kept with
+  the team across `teamctl destroy`, and `teamctl restart <role> --resume <session-id>` pins a
+  different one (an id without a transcript is refused). An agent that never said a word has
+  nothing to resume: `--continue` starts its conversation fresh under the same id. An agent
+  with no id on record (from before 1.12, or a first `start --continue`) falls back to the
+  newest conversation in the folder, which with two leads there may be the other one's, and
+  warns in one line. Codex-based agents take no id: they resume their own last conversation,
+  and in a shared folder that stays ambiguous.
 - Codex-based agents (`astra`, `codex:<id>`) have no worktree guard and no lead-approval
   mode: Codex offers no hook for either. They do send notifications.
 

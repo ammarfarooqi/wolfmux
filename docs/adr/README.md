@@ -30,3 +30,4 @@ build; superseded decisions will link to their replacement.
 | [0023](0023-founder-recovers-an-orphaned-team.md) | A founder recovers or cleans up a team whose lead is not running | accepted | 2026-09-23 |
 | [0024](0024-doctor-probe-and-key-sources.md) | `teamctl doctor --probe`: an unbilled key check, and which console each Kimi key comes from | accepted | 2026-09-23 |
 | [0025](0025-context-use-and-worktree-handover.md) | Context use in status, and a fresh conversation in a built worktree | accepted | 2026-09-23 |
+| [0027](0027-every-agent-resumes-its-own-conversation.md) | Every agent resumes its own conversation, by id | accepted | 2026-10-04 |
