@@ -421,6 +421,25 @@ template like any other. Left out on purpose: a warm idle worker, isolation per 
 
 `tests/smoke.sh`: 184 → 250. `tests/providers.sh`: 116 → 134. `tests/docs.sh`: 28 → 32. v1.11.0.
 
+## 25. Four leads, one conversation (v1.12)
+
+On 2026-09-24 four teams shared one project folder, all four leads were restarted with `--continue`,
+and all four came back in the same conversation (issue #7). `--continue` meant `claude --continue`,
+the newest transcript **of the folder**, and every lead of a project works in the same folder, next to
+the owner's own sessions. The owner's fix (PR #8) gives every Claude-family agent its own conversation
+id at start and resumes that one; `--resume <session-id>` pins one by hand.
+
+That fix was tested with the stub agent, which accepts anything. Asked directly, the real CLI refuses
+two things, and both were on ordinary paths: it will not resume an id that has no transcript, and it
+will not start a new conversation under an id that has one. So `teamctl destroy` in the evening and
+`teamctl start fable --continue` in the morning, the most ordinary way back, gave a lead that exited
+at once: the record was gone, a new id was minted, and the CLI was asked to resume it. Now the lead's
+id is kept with the team, an agent that never spoke starts fresh under its id, a team with no id on
+record keeps the old `--continue` (with its warning), and `tests/stub-agent` refuses what the CLI
+refuses, so the suite can see these paths ([ADR-0027](adr/0027-every-agent-resumes-its-own-conversation.md)).
+The same fault sat in `teamctl status`: CONTEXT was read from the newest transcript of the folder, so
+every lead showed the same number. It reads the agent's own conversation now.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
