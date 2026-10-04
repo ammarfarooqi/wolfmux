@@ -660,6 +660,102 @@ teamctl policy lead-teams off --team default >/dev/null 2>&1
 check "teams: teamctl policy lead-teams off keeps founding teams to you" 'as_lead start fable --team another --no-attach --skip-beads; [ $? -eq 77 ] && ! teamctl teams | grep -q "^another "'
 teamctl policy lead-teams on --team default >/dev/null 2>&1
 
+echo "== tab completion (teamctl _complete: read-only, silent, harmless)"
+# Two teams exist here (default and review). A pending approval file is written BY HAND
+# (never by _complete) before the snapshot below, so approve/deny have something to offer.
+APPROVALS="$(/bin/ls -d "$WOLFMUX_DATA"/state/*/)approvals"
+/bin/mkdir -p "$APPROVALS"
+jq -n '{id: "A90", role: "backend", tool: "Bash", summary: "test", cwd: ".", status: "pending", created_at: "x", created_epoch: 0, decided_by: "", reason: ""}' >"$APPROVALS/A90.json"
+COMP_BEFORE="$(find "$WOLFMUX_DATA" | sort)"
+COMP_SESSIONS="$(tmux -L "$WOLFMUX_TMUX_SOCKET" ls 2>/dev/null | wc -l | tr -d ' ')"
+comp_err="$WORK/complete.err"
+complete_is() { # <description> <expected-grep-ERE> <args after "teamctl _complete --">
+  local desc="$1" pattern="$2"
+  shift 2
+  local out
+  out="$("$REPO/bin/teamctl" _complete -- "$@" 2>"$comp_err")"
+  local rc=$?
+  if [ "$rc" -eq 0 ] && [ ! -s "$comp_err" ] && printf '%s\n' "$out" | grep -Eq -- "$pattern"; then
+    passed=$((passed + 1))
+    printf '  pass  %s\n' "$desc"
+  else
+    failed=$((failed + 1))
+    printf '  FAIL  %s (rc=%s out=%s)\n' "$desc" "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  fi
+}
+complete_isnt() { # <description> <forbidden-grep-ERE> <args ...>: rc 0, silent, and no match
+  local desc="$1" pattern="$2"
+  shift 2
+  local out
+  out="$("$REPO/bin/teamctl" _complete -- "$@" 2>"$comp_err")"
+  local rc=$?
+  if [ "$rc" -eq 0 ] && [ ! -s "$comp_err" ] && ! printf '%s\n' "$out" | grep -Eq -- "$pattern"; then
+    passed=$((passed + 1))
+    printf '  pass  %s\n' "$desc"
+  else
+    failed=$((failed + 1))
+    printf '  FAIL  %s (rc=%s out=%s)\n' "$desc" "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  fi
+}
+complete_empty() { # <description> <args ...>: rc 0, silent, no output at all
+  local desc="$1"
+  shift
+  local out
+  out="$("$REPO/bin/teamctl" _complete -- "$@" 2>"$comp_err")"
+  local rc=$?
+  if [ "$rc" -eq 0 ] && [ ! -s "$comp_err" ] && [ -z "$out" ]; then
+    passed=$((passed + 1))
+    printf '  pass  %s\n' "$desc"
+  else
+    failed=$((failed + 1))
+    printf '  FAIL  %s (rc=%s out=%s)\n' "$desc" "$rc" "$(printf '%s' "$out" | tr '\n' '|')"
+  fi
+}
+complete_is "completion: the first word offers the public commands with descriptions" '^start	|^spawn	|^status	|^doctor	' ""
+complete_is "completion: the aliases workers, open and log are offered" '^workers	|^open	|^log	' ""
+complete_is "completion: --team, help and version are offered as the first word" '^--team	|^help	|^version	' ""
+complete_empty "completion: no internal command is offered" "_"
+complete_is "completion: re<TAB> offers remove and restart" '^remove	|^restart	' "re"
+complete_is "completion: the options of start" '^--no-attach	|^--continue	|^--handover	|^--ticket	|^--init-beads	|^--skip-beads	|^--lead-permissions	|^--worker-permissions	|^--worker-spawn	|^--resume	' "start" "--"
+complete_is "completion: the options of spawn, --resume included" '^--base	|^--from-worktree	|^--branch	|^--ticket	|^--repo	|^--no-kickoff	|^--resume	' "spawn" "--"
+complete_is "completion: the options of capture and doctor" '^--lines$|^--all$' "capture" "--"
+complete_is "completion: doctor offers --probe; diff its modes" '^--probe$' "doctor" "--"
+complete_is "completion: diff offers its modes" '^--stat$|^--names$|^--commits$|^--working$' "diff" "--"
+complete_is "completion: status and teams offer --json, approvals --all" '^--json$' "status" "--"
+complete_is "completion: --team completes the team names of the project" '^default$|^review$|^default	|^review	' "--team" ""
+complete_is "completion: --team= completes in place" '^--team=review' "--team=rev"
+complete_empty "completion: several teams and no --team: no roles are offered" "restart" ""
+complete_is "completion: restart offers the roles of the team --team names" '^lead$|^backend$|^lead	|^backend	' "--team" "review" "restart" ""
+complete_is "completion: the role prefix filters" '^backend' "--team" "default" "restart" "ba"
+complete_is "completion: remove offers workers only, never the lead" '^backend	|^qa	' "--team" "default" "remove" ""
+complete_isnt "completion: remove never offers the lead" '^lead($TAB|\$)' "--team" "default" "remove" ""
+complete_is "completion: --from-worktree offers workers only" '^backend	|^qa	' "--team" "default" "spawn" "x" "--from-worktree" ""
+complete_is "completion: nudge and capture and diff offer roles" '^lead	|^backend	|^qa	' "--team" "review" "nudge" ""
+complete_is "completion: start completes the model keys with their labels" '^glm53	GLM-5.3$|^flash	GLM-5.3 Flash$|^fable	Fable 5.1$' "start" ""
+complete_is "completion: spawn <role> completes the models, providers included" '^kimi	' "spawn" "x" ""
+complete_is "completion: policy completes the keys" '^lead-permissions$|^worker-spawn$|^branch-template$' "policy" ""
+complete_is "completion: policy <key> completes the fixed choices" '^on$|^off$' "policy" "worker-spawn" ""
+complete_is "completion: policy <key> completes skip and ask" '^skip$|^ask$' "policy" "worker-permissions" ""
+complete_empty "completion: branch-template is free text: no value is offered" "policy" "branch-template" ""
+complete_empty "completion: an unknown team is silent and harmless" "--team" "nowhere" "restart" ""
+complete_is "completion: layout completes the layout names" '^lead-left$|^lead-top$|^tiled$' "layout" ""
+complete_is "completion: approve and deny offer the pending approval ids" '^A90$|^A90	' "--team" "default" "approve" ""
+complete_is "completion: deny offers the ids from their prefix" '^A90$|^A90	' "--team" "default" "deny" "A"
+complete_is "completion: --branch and --base complete local branch names" '^main$|^release$' "spawn" "x" "--branch" ""
+complete_is "completion: --base completes branch names too" '^release$|^main$' "spawn" "x" "--base" ""
+complete_is "completion: --repo hands file completion back to the shell" '^__files__$' "spawn" "x" "--repo" ""
+complete_is "completion: completion completes the shells" '^zsh$|^bash$' "completion" ""
+check "completion: it left the state directory, the tmux sessions and stderr untouched" '[ "$(find "$WOLFMUX_DATA" | sort)" = "$COMP_BEFORE" ] && [ "$(tmux -L "$WOLFMUX_TMUX_SOCKET" ls 2>/dev/null | wc -l | tr -d " ")" = "$COMP_SESSIONS" ] && [ ! -s "$comp_err" ]'
+check "completion: outside a git repository exit is 0 with no output and no stderr" 'cd "$WORK" && out="$("$REPO/bin/teamctl" _complete -- "" 2>"$comp_err")"; rc=$?; cd "$PROJECT"; [ "$rc" -eq 0 ] && [ -z "$out" ] && [ ! -s "$comp_err" ]'
+
+echo "== tab completion (the shims)"
+SHIM_DIR="$REPO/config/wolfmux/completion"
+check "shims: the zsh shim registers _teamctl with compdef when compinit has run, and only then" 'zsh -f -c "autoload -Uz compinit; compinit -u -d $WORK/zcompdump; source $SHIM_DIR/teamctl.zsh; print -r -- \$_comps[teamctl]" | grep -qx "_teamctl"'
+check "shims: without compinit the zsh shim is silent, errors nowhere, and registers nothing" 'zsh -f -c "out=\$(source $SHIM_DIR/teamctl.zsh 2>&1); print -r -- \"\$out\${_comps[teamctl]-none}\"" | grep -qx "none"'
+check "shims: a real bash completion for teamctl re<TAB> offers remove and restart" 'PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl re); COMP_CWORD=1; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"" | grep -qx "remove" && PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl re); COMP_CWORD=1; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"" | grep -qx "restart"'
+check "shims: bash completes the values too (models) and falls back to directories on __files__" 'PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl spawn x \"\"); COMP_CWORD=3; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"" | grep -qx "glm53" && ( cd "$WORK" && PATH="$REPO/bin:$PATH" bash --noprofile --norc -c "source $SHIM_DIR/teamctl.bash; COMP_WORDS=(teamctl spawn x --repo \"\"); COMP_CWORD=5; _teamctl_bash; printf \"%s\n\" \"\${COMPREPLY[@]}\"" | grep -qx "data" )'
+check "shims: teamctl completion prints them; no argument or an unknown shell is a usage error (exit 64)" 'teamctl completion zsh | grep -q "_teamctl" && teamctl completion bash | grep -q "_teamctl_bash" && { teamctl completion tcsh >/dev/null 2>&1; [ $? -eq 64 ]; } && { teamctl completion >/dev/null 2>&1; [ $? -eq 64 ]; }'
+
 echo "== a lead recovers and cleans up a team it founded (issue #2)"
 # review founds "child" with a handover, then child's lead dies. Its founder, review.lead, must be able to
 # bring it back or delete it without you and without founding a replacement. The first team's lead

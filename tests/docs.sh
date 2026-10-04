@@ -168,6 +168,57 @@ report "teamctl help shows every option next to its command" "$(missing_options 
 report "README.md shows every option next to its command" "$(missing_options "$README")"
 report "docs/USAGE.md shows every option next to its command" "$(missing_options "$USAGE")"
 
+echo "== tab completion (the drift guard)"
+# _complete must name everything the tool really offers: every public command as the
+# first word, and, per command, every option its parser accepts. Read from the CODE
+# (public_commands and options_of above), asked of the BACKEND. Read-only and offline.
+complete_run() { WOLFMUX_HOME="$REPO/config/wolfmux" "$TEAMCTL" _complete "$@" 2>/dev/null; }
+TAB="$(
+  printf '\t'
+)"
+FIRST_WORDS="$(complete_run -- "")"
+out=""
+while IFS= read -r line; do
+  # shellcheck disable=SC2086
+  set -- $line
+  primary="$1"
+  printf '%s\n' "$FIRST_WORDS" | LC_ALL=C grep -Eq -- "^$primary($TAB|\$)" || out="$out $primary"
+done <<EOF
+$COMMANDS
+EOF
+report "_complete offers every public command as the first word" "$out"
+out=""
+for alias in workers open log; do
+  printf '%s\n' "$FIRST_WORDS" | LC_ALL=C grep -Eq -- "^$alias($TAB|\$)" || out="$out $alias"
+done
+printf '%s\n' "$FIRST_WORDS" | LC_ALL=C grep -Eq -- "^--team($TAB|\$)" || out="$out --team"
+printf '%s\n' "$FIRST_WORDS" | LC_ALL=C grep -Eq -- "^help($TAB|\$)" || out="$out help"
+printf '%s\n' "$FIRST_WORDS" | LC_ALL=C grep -Eq -- "^version($TAB|\$)" || out="$out version"
+report "_complete offers the aliases workers, open, log, and --team, help, version" "$out"
+if printf '%s\n' "$FIRST_WORDS" | LC_ALL=C grep -q '^_'; then
+  report "_complete offers no internal command" " _"
+else
+  report "_complete offers no internal command" ""
+fi
+out=""
+while IFS= read -r line; do
+  # shellcheck disable=SC2086
+  set -- $line
+  primary="$1" handler="$2"
+  # `log` is `capture --all` under another name: no options of its own
+  [ "$handler" = "cmd_$(printf '%s' "$primary" | /usr/bin/tr '-' '_')" ] || continue
+  for group in $(options_of "$handler"); do
+    found=0
+    for option in $(printf '%s' "$group" | /usr/bin/tr '|' ' '); do
+      printf '%s\n' "$(complete_run -- "$primary" --)" | LC_ALL=C grep -Eq -- "^$option($TAB|\$)" && found=1
+    done
+    [ "$found" -eq 1 ] || out="$out $primary:$group"
+  done
+done <<EOF
+$COMMANDS
+EOF
+report "_complete offers every option a command's parser accepts" "$out"
+
 echo "== policy keys and models"
 # shellcheck disable=SC2046
 POLICY_KEYS="$(/usr/bin/sed -n 's/^POLICY_KEYS="\(.*\)"$/\1/p' "$LIB/policy.sh")"

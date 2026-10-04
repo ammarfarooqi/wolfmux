@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout guard; do
+for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -78,6 +78,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Git
     teamctl worktrees
     teamctl diff <role> [--stat|--names|--commits|--working]
+  Tab completion
+    teamctl completion <zsh|bash>                     print the tab-completion script of that shell, so
+                                                      source <(teamctl completion zsh) works; install.sh
+                                                      wires it into ~/.zshrc (then: teamctl <Tab>)
   Housekeeping
     teamctl doctor [--probe]                          provider / billing isolation report; --probe also asks each provider whose
                                                       key is set up if its endpoint accepts it (one incomplete request each,
@@ -121,6 +125,12 @@ main() {
   local rest=() command
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      # _complete reads the raw line (the --team parsing below would eat the word
+      # being completed and refuse an empty --team value): cmd_complete parses itself.
+      _complete)
+        rest+=("$@")
+        break
+        ;;
       --team | -T)
         [ "$#" -ge 2 ] || die_usage "--team needs a name"
         WOLFMUX_TEAM_ARG="$2"
@@ -162,6 +172,8 @@ main() {
     worktrees) cmd_worktrees "$@" ;;
     diff) cmd_diff "$@" ;;
     doctor) cmd_doctor "$@" ;;
+    completion) cmd_completion "$@" ;;
+    _complete) cmd_complete "$@" ;;
     _run-agent) cmd_run_agent "$@" ;;
     _refresh-hooks) cmd_refresh_hooks "$@" ;;
     _splash) cmd_splash "$@" ;;

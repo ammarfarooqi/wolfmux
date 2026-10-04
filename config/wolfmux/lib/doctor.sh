@@ -78,6 +78,17 @@ _doc_tools() {
     *) _fail "$(short_path "$WOLFMUX_BIN_DIR") is not on PATH in this shell (open a new terminal, or check the wolfmux block in ~/.zshrc)" ;;
   esac
   if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then _ok "team protocol  $(short_path "$WOLFMUX_HOME/TEAM_PROTOCOL.md")"; else _fail "team protocol file missing"; fi
+  # Tab completion: the shims install.sh puts in ~/.config/wolfmux/completion and the
+  # line in ~/.zshrc that sources them (ADR-0026).
+  if [ -r "$WOLFMUX_HOME/completion/teamctl.zsh" ]; then
+    if [ -f "$HOME/.zshrc" ] && grep -q 'completion/teamctl.zsh' "$HOME/.zshrc"; then
+      _ok "completion  installed; ~/.zshrc sources it (open a new terminal, then: teamctl <Tab>)"
+    else
+      _note "completion  installed; ~/.zshrc does not source it yet (re-run: ./install.sh)"
+    fi
+  else
+    _note "completion  not installed (re-run ./install.sh; teamctl completion <zsh|bash> prints the script)"
+  fi
 }
 
 _doc_fable() {

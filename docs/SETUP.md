@@ -43,13 +43,15 @@ What it does, and nothing else:
 | nine symlinks | `~/bin/claude-glm-flash` and the provider names `~/bin/claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen` → `claude-glm`, which picks the provider from the name it was started as; `~/bin/claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable`, which picks the model the same way |
 | `~/bin/codex` | only when no `codex` is on PATH: a small `sh` wrapper (one `exec` line) that starts ChatGPT.app's bundled CLI by its real path. Not a symlink: Codex looks for its helper programs next to the path it was started as, and through a symlink it could not run commands ("Code Mode is unavailable"). A symlink left by an earlier version is replaced |
 | builds `Wolfmux.app` | `~/.config/wolfmux/Wolfmux.app`, compiled with `osacompile` from `config/wolfmux/notifier/`, given the wolf icon and signed ad hoc. It owns the notifications of a team that is not open in a terminal which can show them itself (iTerm2, kitty, Ghostty, WezTerm), so that clicking one opens the team instead of Script Editor. Rebuilt only when its source changes. No network, no login item, nothing in `/Applications` |
-| `~/.zshrc` | appends one marked block that adds `~/bin` to the **end** of `PATH`, so nothing in it can shadow an existing tool |
+| `~/.zshrc` | appends one marked block that adds `~/bin` to the **end** of `PATH`, so nothing in it can shadow an existing tool, and sources the tab-completion shim for `teamctl` (registered only when a completion system is loaded) |
 | `~/.claude/settings.json` | merges the rules in `claude/permissions.json`: allow `teamctl`, `bd`, `git status` and `git worktree list`; **ask** before `teamctl destroy`. Rules under `retired` (`git diff/log/show *`, tmux on the team server) are taken out again: a rule is a prefix match, and those also allowed `git log --output=<file>` and `tmux … \; run-shell …` in every Claude Code session |
 | `~/.codex/rules/wolfmux.rules` | a separate execpolicy file: `teamctl` and `bd` may run outside the Codex sandbox, `teamctl destroy` prompts. `default.rules` is not touched |
 
 Every edited file gets `<file>.backup-YYYYMMDD-HHMMSS`. Running it again changes
-nothing. Skip parts with `--no-path`, `--no-claude-permissions`, `--no-codex-rules`,
-`--no-notifier-app`.
+nothing; an install from before tab completion gets the two completion lines added
+to the existing `~/.zshrc` block, after a backup, exactly once. Skip parts with
+`--no-path`, `--no-completion` (only the completion lines), `--no-claude-permissions`,
+`--no-codex-rules`, `--no-notifier-app`.
 It never creates `~/.tmux.conf`, never edits CLAUDE.md or AGENTS.md, and never
 reads, asks for or writes a credential.
 

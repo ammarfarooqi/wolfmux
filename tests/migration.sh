@@ -139,6 +139,30 @@ check "after destroy, uninstall restores ~/.zshrc byte for byte and settings.jso
 # uninstall has run in the check above
 check "uninstall took the provider links away, and kept the launcher script that is the user's own" 'for name in $PROVIDER_LAUNCHERS; do [ "$name" = "$OWN_LAUNCHER" ] && continue; [ ! -e "$HOME/bin/$name" ] && [ ! -L "$HOME/bin/$name" ] || exit 1; done && [ "$("$HOME/bin/$OWN_LAUNCHER")" = mine ] && [ ! -e "$HOME/bin/claude-glm" ] && [ ! -e "$HOME/bin/claude-glm-flash" ] && [ ! -e "$HOME/bin/teamctl" ]'
 
+echo "== tab completion (installer)"
+# A fresh install ships the shims and the two lines in ~/.zshrc. A block from before
+# completion existed (a block without the source line) is upgraded in place, after a
+# backup, and running the installer again changes nothing. --no-completion skips only
+# the completion lines, --no-path skips ~/.zshrc entirely, and uninstall takes the
+# files away with the block.
+zshrc_backups() { /bin/ls "$HOME"/.zshrc.backup-* 2>/dev/null | wc -l | tr -d ' '; }
+strip_completion_lines() {
+  sed -e '/completion\/teamctl.zsh/d' -e '/Tab completion for teamctl/d' "$HOME/.zshrc" >"$HOME/.zshrc.stripped"
+  /bin/mv -f "$HOME/.zshrc.stripped" "$HOME/.zshrc"
+}
+check "completion: a fresh install ships the shims and sources them in ~/.zshrc" '"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1 && [ -f "$HOME/.config/wolfmux/completion/teamctl.zsh" ] && [ -f "$HOME/.config/wolfmux/completion/teamctl.bash" ] && [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ]'
+check "completion: the installed teamctl serves completions from the installed files" 'PATH="$HOME/bin:$PATH" "$HOME/bin/teamctl" _complete -- "" | grep -q "^start	" && PATH="$HOME/bin:$PATH" "$HOME/bin/teamctl" completion zsh | grep -q "_teamctl" && PATH="$HOME/bin:$PATH" "$HOME/bin/teamctl" completion bash | grep -q "_teamctl_bash"'
+strip_completion_lines
+check "completion: a block without the completion line is upgraded in place, after a backup, exactly once" 'before="$(zshrc_backups)"; "$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ] && [ "$(grep -c "Tab completion for teamctl" "$HOME/.zshrc")" = 1 ] && [ "$(zshrc_backups)" = "$((before + 1))" ]'
+check "completion: the upgrade touched nothing but the two lines" 'strip_completion_lines; hash_before="$(shasum -a 256 "$HOME/.zshrc")"; "$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; strip_completion_lines; [ "$(shasum -a 256 "$HOME/.zshrc")" = "$hash_before" ]'
+check "completion: running the installer again changes nothing" 'hash_before="$(shasum -a 256 "$HOME/.zshrc")"; backups="$(zshrc_backups)"; "$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ "$(shasum -a 256 "$HOME/.zshrc")" = "$hash_before" ] && [ "$(zshrc_backups)" = "$backups" ]'
+strip_completion_lines
+check "completion: --no-completion skips only the completion lines" '"$REPO/install.sh" --no-completion --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1 && ! grep -q "completion/teamctl.zsh" "$HOME/.zshrc" && grep -q ">>> wolfmux >>>" "$HOME/.zshrc"'
+check "completion: a plain install re-adds what --no-completion skipped (the upgrade stays idempotent)" '"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1 && [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ]'
+strip_completion_lines
+check "completion: --no-path leaves ~/.zshrc untouched" 'hash_before="$(shasum -a 256 "$HOME/.zshrc")"; "$REPO/install.sh" --no-path --no-completion --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ "$(shasum -a 256 "$HOME/.zshrc")" = "$hash_before" ]'
+check "completion: uninstall takes the completion files away with the block" '"$REPO/uninstall.sh" >/dev/null 2>&1 && [ ! -e "$HOME/.config/wolfmux" ] && ! grep -q ">>> wolfmux >>>" "$HOME/.zshrc" && ! grep -q "completion/teamctl.zsh" "$HOME/.zshrc"'
+
 echo
 echo "result: $passed passed, $failed failed"
 [ "$failed" -eq 0 ] || {
