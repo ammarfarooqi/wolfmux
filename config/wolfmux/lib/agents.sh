@@ -1148,7 +1148,7 @@ _nudge_defer_wait() {
 }
 
 cmd_nudge() {
-  local role="" bead="" quiet=0 all=0 target failed=0
+  local role="" bead="" quiet=0 all=0 target failed=0 shown_cap
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --quiet | -q) quiet=1 ;;
@@ -1211,7 +1211,11 @@ cmd_nudge() {
     0) say "notified: $role" ;;
     2) say "skipped: $role was notified moments ago (debounce ${WOLFMUX_NUDGE_DEBOUNCE}s)" ;;
     3)
-      say "deferred: ${role}'s pane is busy (${TM_BUSY_REASON:-a notice is already waiting}). The notice follows by itself as soon as that pane is idle (it gives up after ${WOLFMUX_NUDGE_DEFER_MAX}s; the bead stays in the inbox either way)."
+      # The marker's own cap, not the global: an approval parked in this marker lowers it
+      # to WOLFMUX_NUDGE_APPROVAL_DEFER_MAX, and that is when this notice really expires.
+      shown_cap="$(nudge_pending_cap "$role" "$WOLFMUX_NUDGE_DEFER_MAX")"
+      case "$shown_cap" in "" | *[!0-9]*) shown_cap="$WOLFMUX_NUDGE_DEFER_MAX" ;; esac
+      say "deferred: ${role}'s pane is busy (${TM_BUSY_REASON:-a notice is already waiting}). The notice follows by itself as soon as that pane is idle (it gives up after ${shown_cap}s; the bead stays in the inbox either way)."
       return 3
       ;;
     *) die "'$role' has no running pane (its beads are waiting in Beads; start it with: teamctl restart $role)" ;;

@@ -153,7 +153,14 @@ nudge_pending_stale() {
 }
 
 # nudge_pending_open <role> — 0 when this process is now the role's one waiter.
-# Called while holding nudge_begin <role>, so two processes never race here.
+#
+# Usually called while holding nudge_begin <role>. notify_lead's no-lock path is the
+# exception: when the lock could not be taken in 30 tries it parks the notice rather
+# than typing it, and parking means coming through here without the lock. That is safe
+# without being tidy — mkdir is atomic, so of two processes exactly one gets the marker
+# and the loser takes the exists branch, leaving one waiter either way. What that path
+# does lose is the reap: nudge_pending_reap only runs under the lock, so a stale marker
+# is not cleared there and the notice joins it instead. The next locked notice reaps it.
 nudge_pending_open() {
   local marker="$STATE_DIR/nudge/$1.pending"
   /bin/mkdir -p "$STATE_DIR/nudge"
@@ -222,18 +229,28 @@ nudge_pending_has_lines() { [ -s "$STATE_DIR/nudge/$1.pending/lines" ]; }
 # nudge_pending_shift_line <role> — print the first queued line AND take it out of the
 # marker. Delivered lines must leave the marker as they go: a waiter that stops part
 # way, or is killed mid-delivery, must never re-send what already went out.
+# An empty line is not a notice, so it is dropped and the next one looked at, rather
+# than taken out and reported as "nothing left": that would stop the caller's delivery
+# loop with real notices still queued behind the blank. Bounded by the size of the file
+# itself, so a shift that cannot write can never spin here.
 nudge_pending_shift_line() {
-  local marker="$STATE_DIR/nudge/$1.pending" first
-  [ -s "$marker/lines" ] || return 1
-  first="$(/usr/bin/head -1 "$marker/lines")"
-  if /usr/bin/tail -n +2 "$marker/lines" >"$marker/lines.next" 2>/dev/null; then
-    /bin/mv -f "$marker/lines.next" "$marker/lines"
-  else
-    /bin/rm -f "$marker/lines.next"
-  fi
-  [ -s "$marker/lines" ] || /bin/rm -f "$marker/lines"
-  [ -n "$first" ] || return 1
-  printf '%s\n' "$first"
+  local marker="$STATE_DIR/nudge/$1.pending" first tries=0
+  while [ "$tries" -le "$NUDGE_PENDING_MAX_LINES" ]; do
+    tries=$((tries + 1))
+    [ -s "$marker/lines" ] || return 1
+    first="$(/usr/bin/head -1 "$marker/lines")"
+    if /usr/bin/tail -n +2 "$marker/lines" >"$marker/lines.next" 2>/dev/null; then
+      /bin/mv -f "$marker/lines.next" "$marker/lines"
+    else
+      /bin/rm -f "$marker/lines.next"
+    fi
+    [ -s "$marker/lines" ] || /bin/rm -f "$marker/lines"
+    if [ -n "$first" ]; then
+      printf '%s\n' "$first"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # nudge_pending_put_cap <role> <seconds> — lower how long this marker's waiter may wait,

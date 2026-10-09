@@ -228,10 +228,19 @@ _TM_NBSP=$'\302\240'
 # could have typed.
 #
 # A TUI draws the placeholder in its input box dim; a human's own typing is not dim.
-# Measured on this machine's live panes: an idle Claude Code pane showed
-# "❯<NBSP> ESC[2m close sprint 7, sprint 8 oct 9 to 15 ESC[0m" with ZERO clients on its
-# session, so that text could not have been typed by anybody. Reading it as a half-typed
-# line is what made an idle agent look busy for as long as its hint showed.
+# That is the whole discriminator, and it is measured, not assumed. Against a real
+# Claude Code in a throwaway tmux socket, 2026-10-09:
+#
+#   empty input box : "❯<NBSP> ESC[2m Try \"fix typecheck errors\""  -> clean
+#   after typing    : "❯<NBSP> i said install bun if requir"        -> DIRTY, no SGR
+#
+# So the dim strip cannot eat text somebody typed, and a hint is not read as a
+# half-typed line. Reading a hint as typing is what made an idle agent look busy for as
+# long as its hint showed, and silently stopped its nudges.
+#
+# (An earlier version of this comment cited pane %18 as seen "with ZERO clients on its
+# session". %18 had a client attached; %790 was the zero-client pane. The probe above
+# replaces that evidence.)
 #
 # Byte semantics on purpose (LC_ALL=C): only single-byte characters are compared, and
 # every byte of a multibyte character is >= 0x80, so none of them can match by accident.
@@ -287,20 +296,27 @@ tm_input_line_dirty() {
 }
 
 # tm_client_idle <session> — seconds since the newest client attached to this session
-# last sent INPUT; 1 (and no output) when no client is attached at all.
+# last sent INPUT. The exit status says why there is no number, because the two reasons
+# need opposite treatment:
+#
+#   0  a number was printed
+#   1  the read worked and listed nobody: no client is attached to that session
+#   2  the tmux read itself FAILED, so we know nothing — the caller must read that as
+#      busy, or a broken tmux read would quietly turn the human checks off
 #
 # Verified on tmux 3.7c, this machine: #{client_activity} moves on real keystrokes
 # only. It does not move when the pane prints output (clients on the live wolfmux
 # socket read 19 hours idle while their agents keep writing), and it does not move
-# for send-keys from outside. A detached session lists no client, so a background
-# team pane is never read as busy.
+# for send-keys from outside. A detached session lists no client at all, which is why
+# the keystroke check needs a client by construction and the input-line check does not.
 tm_client_idle() {
-  local newest="" act
+  local newest="" act clients
+  clients="$(tmx list-clients -t "$1" -F '#{client_activity}' 2>/dev/null)" || return 2
   while read -r act; do
     case "$act" in "" | *[!0-9]*) continue ;; esac
     if [ -z "$newest" ] || [ "$act" -gt "$newest" ]; then newest="$act"; fi
   done <<EOF
-$(tmx list-clients -t "$1" -F '#{client_activity}' 2>/dev/null)
+$clients
 EOF
   [ -n "$newest" ] || return 1
   printf '%s\n' $(($(now_epoch) - newest))
@@ -325,22 +341,35 @@ TM_BUSY_REASON="" # which check said busy; the deferral message names it
 #      prompt. Checked whether or not anybody is watching.
 #   a. a human is AT this pane (active pane of the active window of an attached
 #      session) and pressed a key within WOLFMUX_NUDGE_HUMAN_IDLE seconds.
-#   b. the input line already holds something.
+#   b. the input line already holds something. Also checked whether or not anybody is
+#      attached: a half-typed line survives a detach.
 #
-# (a) and (b) BOTH require a client attached to the pane's session. With no client,
-# nobody can be typing there, so whatever is on the input row cannot be a half-typed
-# human line — it is the TUI's own furniture. Without that gate, an idle agent whose
-# CLI shows a hint in its input box reads busy for as long as the hint shows, every
-# nudge to it waits out the expiry and is dropped, and the agent silently stops being
-# told about its work. That is worse than the bug this fixes.
+# Only (a) needs a client, and it needs one by construction: the only evidence that a
+# key was pressed is an attached client's #{client_activity}. (b) and (c) run whether or
+# not anybody is attached.
 #
-# A false "busy" only delays the notice, so the checks lean towards busy: a tmux read
-# that fails, or a cursor row we cannot make sense of, counts as busy WHEN a client is
-# attached. With no client it counts as free, because nobody can be typing there and a
-# broken read must not silently stop an agent's nudges. Both directions are bounded by
-# the caller's deferral limit.
+# (b) used to need a client too, on the reasoning that with nobody attached nobody can
+# be typing. That is false, and it reopened issue #9: type a line, do not submit it,
+# then detach (or just walk away from `teamctl attach`), and the notice was typed over
+# the half-typed line and submitted with it. Reproduced in review round 2.
+#
+# What tells a TUI's own furniture apart from somebody's typing is DIM, not the client
+# list: tm_visible_text strips dim runs, a placeholder is dim, typed text carries no SGR
+# at all (measured — see tm_visible_text). So (b) can run unconditionally without
+# bringing back the regression it was gated for, which was an idle agent whose hint made
+# it read busy for as long as the hint showed. The price is the other direction: a
+# placeholder drawn in a PLAIN colour rather than dim now reads as typing on a detached
+# pane too, so that agent's nudges wait out the cap and are dropped. Nobody has seen
+# such a placeholder (every Claude Code one measured was ESC[2m; Codex is unmeasured),
+# and WOLFMUX_NUDGE_COLLISION_CHECK=0 is the way out. ROADMAP names it as a known limit.
+#
+# A false "busy" only delays the notice, so everything from the point where we look at
+# the row fails CLOSED: a capture that fails, a cursor row we cannot make sense of, and
+# a client list we cannot read all count as busy. The one exception is the first
+# display-message: if that fails there is no session and no pane to fail closed for.
+# Every delay is bounded by the caller's deferral limit.
 tm_pane_human_busy() {
-  local pane="$1" fields rest in_mode pane_active win_active cy sess idle row
+  local pane="$1" fields rest in_mode pane_active win_active cy sess idle idle_rc row
   TM_BUSY_REASON=""
   [ -n "$pane" ] || return 1
   [ "${WOLFMUX_NUDGE_COLLISION_CHECK:-1}" = "1" ] || return 1
@@ -357,12 +386,21 @@ tm_pane_human_busy() {
     TM_BUSY_REASON="copy mode"
     return 0
   fi
-  # No human on this session: nothing below can be about a human.
+  # Without a session name there is no client list to ask about, and no row either.
   [ -n "$sess" ] || return 1
-  idle="$(tm_client_idle "$sess" 2>/dev/null || true)"
-  case "$idle" in "" | *[!0-9]*) return 1 ;; esac
-  # (a) the human's eyes and hands are on this pane
-  if [ "$pane_active" = "1" ] && [ "$win_active" = "1" ] &&
+  # `cmd || var=$?` keeps errexit out of this: the list is allowed to come back empty.
+  idle=""
+  idle_rc=0
+  idle="$(tm_client_idle "$sess" 2>/dev/null)" || idle_rc=$?
+  if [ "$idle_rc" -ge 2 ]; then
+    # The tmux read failed, so we cannot tell whether somebody is sitting there.
+    TM_BUSY_REASON="the client list could not be read"
+    return 0
+  fi
+  case "$idle" in "" | *[!0-9]*) idle="" ;; esac # rc 1: nobody is attached
+  # (a) the human's eyes and hands are on this pane. Needs a client: no client, no
+  # keystroke to read. Checks (b) and (c) still apply to a detached pane.
+  if [ -n "$idle" ] && [ "$pane_active" = "1" ] && [ "$win_active" = "1" ] &&
     [ "$idle" -lt "${WOLFMUX_NUDGE_HUMAN_IDLE:-5}" ]; then
     TM_BUSY_REASON="a keystroke ${idle}s ago"
     return 0

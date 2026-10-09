@@ -6,10 +6,14 @@
 # the notice submitted together, as one line: "i said install bun if requir[wolfmux]
 # Beads update ... include-infraed".
 #
-# The second thing it guards, which review round 1 found: the input-line check only
-# applies while a client is ATTACHED to the pane's session. With nobody attached, a
-# TUI's own placeholder text in its input box would otherwise read as a half-typed
-# line, and an idle agent would silently stop being told about its work.
+# The second thing it guards, which review round 1 found: a TUI's own placeholder text
+# in its input box must not read as a half-typed line, or an idle agent silently stops
+# being told about its work. DIM is what tells them apart, not the client list — a
+# placeholder is dim, typed text carries no escape sequences at all.
+#
+# The third, which review round 2 found: the input-line check must run whether or not a
+# client is attached. Gating it on a client reopened issue #9, because a line can be
+# left half-typed in a pane and the session then detached.
 #
 # Fully isolated from any team you have running: its own tmux server (socket
 # wolfmux-test-nudge-<pid>), its own state directory, a throwaway git repository and
@@ -103,25 +107,46 @@ detach_client() {
   sleep 1
 }
 HALF="i said install bun if requir"
-# A second string for the episodes with a client attached. The no-client episode above
-# deliberately DOES glue a notice onto HALF (that is the gate working), so the "nothing
-# was glued" checks need a string that only the attached episodes ever typed.
+# A second string for the episodes with a client attached. HALF is typed and submitted
+# in the no-client episode above, so the attached episodes' "nothing was glued" checks
+# need a string that only they ever typed.
 HALF2="the lead reviews this next"
 type_text() { tmx send-keys -t "$1" -l "$2"; }
 type_half() { type_text "$1" "$HALF"; }
 submit() { tmx send-keys -t "$1" Enter; } # the line the human was writing goes off on its own
 
-echo "== nobody attached: the input line says nothing about a human (review round 1, BLOCKER 2)"
+echo "== nobody attached: a dim placeholder is furniture, typed text is not (review rounds 1 and 2)"
 check "setup: no client is attached to the test session" '[ "$(clients)" = "0" ]'
+# A TUI's placeholder, drawn the way a TUI draws it: straight onto the pane's terminal,
+# dim, so it lands on the cursor row without going through the stub's stdin.
+PANE_TTY="$(tmx display-message -p -t "$PANE" '#{pane_tty}')"
+printf '\033[2mTry "fix typecheck errors"\033[0m' >"$PANE_TTY" 2>/dev/null
+sleep 0.5
+check "setup: the dim placeholder really is on the pane's cursor row" 'cursor_row "$PANE" | grep -qF "fix typecheck errors"'
+teamctl nudge qa --id hint-1 >"$WORK/hint-1.log" 2>&1
+HINT_STATUS=$?
+sleep 1
+# Round 2's regression: gating the row check on a client was meant to fix THIS, and the
+# dim strip fixes it without the gate. An idle agent must never stop being told.
+check "no client, dim placeholder: delivered at once, not read as a half-typed line" '[ "$HINT_STATUS" -eq 0 ] && teamctl capture qa --all | grep -q "Beads update for qa (hint-1)"'
+check "no client, dim placeholder: nothing was parked" '[ ! -d "$(pending_dir qa)" ]'
+submit "$PANE"
+sleep 0.5
+# Round 2's new blocker: this is issue #9 verbatim, on a DETACHED session.
 type_half "$PANE"
 sleep 0.5
+BEFORE="$(notices qa "Beads update for qa")"
 teamctl nudge qa --id gate-1 >"$WORK/gate-1.log" 2>&1
 GATE_STATUS=$?
 sleep 1
-check "no client: a non-empty input row is NOT treated as a human, so the notice is delivered" '[ "$GATE_STATUS" -eq 0 ] && teamctl capture qa --all | grep -q "Beads update for qa (gate-1)"'
-check "no client: nothing was parked" '[ ! -d "$(pending_dir qa)" ]'
+check "no client, a half-typed line: deferred (exit 3), and the reason names the input line" '[ "$GATE_STATUS" -eq 3 ] && grep -q "deferred" "$WORK/gate-1.log" && grep -q "input line is not empty" "$WORK/gate-1.log"'
+check "no client, a half-typed line: nothing was typed into the pane" '[ "$(notices qa "Beads update for qa")" = "$BEFORE" ]'
+check "no client, a half-typed line: the text is still on the input line, unsubmitted" 'cursor_row "$PANE" | grep -qF "$HALF"'
+check "no client, a half-typed line: the notice is parked, waiting for the pane" '[ -d "$(pending_dir qa)" ]'
 submit "$PANE"
-sleep 0.5
+sleep 4
+check "no client: the human's own line went off whole, with no notice glued to it" 'teamctl capture qa --all | grep -qF "$HALF" && ! teamctl capture qa --all | grep -q "${HALF}.wolfmux"'
+check "no client: the parked notice follows once the line is gone, and the marker clears" 'teamctl capture qa --all | grep -q "Beads update for qa (gate-1)" && [ ! -d "$(pending_dir qa)" ]'
 
 echo "== copy mode defers whether or not anybody is attached"
 tmx copy-mode -t "$PANE"
@@ -319,6 +344,21 @@ echo "== the checks themselves"
 ) >/dev/null 2>&1
 DIRTY_STATUS=$?
 check "input line: an empty prompt, a bare box and a dim placeholder are clean; typing is not" '[ "$DIRTY_STATUS" -eq 0 ]'
+(
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  # "nobody is attached" and "the read failed" are different answers: the first only
+  # rules out the keystroke check, the second has to be read as busy.
+  tm_client_idle "$SESSION" >/dev/null
+  [ "$?" -eq 1 ] || exit 1
+  tm_client_idle "no-such-session-$$" >/dev/null
+  [ "$?" -eq 2 ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+IDLE_STATUS=$?
+check "client list: no client returns 1, a failed read returns 2, so a broken read reads busy" '[ "$IDLE_STATUS" -eq 0 ]'
 (
   . "$WOLFMUX_HOME/lib/provider-env.sh"
   . "$WOLFMUX_HOME/lib/common.sh"

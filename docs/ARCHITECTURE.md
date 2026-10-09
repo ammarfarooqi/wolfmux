@@ -171,21 +171,42 @@ means busy:
 |-------|-----|--------------------------|
 | the pane is in copy mode or scrollback | `#{pane_in_mode}` is 1, so keys would drive the mode, not the prompt | no |
 | somebody is at this pane and pressed a key moments ago | it is the active pane of the active window of an attached session, and that client's `#{client_activity}` is less than `WOLFMUX_NUDGE_HUMAN_IDLE` (5 s) old. tmux moves `client_activity` on real keystrokes only: not on pane output, not on `send-keys` from outside, and a detached session lists no client at all | yes, by construction |
-| the input line already holds something | the row at `#{cursor_y}`, captured with `-e`, with escape sequences and DIM runs removed, then box glyphs, non-breaking spaces, whitespace and ONE leading prompt marker removed, is not empty | **yes** |
+| the input line already holds something | the row at `#{cursor_y}`, captured with `-e`, with escape sequences and DIM runs removed, then box glyphs, non-breaking spaces, whitespace and ONE leading prompt marker removed, is not empty | no |
 
-**Both human checks need a client on that pane's session.** With nobody attached, nobody
-can be typing, so whatever is on the input row is the TUI's own furniture, not a
-half-typed line. Without that gate an idle agent whose CLI shows a hint in its input box
-reads busy for as long as the hint shows, every nudge to it waits out the expiry and is
-dropped, and the agent silently stops being told about its work — worse than the bug
-being fixed. Dim text is ignored for the same reason: a TUI draws its placeholder dim,
-a human's typing is not dim. Measured on this machine's live panes, an idle Claude Code
-pane showed `❯<NBSP> ESC[2m close sprint 7, sprint 8 oct 9 to 15 ESC[0m` with zero
-clients on its session.
+**Only the keystroke check needs a client**, and it needs one by construction: the sole
+evidence that a key was pressed is an attached client's `#{client_activity}`. The
+input-line check runs whether or not anybody is attached.
 
-A read that fails, or a cursor row that makes no sense, counts as **busy when a client is
-attached** and as free when none is: a false busy only delays, but a broken read must not
-silently stop an agent's nudges. Both directions are bounded by the expiry.
+It used to need a client too, on the reasoning that with nobody attached nobody can be
+typing. That is false, and it reopened issue #9: type a line, do not submit it, then
+detach — or just walk away from `teamctl attach --team X` — and the notice was typed over
+the half-typed line and submitted with it. Review round 2 reproduced exactly the reported
+symptom on a detached session.
+
+What separates a TUI's own furniture from somebody's typing is **dim**, not the client
+list. Measured 2026-10-09 against a real Claude Code in a throwaway tmux socket, nothing
+submitted:
+
+| the input box | the row as `capture-pane -e` hands it over | read as |
+|---------------|--------------------------------------------|---------|
+| empty | `❯<NBSP> ESC[2m Try "fix typecheck errors"` | clean — the placeholder IS dim |
+| typed into | `❯<NBSP> i said install bun if requir` | **dirty** — no escape sequences at all |
+
+So the dim strip cannot eat text a human typed, and dropping the client gate cannot bring
+back the regression it was there for (an idle agent whose hint made it read busy for as
+long as the hint showed, so every nudge waited out the expiry and was dropped). The price
+is the other direction: a placeholder drawn in a plain colour rather than dim now reads as
+typing on a **detached** pane as well as an attached one, and that agent's notices wait out
+the cap and are dropped. Nobody has seen such a placeholder — every Claude Code one
+measured, live and in the probe, was `ESC[2m` — and Codex is unmeasured.
+`WOLFMUX_NUDGE_COLLISION_CHECK=0` is the way out. [ROADMAP](ROADMAP.md) carries it as a
+known limit.
+
+Everything from the point where the row is looked at **fails closed**: a capture that
+fails, a cursor row that makes no sense, and a client list that cannot be read all count
+as busy. The one exception is the first `display-message`: when that fails there is no
+session and no pane to fail closed for. A false busy only delays, and every delay is
+bounded by the expiry.
 
 Busy means the notice is **parked, not dropped**: a per-role marker under
 `~/.wolfmux/state/<project>/nudge/<role>.pending` holds it and ONE detached waiter per
@@ -214,6 +235,16 @@ first keystrokes land after the notice. Closing it needs tmux to report a key ar
 mid-line, and there is no such channel. Measured with a watcher typing from the moment a
 notice appears, re-checking between queued lines cut the glued lines from 5 of 5 to 2 of
 5 and kept the other 3 for later.
+
+**What that number does and does not bound.** The watcher types with `tmux send-keys`,
+which does not move `#{client_activity}`, so the keystroke check can never fire for it:
+the figures bound the input-line check alone. A real person at a real keyboard also trips
+the keystroke check, so they are protected by more than this, and a review round-2 run
+with a much more aggressive send-keys watcher glued 6 of 6 — same reason. An honest
+measurement needs keystrokes pushed through an attached client's own stdin; that harness
+does not exist yet (one attempt deadlocked) and is a named follow-up. What both runs did
+confirm, which is what matters for correctness, is that no notice was ever delivered twice
+and none was lost.
 
 The message body never travels through tmux, so there is nothing to quote, escape
 or truncate. The same hook tells the lead when a worker closes a task or marks

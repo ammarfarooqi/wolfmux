@@ -443,16 +443,45 @@ closed terminal does not kill it. The queued fixed notices were typed in a loop 
 further checks: the pane is now asked again before every line and each line leaves the
 marker as it is typed, so a stop part-way neither glues onto a human's text nor re-sends
 what already went out. Measured with a watcher typing from the moment a notice appeared,
-that cut the glued lines from 5 of 5 to 2 of 5 and kept the other 3 for later. The 300 ms
+that cut the glued lines from 5 of 5 to 2 of 5 and kept the other 3 for later. **That
+watcher typed with `send-keys`, which does not move `#{client_activity}`, so the keystroke
+check could never fire for it and the figure bounds the input-line check alone** — a real
+person also trips the keystroke check, and review round 2's more aggressive send-keys
+watcher glued 6 of 6 for the same reason. Keystrokes pushed through an attached client's
+own stdin would measure the real thing; that harness does not exist yet. What both runs
+confirm is the part that matters: no notice delivered twice, none lost. The 300 ms
 inside tm_type_line itself stays open; closing it needs tmux to report a key arriving
 mid-line, and there is no such channel.
+
+Review round 2 then reproduced the original bug on a **detached** session, so the gate
+above went. "With nobody attached, nobody can be typing" is simply false: you can type a
+line, not submit it, and detach. Two of this machine's sessions were detached at the time.
+The input-line check now runs always and dim does all the discriminating, which the
+reviewer measured against a real Claude Code in a throwaway socket: an empty input box
+reads `❯<NBSP> ESC[2m Try "fix typecheck errors"` and comes back clean, a typed-in box
+reads `❯<NBSP> i said install bun if requir` with no escape sequences at all and comes
+back dirty. Only the keystroke check still needs a client, by construction. The round-1
+reasoning for the gate is not lost — it was about an idle agent's own hint, and the dim
+strip handles that. The remaining hole is a placeholder drawn in a plain colour rather
+than dim, now on detached panes too, which ROADMAP names. Also in this round: a failed
+`list-clients` is told apart from "nobody attached" and read as busy, so no broken tmux
+read can quietly turn the checks off; `teamctl nudge` prints the marker's own cap rather
+than the global one; `nudge_pending_shift_line` steps past an empty queued line instead of
+eating it and stopping the delivery loop; and `nudge_pending_open`'s comment admits
+notify_lead's no-lock path (benign — mkdir is atomic — but it skips the reap). And the
+earlier claim that the dim hint was seen "with ZERO clients on its session" named the
+wrong pane for the second time: %18 had a client, %790 was the zero-client one. The probe
+above replaces that evidence.
 
 A minor version, not a patch: the notice is no longer guaranteed to be immediate, and
 `teamctl nudge` has an exit code it did not have.
 
-`tests/nudge-typing.sh`: new, 44 checks (24 in round 1, plus the client gate, the dim
-placeholder as a fixture row, the reaped marker, the queued fixed notices and a human who
-starts typing part-way through a delivery). `tests/smoke.sh`: 181 → 181.
+`tests/nudge-typing.sh`: new, 52 checks (24 in round 1; then the dim placeholder as a
+fixture row and on a live detached pane, the reaped marker, the queued fixed notices, a
+human who starts typing part-way through a delivery, a half-typed line on a detached
+session, and the client-list exit codes). One assertion was flipped rather than added: a
+non-empty input row on a detached session used to be asserted as delivered, and now has to
+defer. `tests/smoke.sh`: 181 → 181.
 `tests/docs.sh`: 28 → 28. v1.11.0.
 
 ## Footprint on the machine
