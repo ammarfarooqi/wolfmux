@@ -117,6 +117,9 @@ teamctl policy worker-permissions skip|lead|ask # default skip
 teamctl policy lead-permissions skip|ask        # default skip
 teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
 teamctl policy lead-teams on|off                # may the lead found further teams?  default on
+teamctl policy disk-guard refuse|warn|off       # what a spawn does on a full disk    default refuse
+teamctl policy disk-min-gb 20                   # free space a spawn asks for, in GB  default 20
+teamctl policy link-node-modules on|off         # share the root's node_modules       default off
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -280,6 +283,40 @@ teamctl destroy --worktrees        # also removes CLEAN worktrees and FULLY MERG
 `destroy` never deletes source files, commits, unmerged branches, dirty worktrees,
 credentials or Beads data, and always asks first (`--yes` to skip).
 
+## Disk
+
+A worker's worktree carries whatever it installs and builds inside: on one project here
+2.3 GB of `node_modules`, 0.9 GB of `.next` and half a gigabyte of copied assets per lane.
+Nothing used to remove it, 27 parked lanes reached 65 GB and the machine filled its disk.
+Now teamctl cleans up after its own worktrees.
+
+```bash
+teamctl status                     # free disk, and what this team's lanes take
+teamctl teams                      # measures it per team (a du per lane: seconds)
+teamctl prune --dry-run            # what every PARKED lane holds; deletes nothing
+teamctl prune                      # take it: node_modules and all build output
+teamctl prune --keep-node-modules  # build caches only, so a restart stays cheap
+teamctl prune --team review        # one named team
+```
+
+`teamctl stop` takes a lane's build caches (`.next`, `dist`, `.turbo`, `build`, `coverage`,
+`.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`) and keeps
+`node_modules`, so `teamctl restart` stays cheap. `teamctl remove` and
+`teamctl destroy --worktrees` take all of it; the worktree is going away anyway.
+
+Never deleted: a source file, a commit, git state, anything git tracks (a project that
+commits its `dist` keeps it), a running lane, your own checkout, or a worktree holding
+uncommitted changes or untracked files that are not build output — that one is skipped and
+the reason is printed. A lane that lost its `node_modules` needs one `npm install` before
+its tools run again; nothing else of it changes.
+
+`teamctl spawn` refuses a new lane when free disk is under `disk-min-gb` (default 20 GB) and
+names `teamctl prune --dry-run` as the next step; `teamctl policy disk-guard warn` makes it
+a warning, `off` removes the check. `teamctl spawn <role> <model> --link-node-modules` (or
+`teamctl policy link-node-modules on`) points a new lane's `node_modules` at the project
+root's copy instead of installing 2+ GB again — one directory for every lane, so an
+`npm install` in any lane changes the dependencies of all of them.
+
 ## Diagnostics
 
 ```bash
@@ -319,6 +356,9 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
 | `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
+| `WOLFMUX_DISK_GUARD` | `refuse` | what `teamctl spawn` does when free disk is under the limit below: `refuse`, `warn`, `off` |
+| `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes. A lane costs about 3 GB once it has installed and built; `0` switches the check off |
+| `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the project root's copy. One directory for all of them: an install in any lane changes them all |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |
 | `WOLFMUX_NOTIFY` | `all` | whose finished turns notify you: `all`, `lead`, `off`. A team founded by a lead is announced in every case |

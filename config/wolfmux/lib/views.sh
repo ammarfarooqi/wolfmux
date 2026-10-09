@@ -64,8 +64,13 @@ _status_team_json() {
     --arg running "${SESSION_LIVE:-0}" --arg lp "$(policy_get lead-permissions)" \
     --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
+    --arg dg "$(policy_get disk-guard)" --arg dmin "$(policy_get disk-min-gb)" --arg lnm "$(policy_get link-node-modules)" \
+    --arg free "$(disk_free_kb)" --arg trees "$(disk_team_kb_cached)" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
-      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt},
+      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt,
+               disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm},
+      disk: {free_kb: (if $free == "" then null else ($free | tonumber) end),
+             worktrees_kb: (if $trees == "" then null else ($trees | tonumber) end)},
       approvals_pending: ($pending | tonumber), agents: .}'
 }
 
@@ -85,6 +90,9 @@ _status_team_text() {
   fi
   say "TEAM $TEAM · $SESSION · $state"
   say "  policy  $(policy_summary) · approvals pending: $(approvals_pending_count)"
+  # Free disk is a df call; the lane total is whatever the last command that changed the
+  # lanes left behind, because measuring it here is a du over every worktree (lib/disk.sh).
+  say "  disk    $(disk_free_label) free · this team's lanes: $(disk_team_label) · spawn guard: $(policy_get disk-guard) under $(policy_get disk-min-gb) GB"
   rows="$(_status_rows)"
   if [ -z "$rows" ]; then
     say "  no agents on record. Start it: teamctl start <fable|astra>$hint"
@@ -142,7 +150,7 @@ cmd_status() {
 
 # teamctl teams — the short list
 cmd_teams() {
-  local team lead state count role kb
+  local team lead state count kb
   require_tools
   load_project any
   printf '%-16s %-12s %-16s %-7s %-8s %s\n' TEAM STATE LEAD AGENTS DISK SESSION
@@ -158,13 +166,14 @@ cmd_teams() {
     fi
     lead="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
     count="$(reg_list | wc -l | tr -d ' ')"
-    # worktrees of this team's workers (the lead works in your own checkout and adds nothing)
-    kb=0
-    for role in $(reg_list); do
-      if [ "$(reg_field "$role" kind)" = "worker" ]; then kb=$((kb + $(disk_kb "$(reg_field "$role" workdir)"))); fi
-    done
+    # Worktrees of this team's workers (the lead works in your own checkout and adds
+    # nothing). This is the command that MEASURES: a du over every lane, seconds on a
+    # busy machine, and the number it leaves behind is what `teamctl status` shows.
+    kb="$(disk_team_kb_measure)"
     printf '%-16s %-12s %-16s %-7s %-8s %s\n' "$team" "$state" "${lead:--}" "$count" "$(human_size "$kb")" "$SESSION"
   done
+  say ""
+  say "disk: $(disk_free_label) free · take the build output of parked lanes: teamctl prune --dry-run"
 }
 
 cmd_panes() {

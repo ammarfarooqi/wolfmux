@@ -87,6 +87,66 @@ teamctl destroy --team review --worktrees
 | management | a lead manages its own team only; you manage all |
 | your checkout | teammates are apart in worktrees, leads are not: every lead works in your checkout, on the branch that is checked out there. Let one lead integrate at a time |
 
+## Disk: what a lane costs, and how it is given back
+
+One lane worktree on this project carried 2.3 GB of `node_modules`, 0.9 GB of `.next` and
+half a gigabyte of copied assets. Nothing used to remove any of it: not stopping the lane,
+not parking it for a week. 27 parked lanes of one project reached 65 GB, `~/.wolfmux`
+reached 102 GB, and the machine filled its disk and rebooted three times with every team's
+work in flight. So teamctl cleans up after its own worktrees.
+
+```bash
+teamctl status                       # free disk, and what this team's lanes take
+teamctl teams                        # measures it, team by team (a du per lane)
+teamctl prune --dry-run              # what the parked lanes hold, deleting nothing
+teamctl prune                        # take it
+teamctl prune --keep-node-modules    # build caches only, so a restart stays cheap
+```
+
+Who takes what:
+
+| Command | Takes |
+|---------|-------|
+| `teamctl stop <role>` | `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`. **Not** `node_modules`: `teamctl restart` has to stay the cheap thing it looks like |
+| `teamctl prune` | the same list **and** `node_modules`, for every parked lane. A parked lane is what hoards |
+| `teamctl remove <role>`, `teamctl destroy --worktrees` | all of it; the worktree is going away anyway |
+
+Five rules hold for every one of those deletions, and they are in one place
+(`config/wolfmux/lib/disk.sh`):
+
+1. only a name on that one list — a directory a build command makes again from the sources;
+2. never a path git tracks in that worktree, whatever it is called (a project that commits
+   its `dist` keeps it);
+3. never a worktree with uncommitted changes to tracked files, or untracked files that are
+   not themselves build output: it is skipped, and the skip is printed with the reason;
+4. never a running lane, never your own checkout, and only inside a worktree wolfmux made
+   for that project and team — every path resolved with `pwd -P` and checked against that
+   prefix, so an edited record or a symlink leading out cannot aim a deletion elsewhere;
+5. `--dry-run` prints the same report and deletes nothing.
+
+A lane that lost its `node_modules` still has every source file and all of its git state;
+it needs one `npm install` (or whatever the project installs with) before its tools run
+again. Each directory is renamed inside its own worktree before it is deleted, and a rename
+is one atomic step, so a cleanup killed halfway leaves a `.wolfmux-removing-*` directory
+that the next run clears — never a `node_modules` that is half there and looks installed.
+
+**The guard.** `teamctl spawn` checks free disk before it makes anything. Under
+`disk-min-gb` (default 20) it refuses and names the number; `teamctl policy disk-guard warn`
+makes it a warning instead, `off` removes the check, and `teamctl policy disk-min-gb <n>`
+moves the limit (`0` = no limit).
+
+**Sharing one node_modules.** `teamctl spawn <role> <model> --link-node-modules` points the
+new lane's `node_modules` at the project root's copy instead of letting it install 2+ GB of
+its own; `teamctl policy link-node-modules on` does it for every spawn. It is off by default
+for a reason: that is ONE directory for every lane and for your own checkout, so an
+`npm install` in any lane changes the dependencies of all of them, and two lanes that need
+different versions of a package cannot both be right.
+
+**Why `teamctl status` never measures.** A `du` over one lane's `node_modules` walks tens of
+thousands of files, and over 27 lanes it takes seconds. `status` runs every few minutes, so
+it only reads the number that the last command to change the lanes left behind (and says
+"not measured" when there is none). `teamctl teams` is the command that measures.
+
 ## Deleting a team, and what a team costs
 
 | What | Disk |
@@ -133,15 +193,16 @@ lead can never take over a team that already has a lead; a worker can never foun
 |---------|------|
 | `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's last conversation. With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
-| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams) |
+| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
-| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]` | new worker: branch + worktree + pane. Any model, whoever leads (table below) |
-| `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
-| `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
+| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff] [--link-node-modules]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). Refused when free disk is under `disk-min-gb`. `--link-node-modules`: the lane shares the project root's `node_modules` instead of installing its own ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
+| `teamctl stop <role>` | close a pane; worktree, branch and commits stay. Its build caches go, `node_modules` stays |
+| `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch, record and the gigabytes they held. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
+| `teamctl prune [--team <name>] [--dry-run] [--keep-node-modules]` | the build output of every parked lane of the team, with a total in GB. Running lanes untouched; `--dry-run` deletes nothing; `--keep-node-modules` takes the build caches only ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
-| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files |
-| `teamctl teams` | the short list per team: state, lead, number of agents, the disk its teammates' worktrees take, session |
+| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, plus free disk and what the team's lanes take |
+| `teamctl teams` | the short list per team: state, lead, number of agents, the disk its teammates' worktrees take, session. This is the command that measures that disk |
 | `teamctl panes` | tmux's view: command, pid, cwd |
 | `teamctl capture <role> [-n\|--lines N] [--all]`, `teamctl log <role>` | recent / full terminal output — for diagnosing a stuck agent, never for task state |
 | `teamctl focus <role>`, `teamctl attach` (alias `open`) | move your terminal |

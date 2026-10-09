@@ -388,6 +388,42 @@ answered `no team session. Start one first: teamctl start fable`. That line drop
 `restart` of the lead without a session starts the team again, as the model that led it, and
 `--continue` goes with it; a worker's refusal names the exact two commands. `tests/smoke.sh`: 177 → 181.
 
+v1.12.0, the day after: wolfmux had filled the machine's disk. `~/.wolfmux` had grown to
+102 GB — every lane worktree keeping its own `node_modules` (2.3 GB), `.next` (0.9 GB) and
+copied `public` (0.5 GB), one project with 27 lanes alive, and nothing ever pruned, not on
+`stop`, not after a week parked, not on `remove`. The Mac rebooted three times, every team
+died mid-task, and the recovery was a human deleting `node_modules` by hand at 100% disk
+(issue #11). The tool makes those worktrees, so the tool now cleans them up.
+
+The whole of it is one new module, `lib/disk.sh`: one allowlist of regenerable directory
+names and four rules that hold for every deletion — only a name on that list, never a path
+git tracks in that worktree, never a worktree with uncommitted or untracked work of its
+own, and only inside `~/.wolfmux/worktrees/<project>/…` with every path resolved by
+`pwd -P`. `stop` takes the build caches and keeps `node_modules` (a restart has to stay
+cheap); `remove` and `destroy --worktrees` take everything; the new `teamctl prune
+[--dry-run] [--keep-node-modules]` sweeps every parked lane and prints a per-lane line and
+a total. `destroy --worktrees` gained the most: it used to call a worktree with an
+untracked `node_modules` dirty and keep all of it for ever.
+
+Two things were measured rather than guessed. A `du` over one real `node_modules` (69,336
+files, 802 MB) takes 0.62 s warm, and over the 36 lane worktrees on this machine 12.4 s —
+far too slow for `teamctl status`, so status reads a cached number that the commands which
+change the lanes leave in `state/<project>/disk-kb`, and `teamctl teams` is what measures.
+And an interrupted cleanup: each directory is renamed inside its own worktree before it is
+deleted, so a kill halfway through leaves a `.wolfmux-removing-*` the next run clears, never
+a `node_modules` that is half there and looks installed.
+
+Also new: `teamctl spawn` checks free disk first and refuses under `disk-min-gb` (default
+20 GB — about seven more lanes' worth of room, with several gigabytes left for macOS
+itself), naming `teamctl prune --dry-run` as the next step; `disk-guard` can make that a
+warning or switch it off; and `spawn --link-node-modules` (or `policy link-node-modules on`)
+points a new lane's `node_modules` at the project root's copy instead of installing 2+ GB
+again. That one is off by default on purpose: it is ONE directory for every lane, so an
+install in any lane changes the dependencies of all of them.
+
+`tests/disk.sh`: new, 48 checks. `tests/smoke.sh`: 181 → 181 (the policy-defaults check now
+names the three new keys). `tests/docs.sh`: 28 → 28.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

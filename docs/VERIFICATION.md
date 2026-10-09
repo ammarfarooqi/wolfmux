@@ -7,6 +7,7 @@ their first screen; everything else used stub agents or a localhost mock.
 
 ```bash
 tests/smoke.sh                 # 2 to 4 minutes, 181 checks, isolated from any running team
+tests/disk.sh                  # ~40 seconds, 48 checks, its own tmux server and state
 tests/providers.sh             # the provider table, 116 checks
 tests/docs.sh                  # ~2 seconds, 28 checks, starts nothing
 tests/migration.sh             # ~30 seconds, 24 checks, in a throwaway HOME
@@ -20,7 +21,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 181 of 181 pass (v1.10.1)
+## smoke.sh: 181 of 181 pass (v1.12.0)
 
 | Area | Checks |
 |------|--------|
@@ -46,6 +47,27 @@ real team was live on the same machine; the real team was unaffected.
 | desktop notifications | every Claude agent gets the `Stop` hook, the plugin notifier is silenced and the user's own disabled hook is kept · OSC 9 to the attached terminal with the first line, markdown dropped · the lead is marked · **an OSC 52 and a clear-screen sequence inside a message never reach the terminal** (exactly two control bytes come out: ours) · long messages are cut · no terminal attached → `osascript` with the text as an argument, never a failure · nobody attached → the message is handed to Wolfmux.app, not to `osascript`, and the project is remembered · the app fetches its message exactly once, so its next start is a click · a message it never fetched is not posted late · a click opens a terminal on the team (script with the project and `teamctl attach`) · `WOLFMUX_NOTIFY=lead` keeps workers quiet |
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
+
+## disk.sh: 48 of 48 pass (v1.12.0)
+
+Its own tmux server (`wolfmux-disk-test-<pid>`), its own state directory, a throwaway
+repository whose path contains a space, stub agents, and build trees of a few megabytes of
+`/dev/urandom` instead of real installs. Half the checks ask `lib/disk.sh` its questions
+directly, with teamctl's libraries loaded, so the numbers are compared as exact integers
+against an independent `du`; the other half go through the commands in a live throwaway team.
+
+| Area | Checks |
+|------|--------|
+| the allowlist and the numbers | a dry run reports the **exact** kilobytes of the allowlisted directories (compared with `du -sk`) and deletes nothing · it names what it would take · `caches` leaves `node_modules` out of both the number and the deletion · `human_size` turns KB into MB and GB at the right places · applying `caches` deletes the caches and keeps `node_modules` · applying `all` takes both and leaves sources and git state untouched · nothing is left behind |
+| what is never deleted | a `dist` that git tracks survives, and is not counted as freed, while `node_modules` still goes · a worktree with an uncommitted change to a tracked file is refused with the reason, and untouched · a worktree with an untracked file that is not build output is refused, the file is named, and it is untouched · a path outside this project's worktree directory is refused · your own checkout is refused · the worktree directory itself is refused · a `node_modules` that is a symlink out: the link goes, never its target |
+| interruption | a leftover `.wolfmux-removing-*` is cleared by the next run and never makes the lane permanently unclean |
+| the commands | `stop` takes the build caches, keeps `node_modules` and says how much it freed · `stop` on a lane with unfinished work keeps its build output and says why · `prune --dry-run` prints a total, deletes nothing, leaves a running lane out and says so, and names the lane it skipped and why · a worker may run `--dry-run` but gets exit 77 for the real thing · `--keep-node-modules` takes the caches only · `prune` takes `node_modules` from the parked lane, reports the total, never touches the running lane or the skipped one, and leaves the sources and git state intact · `remove` takes the whole worktree and says what that freed · `destroy --worktrees` takes each lane's build output first and still keeps the lane that holds real work |
+| the guard | `status` shows free disk and what the guard is set to · `status` never measures and says so, `teams` measures, and `status` then shows the number · `status --json` carries `disk.free_kb` and the three new policy keys · under the threshold a spawn is refused with **exit 75**, names the number and `teamctl prune --dry-run`, and creates no branch and no record · `disk-guard warn` lets the same spawn through with a warning · `off` asks nothing · a non-numeric or negative `disk-min-gb`, and an unknown `disk-guard` or `link-node-modules` value, are refused with exit 64 · `disk-min-gb 0` switches the limit off without switching the guard off |
+| shared `node_modules` | `--link-node-modules` links the lane to the project's copy and says that an install in any lane changes them all · without the flag and with the policy off there is no link · `policy link-node-modules on` does it for every spawn · cleaning a linked lane removes the link and never the project's copy |
+
+**Measured, not assumed.** One real lane `node_modules` on the owner's machine: 69,336
+files, 802 MB, `du -sk` 0.62 s warm. All 36 lane worktrees on that machine: 12.4 s. That is
+why `teamctl status` reads a cached number and `teamctl teams` is the command that measures.
 
 ## Live checks with the real CLIs
 
@@ -163,7 +185,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
-## docs.sh: 28 of 28 pass (v1.10)
+## docs.sh: 28 of 28 pass (v1.12.0)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.

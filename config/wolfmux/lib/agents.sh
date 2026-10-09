@@ -245,7 +245,7 @@ cmd_start() {
 
 # --- teamctl spawn <role> <model> -----------------------------------------------
 cmd_spawn() {
-  local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
+  local role="" model="" base="HEAD" kickoff=1 link=0 linked=0 stamp path branch base_commit base_ref target pane spawner
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -255,12 +255,13 @@ cmd_spawn() {
         shift
         ;;
       --no-kickoff) kickoff=0 ;;
+      --link-node-modules) link=1 ;;
       -*) die_usage "unknown option for spawn: $1" ;;
       *) if [ -z "$role" ]; then role="$1"; elif [ -z "$model" ]; then model="$1"; else die_usage "unexpected argument: $1"; fi ;;
     esac
     shift
   done
-  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--no-kickoff]   (models: $WOLFMUX_MODEL_KEYS)"
+  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--no-kickoff] [--link-node-modules]   (models: $WOLFMUX_MODEL_KEYS)"
   require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
   model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
@@ -273,6 +274,9 @@ cmd_spawn() {
   if ! is_manager && [ "$(policy_get worker-spawn)" != "on" ]; then
     die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: bd create \"Need a helper: <for what>\" -t message -a lead -d \"<why, which model>\"" 77
   fi
+  # A lane costs another node_modules and another build. Checked before the worktree is
+  # made, so a refusal leaves nothing behind (lib/disk.sh).
+  disk_guard_spawn
   lock_acquire
 
   if reg_exists "$role"; then
@@ -288,6 +292,7 @@ cmd_spawn() {
   stamp="$(now_stamp)"
   branch="$(wt_branch_name "$role" "$stamp")"
   path="$(wt_create "$role" "$stamp" "$base_commit")"
+  if disk_link_wanted "$link" && disk_link_node_modules "$path"; then linked=1; fi
   new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}"
 
   target="$(tm_split_target "$SESSION")" || target=""
@@ -315,6 +320,9 @@ cmd_spawn() {
   say "pane:      $pane"
   say "branch:    $branch  (base: $base_ref @ $(printf '%s' "$base_commit" | cut -c1-12))"
   say "worktree:  $(short_path "$path")"
+  if [ "$linked" -eq 1 ]; then
+    say "deps:      node_modules linked to $(short_path "$ROOT")/node_modules — ONE directory for every lane, so an install in any lane changes them all"
+  fi
 }
 
 # --- internal: the process that a pane runs -----------------------------------------
@@ -516,7 +524,7 @@ $prompt
 
 # --- teamctl stop / restart ------------------------------------------------------------
 cmd_stop() {
-  local role="${1:-}" pane
+  local role="${1:-}" pane freed=""
   require_role_arg "$role"
   require_tools
   load_project
@@ -530,7 +538,17 @@ cmd_stop() {
     layout_apply
   fi
   reg_set "$role" pane_id "" state stopped
-  event_log stop "$role"
+  # A stopped lane keeps its worktree for as long as the role is on the books, which is
+  # where the disk went (issue #11). Its build caches are regenerable, so they go now;
+  # node_modules stays, because `teamctl restart` has to be the cheap thing it looks like.
+  if disk_clean_role "$role" caches 1 && [ -n "$DISK_CLEANED" ]; then
+    freed="$(human_size "$DISK_FREED_KB")"
+    say "freed:   $freed of build output ($DISK_CLEANED)"
+  elif [ -n "$DISK_SKIP_REASON" ]; then
+    say "kept:    its build output ($DISK_SKIP_REASON)"
+  fi
+  disk_cache_adjust "$DISK_FREED_KB"
+  event_log stop "$role" "${freed:+freed=$freed}"
   lock_release
   say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
 }
@@ -617,7 +635,7 @@ _inside_worktrees() {
 # uncommitted files or commits that are not in your current branch is refused, and the
 # refusal lists them. With --force the same list is shown and one question is asked.
 cmd_remove() {
-  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding=""
+  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding="" kb=0 freed=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
@@ -682,9 +700,15 @@ cmd_remove() {
     # A record is a file anyone can edit. Whatever it says, only a directory inside this
     # project's worktrees is ever deleted, and only an ai/* branch that is not checked out
     # in your own checkout.
+    kb=0
     if [ -d "$path" ]; then
       if _inside_worktrees "$path"; then
+        # The whole worktree goes, node_modules and every other build directory with it,
+        # so what it took is what this frees. Measured before, reported after (issue #11).
+        kb="$(disk_kb "$path")"
         gitr worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"
+        if [ -d "$path" ]; then kb=0; fi
+        freed=$((freed + kb))
       else
         warn "$role: its record points outside $(short_path "$WORKTREES_DIR") ($(short_path "$path")); that directory was left alone"
       fi
@@ -703,10 +727,11 @@ cmd_remove() {
     if [ -n "$pane" ]; then tmx kill-pane -t "$pane" 2>/dev/null || true; fi
     /bin/rm -f "$STATE_DIR/settings/$role.json"
     reg_delete "$role"
-    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged"
-    say "removed: $role  (worktree, branch $branch and record)"
+    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged freed_kb=$kb"
+    say "removed: $role  (worktree, branch $branch and record) — freed $(human_size "$kb")"
   done
   layout_apply
+  disk_cache_adjust "$freed"
   lock_release
   [ -z "$holding" ] || die "nothing was removed:$holding still hold$([ "$(printf '%s' "$holding" | wc -w | tr -d ' ')" = "1" ] && printf s) work."
 }
@@ -715,6 +740,14 @@ _destroy_worker_artifacts() {
   local role="$1" path branch result
   path="$(reg_field "$role" workdir)"
   branch="$(reg_field "$role" branch)"
+  # Build output first. A project whose .gitignore does not list node_modules reports it
+  # as untracked, wt_remove_if_clean then calls the worktree dirty, and the gigabytes stay
+  # for ever (issue #11). Taking the allowlist first leaves a tree that is clean or really
+  # dirty, and the answer below is about work again.
+  if disk_clean_worktree "$path" all 1 && [ -n "$DISK_CLEANED" ]; then
+    say "  $role: freed $(human_size "$DISK_FREED_KB") of build output ($DISK_CLEANED)"
+    disk_cache_adjust "$DISK_FREED_KB"
+  fi
   result=0
   wt_remove_if_clean "$path" || result=$?
   case "$result" in

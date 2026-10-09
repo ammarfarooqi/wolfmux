@@ -1,0 +1,275 @@
+#!/bin/bash
+# disk.sh — the lane-worktree cleanup, the spawn guard, and every safety rule that keeps
+# them away from your work (issue #11).
+#
+# Fully isolated from any team you have running: its own tmux server (socket
+# wolfmux-disk-test-<pid>), its own state directory, a throwaway git repository, stub
+# agents instead of real CLIs. Needs tmux, git, jq.
+#
+# The build trees it makes are a few megabytes of /dev/urandom, never a real install, so
+# the whole file costs about 20 MB of disk while it runs and gives it back in the trap.
+#
+#   tests/disk.sh
+# No pipefail: checks end in `grep -q`, which closes the pipe early by design.
+set -u
+
+REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/wolfmux-disk.XXXXXX")"
+export WOLFMUX_HOME="$REPO/config/wolfmux"
+export WOLFMUX_BIN_DIR="$REPO/bin"
+export WOLFMUX_DATA="$WORK/data"
+export WOLFMUX_TMUX_SOCKET="wolfmux-disk-test-$$"
+export WOLFMUX_LAUNCHER_FABLE="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_ASTRA="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_GLM53="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_FLASH="$REPO/tests/stub-agent"
+export WOLFMUX_CLAUDE_PROJECTS="$WORK/claude-projects"
+# Run from an agent's pane, the environment carries that agent's team and worktree: all of
+# it is dropped, or every command here would act as that agent.
+unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
+unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
+unset WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES
+teamctl() { "$REPO/bin/teamctl" "$@"; }
+
+passed=0
+failed=0
+check() { # <description> <command string>
+  if eval "$2" >/dev/null 2>&1; then
+    passed=$((passed + 1))
+    printf '  pass  %s\n' "$1"
+  else
+    failed=$((failed + 1))
+    printf '  FAIL  %s\n' "$1"
+  fi
+}
+
+cleanup() {
+  tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
+  /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$WOLFMUX_TMUX_SOCKET"
+  /bin/rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+PROJECT="$WORK/demo project" # the space is deliberate
+/bin/mkdir -p "$PROJECT"
+cd "$PROJECT" || exit 1
+git init -q -b main
+echo "hello" >README.md
+printf 'node_modules/\n.next/\n' >.gitignore
+git add -A
+git -c user.name=disk -c user.email=disk@example.invalid commit -qm "initial commit"
+
+# lib_eval <shell code> — run it with teamctl's own libraries loaded and this project
+# resolved, so a rule can be asked a question directly instead of through a command.
+lib_eval() {
+  (
+    cd "$PROJECT" || exit 1
+    bash -c '
+      set -u
+      for m in provider-env common registry tmuxctl worktree disk beads policy approvals agents views doctor brand notify layout guard; do
+        . "$WOLFMUX_HOME/lib/$m.sh"
+      done
+      load_project
+      eval "$1"' _ "$1"
+  )
+}
+
+kb_of() { du -sk "$@" 2>/dev/null | awk '{ total += $1 } END { print total + 0 }'; }
+mkfile() { /bin/dd if=/dev/urandom of="$1" bs=1024 count="$2" 2>/dev/null; }
+
+# mk_build_tree <worktree> — about 5 MB of what a real lane would hold
+mk_build_tree() {
+  /bin/mkdir -p "$1/node_modules/pkg" "$1/.next/cache" "$1/dist"
+  mkfile "$1/node_modules/pkg/lib.js" 3000
+  mkfile "$1/.next/cache/blob" 1000
+  mkfile "$1/dist/bundle.js" 1000
+}
+
+TREES="$(lib_eval 'printf "%s\n" "$WORKTREES_DIR"')"
+[ -n "$TREES" ] || { echo "cannot resolve this project's worktree directory" >&2; exit 1; }
+/bin/mkdir -p "$TREES"
+
+# new_lane <name> — a git worktree where wolfmux puts them, without starting an agent
+new_lane() {
+  git -C "$PROJECT" worktree add -q -b "ai/$1" "$TREES/$1" HEAD >/dev/null 2>&1
+  printf '%s\n' "$TREES/$1"
+}
+
+echo "== the allowlist, the numbers, and nothing else touched"
+L1="$(new_lane unit-1)"
+mk_build_tree "$L1"
+EXPECT_ALL="$(kb_of "$L1/node_modules" "$L1/.next" "$L1/dist")"
+EXPECT_CACHES="$(kb_of "$L1/.next" "$L1/dist")"
+check "a dry run reports the exact kilobytes of the allowlisted directories and deletes nothing" \
+  '[ "$(lib_eval "disk_clean_worktree \"$L1\" all 0 && printf %s \"\$DISK_FREED_KB\"")" = "$EXPECT_ALL" ] && [ -d "$L1/node_modules" ] && [ -d "$L1/.next" ] && [ -d "$L1/dist" ]'
+check "the dry run names what it would take, node_modules first on the list" \
+  '[ "$(lib_eval "disk_clean_worktree \"$L1\" all 0 && printf %s \"\$DISK_CLEANED\"")" = "node_modules .next dist" ]'
+check "kind 'caches' leaves node_modules out of the number and out of the list" \
+  '[ "$(lib_eval "disk_clean_worktree \"$L1\" caches 0 && printf %s \"\$DISK_FREED_KB\"")" = "$EXPECT_CACHES" ] && [ "$(lib_eval "disk_clean_worktree \"$L1\" caches 0 && printf %s \"\$DISK_CLEANED\"")" = ".next dist" ]'
+check "freed kilobytes turn into GB only above a gigabyte (human_size, the same helper destroy --purge uses)" \
+  '[ "$(lib_eval "human_size 2097152")" = "2.0 GB" ] && [ "$(lib_eval "human_size 5120")" = "5 MB" ] && [ "$(lib_eval "human_size 7")" = "7 KB" ]'
+lib_eval "disk_clean_worktree \"$L1\" caches 1" >/dev/null
+check "applying 'caches' deletes the build caches and keeps node_modules" \
+  '[ ! -e "$L1/.next" ] && [ ! -e "$L1/dist" ] && [ -d "$L1/node_modules/pkg" ]'
+lib_eval "disk_clean_worktree \"$L1\" all 1" >/dev/null
+check "applying 'all' takes node_modules too, and leaves the sources and the git state alone" \
+  '[ ! -e "$L1/node_modules" ] && [ -f "$L1/README.md" ] && [ -z "$(git -C "$L1" status --porcelain)" ] && git -C "$L1" rev-parse --verify -q HEAD >/dev/null'
+check "nothing is left behind: no half-deleted directory, no trash" \
+  '[ -z "$(/bin/ls -A "$L1" | grep "wolfmux-removing")" ]'
+
+echo "== what is never deleted"
+L2="$(new_lane unit-tracked)"
+/bin/mkdir -p "$L2/dist"
+printf 'committed\n' >"$L2/dist/keep.txt"
+git -C "$L2" add -f dist/keep.txt >/dev/null 2>&1
+git -C "$L2" -c user.name=disk -c user.email=disk@example.invalid commit -qm "a project that commits its dist"
+mkfile "$L2/dist/bundle.js" 500
+/bin/mkdir -p "$L2/node_modules/pkg"
+mkfile "$L2/node_modules/pkg/lib.js" 500
+# `dist` is on the list AND git tracks it here: rule 2 wins, and node_modules still goes.
+lib_eval "disk_clean_worktree \"$L2\" all 1" >/dev/null
+check "a directory git tracks survives, whatever it is called, and the rest is still taken" \
+  '[ -f "$L2/dist/keep.txt" ] && [ -f "$L2/dist/bundle.js" ] && [ ! -e "$L2/node_modules" ]'
+check "a tracked directory is not counted as freed either" \
+  '[ "$(lib_eval "disk_clean_worktree \"$L2\" all 0 && printf %s \"\$DISK_FREED_KB\"")" = "0" ]'
+
+L3="$(new_lane unit-dirty)"
+mk_build_tree "$L3"
+printf 'work in progress\n' >>"$L3/README.md"
+check "a worktree with an uncommitted change to a tracked file is refused, with the reason" \
+  '! lib_eval "disk_clean_worktree \"$L3\" all 1" && lib_eval "disk_clean_worktree \"$L3\" all 1 || printf %s \"\$DISK_SKIP_REASON\"" | grep -q "uncommitted changes to tracked files"'
+check "and nothing of it was touched" '[ -d "$L3/node_modules/pkg" ] && [ -d "$L3/.next" ]'
+
+L4="$(new_lane unit-untracked)"
+mk_build_tree "$L4"
+printf 'notes an agent left\n' >"$L4/NOTES.md"
+check "a worktree with untracked files that are not build output is refused, and the file is named" \
+  '! lib_eval "disk_clean_worktree \"$L4\" all 1" && lib_eval "disk_clean_worktree \"$L4\" all 1 || printf %s \"\$DISK_SKIP_REASON\"" | grep -q "not build output (NOTES.md)"'
+check "and nothing of it was touched" '[ -d "$L4/node_modules/pkg" ] && [ -f "$L4/NOTES.md" ]'
+
+OUTSIDE="$WORK/outside"
+/bin/mkdir -p "$OUTSIDE"
+(cd "$OUTSIDE" && git init -q -b main && echo x >f && git add -A && git -c user.name=d -c user.email=d@e.invalid commit -qm i) >/dev/null 2>&1
+mk_build_tree "$OUTSIDE"
+check "a path outside this project's worktree directory is refused, however good it looks" \
+  '! lib_eval "disk_clean_worktree \"$OUTSIDE\" all 1" && [ -d "$OUTSIDE/node_modules/pkg" ] && [ -d "$OUTSIDE/.next" ]'
+mk_build_tree "$PROJECT"
+check "your own checkout is refused, and the worktree directory itself is refused" \
+  '! lib_eval "disk_clean_worktree \"$PROJECT\" all 1" && ! lib_eval "disk_clean_worktree \"$TREES\" all 1" && [ -d "$PROJECT/node_modules/pkg" ]'
+/bin/rm -rf "$PROJECT/node_modules" "$PROJECT/.next" "$PROJECT/dist"
+check "a symlink that leads out of the worktree: the link goes, never what it points at" \
+  'L="$(new_lane unit-link)" && /bin/ln -s "$OUTSIDE/node_modules" "$L/node_modules" && lib_eval "disk_clean_worktree \"$L\" all 1" && [ ! -e "$L/node_modules" ] && [ -f "$OUTSIDE/node_modules/pkg/lib.js" ]'
+check "a cleanup killed halfway leaves trash the next run clears, never a half-deleted node_modules" \
+  'L="$(new_lane unit-trash)" && /bin/mkdir -p "$L/.wolfmux-removing-node_modules.999/pkg" && mkfile "$L/.wolfmux-removing-node_modules.999/pkg/x" 200 && lib_eval "disk_clean_worktree \"$L\" all 1" && [ -z "$(/bin/ls -A "$L" | grep wolfmux-removing)" ]'
+check "free disk is a plain number of kilobytes, and a label when df says nothing" \
+  'lib_eval "disk_free_kb" | grep -Eq "^[0-9]+$" && lib_eval "disk_free_label" | grep -Eq "(KB|MB|GB)$"'
+for name in unit-1 unit-tracked unit-dirty unit-untracked unit-link unit-trash; do
+  git -C "$PROJECT" worktree remove --force "$TREES/$name" >/dev/null 2>&1
+  git -C "$PROJECT" branch -D "ai/$name" >/dev/null 2>&1
+done
+
+echo "== the commands, in a throwaway team"
+teamctl start fable --no-attach --skip-beads >/dev/null 2>&1
+teamctl spawn parked glm53 --no-kickoff >/dev/null 2>&1
+teamctl spawn busy glm53 --no-kickoff >/dev/null 2>&1
+teamctl spawn messy glm53 --no-kickoff >/dev/null 2>&1
+sleep 2
+PARKED="$(teamctl status --json | "$(command -v jq)" -r '.agents[] | select(.role == "parked") | .workdir')"
+BUSY="$(teamctl status --json | "$(command -v jq)" -r '.agents[] | select(.role == "busy") | .workdir')"
+MESSY="$(teamctl status --json | "$(command -v jq)" -r '.agents[] | select(.role == "messy") | .workdir')"
+check "three lanes exist, each with its own worktree" '[ -d "$PARKED" ] && [ -d "$BUSY" ] && [ -d "$MESSY" ]'
+mk_build_tree "$PARKED"
+mk_build_tree "$BUSY"
+mk_build_tree "$MESSY"
+printf 'half-finished\n' >>"$MESSY/README.md"
+# Both are parked: prune only ever looks at lanes that are not running, and the point of
+# `messy` is that a parked lane holding real work is still left alone.
+teamctl stop messy >/dev/null 2>&1
+
+STOP_OUT="$(teamctl stop parked 2>&1)"
+check "stop takes the build caches, keeps node_modules, and says how much it freed" \
+  '[ ! -e "$PARKED/.next" ] && [ ! -e "$PARKED/dist" ] && [ -d "$PARKED/node_modules/pkg" ] && printf "%s" "$STOP_OUT" | grep -q "freed:.*MB of build output"'
+check "stop says the worktree, branch and commits are untouched, and they are" \
+  'printf "%s" "$STOP_OUT" | grep -q "worktree, branch and commits are untouched" && [ -f "$PARKED/README.md" ]'
+check "stopping a lane that holds unfinished work keeps its build output and says why" \
+  'teamctl restart messy >/dev/null 2>&1; sleep 1; teamctl stop messy 2>&1 | grep -q "kept:    its build output (it has uncommitted changes to tracked files)" && [ -d "$MESSY/.next" ]'
+
+DRY="$(teamctl prune --dry-run 2>&1)"
+check "prune --dry-run reports a total and deletes nothing" \
+  'printf "%s" "$DRY" | grep -q "DRY RUN: nothing is deleted" && printf "%s" "$DRY" | grep -qE "^  total +[0-9.]+ (KB|MB|GB) +is what this would free" && [ -d "$PARKED/node_modules/pkg" ]'
+check "prune --dry-run leaves a running lane out of the total and says so" \
+  'printf "%s" "$DRY" | grep -qE "^  busy +- +running, left alone"'
+check "prune --dry-run skips the lane that holds other changes, and names the reason" \
+  'printf "%s" "$DRY" | grep -q "messy.*skipped: it has uncommitted changes to tracked files"'
+check "a worker may look (--dry-run) but not prune: the deleting is the lead's (exit 77)" \
+  'TEAM_ROLE=busy teamctl prune --dry-run >/dev/null 2>&1 && { TEAM_ROLE=busy teamctl prune >/dev/null 2>&1; [ $? -eq 77 ]; }'
+
+KEEP="$(teamctl prune --keep-node-modules 2>&1)"
+check "prune --keep-node-modules takes the caches only" \
+  '[ -d "$PARKED/node_modules/pkg" ] && printf "%s" "$KEEP" | grep -q "takes:.*\.next" && ! printf "%s" "$KEEP" | grep -q "takes: node_modules"'
+PRUNE="$(teamctl prune 2>&1)"
+check "prune takes node_modules from the parked lane and reports the freed total" \
+  '[ ! -e "$PARKED/node_modules" ] && printf "%s" "$PRUNE" | grep -qE "^  total +[0-9.]+ (KB|MB|GB) +freed from 1 parked lane"'
+check "prune never touches a running lane" '[ -d "$BUSY/node_modules/pkg" ] && [ -d "$BUSY/.next" ]'
+check "prune never touches the lane it skipped" '[ -d "$MESSY/node_modules/pkg" ]'
+check "prune leaves the parked lane's sources and git state intact" \
+  '[ -f "$PARKED/README.md" ] && [ -z "$(git -C "$PARKED" status --porcelain)" ]'
+check "prune says what to do about a skipped lane" 'printf "%s" "$PRUNE" | grep -q "teamctl remove <role>"'
+
+REMOVE="$(teamctl remove parked --yes 2>&1)"
+check "remove takes the whole worktree and says what that freed" \
+  '[ ! -d "$PARKED" ] && printf "%s" "$REMOVE" | grep -qE "removed: parked .*freed [0-9]"'
+
+echo "== the guard before a lane is created"
+check "status shows free disk and what the guard is set to" \
+  'teamctl status | grep -qE "disk +[0-9.]+ (KB|MB|GB) free .* spawn guard: refuse under 20 GB"'
+check "status never measures the lanes by itself: it reads the number teamctl teams left" \
+  'teamctl status | grep -q "not measured (teamctl teams measures it)" && teamctl teams | grep -qE "^default +(running|ended) " && teamctl status | grep -qE "this team.s lanes: [0-9.]+ (KB|MB|GB)"'
+check "status --json carries the disk numbers and the three new policy keys" \
+  'teamctl status --json | jq -e ".disk.free_kb > 0 and .policy.disk_guard == \"refuse\" and .policy.disk_min_gb == 20 and .policy.link_node_modules == \"off\""'
+teamctl policy disk-min-gb 9999 >/dev/null 2>&1
+GUARD="$(teamctl spawn late glm53 --no-kickoff 2>&1)"
+check "under the threshold a spawn is refused (exit 75), names the number, and creates nothing" \
+  'printf "%s" "$GUARD" | grep -q "under the 9999 GB this team asks for" && printf "%s" "$GUARD" | grep -q "teamctl prune --dry-run" && [ -z "$(git -C "$PROJECT" branch --list "ai/late-*")" ] && ! teamctl status --json | jq -e ".agents[] | select(.role == \"late\")"'
+check "the refusal is exit 75, not a usage error" 'teamctl spawn late glm53 --no-kickoff >/dev/null 2>&1; [ $? -eq 75 ]'
+teamctl policy disk-guard warn >/dev/null 2>&1
+WARN="$(teamctl spawn late glm53 --no-kickoff 2>&1)"
+sleep 1
+check "policy disk-guard warn lets the same spawn through, with the warning" \
+  'printf "%s" "$WARN" | grep -q "spawning anyway" && teamctl status --json | jq -e ".agents[] | select(.role == \"late\") | .state == \"running\""'
+teamctl policy disk-guard off >/dev/null 2>&1
+check "policy disk-guard off asks nothing at all" \
+  'teamctl spawn later glm53 --no-kickoff 2>&1 | grep -q "spawned:   later" && ! teamctl spawn-nonsense 2>/dev/null'
+check "a policy value that is not a number, or not one of the words, is refused (exit 64)" \
+  'teamctl policy disk-min-gb twenty >/dev/null 2>&1; [ $? -eq 64 ] && { teamctl policy disk-min-gb -5 >/dev/null 2>&1; [ $? -eq 64 ]; } && { teamctl policy disk-guard maybe >/dev/null 2>&1; [ $? -eq 64 ]; } && { teamctl policy link-node-modules sometimes >/dev/null 2>&1; [ $? -eq 64 ]; }'
+teamctl policy disk-guard refuse >/dev/null 2>&1
+teamctl policy disk-min-gb 0 >/dev/null 2>&1
+check "disk-min-gb 0 switches the limit off without switching the guard off" \
+  'teamctl policy | grep -q "disk-min-gb         0" && teamctl spawn zero glm53 --no-kickoff 2>&1 | grep -q "spawned:   zero"'
+
+echo "== one node_modules for every lane, behind the flag"
+/bin/mkdir -p "$PROJECT/node_modules/rootpkg"
+mkfile "$PROJECT/node_modules/rootpkg/index.js" 500
+LINKED="$(teamctl spawn shared glm53 --no-kickoff --link-node-modules 2>&1)"
+SHARED="$(teamctl status --json | jq -r '.agents[] | select(.role == "shared") | .workdir')"
+check "--link-node-modules points the lane at the project's node_modules and says what that means" \
+  '[ -L "$SHARED/node_modules" ] && [ -f "$SHARED/node_modules/rootpkg/index.js" ] && printf "%s" "$LINKED" | grep -q "an install in any lane changes them all"'
+check "without the flag, and with the policy off, a lane gets no link" \
+  'P="$(teamctl status --json | jq -r ".agents[] | select(.role == \"later\") | .workdir")" && [ ! -e "$P/node_modules" ]'
+teamctl policy link-node-modules on >/dev/null 2>&1
+check "policy link-node-modules on does it for every spawn" \
+  'teamctl spawn shared2 glm53 --no-kickoff >/dev/null 2>&1 && P="$(teamctl status --json | jq -r ".agents[] | select(.role == \"shared2\") | .workdir")" && [ -L "$P/node_modules" ]'
+teamctl stop shared >/dev/null 2>&1
+check "cleaning a lane whose node_modules is a link removes the link and never the project's copy" \
+  'teamctl prune >/dev/null 2>&1; [ ! -e "$SHARED/node_modules" ] && [ -f "$PROJECT/node_modules/rootpkg/index.js" ]'
+
+echo "== destroy --worktrees gets the gigabytes back too"
+DEST="$(teamctl destroy --worktrees --yes 2>&1)"
+check "destroy --worktrees takes each lane's build output before it decides what to remove" \
+  'printf "%s" "$DEST" | grep -qE "freed [0-9.]+ (KB|MB|GB) of build output"'
+check "and the lane that holds real work is still kept, with its work" \
+  '[ -d "$MESSY" ] && git -C "$MESSY" status --porcelain | grep -q "README.md"'
+
+echo
+echo "result: $passed passed, $failed failed"
+[ "$failed" -eq 0 ]
