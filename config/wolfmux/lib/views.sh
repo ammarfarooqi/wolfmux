@@ -91,9 +91,14 @@ _status_team_json() {
     --arg running "${SESSION_LIVE:-0}" --arg founder "$(team_founder)" --arg orphaned "$orphaned" --arg lp "$(policy_get lead-permissions)" \
     --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
+    --arg dg "$(policy_get disk-guard)" --arg dmin "$(policy_get disk-min-gb)" --arg lnm "$(policy_get link-node-modules)" \
+    --arg free "$(disk_free_kb)" --arg trees "$(disk_team_kb_cached)" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
       founder: $founder, orphaned: ($orphaned == "1"),
-      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt},
+      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt,
+               disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm},
+      disk: {free_kb: (if $free == "" then null else ($free | tonumber) end),
+             worktrees_kb: (if $trees == "" then null else ($trees | tonumber) end)},
       approvals_pending: ($pending | tonumber), agents: .}'
 }
 
@@ -116,6 +121,9 @@ _status_team_text() {
     say "  $(team_orphaned_note) Bring it back: teamctl restart lead$hint --continue · delete it: teamctl destroy$hint --purge"
   fi
   say "  policy  $(policy_summary) · approvals pending: $(approvals_pending_count)"
+  # Free disk is a df call; the lane total is whatever the last command that changed the
+  # lanes left behind, because measuring it here is a du over every worktree (lib/disk.sh).
+  say "  disk    $(disk_free_label) free · this team's lanes: $(disk_team_label) · spawn guard: $(policy_get disk-guard) under $(policy_get disk-min-gb) GB"
   rows="$(_status_rows)"
   if [ -z "$rows" ]; then
     say "  no agents on record. Start it: teamctl start <fable|astra>$hint"
@@ -194,18 +202,17 @@ cmd_status() {
 
 # _teams_facts: for the loaded team: TEAMS_STATE, TEAMS_FOUNDER, TEAMS_LEAD, TEAMS_COUNT, TEAMS_KB
 _teams_facts() {
-  local role
   SESSION="$(session_name_for_project)"
   TEAMS_STATE="running"
   if team_orphaned; then TEAMS_STATE="orphaned"; fi
   TEAMS_FOUNDER="$(team_founder)"
   TEAMS_LEAD="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
   TEAMS_COUNT="$(reg_list | wc -l | tr -d ' ')"
-  # worktrees of this team's workers (the lead works in your own checkout and adds nothing)
-  TEAMS_KB=0
-  for role in $(reg_list); do
-    if [ "$(reg_field "$role" kind)" = "worker" ]; then TEAMS_KB=$((TEAMS_KB + $(disk_kb "$(reg_field "$role" workdir)"))); fi
-  done
+  # Worktrees of this team's workers (the lead works in your own checkout and adds nothing).
+  # This is the command that MEASURES: a du over every lane, seconds on a busy machine, and
+  # the number it leaves behind in state/<project>/disk-kb is what `teamctl status` shows
+  # without measuring anything itself (lib/disk.sh).
+  TEAMS_KB="$(disk_team_kb_measure)"
 }
 
 # teamctl teams [--json]: the short list. STATE: running, or orphaned when the team's lead is not running
@@ -244,6 +251,8 @@ cmd_teams() {
     say ""
     printf '%s' "$orphans"
   fi
+  say ""
+  say "disk: $(disk_free_label) free · take the build output of parked lanes: teamctl prune --dry-run"
 }
 
 cmd_panes() {

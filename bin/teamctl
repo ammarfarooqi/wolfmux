@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk beads policy approvals agents views doctor brand notify layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -40,10 +40,13 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                   --continue reopens this agent's own conversation (its stored id); --resume names one instead
                   --ticket: the team's default ticket key, for a branch template that asks for one
   Workers
-    teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff] [--resume <session-id>]
+    teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]
         --branch: that exact branch name · --ticket: the key a branch template asks for (teamctl policy branch-template)
         --repo: worktree and branch in ANOTHER git repository; the guard holds the teammate to that worktree
         --from-worktree: a fresh conversation in a stopped worker's built worktree, on a new branch
+        --link-node-modules: a brand-new lane shares its repository's node_modules instead of installing 2+ GB
+        of its own. One directory for every lane: an install in any lane changes them all.
+        A spawn is refused under disk-min-gb free disk (policy disk-guard)
         models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
                 kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
@@ -63,6 +66,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Policy and permissions
     teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · worker-spawn ·
                                                       worker-isolation (the worktree guard) · lead-teams (may the lead found teams) ·
+                                                      disk-guard refuse|warn|off · disk-min-gb <number> · link-node-modules on|off
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
@@ -78,6 +82,18 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Git
     teamctl worktrees
     teamctl diff <role> [--stat|--names|--commits|--working]
+  Disk  (a lane worktree carries 2-3 GB of node_modules and build output; nothing used to remove it)
+    teamctl prune [--dry-run] [--keep-node-modules]   take the build output of every PARKED lane of
+                                                      the team: node_modules, .next, dist, .turbo, build,
+                                                      coverage and the cache directories. Running lanes and
+                                                      anything git tracks are never touched; a lane that holds
+                                                      other uncommitted files is skipped and named.
+                                                      --dry-run reports and deletes nothing (anyone may run it)
+                                                      --keep-node-modules takes the build caches only
+    teamctl stop <role>                               takes the build caches, keeps node_modules
+    teamctl remove <role> · destroy --worktrees       take all of it, the worktree goes anyway
+    teamctl status                                    free disk, and what this team's lanes take
+    teamctl teams                                     measures the lanes (a du per lane; status reads the number)
   Tab completion
     teamctl completion <zsh|bash>                     print the tab-completion script of that shell, so
                                                       source <(teamctl completion zsh) works, and in bash
@@ -155,6 +171,7 @@ main() {
     remove) cmd_remove "$@" ;;
     restart) cmd_restart "$@" ;;
     destroy) cmd_destroy "$@" ;;
+    prune) cmd_prune "$@" ;;
     nudge) cmd_nudge "$@" ;;
     policy) cmd_policy "$@" ;;
     layout) cmd_layout "$@" ;;

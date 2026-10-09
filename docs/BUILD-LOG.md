@@ -451,7 +451,7 @@ outside a git repository it had offered nothing at all, which is where the owner
 
 `tests/smoke.sh`: 250 → 327. `tests/docs.sh`: 32 → 36. `tests/migration.sh`: 24 → 36. v1.12.0.
 
-## 26. "A notice landed in the middle of my sentence" (v1.13)
+## 26. "A notice landed in the middle of my sentence" (v1.14)
 
 GitHub issue #9, reported on 2026-10-09 from the owner's own lead pane:
 
@@ -544,11 +544,11 @@ fixture row and on a live detached pane, the reaped marker, the queued fixed not
 human who starts typing part-way through a delivery, a half-typed line on a detached
 session, and the client-list exit codes). One assertion was flipped rather than added: a
 non-empty input row on a detached session used to be asserted as delivered, and now has to
-defer. `tests/smoke.sh`: 327 → 327. `tests/docs.sh`: 36 → 36. v1.13.0.
+defer. `tests/smoke.sh`: 327 → 327. `tests/docs.sh`: 36 → 36. v1.14.0.
 
 Merged with main at integration, which had meanwhile reached v1.12.0 (tab completion, the
 doctor probe, per-agent conversations). Five files conflicted and all five were resolved
-by keeping both sides: the version line (1.13.0, since 1.11.x and 1.12.0 were taken), the
+by keeping both sides: the version line (1.14.0: the disk cleanup took that number first and the two ship as one release), the
 test tables in README and VERIFICATION, one `teamctl nudge` / `restart` / `status` /
 `teams` row block in USAGE, and this log's numbering. Resolving it turned up one thing
 round 3 had missed: VERIFICATION still asserted the OLD rule, that a non-empty input row
@@ -556,6 +556,134 @@ with nobody attached is not a human and the notice is delivered. Round 3 reverse
 that, so the sentence was the opposite of the code. Corrected here. Third time a claim in
 these docs was found to outlive the code it described, and all three were found by
 somebody re-reading rather than by a test.
+
+## 27. wolfmux cleans up after its own lane worktrees (v1.14)
+
+The day wolfmux filled the disk: wolfmux had filled the machine's disk. `~/.wolfmux` had grown to
+102 GB — every lane worktree keeping its own `node_modules` (2.3 GB), `.next` (0.9 GB) and
+copied `public` (0.5 GB), one project with 27 lanes alive, and nothing ever pruned, not on
+`stop`, not after a week parked, not on `remove`. The Mac rebooted three times, every team
+died mid-task, and the recovery was a human deleting `node_modules` by hand at 100% disk
+(issue #11). The tool makes those worktrees, so the tool now cleans them up.
+
+The whole of it is one new module, `lib/disk.sh`: one allowlist of regenerable directory
+names and four rules that hold for every deletion — only a name on that list, never a path
+git tracks in that worktree, never a worktree with uncommitted or untracked work of its
+own, and only inside `~/.wolfmux/worktrees/<project>/…` with every path resolved by
+`pwd -P`. `stop` takes the build caches and keeps `node_modules` (a restart has to stay
+cheap); `remove` and `destroy --worktrees` take everything; the new `teamctl prune
+[--dry-run] [--keep-node-modules]` sweeps every parked lane and prints a per-lane line and
+a total. `destroy --worktrees` gained the most: it used to call a worktree with an
+untracked `node_modules` dirty and keep all of it for ever.
+
+Two things were measured rather than guessed. A `du` over one real `node_modules` (69,336
+files, 802 MB) takes 0.62 s warm, and over the 36 lane worktrees on this machine 12.4 s —
+far too slow for `teamctl status`, so status reads a cached number that the commands which
+change the lanes leave in `state/<project>/disk-kb`, and `teamctl teams` is what measures.
+And an interrupted cleanup: each directory is renamed inside its own worktree before it is
+deleted, so a kill halfway through leaves a `.wolfmux-removing-*` the next run clears, never
+a `node_modules` that is half there and looks installed.
+
+Also new: `teamctl spawn` checks free disk first and refuses under `disk-min-gb` (default
+20 GB — about seven more lanes' worth of room, with several gigabytes left for macOS
+itself), naming `teamctl prune --dry-run` as the next step; `disk-guard` can make that a
+warning or switch it off; and `spawn --link-node-modules` (or `policy link-node-modules on`)
+points a new lane's `node_modules` at the project root's copy instead of installing 2+ GB
+again. That one is off by default on purpose: it is ONE directory for every lane, so an
+install in any lane changes the dependencies of all of them.
+
+`tests/disk.sh`: new, 48 checks. `tests/smoke.sh`: 181 → 181 (the policy-defaults check now
+names the three new keys). `tests/docs.sh`: 28 → 28.
+
+Review found two blockers in it, both one line, neither a wrong-deletion path (a reviewer
+drove the code at the project root, `../..`, `/`, an empty path, a deleted `.git`, an
+exported `GIT_DIR`, symlinked `node_modules` and two concurrent prunes, and could not make
+it delete anything it must not). First: `policy_valid` accepted `08`, `test -le` read it as
+base ten and shell arithmetic read it as octal, so one typo made every `teamctl spawn` in
+that team die with a raw bash error — and `010` was quieter, printing `010` while enforcing
+8 GB. A leading zero is now refused, and the one arithmetic site uses `10#` as well.
+Second: a `--link-node-modules` symlink is untracked when `.gitignore` says `node_modules/`
+with the trailing slash, which is the common form, so `wt_dirty_count` called the lane dirty
+and `remove` pointed at `--force` — the discard-work door — for a lane the new flag had
+made; the same happened to a lane holding interrupted-cleanup trash. The first fix ran the
+allowlist pass before the dirty check, the way `destroy --worktrees` already did — which
+worked, but meant a `remove` typed on the wrong role printed "nothing was removed" after
+that lane had already lost its `node_modules`. So the question changed instead of the order:
+a new `disk_work_dirty_count` counts every uncommitted entry EXCEPT an untracked one that is
+only build output, `remove` decides refuse-or-remove from that, and the sweep happens per
+lane once that lane is actually going. A command that refuses now leaves the lane exactly as
+it found it, "nothing was removed" is true, and the `du`-before reporting is unchanged.
+`wt_dirty_count` keeps its old meaning for the `status` and `worktrees` tables, which answer
+a different question.
+
+Four more from the same review: `prune` no longer decides a lane is parked from the tmux
+lookup alone (it also reads the record's state and pane id, and refuses the whole sweep when
+the two disagree while the session is up — a wrong "parked" takes `node_modules` out from
+under a running build); the cached size now rejects a stamp in the future, which used to
+stay "fresh" for ever after a clock jump; `disk_confined` no longer treats another team's
+lane as the first team's, so the sentence in this file and in ARCHITECTURE is true for the
+default team too; and `tests/disk.sh` runs the libraries under `set -euo pipefail`, which is
+`bin/teamctl`'s own line and is why a green suite had missed an arithmetic abort.
+
+What the review also measured, and what is now in ROADMAP as a known gap: of 25 GB across
+the 38 lane worktrees on this machine, only about 4 GB was on the allowlist. The rest is
+files git tracks — one project copies 530 MB of `public/` into every lane, about 0.65 GB per
+lane before anything is installed — so `prune` now prints that floor and says that
+`teamctl remove <role>` is the only thing which gives it back. And nothing yet drains a lane
+that has been parked for days: `stop` leaves `node_modules` on purpose.
+
+A re-review then found four small things, all fixed. The "still held" line left out the two
+kinds of lane that hold the most: `prune`'s running and skipped branches returned before the
+floor was added, so three lanes actually holding 1,240 KB reported 12 KB — in the 27-lane
+case the difference between "18 GB is stuck in tracked files" and a number near zero. It now
+adds the whole remaining size of every lane it skipped or left running, and says so. A
+leading zero in `state/<project>/disk-kb` printed `08: value too great for base` from a block
+whose whole job is to fall back silently; each field is now validated on its own, no leading
+zero, with `10#` on the arithmetic as well. `disk_work_dirty_list` gained the `|| true` its
+sibling has. And three test gaps closed: the post-reboot `prune` path — no session, records
+still claiming `running`, which is the exact state this machine was left in three times and
+the single most important thing `disk_lane_running` decides; a check that claimed to cover a
+stored record but only set the environment variable; and the floor and skipped-size checks,
+which asserted a shape (`[0-9.]+ (KB|MB|GB)`) and are why the still-held bug passed a green
+suite — they compare values now.
+
+One narrowing came with it. `disk_work_dirty_count` had widened `remove` past the two cases
+that motivated it: a lane holding an untracked, unignored `dist/deploy.sh` that somebody
+wrote by hand was removed without the "still holds work" question. `build`, `dist` and
+`target` are now work when git neither tracks nor ignores them (WOLFMUX_WORK_LIKE_DIRS);
+`node_modules`, the caches and our own trash stay not-work, which is what fixed the
+`.gitignore`-with-a-trailing-slash leak and was the point of the change. `prune` is
+unchanged there and still sweeps such a lane — it has no question to ask — which ROADMAP
+records as the one inconsistency.
+
+`tests/disk.sh`: 48 → 93.
+
+Version 1.14.0. Main was already 1.12.0 when this branch was written, and a new command plus
+three policy keys is a minor bump on its own merits. The nudge-typing fix (entry 26, PR #10)
+was briefly numbered 1.13.0 while the two branches were in flight; both landed in the same
+release, so 1.14.0 is the one number for the pair.
+
+Merging v1.12.0 in found one thing four reviews had not: `destroy --purge` did not delete
+`state/<project>/disk-kb`, so a named team's state directory was never empty and its
+`rmdir` quietly did nothing. Main's new founder test asserts that directory is gone, and it
+failed. The purge removes the file now, and `_purge_report` counts it. Rule 4 also had to
+learn about `spawn --repo`, which main added: a lane's worktree is checked against its own
+repository's worktree directory (`worker_trees_dir`), not blindly against this project's, so
+a cross-repository lane is cleaned instead of skipped. And `--link-node-modules` links the
+lane to its own repository's `node_modules`, which is only ever a brand-new worktree:
+`--from-worktree` hands over one that already has the dependencies it installed, and that
+handover is not asked to clear the free-disk bar either, because it installs nothing.
+
+A lane in another repository is the highest-stakes path here — a deletion inside a worktree
+of a repository that is not the project — so it got its own fixture: a second throwaway
+repository, with its own `node_modules` and its own path with a space in it. `stop`, `prune`,
+`remove` and `--link-node-modules` are all exercised against it, in the same sweeps as this
+project's own lanes, and rule 4 is asked the hostile questions there too (that repository's
+root, its worktree directory, a parent traversal, and the lane measured against the wrong
+prefix — all refused, its `node_modules` intact). Writing it found one more inherited bug:
+`teamctl remove` read the teammate's repository out of the registry *after* deleting the
+record, so the `in <repository>` it meant to print was always empty. The value is read while
+the record still exists now.
 
 ## Footprint on the machine
 

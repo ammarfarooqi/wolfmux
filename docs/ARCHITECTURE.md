@@ -57,8 +57,9 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 | `registry.sh` | the only module that touches state files; project lock; nudge debounce and deferred notices |
 | `tmuxctl.sh` | every tmux call, including "is a human typing in this pane" |
 | `worktree.sh` | worktree and branch creation, `worktrees`, `diff` |
+| `disk.sh` | the build-output allowlist and its safety rules, `prune`, free-disk reading, the spawn guard, shared `node_modules` |
 | `beads.sh` | Beads bootstrap (stealth init) and hook installation |
-| `policy.sh` | who is calling (`caller_role`), manager-only commands, the three policy keys |
+| `policy.sh` | who is calling (`caller_role`), manager-only commands, the policy keys |
 | `approvals.sh` | the lead decides workers' permission requests (`_permission-hook`, `approvals`, `approve`, `deny`) |
 | `agents.sh` | `start`, `spawn`, the pane process (`_run-agent`), `stop`, `restart`, `destroy`, `nudge` |
 | `views.sh` | `status`, `panes`, `capture`, `log`, `focus`, `attach` |
@@ -106,6 +107,24 @@ repository, so nothing is nested in the project. Git itself refuses to check one
 branch out twice, and `teamctl` refuses a duplicate role, so two agents can never
 share a working tree. Claude Code keys folder trust on the main checkout, so
 trusting the project once covers every worker worktree.
+
+**What a worktree grows, and who takes it back.** `.git` is shared, so a worktree starts
+as a copy of the tracked files, but whatever the agent installs and builds inside it is
+its own: on one project here 2.3 GB of `node_modules`, 0.9 GB of `.next` and half a
+gigabyte of copied assets per lane. Nothing used to remove it, 27 parked lanes of one
+project reached 65 GB, and the machine filled its disk. `lib/disk.sh` is the one module
+that deletes any of it: one allowlist of regenerable directory names, and four rules —
+only a name on the list, never a path git tracks, never a worktree holding uncommitted or
+untracked work of its own, and only inside the worktree directory of that lane's own
+repository (`worker_trees_dir`, so a lane spawned with `--repo` is checked against that
+repository and not this project) with every path resolved by `pwd -P`. `stop` takes the
+build caches, `remove` and
+`destroy --worktrees` take everything, `prune` sweeps the parked lanes, `spawn` refuses
+under `disk-min-gb`, and each directory is renamed inside its worktree before deletion so
+an interrupted cleanup leaves recognizable trash rather than a half-deleted
+`node_modules`. `teamctl status` never measures (a `du` over 36 lanes here costs 12.4 s):
+the commands that change the lanes leave the number in `~/.wolfmux/state/<project>/disk-kb`
+and status reads it.
 
 ### Beads
 
@@ -400,7 +419,7 @@ One pixel drawing (`tools/wolf-art.py`) produces the terminal art in `lib/brand.
 ```
 ~/bin/                          teamctl + launchers
 ~/.config/wolfmux/              code, tmux.conf, TEAM_PROTOCOL.md, README.md, config, glm-worker-settings.json
-~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/ (debounce stamps, <role>.lock, <role>.pending)
+~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/ (debounce stamps, <role>.lock, <role>.pending), disk-kb
 ~/.wolfmux/worktrees/<project>/ one directory per worker
 <project>/.beads/               tasks and messages (Beads)
 macOS Keychain                  one service per provider: "zai-coding-plan" (Z.ai),

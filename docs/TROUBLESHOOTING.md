@@ -77,6 +77,35 @@ Start with `teamctl doctor`, then `teamctl status`, then `teamctl capture <role>
 | `install.sh` says an installation under the old name is present | v1.1 or earlier ("ai-team") is installed | `./migrate-from-ai-team.sh` — it moves state and worktrees, then installs ([details](SETUP.md#coming-from-ai-team-v11-and-earlier)) |
 | `teamctl doctor` shows `socket: ai-team` | a team started before the rename is still running | nothing to do: teamctl follows it; the next team after it ends uses `wolfmux` |
 | stale `wolfmux-test-*` sockets in `/tmp/tmux-<uid>/` | tmux leaves socket files behind | harmless; `smoke.sh` removes its own |
+| `teamctl spawn` refuses: "… free on this disk, under the … GB this team asks for" | the disk guard: free space is under `disk-min-gb` (default 20 GB) | `teamctl prune --dry-run`, then `teamctl prune`. Still not enough: `teamctl remove <role>` for lanes you are done with, or `teamctl destroy --team <name> --purge`. To spawn anyway: `teamctl policy disk-guard warn` |
+| a lane says a package is missing, right after a `prune` or a `stop` | `prune` takes `node_modules`, `stop` takes the build caches | in that worktree: `npm install` (or the project's own install command). Nothing else of the lane changed |
+| a `.wolfmux-removing-*` directory inside a worktree | a cleanup was killed halfway (the disk filled, the machine rebooted) | harmless; the next `teamctl prune` / `stop` / `remove` clears it. By hand: `/bin/rm -rf` that one directory |
+| `teamctl prune` says "skipped: it has untracked files that are not build output (X)" | the lane holds something that is not regenerable, so nothing of it is touched | look: `teamctl diff <role> --working`. Keep it: commit it in that worktree. Let the lane go: `teamctl remove <role>` |
+| `teamctl status` says "this team's lanes: not measured" | status never runs a `du` (over 36 lanes that is 12 s); it reads the number the last command left | `teamctl teams` measures it |
+| `teamctl prune` refuses: "cannot tell whether '<role>' is running" | its record says the agent is running and the team's tmux session shows no pane for it. prune sweeps lanes unattended, so it stops rather than guess | `teamctl status` and `teamctl panes` to see which is right, then `teamctl stop <role>` (park it for real) or `teamctl restart <role>` (bring it back), and run prune again |
+| `teamctl policy disk-min-gb 08` is refused | a leading zero is ambiguous: shell arithmetic would read `08` as octal and `010` as 8 | write it without the zero: `8`, `10`, `20` |
+| `teamctl prune` says "still held … is in files git tracks" | most of a lane is the checkout itself, not build output — one project copies 530 MB of `public/` into every lane | nothing to fix; `teamctl remove <role>` is the only thing that gives that part back |
+
+## The disk is full
+
+```bash
+df -h /                                  # how bad it is
+du -sk ~/.wolfmux/worktrees/* | sort -n  # which project's lanes are the problem
+teamctl prune --dry-run                  # in that project: what the parked lanes hold
+teamctl prune                            # take it (node_modules and all build output)
+teamctl teams                            # what each team still takes
+teamctl destroy --team <name> --purge    # a team you are finished with, worktrees and all
+```
+
+Each lane worktree carries its own `node_modules` and build output — 2-3 GB is normal for a
+Next.js project — and a parked lane keeps all of it until the role is removed. `prune` only
+touches lanes that are not running and never anything git tracks or any uncommitted work.
+If a lane is skipped and you need the space, `teamctl remove <role>` takes the whole
+worktree (it refuses while the lane holds work that exists nowhere else; `--force`
+discards it after one question). To stop it happening again:
+`teamctl policy disk-min-gb 40` raises the bar a spawn has to clear, and
+`teamctl policy link-node-modules on` makes new lanes share the project's `node_modules`
+instead of installing their own.
 
 ## Tab completion
 
