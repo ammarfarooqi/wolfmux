@@ -109,7 +109,7 @@ Who takes what:
 |---------|-------|
 | `teamctl stop <role>` | `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`. **Not** `node_modules`: `teamctl restart` has to stay the cheap thing it looks like |
 | `teamctl prune` | the same list **and** `node_modules`, for every parked lane. A parked lane is what hoards |
-| `teamctl remove <role>`, `teamctl destroy --worktrees` | all of it; the worktree is going away anyway |
+| `teamctl remove <role>`, `teamctl destroy --worktrees` | all of it; the worktree is going away anyway. A `remove` that **refuses** — because the lane holds commits or files a person wrote — changes nothing at all: "nothing was removed" means the build output is still there too |
 
 Five rules hold for every one of those deletions, and they are in one place
 (`config/wolfmux/lib/disk.sh`):

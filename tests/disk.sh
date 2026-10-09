@@ -334,9 +334,25 @@ teamctl stop shared2 >/dev/null 2>&1
 SHARED2="$(teamctl status --json | jq -r '.agents[] | select(.role == "shared2") | .workdir')"
 check "a linked node_modules really is what git calls untracked (the case this covers)" \
   '[ -L "$SHARED2/node_modules" ] && git -C "$SHARED2" status --porcelain | grep -q "?? node_modules"'
+# A remove that REFUSES must leave the lane exactly as it found it: "nothing was removed"
+# has to be true. So the build output is swept per lane, after every refusal and question,
+# and only for a lane that is going.
+mk_build_tree_caches() { /bin/mkdir -p "$1/.next/cache"; mkfile "$1/.next/cache/blob" 500; }
+mk_build_tree_caches "$SHARED2"
+printf 'notes an agent left\n' >"$SHARED2/NOTES.md"
+R0="$(teamctl remove shared2 2>&1)"
+check "remove refuses a lane that holds one file a person wrote, even with a linked node_modules" \
+  'printf "%s" "$R0" | grep -q "shared2 still holds work" && printf "%s" "$R0" | grep -q "1 uncommitted file" && printf "%s" "$R0" | grep -q "NOTES.md" && [ -d "$SHARED2" ]'
+check "the count and the listed lines agree: the linked node_modules is in neither" \
+  '! printf "%s" "$R0" | grep -qE "^ +\?\? node_modules$"'
+check "and the refused lane keeps its node_modules link and its caches: nothing was removed, for real" \
+  '[ -L "$SHARED2/node_modules" ] && [ -f "$SHARED2/node_modules/rootpkg/index.js" ] && [ -f "$SHARED2/.next/cache/blob" ] && ! printf "%s" "$R0" | grep -q "took .* of build output first"'
+/bin/rm -f "$SHARED2/NOTES.md"
 R2="$(teamctl remove shared2 --yes 2>&1)"
 check "remove takes a --link-node-modules lane off the books without --force, and never the project's copy" \
   '[ ! -d "$SHARED2" ] && ! printf "%s" "$R2" | grep -q "still holds work" && ! printf "%s" "$R2" | grep -q -- "--force" && [ -f "$PROJECT/node_modules/rootpkg/index.js" ]'
+check "it says what the sweep took and reports the lane's whole size as freed" \
+  'printf "%s" "$R2" | grep -q "shared2: took .* of build output first" && printf "%s" "$R2" | grep -qE "removed: shared2 .*freed [0-9.]+ (KB|MB|GB)"'
 teamctl stop shared >/dev/null 2>&1
 check "cleaning a lane whose node_modules is a link removes the link and never the project's copy" \
   'teamctl prune >/dev/null 2>&1; [ ! -e "$SHARED/node_modules" ] && [ -f "$PROJECT/node_modules/rootpkg/index.js" ]'

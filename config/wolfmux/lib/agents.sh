@@ -635,7 +635,7 @@ _inside_worktrees() {
 # uncommitted files or commits that are not in your current branch is refused, and the
 # refusal lists them. With --force the same list is shown and one question is asked.
 cmd_remove() {
-  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding="" kb=0 freed=0
+  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding="" kb=0 swept=0 freed=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
@@ -661,18 +661,13 @@ cmd_remove() {
   done
 
   lock_acquire
-  # Build output first, before anything is asked about work. These lanes are on their way
-  # out, and the question below is about commits and files a person wrote — not about the
-  # node_modules symlink that --link-node-modules put there, and not about the trash an
-  # interrupted cleanup left: both are untracked, both made wt_dirty_count call the lane
-  # dirty, and remove then refused a lane whose only "work" was our own doing. A lane that
-  # holds anything else is refused by rule 3 here as well, so nothing of a person's is taken.
-  for role in $roles; do
-    if disk_clean_role "$role" all 1 && [ -n "$DISK_CLEANED" ]; then
-      say "$role: took $(human_size "$DISK_FREED_KB") of build output first ($DISK_CLEANED)"
-      disk_cache_adjust "$DISK_FREED_KB"
-    fi
-  done
+  # What counts as "still holds work" here is disk_work_dirty_count, not wt_dirty_count: an
+  # untracked entry that is only build output is not work. Two of those are this tool's own
+  # doing — the node_modules symlink --link-node-modules puts in a lane, and the trash an
+  # interrupted cleanup leaves — and counting them made remove demand --force for a lane
+  # wolfmux had made that way. Nothing is swept before this question is answered: a command
+  # that then refuses must leave the lane exactly as it found it, and "nothing was removed"
+  # has to be true. The sweep happens further down, per lane, once that lane is going.
   # All or nothing: nobody is removed when one of them cannot be.
   if [ "$force" -ne 1 ]; then
     for role in $roles; do
@@ -680,13 +675,13 @@ cmd_remove() {
       branch="$(reg_field "$role" branch)"
       unmerged=0
       if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
-      if [ "$(wt_dirty_count "$path")" != "0" ] || [ "$unmerged" != "0" ]; then holding="$holding $role"; fi
+      if [ "$(disk_work_dirty_count "$path")" != "0" ] || [ "$unmerged" != "0" ]; then holding="$holding $role"; fi
     done
   fi
   for role in $roles; do
     path="$(reg_field "$role" workdir)"
     branch="$(reg_field "$role" branch)"
-    dirty="$(wt_dirty_count "$path")"
+    dirty="$(disk_work_dirty_count "$path")"
     unmerged=0
     if wt_branch_exists "$branch"; then unmerged="$(gitr rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
     if [ -n "$holding" ] && [ "$dirty" = "0" ] && [ "$unmerged" = "0" ]; then continue; fi # reported below, removed never
@@ -698,7 +693,9 @@ cmd_remove() {
       fi
       if [ "$dirty" != "0" ]; then
         say "  $dirty uncommitted file$([ "$dirty" = "1" ] || printf s) in $(short_path "$path"):"
-        "$GIT_BIN" -C "$path" status --short | head -10 | sed 's/^/    /'
+        # The same list the count came from, so the number and the lines agree: build
+        # output is left out of both.
+        disk_work_dirty_list "$path" | head -10 | sed 's/^/    /'
       fi
       if [ "$force" -ne 1 ]; then
         say "  keep it:    commit in that worktree, then: git merge $branch"
@@ -708,6 +705,16 @@ cmd_remove() {
       if [ "$assume_yes" -ne 1 ]; then
         confirm "Discard all of that and remove '$role'?" || { lock_release; die "aborted; nothing was removed (pass --yes to skip this question)"; }
       fi
+    fi
+    # This lane is going now: every refusal and every question above is behind us. Take its
+    # build output first, so the symlink of a --link-node-modules lane and any leftover
+    # cleanup trash are gone before git is asked to remove the worktree (that is what used
+    # to make `git worktree remove` need --force here).
+    swept=0
+    if disk_clean_role "$role" all 1 && [ -n "$DISK_CLEANED" ]; then
+      swept="$DISK_FREED_KB"
+      say "$role: took $(human_size "$swept") of build output first ($DISK_CLEANED)"
+      disk_cache_adjust "$swept"
     fi
     # A record is a file anyone can edit. Whatever it says, only a directory inside this
     # project's worktrees is ever deleted, and only an ai/* branch that is not checked out
@@ -739,8 +746,8 @@ cmd_remove() {
     if [ -n "$pane" ]; then tmx kill-pane -t "$pane" 2>/dev/null || true; fi
     /bin/rm -f "$STATE_DIR/settings/$role.json"
     reg_delete "$role"
-    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged freed_kb=$kb"
-    say "removed: $role  (worktree, branch $branch and record) — freed $(human_size "$kb")"
+    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged freed_kb=$((kb + swept))"
+    say "removed: $role  (worktree, branch $branch and record) — freed $(human_size "$((kb + swept))")"
   done
   layout_apply
   disk_cache_adjust "$freed"

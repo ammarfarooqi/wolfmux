@@ -434,9 +434,16 @@ that team die with a raw bash error — and `010` was quieter, printing `010` wh
 Second: a `--link-node-modules` symlink is untracked when `.gitignore` says `node_modules/`
 with the trailing slash, which is the common form, so `wt_dirty_count` called the lane dirty
 and `remove` pointed at `--force` — the discard-work door — for a lane the new flag had
-made; the same happened to a lane holding interrupted-cleanup trash. `remove` now runs the
-allowlist pass before the dirty check, the way `destroy --worktrees` already did, and keeps
-the `du`-before reporting; the question it asks is about work a person wrote again.
+made; the same happened to a lane holding interrupted-cleanup trash. The first fix ran the
+allowlist pass before the dirty check, the way `destroy --worktrees` already did — which
+worked, but meant a `remove` typed on the wrong role printed "nothing was removed" after
+that lane had already lost its `node_modules`. So the question changed instead of the order:
+a new `disk_work_dirty_count` counts every uncommitted entry EXCEPT an untracked one that is
+only build output, `remove` decides refuse-or-remove from that, and the sweep happens per
+lane once that lane is actually going. A command that refuses now leaves the lane exactly as
+it found it, "nothing was removed" is true, and the `du`-before reporting is unchanged.
+`wt_dirty_count` keeps its old meaning for the `status` and `worktrees` tables, which answer
+a different question.
 
 Four more from the same review: `prune` no longer decides a lane is parked from the tmux
 lookup alone (it also reads the record's state and pane id, and refuses the whole sweep when
@@ -454,7 +461,7 @@ lane before anything is installed — so `prune` now prints that floor and says 
 `teamctl remove <role>` is the only thing which gives it back. And nothing yet drains a lane
 that has been parked for days: `stop` leaves `node_modules` on purpose.
 
-`tests/disk.sh`: 48 → 68.
+`tests/disk.sh`: 48 → 72.
 
 ## Footprint on the machine
 

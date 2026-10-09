@@ -136,6 +136,47 @@ EOF
   return 0
 }
 
+# --- is anything here a person's work? -----------------------------------------------
+# disk_work_dirty_list <path> — the lines of `git status --porcelain` that are somebody's
+# work, which is every line EXCEPT an untracked entry that is only build output: a name on
+# WOLFMUX_BUILD_DIRS, or our own .wolfmux-removing-* trash.
+#
+# Two of those are this tool's own doing, and counting them as work was wrong in both
+# directions. A lane made with --link-node-modules carries an untracked node_modules
+# SYMLINK whenever .gitignore says "node_modules/" with the trailing slash (the common
+# form: that pattern matches directories, not links), and an interrupted cleanup leaves
+# trash. `teamctl remove` counted either as a dirty file and demanded --force — the
+# discard-work door — for a lane wolfmux itself had made that way.
+#
+# This is deliberately NOT wt_dirty_count: that one answers "is anything uncommitted here",
+# which is the right question for the status and worktrees tables. This one answers "would
+# removing this lane lose something a person wrote", which is the question `remove` asks.
+disk_work_dirty_list() {
+  local path="$1" status line entry first
+  [ -d "$path" ] || return 0
+  status="$("$GIT_BIN" -C "$path" status --porcelain 2>/dev/null)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "$line" in
+      '?? '*) ;;
+      *)
+        printf '%s\n' "$line" # a tracked file changed: always work
+        continue
+        ;;
+    esac
+    entry="${line#?? }"
+    first="${entry%%/*}" # an untracked directory is reported as "node_modules/"
+    case "$first" in .wolfmux-removing-*) continue ;; esac
+    case " $WOLFMUX_BUILD_DIRS " in *" $first "*) continue ;; esac
+    printf '%s\n' "$line"
+  done <<EOF
+$status
+EOF
+}
+
+# disk_work_dirty_count <path> — how many of those there are
+disk_work_dirty_count() { disk_work_dirty_list "$1" | wc -l | tr -d ' '; }
+
 # --- the cleaning itself -------------------------------------------------------------
 # disk_clean_worktree <path> <all|caches> <apply 0|1> — the allowlisted directories of
 # ONE worktree. Sets DISK_FREED_KB (kilobytes, also when apply is 0) and DISK_CLEANED

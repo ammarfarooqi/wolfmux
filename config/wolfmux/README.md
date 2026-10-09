@@ -302,7 +302,9 @@ teamctl prune --team review        # one named team
 `teamctl stop` takes a lane's build caches (`.next`, `dist`, `.turbo`, `build`, `coverage`,
 `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`) and keeps
 `node_modules`, so `teamctl restart` stays cheap. `teamctl remove` and
-`teamctl destroy --worktrees` take all of it; the worktree is going away anyway.
+`teamctl destroy --worktrees` take all of it; the worktree is going away anyway. A `remove`
+that refuses, because the lane holds commits or files somebody wrote, changes nothing:
+"nothing was removed" means the build output is still there too.
 
 Never deleted: a source file, a commit, git state, anything git tracks (a project that
 commits its `dist` keeps it), a running lane, your own checkout, or a worktree holding
