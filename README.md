@@ -114,10 +114,16 @@ worktrees.
 
 Most of a lane is not build output: measured on one machine, of 25 GB across 38 lane
 worktrees only about 4 GB sat in a directory on that list — the rest is the checkout itself,
-copied into every lane. `prune` prints that floor and says that `teamctl remove <role>` is
-the only thing which gives it back. `stop` deliberately keeps `node_modules`, so a lane
-parked for a week keeps it for the week unless somebody prunes ([a known
-gap](docs/ROADMAP.md)).
+copied into every lane. `prune`'s "still held" line is that floor plus the whole of every
+lane it skipped or left running, and says that `teamctl remove <role>` is what gives back
+the part git tracks. `stop` deliberately keeps `node_modules`, so a lane parked for a week
+keeps it for the week unless somebody prunes ([a known gap](docs/ROADMAP.md)).
+
+`teamctl remove` refuses a lane that holds commits or files somebody wrote, and build output
+is not that: a `node_modules` (the `--link-node-modules` symlink included), the build caches
+and wolfmux's own cleanup trash are swept without a question. `build`, `dist` and `target`
+are the exception — when git neither tracks nor ignores one of them, remove asks, because a
+handwritten `dist/deploy.sh` lives exactly there.
 
 What is never deleted: a source file, a commit, git state, anything git tracks (a project
 that commits its `dist` keeps it), a worktree with uncommitted changes, your own checkout.
@@ -181,7 +187,7 @@ nothing global points anywhere.
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (181 isolated lifecycle checks, no model calls), `disk.sh` (72 checks: the worktree cleanup, the spawn guard and every safety rule that keeps them off your work), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tests/` | `smoke.sh` (181 isolated lifecycle checks, no model calls), `disk.sh` (82 checks: the worktree cleanup, the spawn guard and every safety rule that keeps them off your work), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 

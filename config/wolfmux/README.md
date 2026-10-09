@@ -304,7 +304,11 @@ teamctl prune --team review        # one named team
 `node_modules`, so `teamctl restart` stays cheap. `teamctl remove` and
 `teamctl destroy --worktrees` take all of it; the worktree is going away anyway. A `remove`
 that refuses, because the lane holds commits or files somebody wrote, changes nothing:
-"nothing was removed" means the build output is still there too.
+"nothing was removed" means the build output is still there too. Build output is not
+"files somebody wrote" — a `node_modules` (the `--link-node-modules` symlink included), the
+build caches and wolfmux's own cleanup trash go without a question — except for `build`,
+`dist` and `target`: when git neither tracks nor ignores one of those, remove asks, because
+a handwritten `dist/deploy.sh` lives exactly there.
 
 Never deleted: a source file, a commit, git state, anything git tracks (a project that
 commits its `dist` keeps it), a running lane, your own checkout, or a worktree holding

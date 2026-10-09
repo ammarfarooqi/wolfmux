@@ -461,7 +461,31 @@ lane before anything is installed — so `prune` now prints that floor and says 
 `teamctl remove <role>` is the only thing which gives it back. And nothing yet drains a lane
 that has been parked for days: `stop` leaves `node_modules` on purpose.
 
-`tests/disk.sh`: 48 → 72.
+A re-review then found four small things, all fixed. The "still held" line left out the two
+kinds of lane that hold the most: `prune`'s running and skipped branches returned before the
+floor was added, so three lanes actually holding 1,240 KB reported 12 KB — in the 27-lane
+case the difference between "18 GB is stuck in tracked files" and a number near zero. It now
+adds the whole remaining size of every lane it skipped or left running, and says so. A
+leading zero in `state/<project>/disk-kb` printed `08: value too great for base` from a block
+whose whole job is to fall back silently; each field is now validated on its own, no leading
+zero, with `10#` on the arithmetic as well. `disk_work_dirty_list` gained the `|| true` its
+sibling has. And three test gaps closed: the post-reboot `prune` path — no session, records
+still claiming `running`, which is the exact state this machine was left in three times and
+the single most important thing `disk_lane_running` decides; a check that claimed to cover a
+stored record but only set the environment variable; and the floor and skipped-size checks,
+which asserted a shape (`[0-9.]+ (KB|MB|GB)`) and are why the still-held bug passed a green
+suite — they compare values now.
+
+One narrowing came with it. `disk_work_dirty_count` had widened `remove` past the two cases
+that motivated it: a lane holding an untracked, unignored `dist/deploy.sh` that somebody
+wrote by hand was removed without the "still holds work" question. `build`, `dist` and
+`target` are now work when git neither tracks nor ignores them (WOLFMUX_WORK_LIKE_DIRS);
+`node_modules`, the caches and our own trash stay not-work, which is what fixed the
+`.gitignore`-with-a-trailing-slash leak and was the point of the change. `prune` is
+unchanged there and still sweeps such a lane — it has no question to ask — which ROADMAP
+records as the one inconsistency.
+
+`tests/disk.sh`: 48 → 82.
 
 ## Footprint on the machine
 

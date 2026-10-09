@@ -133,10 +133,19 @@ that the next run clears — never a `node_modules` that is half there and looks
 **What prune cannot reach.** Most of a lane is usually not build output. Measured on one
 machine: of 25 GB across 38 lane worktrees, about 4 GB sat in a directory on the list; the
 rest was files git tracks, because the whole checkout is copied into every lane (one project
-copies 530 MB of `public/`, about 0.65 GB per lane before anything is installed). `prune`
-prints that floor on its "still held" line. `teamctl remove <role>` is the only thing that
-gives it back. And note that `stop` deliberately leaves `node_modules`, so a lane parked for
-a week keeps it for the week unless somebody prunes ([a known gap](ROADMAP.md)).
+copies 530 MB of `public/`, about 0.65 GB per lane before anything is installed). `prune`'s
+"still held" line is that floor plus the whole of every lane it skipped or left running —
+those are the expensive ones, because they keep their `node_modules` too. What git tracks
+comes back only with `teamctl remove <role>`; a lane left running is swept by the next prune
+once it is parked. And note that `stop` deliberately leaves `node_modules`, so a lane parked
+for a week keeps it for the week unless somebody prunes ([a known gap](ROADMAP.md)).
+
+**What `remove` asks about.** It refuses a lane that holds commits your branch does not have
+or files somebody wrote, and lists them. Build output is not "files somebody wrote": a
+`node_modules` (including the symlink `--link-node-modules` makes), the build caches and
+wolfmux's own cleanup trash are swept without a question. `build`, `dist` and `target` are
+the exception — when git neither tracks nor ignores one of those, `remove` treats it as work
+and asks, because a `dist/deploy.sh` somebody wrote by hand lives exactly there.
 
 **When prune refuses.** If a lane's record says it is running while the team's tmux session
 shows no pane for it, prune stops the whole sweep and touches nothing: it sweeps lanes

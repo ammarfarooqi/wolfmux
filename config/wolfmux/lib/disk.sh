@@ -35,6 +35,14 @@ WOLFMUX_BUILD_DIRS="node_modules .next dist .turbo build coverage .cache .parcel
 # the lane is going away or parked, take the whole list.
 WOLFMUX_KEEP_ON_STOP="node_modules"
 
+# Of the names above, the three most likely to hold something a person wrote by hand. They
+# matter in one place: whether `teamctl remove` asks before discarding a lane
+# (disk_work_dirty_list). When a project ignores these directories git says nothing about
+# them and nothing changes; when it tracks them rule 2 protects them. The case left over is
+# a directory git neither tracks nor ignores, and there a dist/deploy.sh somebody wrote is
+# more likely than build output nobody will miss — so remove asks instead of assuming.
+WOLFMUX_WORK_LIKE_DIRS="build dist target"
+
 # The default disk-min-gb: a lane costs about 3 GB of node_modules and build output, so
 # 20 GB is seven more lanes' worth of room, and macOS wants several gigabytes of its own
 # for swap, updates and Spotlight. Low enough not to nag, high enough that the guard
@@ -138,23 +146,25 @@ EOF
 
 # --- is anything here a person's work? -----------------------------------------------
 # disk_work_dirty_list <path> — the lines of `git status --porcelain` that are somebody's
-# work, which is every line EXCEPT an untracked entry that is only build output: a name on
-# WOLFMUX_BUILD_DIRS, or our own .wolfmux-removing-* trash.
+# work. Everything is, except an untracked entry that can only be build output: a name on
+# WOLFMUX_BUILD_DIRS that is NOT one of WOLFMUX_WORK_LIKE_DIRS, or our own
+# .wolfmux-removing-* trash.
 #
-# Two of those are this tool's own doing, and counting them as work was wrong in both
-# directions. A lane made with --link-node-modules carries an untracked node_modules
-# SYMLINK whenever .gitignore says "node_modules/" with the trailing slash (the common
-# form: that pattern matches directories, not links), and an interrupted cleanup leaves
-# trash. `teamctl remove` counted either as a dirty file and demanded --force — the
-# discard-work door — for a lane wolfmux itself had made that way.
+# Two of those exceptions are this tool's own doing, and counting them as work was wrong.
+# A lane made with --link-node-modules carries an untracked node_modules SYMLINK whenever
+# .gitignore says "node_modules/" with the trailing slash (the common form: that pattern
+# matches directories, not links), and an interrupted cleanup leaves trash. `teamctl
+# remove` counted either as a dirty file and demanded --force — the discard-work door —
+# for a lane wolfmux itself had made that way. An untracked build / dist / target that the
+# project neither tracks nor ignores stays work: see WOLFMUX_WORK_LIKE_DIRS.
 #
 # This is deliberately NOT wt_dirty_count: that one answers "is anything uncommitted here",
 # which is the right question for the status and worktrees tables. This one answers "would
 # removing this lane lose something a person wrote", which is the question `remove` asks.
 disk_work_dirty_list() {
-  local path="$1" status line entry first
+  local path="$1" status line entry first work
   [ -d "$path" ] || return 0
-  status="$("$GIT_BIN" -C "$path" status --porcelain 2>/dev/null)"
+  status="$("$GIT_BIN" -C "$path" status --porcelain 2>/dev/null || true)"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     case "$line" in
@@ -167,7 +177,11 @@ disk_work_dirty_list() {
     entry="${line#?? }"
     first="${entry%%/*}" # an untracked directory is reported as "node_modules/"
     case "$first" in .wolfmux-removing-*) continue ;; esac
-    case " $WOLFMUX_BUILD_DIRS " in *" $first "*) continue ;; esac
+    work=0
+    case " $WOLFMUX_WORK_LIKE_DIRS " in *" $first "*) work=1 ;; esac
+    if [ "$work" -eq 0 ]; then
+      case " $WOLFMUX_BUILD_DIRS " in *" $first "*) continue ;; esac
+    fi
     printf '%s\n' "$line"
   done <<EOF
 $status
@@ -287,11 +301,15 @@ disk_team_kb_cached() {
   [ -n "$line" ] || return 0
   stamp="${line%% *}"
   kb="${line##* }"
-  case "${stamp:-x}${kb:-x}" in *[!0-9]*) return 0 ;; esac
+  # Each field on its own, and no leading zero: this block exists to fall back silently on
+  # a garbled file, and "08 500" in it used to make teamctl status print a raw
+  # "08: value too great for base" from the arithmetic below. A single 0 is fine.
+  case "${stamp:-x}" in "" | *[!0-9]* | 0?*) return 0 ;; esac
+  case "${kb:-x}" in "" | *[!0-9]* | 0?*) return 0 ;; esac
   # Both ends: a stamp in the future (a clock that went back, a garbled write) would
   # otherwise stay "fresh" for ever and pin status to a number nobody can correct.
   [ "$stamp" -le "$(now_epoch)" ] || return 0
-  [ $(($(now_epoch) - stamp)) -le "$WOLFMUX_DISK_CACHE_SECONDS" ] || return 0
+  [ $(($(now_epoch) - 10#$stamp)) -le "$WOLFMUX_DISK_CACHE_SECONDS" ] || return 0
   printf '%s\n' "$kb"
 }
 
@@ -414,20 +432,26 @@ cmd_prune() {
   for role in $(reg_list); do
     [ "$(reg_field "$role" kind)" = "worker" ] || continue
     path="$(reg_field "$role" workdir)"
+    # Every lane prune does not empty adds its whole remaining size to the floor below —
+    # a running or skipped lane most of all, because it still holds its node_modules too.
     if disk_lane_running "$role"; then
-      printf '  %-18s %9s   running, left alone\n' "$role" "-"
+      rest="$(disk_kb "$path")"
+      floor=$((floor + rest))
+      printf '  %-18s %9s   running, left alone\n' "$role" "$(human_size "$rest")"
       running=$((running + 1))
       continue
     fi
     if ! disk_clean_worktree "$path" "$kind" "$apply"; then
-      # The size is printed even here, because this is what one stray file is pinning.
-      printf '  %-18s %9s   skipped: %s\n' "$role" "$(human_size "$(disk_kb "$path")")" "$DISK_SKIP_REASON"
+      # The size is printed here too, because this is what one stray file is pinning.
+      rest="$(disk_kb "$path")"
+      floor=$((floor + rest))
+      printf '  %-18s %9s   skipped: %s\n' "$role" "$(human_size "$rest")" "$DISK_SKIP_REASON"
       skipped=$((skipped + 1))
       continue
     fi
     total=$((total + DISK_FREED_KB))
-    # What is left after the sweep is the floor: tracked files, mostly. prune can never
-    # take those (rule 2), so it says how much of it there is instead of looking finished.
+    # What is left of a lane prune did sweep is tracked files, mostly: rule 2 means prune
+    # can never take those, so it says how much there is instead of looking finished.
     rest="$(disk_kb "$path")"
     if [ "$apply" -eq 0 ]; then rest=$((rest - DISK_FREED_KB)); fi
     [ "$rest" -ge 0 ] || rest=0
@@ -456,8 +480,9 @@ cmd_prune() {
   # allowlist. The rest is the checkout itself (one project copies 530 MB of public/ into
   # every lane), and only taking the lane off the books gives that back.
   if [ "$floor" -gt 0 ]; then
-    printf '  %-18s %9s   is in files git tracks: prune can never take those. Only teamctl remove <role>%s does.\n' \
-      "still held" "$(human_size "$floor")" "$hint"
+    printf '  %-18s %9s   is still in these lanes: files git tracks, plus every lane above that was skipped or left running.\n' \
+      "still held" "$(human_size "$floor")"
+    say "  What git tracks comes back only with teamctl remove <role>$hint. A skipped lane keeps its node_modules as well; a running one is swept once it is parked."
   fi
   if [ "$skipped" -gt 0 ]; then
     say "  A skipped lane holds something that is not build output. Look: teamctl diff <role> --working · let it go: teamctl remove <role>"

@@ -187,15 +187,41 @@ check "a fresh number is used, and garbage, a short line and an empty file are n
   '[ "$(cache_says "$(date +%s) 4096")" = "4096" ] && [ -z "$(cache_says "garbage")" ] && [ -z "$(cache_says "123")" ] && [ -z "$(cache_says "")" ] && [ -z "$(cache_says "-5 -5")" ]'
 check "a stale number is dropped, and so is one stamped in the future (a clock that went back)" \
   '[ -z "$(cache_says "1000000000 4096")" ] && [ -z "$(cache_says "9999999999999 500")" ] && [ -z "$(cache_says "$(($(date +%s) + 86400)) 500")" ]'
+# This block exists to fall back silently. A leading zero in the file used to reach the
+# arithmetic and make teamctl status print "08: value too great for base" instead.
+check "a leading zero in either field is dropped silently, with no shell error on stderr" \
+  '[ -z "$(cache_says "08 500")" ] && [ -z "$(cache_says "$(date +%s) 08")" ] && [ -z "$(printf "08 500" >"$STATE/disk-kb"; lib_eval "disk_team_kb_cached" 2>&1)" ] && [ "$(cache_says "$(date +%s) 0")" = "0" ]'
 check "a command that just freed something corrects the number instead of measuring again, and never below zero" \
   'printf "%s 4096\n" "$(date +%s)" >"$STATE/disk-kb" && lib_eval "disk_cache_adjust 1024" && [ "$(lib_eval "disk_team_kb_cached")" = "3072" ] && lib_eval "disk_cache_adjust 999999" && [ "$(lib_eval "disk_team_kb_cached")" = "0" ]'
 /bin/rm -f "$STATE/disk-kb"
 
+echo "== what counts as a person's work, for the question teamctl remove asks"
+# node_modules and the caches are never handwriting, and the node_modules symlink plus our
+# own trash are this tool's own doing. build, dist and target are different: when a project
+# ignores them git says nothing, when it tracks them rule 2 protects them, and what is left
+# is a directory git neither tracks nor ignores — where a dist/deploy.sh somebody wrote is
+# likelier than build output nobody will miss. remove has to ask about those.
+WL="$(new_lane unit-work)"
+check "an untracked dist, build or target that git neither tracks nor ignores counts as work" \
+  'for d in dist build target; do /bin/mkdir -p "$WL/$d"; printf "#!/bin/sh\n" >"$WL/$d/deploy.sh"; [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "1" ] || exit 1; lib_eval "disk_work_dirty_list \"$WL\"" | grep -q "?? $d/" || exit 1; /bin/rm -rf "$WL/$d"; done'
+check "node_modules, the build caches and our own trash never count as work" \
+  '/bin/mkdir -p "$WL/node_modules/pkg" "$WL/.next" "$WL/.turbo" "$WL/.wolfmux-removing-node_modules.1" && [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "0" ]'
+check "a node_modules SYMLINK does not count either, which is the case the ignore line misses" \
+  '/bin/rm -rf "$WL/node_modules" && /bin/ln -s "$PROJECT" "$WL/node_modules" && git -C "$WL" status --porcelain | grep -q "?? node_modules" && [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "0" ]'
+check "a changed tracked file always counts, and so does any other untracked file" \
+  'printf "x\n" >>"$WL/README.md" && printf "notes\n" >"$WL/NOTES.md" && [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "2" ]'
+git -C "$PROJECT" worktree remove --force "$TREES/unit-work" >/dev/null 2>&1
+git -C "$PROJECT" branch -D ai/unit-work >/dev/null 2>&1
+
 echo "== a number that is not base ten"
 check "policy refuses a leading zero: 08 would abort shell arithmetic, 010 would quietly mean 8" \
   'for v in 08 010 09 twenty -5 1e3 10001; do teamctl policy disk-min-gb "$v" >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done'
-check "a leading zero in the environment or in a stored record falls back to the default, it never reaches the arithmetic" \
+check "a leading zero in the environment falls back to the default, it never reaches the arithmetic" \
   '[ "$(WOLFMUX_DISK_MIN_GB=08 lib_eval "policy_get disk-min-gb")" = "20" ] && [ "$(WOLFMUX_DISK_MIN_GB=010 lib_eval "policy_get disk-min-gb")" = "20" ]'
+# A stored value cannot come through teamctl policy any more, but meta.json is a file
+# anyone can edit, so the same has to hold for a value already in it.
+check "and so does one already stored in meta.json, which teamctl policy would no longer accept" \
+  'META="$(lib_eval "printf %s \"\$STATE_DIR/meta.json\"")" && /bin/mkdir -p "$(dirname "$META")" && printf "{\"policy_disk_min_gb\":\"08\"}\n" >"$META" && [ "$(lib_eval "policy_get disk-min-gb")" = "20" ] && printf "{\"policy_disk_min_gb\":\"8\"}\n" >"$META" && [ "$(lib_eval "policy_get disk-min-gb")" = "8" ] && /bin/rm -f "$META"'
 check "and the one arithmetic site forces base ten anyway, so even 08 cannot abort a spawn" \
   'lib_eval "policy_get() { case \"\$1\" in disk-guard) printf refuse ;; disk-min-gb) printf 08 ;; esac; printf \"\\n\"; }; disk_guard_spawn"'
 for name in unit-1 unit-tracked unit-dirty unit-untracked unit-link unit-trash unit-nogit; do
@@ -236,14 +262,22 @@ check "prune --dry-run reports a total and deletes nothing" \
   'printf "%s" "$DRY" | grep -q "DRY RUN: nothing is deleted" && printf "%s" "$DRY" | grep -qE "^  total +[0-9.]+ (KB|MB|GB) +is what this would free" && [ -d "$PARKED/node_modules/pkg" ]'
 check "prune --dry-run leaves the interrupted-cleanup trash alone too" \
   '[ -f "$PARKED/.wolfmux-removing-node_modules.999/pkg/x" ]'
-check "prune --dry-run leaves a running lane out of the total and says so" \
-  'printf "%s" "$DRY" | grep -qE "^  busy +- +running, left alone"'
+# The sizes, not the shape of the line: asserting /[0-9.]+ (KB|MB|GB)/ is how the first
+# version of the still-held total passed while leaving out the two lanes that held the most.
+# Expected floor = what is left of the lane prune sweeps, plus the WHOLE of the running and
+# the skipped one. disk_clean_worktree with apply 0 changes nothing, so it can be asked.
+P_FREED="$(lib_eval "disk_clean_worktree \"$PARKED\" all 0 && printf %s \"\$DISK_FREED_KB\"")"
+EXP_FLOOR=$(($(kb_of "$PARKED") - P_FREED + $(kb_of "$BUSY") + $(kb_of "$MESSY")))
+check "prune --dry-run leaves a running lane out of the freed total and prints its real size" \
+  'printf "%s" "$DRY" | grep -qE "^  busy +$(lib_eval "human_size $(kb_of "$BUSY")") +running, left alone"'
 check "prune --dry-run skips the lane that holds other changes, and names the reason" \
   'printf "%s" "$DRY" | grep -q "messy.*skipped: it has uncommitted changes to tracked files"'
-check "a skipped lane shows its size, so what one stray file is pinning is visible" \
-  'printf "%s" "$DRY" | grep -qE "^  messy +[0-9.]+ (KB|MB|GB) +skipped:"'
-check "prune says how much is in files it can never take, and that only remove gives that back" \
-  'printf "%s" "$DRY" | grep -qE "^  still held +[0-9.]+ (KB|MB|GB) +is in files git tracks" && printf "%s" "$DRY" | grep -q "Only teamctl remove <role> does"'
+check "a skipped lane shows its real size, so what one stray file is pinning is visible" \
+  'printf "%s" "$DRY" | grep -qE "^  messy +$(lib_eval "human_size $(kb_of "$MESSY")") +skipped:"'
+check "the still-held total is the real number: it counts the skipped and running lanes, which hold the most" \
+  '[ "$EXP_FLOOR" -gt "$P_FREED" ] && printf "%s" "$DRY" | grep -qE "^  still held +$(lib_eval "human_size "$EXP_FLOOR"") +is still in these lanes" && printf "%s" "$DRY" | grep -q "comes back only with teamctl remove <role>"'
+check "and it is bigger than the swept lane's leftovers alone, which is all the first version counted" \
+  '! printf "%s" "$DRY" | grep -qE "^  still held +$(lib_eval "human_size $(($(kb_of "$PARKED") - P_FREED))") "'
 # One signal is not enough for a command that sweeps many lanes unattended: a record that
 # claims a running agent while the session shows no pane of its means we do not know.
 RECORDS="$(/bin/ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)"
@@ -357,12 +391,29 @@ teamctl stop shared >/dev/null 2>&1
 check "cleaning a lane whose node_modules is a link removes the link and never the project's copy" \
   'teamctl prune >/dev/null 2>&1; [ ! -e "$SHARED/node_modules" ] && [ -f "$PROJECT/node_modules/rootpkg/index.js" ]'
 
+check "remove asks about a lane holding an untracked dist that git neither tracks nor ignores" \
+  'LATER="$(teamctl status --json | jq -r ".agents[] | select(.role == \"later\") | .workdir")" && teamctl stop later >/dev/null 2>&1 && /bin/mkdir -p "$LATER/dist" && printf "#!/bin/sh\necho ship\n" >"$LATER/dist/deploy.sh" && out="$(teamctl remove later 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "later still holds work" && printf "%s" "$out" | grep -q "?? dist/" && [ -f "$LATER/dist/deploy.sh" ]'
+
 echo "== destroy --worktrees gets the gigabytes back too"
 DEST="$(teamctl destroy --worktrees --yes 2>&1)"
 check "destroy --worktrees takes each lane's build output before it decides what to remove" \
   'printf "%s" "$DEST" | grep -qE "freed [0-9.]+ (KB|MB|GB) of build output"'
 check "and the lane that holds real work is still kept, with its work" \
   '[ -d "$MESSY" ] && git -C "$MESSY" status --porcelain | grep -q "README.md"'
+
+echo "== after a reboot: no session, records still claiming running"
+# The case issue #11 is actually about. The machine filled its disk and restarted three
+# times; every record still said "running" and there was no tmux server left. prune has to
+# clean there — with no session nothing of that team can be alive — and it must NOT read the
+# stale records as a disagreement and refuse. destroy above already ended the session.
+check "the test server really is gone, so this is the post-reboot state" \
+  '! tmux -L "$WOLFMUX_TMUX_SOCKET" has-session -t "=$(lib_eval "session_name_for_project")" 2>/dev/null'
+REBOOTED="$(new_lane rebooted)"
+mk_build_tree "$REBOOTED"
+"$(command -v jq)" --arg w "$REBOOTED" '.role = "rebooted" | .workdir = $w | .branch = "ai/rebooted" | .state = "running" | .pane_id = "%99"' "$RECORDS/messy.json" >"$RECORDS/rebooted.json"
+check "prune cleans a lane whose record still says running when there is no session, and exits 0" \
+  'out="$(teamctl prune 2>&1)"; [ $? -eq 0 ] && ! printf "%s" "$out" | grep -q "cannot tell whether" && [ ! -e "$REBOOTED/node_modules" ] && [ ! -e "$REBOOTED/.next" ] && [ -f "$REBOOTED/README.md" ]'
+/bin/rm -f "$RECORDS/rebooted.json"
 
 echo
 echo "result: $passed passed, $failed failed"
