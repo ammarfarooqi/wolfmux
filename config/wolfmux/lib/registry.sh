@@ -115,6 +115,167 @@ nudge_begin() {
 }
 nudge_end() { /bin/rm -rf "$STATE_DIR/nudge/$1.lock"; }
 
+# --- deferred notices ----------------------------------------------------------
+# A pane a human may be typing in is never typed into (tm_pane_human_busy). The
+# notice is parked in a per-role marker instead, and ONE detached waiter per role
+# delivers it as soon as the pane is idle. Beads nudges collapse into a single line,
+# because that line always ends with the full inbox command; fixed notices (spawn,
+# approval, policy) each name a different event, so they queue.
+#
+# The marker is a directory, created with the same atomic mkdir as nudge_begin:
+#   ts     when it was claimed        beat   the waiter's heartbeat
+#   bead   the newest bead id         mixed  present once two ids collapsed
+#   lines  queued fixed notices, one per line
+NUDGE_PENDING_SLACK_SECONDS=15
+NUDGE_PENDING_MAX_LINES=20
+
+# _nudge_num <file> — the number in a marker file; 0 when missing or damaged
+_nudge_num() {
+  local value
+  value="$(/bin/cat "$1" 2>/dev/null || printf '0')"
+  case "$value" in "" | *[!0-9]*) value=0 ;; esac
+  printf '%s\n' "$value"
+}
+
+nudge_pending_exists() { [ -d "$STATE_DIR/nudge/$1.pending" ]; }
+nudge_pending_clear() { /bin/rm -rf "$STATE_DIR/nudge/$1.pending"; }
+nudge_pending_beat() { now_epoch >"$STATE_DIR/nudge/$1.pending/beat" 2>/dev/null || true; }
+
+# nudge_pending_stale <role> — 0 when the marker may be taken over: its waiter
+# stopped beating, or the marker outlived the longest wait a waiter can run for.
+nudge_pending_stale() {
+  local marker="$STATE_DIR/nudge/$1.pending" now gap cap
+  now="$(now_epoch)"
+  cap="$(nudge_pending_cap "$1" "${WOLFMUX_NUDGE_DEFER_MAX:-600}")"
+  case "$cap" in "" | *[!0-9]*) cap=600 ;; esac
+  if [ $((now - $(_nudge_num "$marker/ts"))) -gt $((cap + NUDGE_PENDING_SLACK_SECONDS)) ]; then return 0; fi
+  gap=$((${WOLFMUX_NUDGE_RETRY:-3} * 3))
+  if [ "$gap" -lt "$NUDGE_PENDING_SLACK_SECONDS" ]; then gap="$NUDGE_PENDING_SLACK_SECONDS"; fi
+  [ $((now - $(_nudge_num "$marker/beat"))) -gt "$gap" ]
+}
+
+# nudge_pending_open <role> — 0 when this process is now the role's one waiter.
+#
+# Usually called while holding nudge_begin <role>. notify_lead's no-lock path is the
+# exception: when the lock could not be taken in 30 tries it parks the notice rather
+# than typing it, and parking means coming through here without the lock. That is safe
+# without being tidy — mkdir is atomic, so of two processes exactly one gets the marker
+# and the loser takes the exists branch, leaving one waiter either way. What that path
+# does lose is the reap: nudge_pending_reap only runs under the lock, so a stale marker
+# is not cleared there and the notice joins it instead. The next locked notice reaps it.
+nudge_pending_open() {
+  local marker="$STATE_DIR/nudge/$1.pending"
+  /bin/mkdir -p "$STATE_DIR/nudge"
+  if ! /bin/mkdir "$marker" 2>/dev/null; then
+    nudge_pending_stale "$1" || return 1
+    /bin/rm -rf "$marker"
+    /bin/mkdir "$marker" 2>/dev/null || return 1
+  fi
+  now_epoch >"$marker/ts"
+  now_epoch >"$marker/beat"
+}
+
+# nudge_pending_reap <role> — 0 when a marker with no waiter behind it was removed.
+# A waiter can die (a closed terminal, a reboot, a kill), and the marker it leaves
+# would otherwise swallow every later notice for that role: the exists path would park
+# a bead into it forever and nobody would ever deliver. Both call sites reap before
+# they look, while holding nudge_begin, so no live waiter is ever taken out from under.
+nudge_pending_reap() {
+  nudge_pending_exists "$1" || return 1
+  nudge_pending_stale "$1" || return 1
+  nudge_pending_clear "$1"
+}
+
+# nudge_pending_put_bead <role> <bead> — the collapsible slot: the newest bead id
+# wins, and two different ids mean the generic line that points at the whole inbox.
+#
+# An empty bead id (a nudge with no --id) counts as different from a real one, so a
+# bare nudge followed by one with --id also collapses to the generic line. Pessimistic
+# in the safe direction: the generic line names the whole inbox, which covers both.
+nudge_pending_put_bead() {
+  local marker="$STATE_DIR/nudge/$1.pending" prev
+  [ -d "$marker" ] || return 1
+  if [ -f "$marker/bead" ]; then
+    prev="$(/bin/cat "$marker/bead" 2>/dev/null || true)"
+    if [ "${2:-}" != "$prev" ]; then : >"$marker/mixed"; fi
+  fi
+  printf '%s\n' "${2:-}" >"$marker/bead"
+}
+
+nudge_pending_has_bead() { [ -f "$STATE_DIR/nudge/$1.pending/bead" ]; }
+
+# nudge_pending_bead <role> — the bead id to name, or nothing when several collapsed
+nudge_pending_bead() {
+  local marker="$STATE_DIR/nudge/$1.pending"
+  if [ -f "$marker/mixed" ]; then return 0; fi
+  /bin/cat "$marker/bead" 2>/dev/null || true
+}
+
+# nudge_pending_put_line <role> <text> — a fixed notice names its own event, so it
+# queues. Bounded, so a caller in a loop can never grow the file without end.
+nudge_pending_put_line() {
+  local marker="$STATE_DIR/nudge/$1.pending" held=0
+  [ -d "$marker" ] || return 1
+  # The < redirect is the shell's, so a missing file prints ITS error, which 2>/dev/null
+  # on wc never catches: that reached a user's terminal and an agent's hook stderr.
+  if [ -f "$marker/lines" ]; then
+    held="$(/usr/bin/wc -l <"$marker/lines" | /usr/bin/tr -d ' ')"
+    case "$held" in "" | *[!0-9]*) held=0 ;; esac
+  fi
+  if [ "$held" -ge "$NUDGE_PENDING_MAX_LINES" ]; then return 0; fi
+  printf '%s\n' "$2" >>"$marker/lines"
+}
+
+nudge_pending_has_lines() { [ -s "$STATE_DIR/nudge/$1.pending/lines" ]; }
+
+# nudge_pending_shift_line <role> — print the first queued line AND take it out of the
+# marker. Delivered lines must leave the marker as they go: a waiter that stops part
+# way, or is killed mid-delivery, must never re-send what already went out.
+# An empty line is not a notice, so it is dropped and the next one looked at, rather
+# than taken out and reported as "nothing left": that would stop the caller's delivery
+# loop with real notices still queued behind the blank. Bounded by the size of the file
+# itself, so a shift that cannot write can never spin here.
+nudge_pending_shift_line() {
+  local marker="$STATE_DIR/nudge/$1.pending" first tries=0
+  while [ "$tries" -le "$NUDGE_PENDING_MAX_LINES" ]; do
+    tries=$((tries + 1))
+    [ -s "$marker/lines" ] || return 1
+    first="$(/usr/bin/head -1 "$marker/lines")"
+    if /usr/bin/tail -n +2 "$marker/lines" >"$marker/lines.next" 2>/dev/null; then
+      /bin/mv -f "$marker/lines.next" "$marker/lines"
+    else
+      /bin/rm -f "$marker/lines.next"
+    fi
+    [ -s "$marker/lines" ] || /bin/rm -f "$marker/lines"
+    if [ -n "$first" ]; then
+      printf '%s\n' "$first"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# nudge_pending_put_cap <role> <seconds> — lower how long this marker's waiter may wait,
+# never raise it. An approval notice is useless once the worker has stopped waiting for
+# the decision, so it asks for a short cap; the most urgent notice in the marker wins.
+nudge_pending_put_cap() {
+  local marker="$STATE_DIR/nudge/$1.pending" held
+  [ -d "$marker" ] || return 1
+  case "${2:-}" in "" | *[!0-9]*) return 0 ;; esac
+  if [ -f "$marker/cap" ]; then
+    held="$(_nudge_num "$marker/cap")"
+    if [ "$held" -gt 0 ] && [ "$held" -le "$2" ]; then return 0; fi
+  fi
+  printf '%s\n' "$2" >"$marker/cap"
+}
+
+# nudge_pending_cap <role> <fallback> — the marker's cap, or the fallback
+nudge_pending_cap() {
+  local held
+  held="$(_nudge_num "$STATE_DIR/nudge/$1.pending/cap")"
+  if [ "$held" -gt 0 ]; then printf '%s\n' "$held"; else printf '%s\n' "$2"; fi
+}
+
 # --- project lock: serializes spawn / stop / restart / destroy ------------------
 # mkdir is atomic on every POSIX filesystem; macOS ships no flock(1).
 LOCK_HELD=""

@@ -54,8 +54,8 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 | `provider-env.sh` | the scrub lists, binary resolution, the login guard (every provider), config parsing |
 | `providers.sh` | the provider table: vendor, label, endpoint, Keychain service, billing, default model ids, context window, auth variable, key URL per provider |
 | `common.sh` | output, validation, tool lookup, **the model table**, project resolution |
-| `registry.sh` | the only module that touches state files; project lock; nudge debounce |
-| `tmuxctl.sh` | every tmux call |
+| `registry.sh` | the only module that touches state files; project lock; nudge debounce and deferred notices |
+| `tmuxctl.sh` | every tmux call, including "is a human typing in this pane" |
 | `worktree.sh` | worktree and branch creation, `worktrees`, `diff` |
 | `disk.sh` | the build-output allowlist and its safety rules, `prune`, free-disk reading, the spawn guard, shared `node_modules` |
 | `beads.sh` | Beads bootstrap (stealth init) and hook installation |
@@ -168,9 +168,105 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 3. `beads-nudge` sees an assignee that is not the actor and calls
    `teamctl nudge backend --quiet --id <bead-id>` in the background
 4. `teamctl` validates role and id, debounces bursts (3 s, under a per-role guard),
-   and types **one fixed line** into the pane:
+   checks that nobody is typing in that pane, and types **one fixed line** into it:
    `[wolfmux] Beads update for backend (<id>). Run: bd show <id> -- then: bd list …`
 5. the worker runs the command it was shown and reads the body from Beads
+
+### Never into a half-typed line
+
+A pane is a keyboard somebody may be using. Typing a notice into it mid-sentence
+submitted the human's unfinished text and the notice together as one message, which
+is what GitHub issue #9 reported.
+
+**Why type at all, rather than use the status line or a popup?** Because the notice is
+for the AGENT in that pane, not for the human. The agent reads it as input and runs the
+inbox command it names. `display-message` and `display-popup` put text in front of a
+human only, so an agent would never see it, and the lead's pane — the one a human sits
+at, which is exactly where issue #9 happens — would stop being notified at all. Typing
+is the only channel that reaches the agent, so detect-and-defer is the shape the channel
+forces. Do not "simplify" it into a popup.
+
+Before anything is typed, `tm_pane_human_busy` asks three cheap questions, and any yes
+means busy:
+
+| Check | How | Needs a client attached? |
+|-------|-----|--------------------------|
+| the pane is in copy mode or scrollback | `#{pane_in_mode}` is 1, so keys would drive the mode, not the prompt | no |
+| somebody is at this pane and pressed a key moments ago | it is the active pane of the active window of an attached session, and that client's `#{client_activity}` is less than `WOLFMUX_NUDGE_HUMAN_IDLE` (5 s) old. tmux moves `client_activity` on real keystrokes only: not on pane output, not on `send-keys` from outside, and a detached session lists no client at all | yes, by construction |
+| the input line already holds something | the row at `#{cursor_y}`, captured with `-e`, with escape sequences and DIM runs removed, then box glyphs, non-breaking spaces, whitespace and ONE leading prompt marker removed, is not empty | no |
+
+**Only the keystroke check needs a client**, and it needs one by construction: the sole
+evidence that a key was pressed is an attached client's `#{client_activity}`. The
+input-line check runs whether or not anybody is attached.
+
+It used to need a client too, on the reasoning that with nobody attached nobody can be
+typing. That is false, and it reopened issue #9: type a line, do not submit it, then
+detach — or just walk away from `teamctl attach --team X` — and the notice was typed over
+the half-typed line and submitted with it. Review round 2 reproduced exactly the reported
+symptom on a detached session.
+
+What separates a TUI's own furniture from somebody's typing is **dim**, not the client
+list. Measured 2026-10-09 against a real Claude Code in a throwaway tmux socket, nothing
+submitted:
+
+| the input box | the row as `capture-pane -e` hands it over | read as |
+|---------------|--------------------------------------------|---------|
+| empty | `❯<NBSP> ESC[2m Try "fix typecheck errors"` | clean — the placeholder IS dim |
+| typed into | `❯<NBSP> i said install bun if requir` | **dirty** — no escape sequences at all |
+
+So the dim strip cannot eat text a human typed, and dropping the client gate cannot bring
+back the regression it was there for (an idle agent whose hint made it read busy for as
+long as the hint showed, so every nudge waited out the expiry and was dropped). The price
+is the other direction: a placeholder drawn in a plain colour rather than dim now reads as
+typing on a **detached** pane as well as an attached one, and that agent's notices wait out
+the cap and are dropped. Nobody has seen such a placeholder — every Claude Code one
+measured, live and in the probe, was `ESC[2m` — and Codex is unmeasured.
+`WOLFMUX_NUDGE_COLLISION_CHECK=0` is the way out. [ROADMAP](ROADMAP.md) carries it as a
+known limit.
+
+Everything from the point where the row is looked at **fails closed**: a capture that
+fails, a cursor row that makes no sense, and a client list that cannot be read all count
+as busy. The one exception is the first `display-message`: when that fails there is no
+session and no pane to fail closed for. A false busy only delays, and every delay is
+bounded by the expiry.
+
+Busy means the notice is **parked, not dropped**: a per-role marker under
+`~/.wolfmux/state/<project>/nudge/<role>.pending` holds it and ONE detached waiter per
+role looks again every `WOLFMUX_NUDGE_RETRY` (3 s, floored at 1) for up to the marker's
+cap — `WOLFMUX_NUDGE_DEFER_MAX` (600 s), or `WOLFMUX_NUDGE_APPROVAL_DEFER_MAX` (60 s) for
+an approval notice, which is worthless once the worker has stopped waiting for the
+decision. It looks once BEFORE its first sleep, so an already-idle pane is notified at
+once. Beads nudges that pile up while it waits **collapse into one line** (two different
+bead ids, or an empty id beside a real one, give the generic line, which names the whole
+inbox anyway); spawn, approval and policy notices each name their own event, so they
+queue instead, and the pane is asked again before EVERY queued line, each line leaving
+the marker as it is typed so a stop part-way can never re-send what already went out.
+On expiry the marker is removed and `nudge-defer-expired` goes into `events.jsonl`.
+
+The per-role lock is never held across the wait. A marker whose waiter died is **reaped**
+by the next notice for that role (`nudge_pending_reap`, under the lock): without that it
+would swallow every later notice for ever. The waiter itself ignores `HUP`, `INT` and
+`TERM` — macOS has no `setsid(1)` — so closing the terminal that ran `teamctl` does not
+kill it. `teamctl nudge` says `deferred: …`, names the check that fired, and exits 3.
+`WOLFMUX_NUDGE_COLLISION_CHECK=0` brings the old blind typing back.
+
+One window stays open: `tm_type_line` sends the text, waits 300 ms so a TUI does not read
+the Enter as part of a paste, then sends Enter. A human who had been idle for
+`WOLFMUX_NUDGE_HUMAN_IDLE` seconds can start typing inside those 300 ms and have their
+first keystrokes land after the notice. Closing it needs tmux to report a key arriving
+mid-line, and there is no such channel. Measured with a watcher typing from the moment a
+notice appears, re-checking between queued lines cut the glued lines from 5 of 5 to 2 of
+5 and kept the other 3 for later.
+
+**What that number does and does not bound.** The watcher types with `tmux send-keys`,
+which does not move `#{client_activity}`, so the keystroke check can never fire for it:
+the figures bound the input-line check alone. A real person at a real keyboard also trips
+the keystroke check, so they are protected by more than this, and a review round-2 run
+with a much more aggressive send-keys watcher glued 6 of 6 — same reason. An honest
+measurement needs keystrokes pushed through an attached client's own stdin; that harness
+does not exist yet (one attempt deadlocked) and is a named follow-up. What both runs did
+confirm, which is what matters for correctness, is that no notice was ever delivered twice
+and none was lost.
 
 The message body never travels through tmux, so there is nothing to quote, escape
 or truncate. The same hook tells the lead when a worker closes a task or marks
@@ -323,7 +419,7 @@ One pixel drawing (`tools/wolf-art.py`) produces the terminal art in `lib/brand.
 ```
 ~/bin/                          teamctl + launchers
 ~/.config/wolfmux/              code, tmux.conf, TEAM_PROTOCOL.md, README.md, config, glm-worker-settings.json
-~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/, disk-kb
+~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/ (debounce stamps, <role>.lock, <role>.pending), disk-kb
 ~/.wolfmux/worktrees/<project>/ one directory per worker
 <project>/.beads/               tasks and messages (Beads)
 macOS Keychain                  one service per provider: "zai-coding-plan" (Z.ai),

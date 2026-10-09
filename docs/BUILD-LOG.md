@@ -451,6 +451,112 @@ outside a git repository it had offered nothing at all, which is where the owner
 
 `tests/smoke.sh`: 250 → 327. `tests/docs.sh`: 32 → 36. `tests/migration.sh`: 24 → 36. v1.12.0.
 
+## 26. "A notice landed in the middle of my sentence" (v1.14)
+
+GitHub issue #9, reported on 2026-10-09 from the owner's own lead pane:
+
+```
+i said install bun if requir[wolfmux] Beads update ... include-infraed
+```
+
+`tm_type_line` typed its notice with `send-keys -l` and pressed Enter, without ever
+asking what was already on that pane's input line. Half-typed text and the notice went
+off as one message, several times a day.
+
+Two parts now. **Detect**: `tm_pane_human_busy` calls a pane busy when somebody is at it
+and pressed a key within 5 s, or its input line is not empty, or it is in copy mode.
+The keyboard question is answered by tmux's `#{client_activity}`, which was measured
+first: on the live socket, clients that had not been touched for 19 hours read as idle
+while their agents kept printing, a detached session lists no client, and `send-keys`
+from outside does not move it either. So it tracks input, not output, which is exactly
+the question. **Defer and collapse**: a busy pane is not typed into. The notice goes
+into a per-role marker and one detached waiter looks again every 3 s for up to 10
+minutes; the first idle look delivers. Beads nudges that pile up collapse into one
+generic line, because that line names the whole inbox anyway; spawn, approval and
+policy notices name their own event, so they queue. On expiry the marker is dropped
+with `nudge-defer-expired` in the event log: nothing is lost, the bead is still in the
+inbox. The per-role lock is deliberately not held across the wait, and `tm_type_line`
+stays the dumb primitive it was.
+
+Four knobs, shaped like `WOLFMUX_NUDGE_DEBOUNCE`: `WOLFMUX_NUDGE_HUMAN_IDLE` (5),
+`WOLFMUX_NUDGE_RETRY` (3), `WOLFMUX_NUDGE_DEFER_MAX` (600) and
+`WOLFMUX_NUDGE_COLLISION_CHECK=0`, which brings the old blind typing back. `teamctl
+nudge` reports `deferred: …` and exits 3.
+
+The first read of the machine's 13 live panes was done without `capture-pane -e`, and
+that hid the thing that mattered. Read again WITH it, the `❯` is followed by a
+non-breaking space, and the text beside it is dim (`ESC[2m`): it is Claude Code's own
+placeholder, not anybody's typing. One pane read as `❯ close sprint 7, sprint 8 oct 9 to
+15` and was written up here as "the bug caught in the act"; it was a placeholder, on a
+pane with a client attached, and that claim was wrong. A pane showing the same kind of
+hint with ZERO clients on its session held it for 15 minutes.
+
+So the check has two gates it did not have at first. The input-line question only
+applies when a client is attached to the pane's session: with nobody attached nobody can
+be typing, and without that gate an idle agent would have been "busy" for as long as its
+CLI showed a hint, every nudge to it waiting out the expiry and being dropped. And dim
+runs are removed before the row is judged, because a TUI draws its placeholder dim and a
+human's typing is not dim. A read that fails counts as busy when a client is attached and
+as free when none is.
+
+Three more things the first round got wrong, all found by review. A marker whose waiter
+had died was never reaped, so that role was never nudged again: both call sites now reap
+under the per-role lock, and the waiter ignores HUP/INT/TERM (macOS has no setsid) so a
+closed terminal does not kill it. The queued fixed notices were typed in a loop with no
+further checks: the pane is now asked again before every line and each line leaves the
+marker as it is typed, so a stop part-way neither glues onto a human's text nor re-sends
+what already went out. Measured with a watcher typing from the moment a notice appeared,
+that cut the glued lines from 5 of 5 to 2 of 5 and kept the other 3 for later. **That
+watcher typed with `send-keys`, which does not move `#{client_activity}`, so the keystroke
+check could never fire for it and the figure bounds the input-line check alone** — a real
+person also trips the keystroke check, and review round 2's more aggressive send-keys
+watcher glued 6 of 6 for the same reason. Keystrokes pushed through an attached client's
+own stdin would measure the real thing; that harness does not exist yet. What both runs
+confirm is the part that matters: no notice delivered twice, none lost. The 300 ms
+inside tm_type_line itself stays open; closing it needs tmux to report a key arriving
+mid-line, and there is no such channel.
+
+Review round 2 then reproduced the original bug on a **detached** session, so the gate
+above went. "With nobody attached, nobody can be typing" is simply false: you can type a
+line, not submit it, and detach. Two of this machine's sessions were detached at the time.
+The input-line check now runs always and dim does all the discriminating, which the
+reviewer measured against a real Claude Code in a throwaway socket: an empty input box
+reads `❯<NBSP> ESC[2m Try "fix typecheck errors"` and comes back clean, a typed-in box
+reads `❯<NBSP> i said install bun if requir` with no escape sequences at all and comes
+back dirty. Only the keystroke check still needs a client, by construction. The round-1
+reasoning for the gate is not lost — it was about an idle agent's own hint, and the dim
+strip handles that. The remaining hole is a placeholder drawn in a plain colour rather
+than dim, now on detached panes too, which ROADMAP names. Also in this round: a failed
+`list-clients` is told apart from "nobody attached" and read as busy, so no broken tmux
+read can quietly turn the checks off; `teamctl nudge` prints the marker's own cap rather
+than the global one; `nudge_pending_shift_line` steps past an empty queued line instead of
+eating it and stopping the delivery loop; and `nudge_pending_open`'s comment admits
+notify_lead's no-lock path (benign — mkdir is atomic — but it skips the reap). And the
+earlier claim that the dim hint was seen "with ZERO clients on its session" named the
+wrong pane for the second time: %18 had a client, %790 was the zero-client one. The probe
+above replaces that evidence.
+
+A minor version, not a patch: the notice is no longer guaranteed to be immediate, and
+`teamctl nudge` has an exit code it did not have.
+
+`tests/nudge-typing.sh`: new, 52 checks (24 in round 1; then the dim placeholder as a
+fixture row and on a live detached pane, the reaped marker, the queued fixed notices, a
+human who starts typing part-way through a delivery, a half-typed line on a detached
+session, and the client-list exit codes). One assertion was flipped rather than added: a
+non-empty input row on a detached session used to be asserted as delivered, and now has to
+defer. `tests/smoke.sh`: 327 → 327. `tests/docs.sh`: 36 → 36. v1.14.0.
+
+Merged with main at integration, which had meanwhile reached v1.12.0 (tab completion, the
+doctor probe, per-agent conversations). Five files conflicted and all five were resolved
+by keeping both sides: the version line (1.14.0: the disk cleanup took that number first and the two ship as one release), the
+test tables in README and VERIFICATION, one `teamctl nudge` / `restart` / `status` /
+`teams` row block in USAGE, and this log's numbering. Resolving it turned up one thing
+round 3 had missed: VERIFICATION still asserted the OLD rule, that a non-empty input row
+with nobody attached is not a human and the notice is delivered. Round 3 reversed exactly
+that, so the sentence was the opposite of the code. Corrected here. Third time a claim in
+these docs was found to outlive the code it described, and all three were found by
+somebody re-reading rather than by a test.
+
 ## 27. wolfmux cleans up after its own lane worktrees (v1.14)
 
 The day wolfmux filled the disk: wolfmux had filled the machine's disk. `~/.wolfmux` had grown to
@@ -552,9 +658,10 @@ records as the one inconsistency.
 
 `tests/disk.sh`: 48 → 93.
 
-Version 1.14.0. Main was already 1.12.0 when this branch was written, and the nudge-typing
-fix (PR #10) takes 1.13.0, so this is the next free minor — and a new command plus three
-policy keys is a minor bump on its own merits. Entry 26 is that nudge fix.
+Version 1.14.0. Main was already 1.12.0 when this branch was written, and a new command plus
+three policy keys is a minor bump on its own merits. The nudge-typing fix (entry 26, PR #10)
+was briefly numbered 1.13.0 while the two branches were in flight; both landed in the same
+release, so 1.14.0 is the one number for the pair.
 
 Merging v1.12.0 in found one thing four reviews had not: `destroy --purge` did not delete
 `state/<project>/disk-kb`, so a named team's state directory was never empty and its

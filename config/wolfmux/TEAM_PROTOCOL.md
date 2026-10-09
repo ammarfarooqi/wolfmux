@@ -76,6 +76,12 @@ notifies the assignee's pane automatically; you only ever see the one-line notic
 `[wolfmux] Beads update for <role> ...`. When you see it, run the command it names.
 Comments notify nobody: if someone must act, send a message.
 
+The notice never lands in a half-typed line: a pane somebody is typing in is left
+alone and the notice arrives by itself once that pane is idle. Several notices that
+pile up in the meantime arrive as one line, which names the whole inbox instead of a
+single bead. So a notice can be a few seconds or a few minutes late, and after a long
+wait it may not come at all. Sweep your own inbox anyway; that is what it is for.
+
 ## LEAD
 
 You are architect, coordinator and reviewer. You own the plan and the final
