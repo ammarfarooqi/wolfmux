@@ -32,10 +32,16 @@ WOLFMUX_PROVIDERS="glm kimi moonshot deepseek minimax qwen"
 #   PROVIDER_EXTRA_ENV   NAME=value pairs the vendor's own guide asks for ("" if none)
 #   PROVIDER_PINNABLE    1 when the owner may pin a model id, 0 when the plan forbids it
 #   PROVIDER_KEY_URL     where the owner gets a key ("" when the vendor has no such page)
+#   PROVIDER_KEY_PREFIX  how a key of THIS endpoint starts ("" = no check); teamctl doctor --probe
+#                        warns when a stored key does not start with it
+#   PROVIDER_KEY_SOURCE  a sentence: which console issues the key, and which look-alike key does
+#                        not work here ("" = doctor points at PROVIDER_KEY_URL instead)
 wolfmux_provider_info() {
   PROVIDER_NAME="$1"
   PROVIDER_EXTRA_ENV=""
   PROVIDER_KEY_URL=""
+  PROVIDER_KEY_PREFIX=""
+  PROVIDER_KEY_SOURCE=""
   case "$1" in
     glm)
       PROVIDER_VENDOR="Z.ai GLM Coding Plan"
@@ -72,6 +78,10 @@ wolfmux_provider_info() {
       PROVIDER_EXTRA_ENV="CLAUDE_CODE_EFFORT_LEVEL=high"
       PROVIDER_PINNABLE=1
       PROVIDER_KEY_URL="https://www.kimi.com/code/docs/en/third-party-tools/claude-code"
+      # Two consoles both say "Kimi" and both keys start with sk-, and only this one works
+      # here. A key from platform.kimi.ai got a 401 from this endpoint (issue #1).
+      PROVIDER_KEY_PREFIX="sk-kim"
+      PROVIDER_KEY_SOURCE="A Kimi Code membership key comes from the Kimi Code console (https://www.kimi.com/code/console) and starts with sk-kim. A key from platform.kimi.ai is a Moonshot platform key: it belongs to the moonshot provider, and this endpoint rejects it."
       ;;
     moonshot)
       PROVIDER_VENDOR="Moonshot AI (open platform)"
@@ -88,6 +98,7 @@ wolfmux_provider_info() {
       PROVIDER_EXTRA_ENV="CLAUDE_CODE_EFFORT_LEVEL=max"
       PROVIDER_PINNABLE=1
       PROVIDER_KEY_URL="https://platform.kimi.ai/docs/guide/claude-code-kimi"
+      PROVIDER_KEY_SOURCE="A Moonshot key comes from the Kimi API platform (https://platform.kimi.ai/console/api-keys). A Kimi Code membership key (starts with sk-kim, from kimi.com/code) belongs to the kimi provider, and this endpoint rejects it."
       ;;
     deepseek)
       PROVIDER_VENDOR="DeepSeek"
@@ -140,6 +151,8 @@ wolfmux_provider_info() {
       PROVIDER_AUTH_VAR="ANTHROPIC_AUTH_TOKEN"
       PROVIDER_PINNABLE=1
       PROVIDER_KEY_URL="https://www.alibabacloud.com/help/en/model-studio/claude-code"
+      PROVIDER_KEY_PREFIX="sk-sp-"
+      PROVIDER_KEY_SOURCE="A Coding Plan key starts with sk-sp-; any other Model Studio key is billed the other way, and this endpoint answers it with 403."
       ;;
     *)
       return 1
@@ -163,6 +176,22 @@ wolfmux_provider_of_launcher() {
     fi
   done
   return 1
+}
+
+# wolfmux_provider_of_model <model key>: the provider a registry model key runs on: glm for
+# glm53 and flash, the key's own name for "<provider>" and "<provider>:<model id>". Returns 1 for
+# a subscription model (fable, astra, claude:<id>, ...) and for anything not in the table.
+wolfmux_provider_of_model() {
+  local provider="${1%%:*}"
+  case "$1" in
+    glm53 | flash)
+      printf '%s\n' glm
+      return 0
+      ;;
+  esac
+  [ "$provider" != glm ] || return 1 # glm is only ever glm53 or flash
+  case " $WOLFMUX_PROVIDERS " in *" $provider "*) ;; *) return 1 ;; esac
+  printf '%s\n' "$provider"
 }
 
 # The launcher names that exist, for a "you called me by a name I do not know" message.

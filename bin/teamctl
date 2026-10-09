@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk beads policy approvals agents views doctor brand notify layout guard; do
+for module in provider-env common registry tmuxctl worktree disk beads policy approvals agents views doctor brand notify layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -18,6 +18,8 @@ for module in provider-env common registry tmuxctl worktree disk beads policy ap
   # shellcheck source=/dev/null
   . "$WOLFMUX_HOME/lib/$module.sh"
 done
+TEAMCTL_ARGS="$*"
+trap 'teamctl_on_exit' EXIT
 wolfmux_load_config # ~/.config/wolfmux/config supplies defaults; the environment wins
 tm_adopt_legacy_server
 
@@ -29,35 +31,49 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          With one team you never need it. teamctl status shows them all; teamctl teams is the short list.
     teamctl start fable --team review               a second team, named by you, with its own session
     teamctl start fable --team next --handover <bead-id>    (a lead may do this too) the new lead starts by reading that bead
-  Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you)
-    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--init-beads|--skip-beads]
+         A team whose lead is not running is orphaned (teamctl teams). Then the lead that founded it may recover or clean it up,
+         as you may: teamctl restart lead --team <name> --continue · stop · remove · destroy --team <name> --purge. You are told.
+  Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you,
+         and start/restart/stop/remove/destroy for the founder of a team whose lead is not running)
+    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
+                  --continue reopens this agent's own conversation (its stored id); --resume names one instead
+                  --ticket: the team's default ticket key, for a branch template that asks for one
   Workers
-    teamctl spawn <role> <model> [--base <ref>] [--no-kickoff] [--link-node-modules]
-                  --link-node-modules: the lane shares the project root's node_modules instead of
-                  installing 2+ GB of its own. One directory for every lane: an install in any lane
-                  changes them all. Refused under disk-min-gb free disk (policy disk-guard)
+    teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]
+        --branch: that exact branch name · --ticket: the key a branch template asks for (teamctl policy branch-template)
+        --repo: worktree and branch in ANOTHER git repository; the guard holds the teammate to that worktree
+        --from-worktree: a fresh conversation in a stopped worker's built worktree, on a new branch
+        --link-node-modules: a brand-new lane shares its repository's node_modules instead of installing 2+ GB
+        of its own. One directory for every lane: an install in any lane changes them all.
+        A spawn is refused under disk-min-gb free disk (policy disk-guard)
         models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
                 kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
                 minimax:<model-id> · qwen:<model-id>      any model in any team, whoever leads
                 moonshot and deepseek bill every token (metered): refused unless the owner's config file says WOLFMUX_METERED=on;
                 teamctl status marks them with $
+        --from-worktree <role>: a fresh conversation for a NEW role in that stopped worker's worktree,
+                on a new branch (the old branch and commits stay). What git ignores (node_modules,
+                build output) is kept, so install and build are not repeated
     teamctl stop <role>                               close the pane; worktree, branch and record stay
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else
-    teamctl restart <role> [--continue]
+    teamctl restart <role> [--continue] [--resume <session-id>]    its own conversation, or the one you name
+                                                      (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
   Policy and permissions
     teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · worker-spawn ·
                                                       worker-isolation (the worktree guard) · lead-teams (may the lead found teams) ·
                                                       disk-guard refuse|warn|off · disk-min-gb <number> · link-node-modules on|off
+                                                      branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
-    teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team
-    teamctl teams                                     the short list: state, lead, agents and disk per team
+    teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
+                                                      CONTEXT: what each agent's conversation holds (tokens, share of the window)
+    teamctl teams [--json]                            the short list: state (running or orphaned), lead, agents, disk and founder per team
     teamctl panes                                     what tmux reports per pane
     teamctl capture <role> [-n|--lines <count>] [--all]    recent terminal output
     teamctl log <role>                                full scrollback
@@ -78,12 +94,19 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl remove <role> · destroy --worktrees       take all of it, the worktree goes anyway
     teamctl status                                    free disk, and what this team's lanes take
     teamctl teams                                     measures the lanes (a du per lane; status reads the number)
+  Tab completion
+    teamctl completion <zsh|bash>                     print the tab-completion script of that shell, so
+                                                      source <(teamctl completion zsh) works, and in bash
+                                                      eval "$(teamctl completion bash)"; install.sh
+                                                      wires it into ~/.zshrc (then: teamctl <Tab>)
   Housekeeping
-    teamctl doctor                                    provider / billing isolation report
+    teamctl doctor [--probe]                          provider / billing isolation report; --probe also asks each provider whose
+                                                      key is set up if its endpoint accepts it (one incomplete request each,
+                                                      nothing billed, only the HTTP status is shown)
     teamctl destroy [--worktrees] [--yes]             end the team; --worktrees also removes workers that hold nothing
     teamctl destroy --purge [--force] [--keep-transcripts] [--yes]
-                                                      DELETE the team: session, every worktree, ai/ branches, records,
-                                                      transcripts. Lists uncommitted and unmerged work and asks first;
+                                                      DELETE the team: session, every worktree, the branches teamctl
+                                                      created, records, transcripts. Lists uncommitted and unmerged work and asks first;
                                                       --force deletes it anyway. teamctl teams shows what a team takes on disk
     teamctl version | help
 
@@ -119,6 +142,12 @@ main() {
   local rest=() command
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      # _complete reads the raw line (the --team parsing below would eat the word
+      # being completed and refuse an empty --team value): cmd_complete parses itself.
+      _complete)
+        rest+=("$@")
+        break
+        ;;
       --team | -T)
         [ "$#" -ge 2 ] || die_usage "--team needs a name"
         WOLFMUX_TEAM_ARG="$2"
@@ -161,6 +190,8 @@ main() {
     worktrees) cmd_worktrees "$@" ;;
     diff) cmd_diff "$@" ;;
     doctor) cmd_doctor "$@" ;;
+    completion) cmd_completion "$@" ;;
+    _complete) cmd_complete "$@" ;;
     _run-agent) cmd_run_agent "$@" ;;
     _refresh-hooks) cmd_refresh_hooks "$@" ;;
     _splash) cmd_splash "$@" ;;

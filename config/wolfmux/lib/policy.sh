@@ -18,10 +18,14 @@
 #   disk-min-gb         <whole number>      the free space a spawn asks for, in GB (0 = no limit)
 #   link-node-modules   off | on            link a new lane's node_modules to the project root's
 #                                           copy instead of letting it install its own
+#   branch-template     <template>          how this team names its workers' branches, with the
+#                                           placeholders {team} {role} {ts} {ticket}. Empty = the
+#                                           built-in shape (lib/worktree.sh). The only key whose
+#                                           value is free text, so it is handled apart below.
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules"
+POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules branch-template"
 
 policy_default() {
   case "$1" in
@@ -33,11 +37,17 @@ policy_default() {
     disk-guard) printf '%s\n' "${WOLFMUX_DISK_GUARD:-refuse}" ;;
     disk-min-gb) printf '%s\n' "${WOLFMUX_DISK_MIN_GB:-$WOLFMUX_DISK_MIN_GB_DEFAULT}" ;;
     link-node-modules) printf '%s\n' "${WOLFMUX_LINK_NODE_MODULES:-off}" ;;
+    branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     *) return 1 ;;
   esac
 }
 
 policy_valid() { # <key> <value>
+  # The one key that is not a choice out of a fixed set.
+  if [ "$1" = "branch-template" ]; then
+    branch_template_valid "$2"
+    return
+  fi
   case "$1:$2" in
     lead-permissions:skip | lead-permissions:ask) return 0 ;;
     worker-permissions:skip | worker-permissions:lead | worker-permissions:ask) return 0 ;;
@@ -66,6 +76,7 @@ policy_choices() {
     worker-spawn | worker-isolation | lead-teams | link-node-modules) printf 'on|off\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
+    branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
   esac
 }
 
@@ -75,6 +86,12 @@ policy_get() {
   local key="$1" value
   value="$(meta_get "policy_${key//-/_}" 2>/dev/null || true)"
   [ -n "$value" ] || value="$(policy_default "$key")"
+  if [ "$key" = "branch-template" ]; then
+    # Empty, or anything unusable, means the built-in shape: a stored template that can no
+    # longer be expanded must never stop a spawn.
+    if [ -n "$value" ] && branch_template_valid "$value"; then printf '%s\n' "$value"; fi
+    return 0
+  fi
   if policy_valid "$key" "$value"; then
     printf '%s\n' "$value"
   elif [ "$key" = "worker-spawn" ]; then
@@ -95,6 +112,18 @@ policy_get() {
 }
 
 policy_set() { # <key> <value>
+  local why
+  if [ "$1" = "branch-template" ]; then
+    # "default" is how you go back to the built-in shape; it is stored as no template at all.
+    if [ "$2" = "default" ]; then
+      meta_put policy_branch_template ""
+      return 0
+    fi
+    why="$(branch_template_error "$2")"
+    [ -z "$why" ] || die_usage "branch-template '$2': $why"
+    meta_put policy_branch_template "$2"
+    return 0
+  fi
   policy_valid "$1" "$2" || die_usage "$1 must be one of: $(policy_choices "$1")"
   meta_put "policy_${1//-/_}" "$2"
 }
@@ -134,9 +163,94 @@ is_manager() {
   [ "${team:-$WOLFMUX_DEFAULT_TEAM}" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ]
 }
 
+# --- the founder of a team ---------------------------------------------------------------
+# A lead that founds a team (teamctl start <model> --team <new>) does not manage it while its own
+# lead runs. When that lead is not running (its pane exited or is gone, or there is no session at
+# all) nobody would be left to restart, stop or delete the team, so its founder may: restart, stop,
+# remove and destroy, and start --continue. Never policy, approve or deny. The founder is the Beads
+# identity in the lead's spawned_by ("lead", "review.lead"), written when the team was started.
+FOUNDER_COMMANDS="restart stop remove destroy"
+
+# caller_identity: what the calling agent is called in Beads ("lead", "review.backend"); empty for you
+caller_identity() {
+  local role team
+  role="$(caller_role)"
+  [ -n "$role" ] || return 1
+  team="$(caller_team)"
+  team_identity "${team:-$WOLFMUX_DEFAULT_TEAM}" "$role"
+}
+
+# team_founder: who started the loaded team: the Beads identity of the lead that founded it, else
+# "operator" (you). The lead's record says; meta.json keeps it for when that record is gone
+# (a plain `teamctl destroy` deletes the lead's record and keeps the workers').
+team_founder() {
+  local founder
+  founder="$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by 2>/dev/null || true)"
+  [ -n "$founder" ] || founder="$(meta_get founder 2>/dev/null || true)"
+  printf '%s\n' "${founder:-operator}"
+}
+
+# team_lead_running: is the lead of the loaded team running right now? Asks tmux.
+team_lead_running() {
+  local session pane
+  session="$(session_name_for_project)"
+  tm_session_exists "$session" || return 1
+  pane="$(tm_pane_for_role "$session" "$WOLFMUX_LEAD_ROLE" 2>/dev/null || true)"
+  [ "$(tm_pane_state "$pane")" = "running" ]
+}
+
+# team_orphaned: the loaded team exists (records or a session) and has no running lead
+team_orphaned() {
+  [ -n "$(reg_list 2>/dev/null)" ] || tm_session_exists "$(session_name_for_project)" || return 1
+  ! team_lead_running
+}
+
+# is_founder: the caller is a lead, and the lead that founded the loaded team
+is_founder() {
+  local founder
+  [ "$(caller_role)" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  founder="$(team_founder)"
+  [ "$founder" != "operator" ] && [ "$founder" = "$(caller_identity)" ]
+}
+
+# founder_may_act: is_founder, and the loaded team has no running lead to conflict with
+founder_may_act() {
+  is_founder && ! team_lead_running
+}
+
+FOUNDER_HINT="you founded it: once its lead has stopped you may restart or destroy it"
+
+# founder_announce <what it did>: set by require_manager / cmd_start when a founder acts: you are told, the way
+# founding a team is told, and the event log says who acted (event_log: by is the founder's identity)
+founder_announce() {
+  [ -n "${FOUNDER_ACTING:-}" ] || return 0
+  (WOLFMUX_TEAM="$TEAM" notify_deliver "$WOLFMUX_LEAD_MARK $FOUNDER_ACTING $1 team '$TEAM', which it founded (its lead was not running)." >/dev/null 2>&1) || true
+}
+
 require_manager() { # <command name>
+  local hint=""
   is_manager && return 0
-  die "'teamctl $1' is reserved for the lead of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}'. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")'. Ask that lead: bd create \"<what you need>\" -t message -a $(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE") -d \"<why>\"" 77
+  case " $FOUNDER_COMMANDS " in
+    *" $1 "*)
+      if is_founder; then
+        if ! team_lead_running; then
+          FOUNDER_ACTING="$(caller_identity)"
+          EVENT_BY="$FOUNDER_ACTING"
+          return 0
+        fi
+        hint="; $FOUNDER_HINT"
+      fi
+      ;;
+  esac
+  die "'teamctl $1' is reserved for the lead of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}'. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")'$hint. Ask that lead: bd create \"<what you need>\" -t message -a $(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE") -d \"<why>\"" 77
+}
+
+# team_orphaned_note: who may act on the loaded team while its lead is not running
+team_orphaned_note() {
+  local founder note="you"
+  founder="$(team_founder)"
+  if [ "$founder" != "operator" ]; then note="you, $founder (its founder)"; fi
+  printf 'orphaned: its lead is not running. May act on it: %s.' "$note"
 }
 
 policy_summary() {
@@ -146,7 +260,7 @@ policy_summary() {
 
 # teamctl policy [<key> <value>]
 cmd_policy() {
-  local key="${1:-}" value="${2:-}"
+  local key="${1:-}" value="${2:-}" template
   require_tools
   load_project
   if [ -z "$key" ]; then
@@ -158,7 +272,16 @@ cmd_policy() {
     say "  lead-teams          $(policy_get lead-teams)      (on|off)          may the lead found further teams and hand work over?"
     say "  disk-guard          $(policy_get disk-guard)  (refuse|warn|off) what 'teamctl spawn' does under disk-min-gb free disk"
     say "  disk-min-gb         $(policy_get disk-min-gb)       (number, GB)      free space a spawn asks for; 0 = no limit"
-    say "  link-node-modules   $(policy_get link-node-modules)     (on|off)          link a new lane's node_modules to the project root's copy"
+    say "  link-node-modules   $(policy_get link-node-modules)     (on|off)          link a new lane's node_modules to its repository's copy"
+    template="$(policy_get branch-template)"
+    if [ -n "$template" ]; then
+      say "  branch-template     $template     how this team names its workers' branches"
+    else
+      say "  branch-template     $(wt_default_template)   (the built-in shape)   how this team names its workers' branches"
+    fi
+    say "                      placeholders {team} {role} {ts} {ticket}; {ts} is required. A template with {ticket}"
+    say "                      needs teamctl spawn --ticket <KEY>, or a team default: teamctl start <model> --ticket <KEY>"
+    say "                      back to the built-in shape: teamctl policy branch-template default"
     say ""
     say "change:  teamctl policy <key> <value>     permission changes apply at the next start/restart of an agent"
     return 0
@@ -169,7 +292,11 @@ cmd_policy() {
   ensure_state_dirs
   policy_set "$key" "$value"
   event_log policy "" "$key=$value"
-  say "policy: $key = $value"
+  if [ "$key" = "branch-template" ] && [ "$value" = "default" ]; then
+    say "policy: branch-template = $(wt_default_template)   (the built-in shape)"
+  else
+    say "policy: $key = $value"
+  fi
   case "$key" in
     worker-spawn) ;;
     *) say "applies to agents started or restarted from now on (teamctl restart <role>)" ;;

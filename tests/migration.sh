@@ -123,7 +123,7 @@ check "git knows the worktree at its new path, nothing prunable" 'git -C "$PROJE
 check "uncommitted work in the worktree survived" '[ "$(/bin/cat "$NEW_TREE/notes.txt")" = "draft" ] && git -C "$NEW_TREE" status --porcelain | grep -q notes.txt'
 check "the worker restarts in the moved worktree" 'new_teamctl restart research && sleep 2 && new_teamctl capture research -n 8 | grep -q "STUB cwd=$NEW_TREE"'
 check "Beads hooks point at the new location" '[ "$(grep -l "wolfmux-hook v1" "$PROJECT"/.beads/hooks/on_* | wc -l | tr -d " ")" = 3 ] && ! grep -q "ai-team" "$PROJECT"/.beads/hooks/on_*'
-check "~/.zshrc: one block; only its two marker lines changed" '[ "$(grep -c ">>> wolfmux >>>" "$HOME/.zshrc")" = 1 ] && sed -e "s/^# >>> ai-team >>>/# >>> wolfmux >>>/" -e "s/^# <<< ai-team <<</# <<< wolfmux <<</" "$WORK/zshrc.before" | /usr/bin/cmp -s - "$HOME/.zshrc"'
+check "~/.zshrc: one block; its two marker lines changed, and the block gained the two tab-completion lines and nothing else" '[ "$(grep -c ">>> wolfmux >>>" "$HOME/.zshrc")" = 1 ] && [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ] && sed -e "s/^# >>> ai-team >>>/# >>> wolfmux >>>/" -e "s/^# <<< ai-team <<</# <<< wolfmux <<</" "$WORK/zshrc.before" >"$WORK/zshrc.expected" && sed -e "/completion\/teamctl.zsh/d" -e "/Tab completion for teamctl/d" "$HOME/.zshrc" | /usr/bin/cmp -s - "$WORK/zshrc.expected"'
 # v1.1 added rules that allowed more than they read (git diff/log/show *, tmux list-panes/capture-pane *).
 # The migration renames the tmux ones, then install.sh retires all five: what is left is your own
 # rule plus the four current ones.
@@ -138,6 +138,43 @@ new_teamctl destroy --worktrees --yes >/dev/null 2>&1
 check "after destroy, uninstall restores ~/.zshrc byte for byte and settings.json in content" '"$REPO/uninstall.sh" && /usr/bin/cmp -s "$HOME/.zshrc" "$WORK/zshrc.original" && [ "$(jq -S . "$HOME/.claude/settings.json")" = "$(/bin/cat "$WORK/settings.original")" ]'
 # uninstall has run in the check above
 check "uninstall took the provider links away, and kept the launcher script that is the user's own" 'for name in $PROVIDER_LAUNCHERS; do [ "$name" = "$OWN_LAUNCHER" ] && continue; [ ! -e "$HOME/bin/$name" ] && [ ! -L "$HOME/bin/$name" ] || exit 1; done && [ "$("$HOME/bin/$OWN_LAUNCHER")" = mine ] && [ ! -e "$HOME/bin/claude-glm" ] && [ ! -e "$HOME/bin/claude-glm-flash" ] && [ ! -e "$HOME/bin/teamctl" ]'
+
+echo "== tab completion (installer)"
+# A fresh install ships the shims and the two lines in ~/.zshrc. A block from before
+# completion existed (a block without the source line) is upgraded in place, after a
+# backup, and running the installer again changes nothing. --no-completion skips only
+# the completion lines, --no-path skips ~/.zshrc entirely, and uninstall takes the
+# files away with the block.
+zshrc_backups() { /bin/ls "$HOME"/.zshrc.backup-* 2>/dev/null | wc -l | tr -d ' '; }
+strip_completion_lines() {
+  sed -e '/completion\/teamctl.zsh/d' -e '/Tab completion for teamctl/d' "$HOME/.zshrc" >"$HOME/.zshrc.stripped"
+  /bin/mv -f "$HOME/.zshrc.stripped" "$HOME/.zshrc"
+}
+check "completion: a fresh install ships the shims and sources them in ~/.zshrc" '"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1 && [ -f "$HOME/.config/wolfmux/completion/teamctl.zsh" ] && [ -f "$HOME/.config/wolfmux/completion/teamctl.bash" ] && [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ]'
+check "completion: the installed teamctl serves completions from the installed files" 'PATH="$HOME/bin:$PATH" "$HOME/bin/teamctl" _complete -- "" | grep -q "^start	" && PATH="$HOME/bin:$PATH" "$HOME/bin/teamctl" completion zsh | grep -q "_teamctl" && PATH="$HOME/bin:$PATH" "$HOME/bin/teamctl" completion bash | grep -q "_teamctl_bash"'
+strip_completion_lines
+/bin/cp "$HOME/.zshrc" "$WORK/zshrc.pre-upgrade"
+has_backup_of() { local b; for b in "$HOME"/.zshrc.backup-*; do [ -f "$b" ] && /usr/bin/cmp -s "$b" "$1" && return 0; done; return 1; } # the stamp has seconds: counting files would miss two installs in one second
+check "completion: a block without the completion line is upgraded in place, exactly once, and a backup holds the file as it was" '"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ] && [ "$(grep -c "Tab completion for teamctl" "$HOME/.zshrc")" = 1 ] && has_backup_of "$WORK/zshrc.pre-upgrade"'
+check "completion: the upgrade touched nothing but the two lines" 'strip_completion_lines; /bin/cp "$HOME/.zshrc" "$WORK/zshrc.without"; "$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ] && sed -e "/completion\/teamctl.zsh/d" -e "/Tab completion for teamctl/d" "$HOME/.zshrc" | /usr/bin/cmp -s - "$WORK/zshrc.without"'
+check "completion: running the installer again changes nothing" 'hash_before="$(shasum -a 256 "$HOME/.zshrc")"; backups="$(zshrc_backups)"; "$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ "$(shasum -a 256 "$HOME/.zshrc")" = "$hash_before" ] && [ "$(zshrc_backups)" = "$backups" ]'
+strip_completion_lines
+check "completion: --no-completion skips only the completion lines" '"$REPO/install.sh" --no-completion --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1 && ! grep -q "completion/teamctl.zsh" "$HOME/.zshrc" && grep -q ">>> wolfmux >>>" "$HOME/.zshrc"'
+check "completion: a plain install re-adds what --no-completion skipped (the upgrade stays idempotent)" '"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1 && [ "$(grep -c "completion/teamctl.zsh" "$HOME/.zshrc")" = 1 ]'
+strip_completion_lines
+check "completion: --no-path leaves ~/.zshrc untouched" 'hash_before="$(shasum -a 256 "$HOME/.zshrc")"; "$REPO/install.sh" --no-path --no-completion --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ "$(shasum -a 256 "$HOME/.zshrc")" = "$hash_before" ]'
+# A ~/.zshrc that is a symlink into a dotfiles folder, readable by its owner only: it is written through, not replaced.
+/bin/mkdir -p "$HOME/dotfiles" && /bin/mv "$HOME/.zshrc" "$HOME/dotfiles/zshrc" && /bin/ln -s "$HOME/dotfiles/zshrc" "$HOME/.zshrc" && /bin/chmod 600 "$HOME/dotfiles/zshrc"
+strip_through() { sed -e '/completion\/teamctl.zsh/d' -e '/Tab completion for teamctl/d' "$HOME/dotfiles/zshrc" >"$WORK/zshrc.stripped" && /bin/cat "$WORK/zshrc.stripped" >"$HOME/dotfiles/zshrc"; }
+strip_through
+check "completion: a symlinked ~/.zshrc stays a symlink, its target gets the lines and keeps its mode (0600)" '"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1; [ -L "$HOME/.zshrc" ] && [ "$(grep -c "completion/teamctl.zsh" "$HOME/dotfiles/zshrc")" = 1 ] && [ "$(stat -f %Lp "$HOME/dotfiles/zshrc")" = 600 ]'
+/bin/cp "$HOME/dotfiles/zshrc" "$WORK/zshrc.whole"
+printf '\n# >>> wolfmux >>> (a block somebody cut the end off)\n[[ -d "$HOME/bin" ]] && path+=("$HOME/bin")\n' >"$HOME/dotfiles/zshrc"
+check "completion: a block without its closing marker is left alone, and the installer says so instead of claiming it added the lines" 'before="$(shasum -a 256 "$HOME/dotfiles/zshrc")"; out="$("$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app 2>&1)"; [ "$(shasum -a 256 "$HOME/dotfiles/zshrc")" = "$before" ] && printf "%s" "$out" | grep -q "closing marker" && ! printf "%s" "$out" | grep -q "added tab completion"'
+/bin/cat "$WORK/zshrc.whole" >"$HOME/dotfiles/zshrc"
+check "completion: uninstall writes through a symlinked ~/.zshrc as well (still a symlink, mode kept)" '"$REPO/uninstall.sh" >/dev/null 2>&1; [ -L "$HOME/.zshrc" ] && [ "$(stat -f %Lp "$HOME/dotfiles/zshrc")" = 600 ] && ! grep -q ">>> wolfmux >>>" "$HOME/dotfiles/zshrc"'
+"$REPO/install.sh" --no-claude-permissions --no-codex-rules --no-notifier-app >/dev/null 2>&1
+check "completion: uninstall takes the completion files away with the block" '"$REPO/uninstall.sh" >/dev/null 2>&1 && [ ! -e "$HOME/.config/wolfmux" ] && ! grep -q ">>> wolfmux >>>" "$HOME/.zshrc" && ! grep -q "completion/teamctl.zsh" "$HOME/.zshrc"'
 
 echo
 echo "result: $passed passed, $failed failed"

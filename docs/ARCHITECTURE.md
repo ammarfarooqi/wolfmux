@@ -98,7 +98,9 @@ current-directory inheritance for new panes. One extra key: `prefix T` re-tiles.
 
 ### Git worktrees
 
-`teamctl spawn <role> <model>` creates branch `ai/<role>-<timestamp>` from the
+`teamctl spawn <role> <model>` creates a branch named by the team's branch template
+(by default `ai/<role>-<timestamp>`, `ai/<team>/<role>-<timestamp>`; `teamctl policy
+branch-template`, `--branch`, `--ticket`) from the
 lead's current `HEAD` (or `--base <ref>`) in a worktree at
 `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/` — outside the
 repository, so nothing is nested in the project. Git itself refuses to check one
@@ -113,8 +115,10 @@ gigabyte of copied assets per lane. Nothing used to remove it, 27 parked lanes o
 project reached 65 GB, and the machine filled its disk. `lib/disk.sh` is the one module
 that deletes any of it: one allowlist of regenerable directory names, and four rules —
 only a name on the list, never a path git tracks, never a worktree holding uncommitted or
-untracked work of its own, and only inside `~/.wolfmux/worktrees/<project>/…` with every
-path resolved by `pwd -P`. `stop` takes the build caches, `remove` and
+untracked work of its own, and only inside the worktree directory of that lane's own
+repository (`worker_trees_dir`, so a lane spawned with `--repo` is checked against that
+repository and not this project) with every path resolved by `pwd -P`. `stop` takes the
+build caches, `remove` and
 `destroy --worktrees` take everything, `prune` sweeps the parked lanes, `spawn` refuses
 under `disk-min-gb`, and each directory is renamed inside its worktree before deletion so
 an interrupted cleanup leaves recognizable trash rather than a half-deleted
@@ -148,7 +152,8 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 ### Spawning a worker
 
 1. validate role and model key (a metered model is refused while `WOLFMUX_METERED` is off); take the project lock (`mkdir`, released on exit)
-2. `git worktree add -b ai/<role>-<stamp> <path> <base>`
+2. `git worktree add -b <branch from the template> <path> <base>`, in the project or,
+   with `--repo <path>`, in that repository (its own worktrees directory and its own base)
 3. write the registry record (role, model, launcher, worktree, branch, base)
 4. split a pane that runs `teamctl _run-agent <root> <role>`; tag it with `@ai_role`
 5. re-tile; record the pane id. If the pane cannot be created, the fresh worktree,
@@ -234,7 +239,7 @@ needed no team logic of their own.
 | tmux session | `team-<project>` | `team-<project>-<team>` |
 | state | `~/.wolfmux/state/<project>/` | `…/<project>/teams/<team>/` |
 | worktrees | `~/.wolfmux/worktrees/<project>/<role>-<stamp>` | `…/<project>/teams/<team>/<role>-<stamp>` |
-| branches | `ai/<role>-<stamp>` | `ai/<team>/<role>-<stamp>` |
+| branches | `ai/<role>-<stamp>` | `ai/<team>/<role>-<stamp>` |   (the default template; `teamctl policy branch-template` sets another)
 | Beads name | `<role>` | `<team>.<role>` |
 
 The Beads hook reads the team out of the assignee's name (`review.backend`) and the lead to
@@ -248,13 +253,19 @@ start` is yours and, for its own team, the lead's. One thing more: a lead may st
 that does not exist yet (`start_permitted`; policy `lead-teams` of the founder's team,
 default on), and `--handover <bead-id>` is stored in the new lead's record and becomes its
 first prompt. The founder is
-recorded as `spawned_by`, you are notified, and the founder does not manage the new team.
+recorded as `spawned_by`, you are notified, and the founder does not manage the new team
+while that team's lead runs. When it does not (`team_lead_running` asks tmux: no session,
+a dead pane or none), `require_manager` and `start_permitted` let the founder run `restart`,
+`stop`, `remove`, `destroy` and `start --continue` on it, announce each one to you and log it
+with the founder's Beads name ([ADR-0023](adr/0023-founder-recovers-an-orphaned-team.md)).
 `teamctl destroy --purge` is the reverse: `_purge_report` measures and lists first (size per
 worktree, uncommitted files, commits the checked-out branch does not have, transcripts).
 Nothing is touched until the answer is yes, `--force` was given, or `--yes` with nothing at
 risk. `_purge_team` then ends the session and removes the team's own state files; a
 worktree named in a record only when it lies inside the team's worktree directory (with
-the transcript folder derived from its path); a branch only when it is `ai/…` and not the
+the transcript folder derived from its path); a branch only when teamctl created it
+(`branch_created` in the record; a record from before that field counts its `ai/…` branch as
+teamctl's) and it is not the
 one checked out in your checkout.
 
 What teams do not have apart: your checkout. Every lead works in the project root.

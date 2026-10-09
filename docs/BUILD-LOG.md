@@ -388,7 +388,72 @@ answered `no team session. Start one first: teamctl start fable`. That line drop
 `restart` of the lead without a session starts the team again, as the model that led it, and
 `--continue` goes with it; a worker's refusal names the exact two commands. `tests/smoke.sh`: 177 → 181.
 
-v1.12.0, the day after: wolfmux had filled the machine's disk. `~/.wolfmux` had grown to
+v1.10.2 (issue #6): `destroy --purge --force` and `remove --force` ended with exit 141, no message
+and nothing deleted, when a worker had more than ten unmerged commits: `git log | head -10`
+under `pipefail`. git now limits its own output, the reports say how much they left out, and a
+teamctl ended by a signal says so and names the command. `tests/smoke.sh`: 181 → 184.
+
+## 24. Five issues from a day of real use (v1.11)
+
+The issues came from a long day on another project: seven short-lived workers in one repository,
+work across three repositories, a hook that wants a ticket key in every branch name, a founded
+team whose lead died, and an hour lost to a Kimi key of the wrong kind. Four teammates took one
+issue each (#3 and #4 together); the lead merged them and settled where they met.
+
+- **#2, a founded team with no lead.** Its founder may now restart, stop, remove and destroy it,
+  but only while that team's lead is not running; you are told each time, and `teamctl teams`
+  marks the team `orphaned`. A restart keeps the lead record's founder and handover, or the
+  founder would lose that right after one restart ([ADR-0023](adr/0023-founder-recovers-an-orphaned-team.md)).
+- **#1, a rejected key that doctor called ok.** `teamctl doctor --probe` asks each endpoint once,
+  with a request no vendor bills (POST `/v1/messages` with an empty body; the key is checked
+  first, measured at all six), and names the console a key comes from. The key reaches curl on
+  its stdin only ([ADR-0024](adr/0024-doctor-probe-and-key-sources.md)).
+- **#3, branch names.** A team template (`teamctl policy branch-template`), `--ticket` and
+  `--branch`; teamctl deletes only the branches it created ([ADR-0021](adr/0021-branch-names-from-a-template.md)).
+- **#4, a sibling repository.** `teamctl spawn <role> <model> --repo <path>`: worktree and branch
+  there, the guard still on, that repository's own checkout read-only too ([ADR-0022](adr/0022-a-worker-in-another-repository.md)).
+- **#5, cold starts.** A CONTEXT column in `status`, and `spawn --from-worktree` for a fresh
+  conversation in a built worktree ([ADR-0025](adr/0025-context-use-and-worktree-handover.md)).
+
+Where two of them met, the lead decided: a worktree handed over stays in its own repository
+(so `--from-worktree` and `--repo` do not combine), and its new branch follows the team's
+template like any other. Left out on purpose: a warm idle worker, isolation per worker.
+
+`tests/smoke.sh`: 184 → 250. `tests/providers.sh`: 116 → 134. `tests/docs.sh`: 28 → 32. v1.11.0.
+
+## 25. Four leads, one conversation (v1.12)
+
+On 2026-09-24 four teams shared one project folder, all four leads were restarted with `--continue`,
+and all four came back in the same conversation (issue #7). `--continue` meant `claude --continue`,
+the newest transcript **of the folder**, and every lead of a project works in the same folder, next to
+the owner's own sessions. The owner's fix (PR #8) gives every Claude-family agent its own conversation
+id at start and resumes that one; `--resume <session-id>` pins one by hand.
+
+That fix was tested with the stub agent, which accepts anything. Asked directly, the real CLI refuses
+two things, and both were on ordinary paths: it will not resume an id that has no transcript, and it
+will not start a new conversation under an id that has one. So `teamctl destroy` in the evening and
+`teamctl start fable --continue` in the morning, the most ordinary way back, gave a lead that exited
+at once: the record was gone, a new id was minted, and the CLI was asked to resume it. Now the lead's
+id is kept with the team, an agent that never spoke starts fresh under its id, a team with no id on
+record keeps the old `--continue` (with its warning), and `tests/stub-agent` refuses what the CLI
+refuses, so the suite can see these paths ([ADR-0027](adr/0027-every-agent-resumes-its-own-conversation.md)).
+The same fault sat in `teamctl status`: CONTEXT was read from the newest transcript of the folder, so
+every lead showed the same number. It reads the agent's own conversation now.
+
+**"teamctl plus Tab brings nothing."** Tab completion came in the same release: one backend inside
+teamctl (`teamctl _complete`, which knows the commands, their options, and the roles, teams, models,
+policy keys, layouts, approvals and branches) and two thin shims for zsh and bash, so nothing is
+written down twice and `tests/docs.sh` can hold the list against the option parsers. The installer
+adds two lines to its block in `~/.zshrc`, and upgrades a block from before; it never switches
+`compinit` on for you ([ADR-0026](adr/0026-tab-completion.md)). A teammate built it; the lead stopped
+it at 255k tokens of context, before it had committed, and finished the last checks at integration:
+outside a git repository it had offered nothing at all, which is where the owner pressed Tab.
+
+`tests/smoke.sh`: 250 → 327. `tests/docs.sh`: 32 → 36. `tests/migration.sh`: 24 → 36. v1.12.0.
+
+## 27. wolfmux cleans up after its own lane worktrees (v1.14)
+
+The day wolfmux filled the disk: wolfmux had filled the machine's disk. `~/.wolfmux` had grown to
 102 GB — every lane worktree keeping its own `node_modules` (2.3 GB), `.next` (0.9 GB) and
 copied `public` (0.5 GB), one project with 27 lanes alive, and nothing ever pruned, not on
 `stop`, not after a week parked, not on `remove`. The Mac rebooted three times, every team
@@ -486,6 +551,21 @@ unchanged there and still sweeps such a lane — it has no question to ask — w
 records as the one inconsistency.
 
 `tests/disk.sh`: 48 → 82.
+
+Version 1.14.0. Main was already 1.12.0 when this branch was written, and the nudge-typing
+fix (PR #10) takes 1.13.0, so this is the next free minor — and a new command plus three
+policy keys is a minor bump on its own merits. Entry 26 is that nudge fix.
+
+Merging v1.12.0 in found one thing four reviews had not: `destroy --purge` did not delete
+`state/<project>/disk-kb`, so a named team's state directory was never empty and its
+`rmdir` quietly did nothing. Main's new founder test asserts that directory is gone, and it
+failed. The purge removes the file now, and `_purge_report` counts it. Rule 4 also had to
+learn about `spawn --repo`, which main added: a lane's worktree is checked against its own
+repository's worktree directory (`worker_trees_dir`), not blindly against this project's, so
+a cross-repository lane is cleaned instead of skipped. And `--link-node-modules` links the
+lane to its own repository's `node_modules`, which is only ever a brand-new worktree:
+`--from-worktree` hands over one that already has the dependencies it installed, and that
+handover is not asked to clear the free-disk bar either, because it installs nothing.
 
 ## Footprint on the machine
 

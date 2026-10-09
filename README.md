@@ -20,7 +20,7 @@ No metered proxy, ever.**
 | | |
 |---|---|
 | **Any model in any seat** | Fable, Opus, Sonnet, Haiku, GPT-6 Astra, GLM-5.3 and GLM-5.3 Flash, plus the provider keys `kimi`, `moonshot`, `deepseek`, `minimax`, `qwen`, as lead or as teammate, mixed freely in one team ([models](#models)) |
-| **Several teams per project** | the first is called `default`, every further one is named by you; each has its own session, lead and teammates; `teamctl status` shows them as a tree. Teams message each other through Beads, and a lead can found a fresh team and hand work over to it ([diagram](docs/diagrams/teams.svg)) |
+| **Several teams per project** | the first is called `default`, every further one is named by you; each has its own session, lead and teammates; `teamctl status` shows them as a tree. Teams message each other through Beads, and a lead can found a fresh team and hand work over to it, and recover or delete it if its lead dies ([diagram](docs/diagrams/teams.svg)) |
 | **One worktree per teammate** | its own branch and checkout, outside your project. A guard refuses a teammate's tool calls that change your checkout, read another teammate's worktree, switch or delete branches, push to main or drive tmux (Claude Code teammates; Codex has no such hook) |
 | **You always find the manager** | the 🐺 lead is the amber pane on the left, 🐶 teammates are stacked on the right. A desktop notification tells you when an agent finishes, and clicking it opens the team |
 | **Nothing is lost by accident** | `stop` and `destroy` keep worktrees, branches and commits. `remove` refuses while a teammate holds uncommitted or unmerged work, and lists it. `destroy --purge` shows each worktree's size, that same list and the total it frees, and asks before it deletes |
@@ -58,11 +58,11 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl start <model> [--team <name>] [--no-attach] [--continue]` | start a team with that model as its 🐺 lead, and open it. `--team` names a further team in the same project; `--continue` resumes the lead's last conversation; after the lead quit, the same command brings it back |
-| `teamctl start … [--init-beads\|--skip-beads] [--lead-permissions skip\|ask] [--worker-permissions skip\|lead\|ask] [--worker-spawn on\|off]` | `--init-beads` or `--skip-beads` answers the first start's question about Beads; the other three set the team's policy, at any start |
-| `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead. A lead may run this too; you are notified |
-| `teamctl status [--json]` (alias `workers`) | every team as a tree (one team with `--team`, or from inside a pane): 🐺 lead, 🐶 teammates, model, running or stopped, branch, commits ahead, uncommitted files |
-| `teamctl teams` | the short list: state, lead, number of agents, and the disk its teammates' worktrees take |
+| `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>]` | start a team with that model as its 🐺 lead, and open it. `--team` names a further team in the same project; `--continue` resumes the lead's **own** conversation (the id stored with it), `--resume` reopens the one you name; after the lead quit, the same command brings it back |
+| `teamctl start … [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions skip\|ask] [--worker-permissions skip\|lead\|ask] [--worker-spawn on\|off]` | `--ticket` is the team's default ticket key, used by a branch template that asks for one; `--init-beads` or `--skip-beads` answers the first start's question about Beads; the other three set the team's policy, at any start |
+| `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead. A lead may run this too; you are notified. While that lead runs, the founder does not manage the team; once it is not running the founder may `restart`, `stop`, `remove` or `destroy` it, and `start <model> --team <it> --continue`; you are told each time |
+| `teamctl status [--json]` (alias `workers`) | every team as a tree (one team with `--team`, or from inside a pane): 🐺 lead, 🐶 teammates, model, running or stopped, branch, commits ahead, uncommitted files, and CONTEXT: what each agent's conversation holds (tokens, share of the window, from the transcript of its own conversation). A team without a running lead says it is orphaned and who may act on it; `--json` has `founder`, `orphaned`, `session_id`, `context_tokens`, `context_window` and `requests` |
+| `teamctl teams [--json]` | the short list: state (`running`, or `orphaned` when its lead is not running), lead, number of agents, the disk its teammates' worktrees take, and who founded it. Under the table, each orphaned team says who may act on it: you, and the lead that founded it |
 | `teamctl attach` (alias `open`) | open the team in this terminal (`Ctrl-b d` leaves it running) |
 | `teamctl focus <role>` | jump to one pane |
 | `teamctl layout [lead-left\|lead-top\|tiled]` | how the panes are arranged; `lead-left` is the default |
@@ -71,9 +71,9 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl spawn <role> <model> [--base <ref>] [--no-kickoff] [--link-node-modules]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads. Refused when free disk is under `disk-min-gb` (policy `disk-guard`). `--link-node-modules` points the lane's `node_modules` at the project root's copy instead of installing 2+ GB of its own — one directory for every lane, so an install in any lane changes them all |
+| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads. Refused when free disk is under `disk-min-gb` (policy `disk-guard`). `--branch` names the branch exactly; `--ticket` supplies the key a [branch template](#branch-names-and-other-repositories) asks for; `--repo` puts the worktree and the branch in **another** git repository, with the guard still on. `--from-worktree <role>` gives the fresh teammate the stopped worker's built worktree, on a new branch (its branch and commits stay), so node_modules and build output survive and no install or build is repeated. The worktree must be clean; the work is refused and listed otherwise (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one, and sends no kickoff. `--link-node-modules` points a brand-new lane's `node_modules` at its repository's copy instead of installing 2+ GB of its own — one directory for every lane, so an install in any lane changes them all |
 | `teamctl stop <role>` | close its pane; worktree, branch and commits stay. Its build caches (`.next`, `dist`, …) are deleted, `node_modules` is kept, so `restart` stays cheap |
-| `teamctl restart <role> [--continue]` | start it again in the same worktree; `--continue` keeps its conversation. When the team's tmux session is gone (a reboot), `restart lead` starts the team again |
+| `teamctl restart <role> [--continue] [--resume <session-id>]` | start it again in the same worktree; `--continue` keeps its own conversation, `--resume` reopens the one you name (`teamctl status --json` prints each agent's `session_id`). When the team's tmux session is gone (a reboot), `restart lead` starts the team again |
 | `teamctl remove <role>… [--force] [--yes]` | take a stopped teammate off the books: worktree, branch, record, and the gigabytes they held. Refuses while it holds work that exists nowhere else, and lists it; `--force` discards it after one question |
 | `teamctl nudge <role>\|--all [--id <bead-id>] [--quiet]` | re-send the one-line notification into a pane. The Beads hook does this by itself |
 
@@ -91,7 +91,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl policy [<key> <value>]` | show or set, per team: `lead-permissions` skip\|ask · `worker-permissions` skip\|lead\|ask · `worker-spawn` on\|off · `worker-isolation` on\|off (the worktree guard) · `lead-teams` on\|off (may the lead found teams) · `disk-guard` refuse\|warn\|off · `disk-min-gb` a whole number of GB (0 = no limit) · `link-node-modules` on\|off |
+| `teamctl policy [<key> <value>]` | show or set, per team: `lead-permissions` skip\|ask · `worker-permissions` skip\|lead\|ask · `worker-spawn` on\|off · `worker-isolation` on\|off (the worktree guard) · `lead-teams` on\|off (may the lead found teams) · `branch-template` (how this team names its workers' branches) · `disk-guard` refuse\|warn\|off · `disk-min-gb` a whole number of GB (0 = no limit) · `link-node-modules` on\|off |
 | `teamctl approvals [--all]` | teammates' permission requests waiting for the lead (`worker-permissions lead`) |
 | `teamctl approve <id>…\|--all` | allow them |
 | `teamctl deny <id> "<reason>"` | refuse one, with the reason the teammate is shown |
@@ -137,12 +137,71 @@ run clears, never a half-deleted `node_modules` that looks installed.
 | Command | Does |
 |---------|------|
 | `teamctl destroy [--worktrees] [--yes]` | end the team. Every worktree is kept; `--worktrees` also removes teammates that hold nothing, and takes the build output of all of them first |
-| `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and give its disk space back: shows sizes and any uncommitted or unmerged work, asks, then removes the session, worktrees, `ai/…` branches, records and its teammates' Claude Code transcripts. `--force` deletes that work too. Never touched: your checkout, other branches, Beads, other teams, the lead's own conversations |
-| `teamctl doctor` | billing and credential isolation report: launchers, inherited keys, settings overrides, Keychain, logins |
+| `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and give its disk space back: shows sizes and any uncommitted or unmerged work, asks, then removes the session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts. `--force` deletes that work too. Never touched: your checkout, other branches, Beads, other teams, the lead's own conversations |
+| `teamctl doctor [--probe]` | billing and credential isolation report: launchers, inherited keys, settings overrides, Keychain, logins. `--probe` also asks each provider whose key is set up whether its endpoint accepts it: one incomplete request each, nothing billed, only the HTTP status shown |
 | `teamctl version` · `teamctl help` | |
 
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
 are for you and for the team's lead; a teammate that tries them is refused (exit 77).
+
+### Tab completion
+
+After `./install.sh`, a new zsh terminal completes `teamctl`: the commands with short
+descriptions, the options of each command, and the values teamctl knows - roles,
+teams, models, policy keys and their choices, layouts, pending approval ids, local
+branch names.
+
+```bash
+teamctl <Tab>                 # the commands (teamctl re<Tab> offers remove and restart)
+teamctl restart <Tab>         # the roles of your team (remove offers workers only)
+teamctl spawn x <Tab>         # the models, with their labels
+teamctl --team <Tab>          # the teams of this project
+teamctl policy <Tab>          # the policy keys; teamctl policy worker-spawn <Tab> the choices
+```
+
+The knowledge lives in one backend inside teamctl (`teamctl _complete`); the zsh and
+bash shims in `~/.config/wolfmux/completion/` are thin and only present what it
+answers ([ADR-0026](docs/adr/0026-tab-completion.md)). The zsh shim registers only
+when a completion system is loaded (compinit): it never switches one on by itself.
+To try it without install.sh: `source <(teamctl completion zsh)`. In bash:
+`eval "$(teamctl completion bash)"` (bash 3.2 cannot source a process substitution). Tab offers nothing? See
+[TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#tab-completion).
+
+### Branch names and other repositories
+
+A teammate's branch is named by the team's **branch template**. The default reproduces the
+names wolfmux has always used, `ai/<role>-<timestamp>` and `ai/<team>/<role>-<timestamp>`,
+so nothing changes unless you change it:
+
+```bash
+teamctl policy branch-template 'feature-{ticket}-{role}-{ts}'   # this team, from now on
+teamctl start fable --ticket AFD-1844                           # the team's default ticket key
+teamctl spawn sam glm53 --ticket AFD-1844                       # feature-AFD-1844-sam-20260923-112233
+teamctl spawn sam glm53 --branch feature-AFD-1844-sam           # or name the branch yourself
+teamctl policy branch-template default                          # back to the built-in shape
+```
+
+Placeholders: `{team}` `{role}` `{ts}` `{ticket}`. `{ts}` is the timestamp and is required —
+it is what keeps two teammates of the same role on two branches. A template with `{ticket}`
+and a spawn with no ticket key is refused rather than guessed at (exit 64). Set this when
+your repository's hooks require a shape, so teammates never have to commit with a skip
+switch. `WOLFMUX_BRANCH_TEMPLATE` in `~/.config/wolfmux/config` is the default for every team.
+
+teamctl deletes a teammate's branch (`teamctl remove`, `teamctl destroy --purge`) **only when
+teamctl created it**, whatever it is called. A branch you made yourself is named and left alone.
+
+A teammate can also work in a **different repository**:
+
+```bash
+teamctl spawn srv glm53 --repo ../fanpro-studio-server
+```
+
+Its worktree and branch are created there, from that repository's `HEAD` (or its `--base`),
+under `~/.wolfmux/worktrees/<that repo>/teams/<team>/`. Worker isolation stays on and holds
+that teammate to that worktree: both your project's checkout and the other repository's own
+checkout are read-only for it. `teamctl status` (a `REPO` column, and `repo` in `--json`),
+`diff`, `worktrees`, `remove` and `destroy` all run git in that repository, so what wolfmux
+created there is also what wolfmux cleans up there.
 
 ### Models
 
@@ -151,10 +210,10 @@ For `teamctl start` and `teamctl spawn`:
 | Key | Runs | Pays with |
 |-----|------|-----------|
 | `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan |
-| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription |
+| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription; the key is a Kimi Code membership key (Kimi Code console, starts `sk-kim`) |
 | `minimax` | Claude Code + MiniMax M3 | MiniMax Coding Plan |
-| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan |
-| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on` |
+| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan; the key starts `sk-sp-` |
+| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on`; the key comes from platform.kimi.ai |
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
@@ -167,6 +226,37 @@ read it ([ADR-0020](docs/adr/0020-providers-beyond-the-three-subscriptions.md)).
 provider's key lives in its own Keychain service (`wolfmux-kimi`, …; Z.ai keeps
 `zai-coding-plan`); `WOLFMUX_<PROVIDER>_MODEL` / `_FAST_MODEL` pin a model id when a
 vendor changes it. `teamctl status` marks a metered agent with `$` after its label.
+
+The two Kimi keys are not interchangeable, and both say "Kimi" and start with `sk-`. A
+**Kimi Code membership key** (from the Kimi Code console,
+[kimi.com/code/console](https://www.kimi.com/code/console), starts `sk-kim`) belongs to `kimi`.
+A key created at [platform.kimi.ai](https://platform.kimi.ai/console/api-keys) belongs to
+`moonshot`. Put one in the other's slot and the endpoint answers 401 while everything on your
+side looks right. `teamctl doctor --probe` finds that in a minute: it sends one incomplete
+request per key you stored (nothing is generated, nothing is billed), shows only the HTTP
+status, and says `the key in 'wolfmux-kimi' is rejected by <endpoint>`. It also warns when a
+`kimi` key does not start with `sk-kim` or a `qwen` key with `sk-sp-`. Plain `teamctl doctor`
+stays offline and never reads a key.
+
+### Auth modes
+
+A provider worker gets its key one of two ways (`WOLFMUX_<PROVIDER>_AUTH_MODE` in
+`~/.config/wolfmux/config`):
+
+- `helper` (the default): Claude Code is given a command that reads the Keychain on demand, so the
+  key is never in an environment. Every provider worker also carries an inert
+  `CLAUDE_CODE_OAUTH_TOKEN` (the login guard), so Claude Code prints
+  `Both CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set: auth may not work as expected`. That warning is
+  expected and harmless (the helper's key is what is sent). It is not the cause of a 401 next to it.
+- `env`: the vendor's own variable (`ANTHROPIC_API_KEY` for Kimi Code, `ANTHROPIC_AUTH_TOKEN` for the
+  others). A last resort, for an endpoint that refuses helper-mode headers. It cannot fix a wrong key.
+  With `ANTHROPIC_API_KEY` set, Claude Code's own documentation says it asks whether to use the key
+  ("Do you want to use this API key?", default No) and remembers the answer, so an unattended worker
+  waits at that prompt until a human answers it in the pane. Claude Code documents no setting that
+  pre-approves the key, and Wolfmux does not edit your `~/.claude.json` to answer for you, so there
+  is nothing to switch on.
+
+A 401 means the key first: run `teamctl doctor --probe` before changing the mode.
 
 Behind the keys are launchers you can also run by hand: `claude-fable`, `claude-opus`,
 `claude-sonnet`, `claude-haiku`, `codex-astra`, `claude-glm`, `claude-glm-flash`,
@@ -187,7 +277,7 @@ nothing global points anywhere.
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (181 isolated lifecycle checks, no model calls), `disk.sh` (82 checks: the worktree cleanup, the spawn guard and every safety rule that keeps them off your work), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tests/` | `smoke.sh` (327 isolated lifecycle checks, no model calls), `disk.sh` (82 checks: the worktree cleanup, the spawn guard and every safety rule that keeps them off your work), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 

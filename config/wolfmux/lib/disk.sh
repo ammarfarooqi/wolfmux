@@ -79,15 +79,18 @@ disk_free_label() {
 # disk_real <path> — absolute, every symlink resolved; empty when the path is not there
 disk_real() { (cd "$1" 2>/dev/null && pwd -P) || true; }
 
-# disk_confined <path> — a lane worktree of THIS team's worktree directory, and not the
-# directory itself. Rule 4: the only answer that lets anything be deleted.
+# disk_confined <path> [<worktrees dir>] [<repository>] — a lane worktree of that worktree
+# directory, and not the directory itself. Rule 4: the only answer that lets anything be
+# deleted. The two optional arguments are this team's own by default; a teammate spawned
+# with `teamctl spawn --repo` lives under its own repository's worktree directory, and
+# worker_trees_dir / worker_repo say which (disk_clean_role passes them).
 disk_confined() {
-  local real base
+  local real base trees="${2:-${WORKTREES_DIR:-}}" repo="${3:-$ROOT}"
   real="$(disk_real "$1")"
-  base="$(disk_real "${WORKTREES_DIR:-}")"
+  base="$(disk_real "$trees")"
   [ -n "$real" ] && [ -n "$base" ] || return 1
   [ "$real" != "$base" ] || return 1
-  [ "$real" != "$(disk_real "$ROOT")" ] || return 1 # your own checkout, never
+  [ "$real" != "$(disk_real "$repo")" ] || return 1 # a checkout itself, never
   # The first team's worktree directory is also the parent of the named teams' ones
   # (teams/<name>/<lane>), so for it the prefix alone would reach another team's lanes.
   # Another team's lanes are that team's to clean.
@@ -102,14 +105,14 @@ disk_confined() {
 # DISK_SKIP_REASON otherwise. Rules 3 and 4. The untracked test uses the whole list and
 # not the kind: a lane with node_modules is cleanable even when node_modules is kept.
 disk_cleanable() {
-  local path="$1" status line entry first
+  local path="$1" trees="${2:-${WORKTREES_DIR:-}}" repo="${3:-$ROOT}" status line entry first
   DISK_SKIP_REASON=""
   if [ ! -d "$path" ]; then
     DISK_SKIP_REASON="its worktree is gone"
     return 1
   fi
-  if ! disk_confined "$path"; then
-    DISK_SKIP_REASON="it is not a lane of team '${TEAM:-?}' under $(short_path "${WORKTREES_DIR:-(no worktree directory resolved)}")"
+  if ! disk_confined "$path" "$trees" "$repo"; then
+    DISK_SKIP_REASON="it is not a lane of team '${TEAM:-?}' under $(short_path "${trees:-(no worktree directory resolved)}")"
     return 1
   fi
   if ! "$GIT_BIN" -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -204,10 +207,10 @@ disk_work_dirty_count() { disk_work_dirty_list "$1" | wc -l | tr -d ' '; }
 # every source file and all of its git state; it needs one `npm install` (or whatever
 # the project installs with) before its tools run again.
 disk_clean_worktree() {
-  local path="$1" kind="$2" apply="$3" real name target trash kb leftover
+  local path="$1" kind="$2" apply="$3" trees="${4:-}" repo="${5:-}" real name target trash kb leftover
   DISK_FREED_KB=0
   DISK_CLEANED=""
-  disk_cleanable "$path" || return 1
+  disk_cleanable "$path" "${trees:-${WORKTREES_DIR:-}}" "${repo:-$ROOT}" || return 1
   real="$(disk_real "$path")"
   # What an interrupted cleanup left. It is counted and named like anything else, so the
   # line a command prints says where the space came from instead of appearing out of thin air.
@@ -245,8 +248,11 @@ disk_clean_worktree() {
   return 0
 }
 
-# disk_clean_role <role> <all|caches> <apply 0|1> — the same for an agent on record.
-# The lead works in your own checkout and nothing of its is ever deleted.
+# disk_clean_role <role> <all|caches> <apply 0|1> — the same for an agent on record, and
+# the form every command uses: the record says which repository the teammate belongs to
+# (`teamctl spawn --repo` can make that another one), so rule 4 is checked against that
+# repository's worktree directory and not blindly against this project's.
+# The lead works in a checkout of yours and nothing of its is ever deleted.
 disk_clean_role() {
   local role="$1"
   DISK_FREED_KB=0
@@ -256,7 +262,7 @@ disk_clean_role() {
     DISK_SKIP_REASON="it works in your own checkout"
     return 1
   fi
-  disk_clean_worktree "$(reg_field "$role" workdir)" "$2" "$3"
+  disk_clean_worktree "$(reg_field "$role" workdir)" "$2" "$3" "$(worker_trees_dir "$role")" "$(worker_repo "$role")"
 }
 
 # --- what a team's lanes take, without making `teamctl status` slow ------------------
@@ -344,17 +350,19 @@ disk_guard_spawn() {
 }
 
 # --- node_modules linking at spawn ---------------------------------------------------
-# disk_link_node_modules <worktree> — the lane shares the project's installed
-# dependencies instead of installing 2.3 GB of its own. Off by default and for a reason:
-# it is ONE directory for every lane and for your own checkout, so an `npm install` in
-# any lane changes the dependencies of all of them, and two lanes that need different
-# versions of a package cannot both be right. Only a real directory in the project root
-# is linked; a root without one is left alone.
+# disk_link_node_modules <repo> <worktree> — the lane shares the installed dependencies of
+# the repository it belongs to, instead of installing 2.3 GB of its own. Off by default and
+# for a reason: it is ONE directory for every lane and for the checkout itself, so an
+# `npm install` in any lane changes the dependencies of all of them, and two lanes that
+# need different versions of a package cannot both be right. Only a real directory in that
+# repository is linked; one without node_modules, or whose node_modules is itself a link,
+# is left alone. <repo> is the teammate's own repository, which `teamctl spawn --repo` can
+# make a different one from yours.
 disk_link_node_modules() {
-  local path="$1"
-  [ -d "$ROOT/node_modules" ] && [ ! -L "$ROOT/node_modules" ] || return 1
+  local repo="$1" path="$2"
+  [ -d "$repo/node_modules" ] && [ ! -L "$repo/node_modules" ] || return 1
   [ ! -e "$path/node_modules" ] && [ ! -L "$path/node_modules" ] || return 1
-  /bin/ln -s "$ROOT/node_modules" "$path/node_modules" 2>/dev/null || return 1
+  /bin/ln -s "$repo/node_modules" "$path/node_modules" 2>/dev/null || return 1
 }
 
 # disk_link_wanted <flag 0|1> — did this spawn ask for it, or does the team's policy?
@@ -441,7 +449,7 @@ cmd_prune() {
       running=$((running + 1))
       continue
     fi
-    if ! disk_clean_worktree "$path" "$kind" "$apply"; then
+    if ! disk_clean_role "$role" "$kind" "$apply"; then
       # The size is printed here too, because this is what one stray file is pinning.
       rest="$(disk_kb "$path")"
       floor=$((floor + rest))

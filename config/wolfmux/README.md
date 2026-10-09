@@ -42,6 +42,7 @@ security add-generic-password -U -s wolfmux-minimax  -a "$USER" -l "MiniMax Codi
 security add-generic-password -U -s wolfmux-qwen     -a "$USER" -l "Alibaba Model Studio API key" -w
 
 teamctl doctor        # must show no "!! WARNING !!" lines; says which providers are set up
+teamctl doctor --probe   # optional: asks each endpoint whether it accepts the key you stored (nothing is billed)
 ```
 
 ## Starting with Fable
@@ -81,7 +82,37 @@ Each worker gets its own branch `ai/<role>-<timestamp>`, its own worktree under
 `TEAM_ROLE` / `BEADS_ACTOR` set to its role (in a named team: branch
 `ai/<team>/<role>-<timestamp>`, Beads name `<team>.<role>`). The lead stays the large pane
 on the left; teammates stack on the right. A worker reads its Beads inbox as soon as it
-boots, so assign work first, then spawn. Options: `--base <ref>`, `--no-kickoff`.
+boots, so assign work first, then spawn. Options: `--base <ref>`, `--branch <name>`,
+`--ticket <KEY>`, `--repo <path>`, `--no-kickoff`, and
+`--from-worktree <role>`: a fresh conversation in a stopped worker's built worktree, on a
+new branch (its branch and commits stay; node_modules and build output survive). The lead
+reads each agent's CONTEXT in `teamctl status` (tokens, share of the window) to choose
+between `restart` (keep the conversation) and a fresh worker.
+
+**Branch names.** That shape is a template, and a team can set its own when the repository
+enforces one (a ticket key, a prefix), so no teammate ever has to commit past a hook:
+
+```bash
+teamctl policy branch-template 'feature-{ticket}-{role}-{ts}'   # this team, from now on
+teamctl start fable --ticket AFD-1844            # the team's default ticket key
+teamctl spawn sam glm53 --ticket AFD-1844        # feature-AFD-1844-sam-20260923-112233
+teamctl spawn sam glm53 --branch my-exact-name   # or name the branch yourself
+teamctl policy branch-template default           # back to the built-in shape
+```
+
+Placeholders: `{team}` `{role}` `{ts}` `{ticket}`. `{ts}` is required — it is what keeps two
+teammates of one role on two branches — so a template without it is refused, and so is a
+template with `{ticket}` when the spawn has no ticket key. teamctl deletes a teammate's
+branch only when teamctl created it, whatever it is called.
+
+**Another repository.** `teamctl spawn srv glm53 --repo ../other-repo` creates the worktree
+and the branch **there** (base: that repository's `HEAD`, or the `--base` you name, resolved
+there), under `~/.wolfmux/worktrees/<that repo>/teams/<team>/`. Isolation stays on: the
+teammate may change only its own worktree, and both your project's checkout and that
+repository's own checkout are read-only for it. `teamctl status` grows a `REPO` column while
+some teammate has one, and `diff`, `worktrees`, `remove` and `destroy` run git where that
+teammate's work actually is. It stays an ordinary member of this team, with this project's
+Beads inbox.
 
 A provider worker needs that provider's key in the Keychain first (one-time setup above);
 `teamctl doctor` says which are set up. `spawn` and `start` refuse a metered key until
@@ -91,10 +122,10 @@ A provider worker needs that provider's key in the Keychain first (one-time setu
 | Model key | Runs | Pays with |
 |-----------|------|-----------|
 | `glm53` · `flash` | Claude Code + GLM-5.3 / GLM-5.3 Flash | Z.ai GLM Coding Plan |
-| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription |
+| `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription; the key is a Kimi Code membership key (starts `sk-kim`), not one from platform.kimi.ai |
 | `minimax` | Claude Code + MiniMax M3 | MiniMax Coding Plan |
-| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan |
-| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API, metered: refused until `WOLFMUX_METERED=on` |
+| `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan; the key starts `sk-sp-` |
+| `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API, metered: refused until `WOLFMUX_METERED=on`; the key comes from platform.kimi.ai, not from the Kimi Code console |
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API, metered: refused until `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
@@ -117,9 +148,11 @@ teamctl policy worker-permissions skip|lead|ask # default skip
 teamctl policy lead-permissions skip|ask        # default skip
 teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
 teamctl policy lead-teams on|off                # may the lead found further teams?  default on
+teamctl policy branch-template '<template>'     # how this team names workers' branches (above)
+teamctl policy branch-template default          # …back to ai/{role}-{ts} · ai/{team}/{role}-{ts}
 teamctl policy disk-guard refuse|warn|off       # what a spawn does on a full disk    default refuse
 teamctl policy disk-min-gb 20                   # free space a spawn asks for (1 GB = 1024 MB)  default 20
-teamctl policy link-node-modules on|off         # share the root's node_modules       default off
+teamctl policy link-node-modules on|off         # share the repository's node_modules default off
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -206,11 +239,19 @@ bd create "Handover: payments" -t message -a next.lead --body-file handover.md  
 teamctl start fable --team next --no-attach --handover <that-id>
 ```
 
-The new lead starts by reading that bead and you get a notification. The founder does not
-manage the new team, can never take over a team that already has a lead, and a worker can
-never found one. `teamctl policy lead-teams off` keeps founding teams to yourself, for that
-team (`WOLFMUX_LEAD_TEAMS=off` for every team). Like all of the policy it is cooperative: a
-lead can change its own team's policy.
+The new lead starts by reading that bead and you get a notification. While that lead runs
+the founder does not manage the new team; it can never take over a team that already has a
+lead, and a worker can never found one. `teamctl policy lead-teams off` keeps founding teams
+to yourself, for that team (`WOLFMUX_LEAD_TEAMS=off` for every team). Like all of the policy
+it is cooperative: a lead can change its own team's policy.
+
+When the lead of a founded team is not running (a session restart, a reboot, a lead that is
+finished), `teamctl teams` marks the team `orphaned` and says who may act on it: you, and its
+founder. The founder may then bring it back or clean it up without you:
+`teamctl restart lead --team <name> --continue`, `teamctl stop`, `teamctl remove` and
+`teamctl destroy --team <name> --purge`, or `teamctl start <model> --team <name> --continue`.
+You are told each time, and the event log records it with the founder's Beads name. It never
+includes `policy`, `approve` or `deny`, and it ends the moment that team's lead runs again.
 
 ## Deleting a team
 
@@ -221,7 +262,7 @@ teamctl destroy --team review --purge --force    # …even with uncommitted or u
 ```
 
 A worker costs a checkout of your tracked files plus whatever it installs or builds; the
-lead costs nothing. Purge removes the session, every worktree, the team's `ai/…` branches,
+lead costs nothing. Purge removes the session, every worktree, the branches teamctl created,
 records and its teammates' Claude Code transcripts; never your checkout, other branches,
 Beads, other teams, or the lead's own conversations (they live in your checkout's folder).
 
@@ -232,7 +273,7 @@ Beads, other teams, or the lead's own conversations (they live in your checkout'
   changes it for the project; `Ctrl-b Space` cycles, `Ctrl-b T` puts it back.
 - Quit every agent and run `teamctl start` again: you get a new session, not the finished
   panes. Quit only the lead: `teamctl start` brings it back, workers keep running.
-  Add `--continue` to resume the lead's last conversation.
+  Add `--continue` to resume the lead's own conversation, or `--resume <session-id>` to name one.
 - Opening a team (`teamctl start`, `teamctl attach`) shows the wolf in a popup. Any key
   closes it, or 3 seconds. `WOLFMUX_SPLASH=off` in `~/.config/wolfmux/config` removes it.
 - The manager is the wolf: `🐺 lead · <model>` in its pane border, an amber border
@@ -260,6 +301,21 @@ status, commit hash, risks) → closes its task → lead reviews the diff → re
 changes, cherry-picks, rejects, or asks another worker to review. The lead owns
 integration. Full rules: `TEAM_PROTOCOL.md` (injected into every agent at launch).
 
+## Tab completion
+
+```bash
+source <(teamctl completion zsh)       # zsh, without install.sh
+eval "$(teamctl completion bash)"      # bash (3.2 cannot source a process substitution)
+```
+
+`./install.sh` puts the shims in `~/.config/wolfmux/completion/` and sources the zsh
+one from the wolfmux block in `~/.zshrc`. The backend is `teamctl _complete` inside
+teamctl; Tab completes commands, options, and the values teamctl knows: roles,
+teams, models, policy keys and choices, layouts, pending approvals, branches. The
+zsh shim registers only when a completion system is already loaded (compinit);
+it never switches one on itself. A shell without compinit:
+`autoload -Uz compinit && compinit` above the wolfmux block.
+
 ## Clearing up
 
 ```bash
@@ -275,9 +331,10 @@ work with `git merge <branch>`, or discard it with `--force`.
 
 ```bash
 teamctl stop backend               # close one pane; worktree, branch, commits stay
-teamctl restart backend            # same worktree + branch   (--continue resumes its conversation)
+teamctl restart backend            # same worktree + branch   (--continue resumes its own conversation,
+                                   #                           --resume <session-id> reopens the one you name)
 teamctl destroy                    # end the tmux session; keeps everything else
-teamctl destroy --worktrees        # also removes CLEAN worktrees and FULLY MERGED ai/* branches
+teamctl destroy --worktrees        # also removes CLEAN worktrees and FULLY MERGED branches teamctl created
 ```
 
 `destroy` never deletes source files, commits, unmerged branches, dirty worktrees,
@@ -327,6 +384,7 @@ root's copy instead of installing 2+ GB again — one directory for every lane, 
 
 ```bash
 teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins
+teamctl doctor --probe                          # the same, plus one incomplete request per stored provider key: is it accepted?
 WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
 WOLFMUX_DRY_RUN=1 claude-kimi                   # any provider name works; shows billing and the metered gate too
 ```
@@ -358,21 +416,22 @@ the same name wins for a launcher you start by hand.
 | Setting | Default | Means |
 |---------|---------|-------|
 | `WOLFMUX_LEAD_PERMISSIONS` · `WOLFMUX_WORKER_PERMISSIONS` | `skip` | permission mode of every team that has not set its own (`teamctl policy`) |
+| `WOLFMUX_BRANCH_TEMPLATE` | unset | how workers' branches are named in every team that has not set its own (`teamctl policy branch-template`); unset = `ai/{role}-{ts}` and `ai/{team}/{role}-{ts}` |
 | `WOLFMUX_WORKER_SPAWN` | `off` | may workers spawn teammates (same rule: a team's own policy wins) |
 | `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
 | `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
 | `WOLFMUX_DISK_GUARD` | `refuse` | what `teamctl spawn` does when free disk is under the limit below: `refuse`, `warn`, `off` |
 | `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes, where 1 GB is 1024 MB (a gibibyte — the unit teamctl prints sizes in). A lane costs about 3 GB once it has installed and built; `0` switches the check off; no leading zero (write `8`, not `08`) |
-| `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the project root's copy. One directory for all of them: an install in any lane changes them all |
+| `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the copy in the repository that lane belongs to (`teamctl spawn --repo` can make that another one). One directory for all of them: an install in any lane changes them all |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |
 | `WOLFMUX_NOTIFY` | `all` | whose finished turns notify you: `all`, `lead`, `off`. A team founded by a lead is announced in every case |
 | `WOLFMUX_TERMINAL` | the one you last attached from, else iTerm2 when installed, else Terminal | `iterm` or `terminal`: what a click on a notification opens |
-| `WOLFMUX_GLM_AUTH_MODE` | `helper` | `env` hands the Z.ai key over as `ANTHROPIC_AUTH_TOKEN` instead (if workers report an authentication error) |
+| `WOLFMUX_GLM_AUTH_MODE` | `helper` | `env` hands the Z.ai key over as `ANTHROPIC_AUTH_TOKEN` instead: a last resort that cannot fix a wrong key ([Auth modes](#auth-modes-and-the-key-probe)) |
 | `WOLFMUX_GLM_CONTEXT` | 200000 tokens | `1m`, or a number: the context window GLM workers declare |
 | `WOLFMUX_METERED` | `off` | `on` lets the metered providers start. Which those are, and what that can cost: [Metered providers](#metered-providers) |
-| `WOLFMUX_KIMI_AUTH_MODE` · `WOLFMUX_MOONSHOT_AUTH_MODE` · `WOLFMUX_DEEPSEEK_AUTH_MODE` · `WOLFMUX_MINIMAX_AUTH_MODE` · `WOLFMUX_QWEN_AUTH_MODE` | `helper` | per provider, the same two modes as `WOLFMUX_GLM_AUTH_MODE`; `env` exports the vendor's documented variable (`ANTHROPIC_API_KEY` for Kimi, `ANTHROPIC_AUTH_TOKEN` for the others) |
+| `WOLFMUX_KIMI_AUTH_MODE` · `WOLFMUX_MOONSHOT_AUTH_MODE` · `WOLFMUX_DEEPSEEK_AUTH_MODE` · `WOLFMUX_MINIMAX_AUTH_MODE` · `WOLFMUX_QWEN_AUTH_MODE` | `helper` | per provider, the same two modes as `WOLFMUX_GLM_AUTH_MODE`; `env` exports the vendor's documented variable (`ANTHROPIC_API_KEY` for Kimi, `ANTHROPIC_AUTH_TOKEN` for the others); a last resort, and Kimi's makes Claude Code ask "use this API key?" in the pane ([Auth modes](#auth-modes-and-the-key-probe)) |
 | `WOLFMUX_KIMI_CONTEXT` · `WOLFMUX_MOONSHOT_CONTEXT` · `WOLFMUX_DEEPSEEK_CONTEXT` · `WOLFMUX_MINIMAX_CONTEXT` · `WOLFMUX_QWEN_CONTEXT` | the table value | a number: the context window that provider's workers declare to Claude Code |
 | `WOLFMUX_KIMI_MODEL` · `WOLFMUX_MOONSHOT_MODEL` · `WOLFMUX_DEEPSEEK_MODEL` · `WOLFMUX_MINIMAX_MODEL` · `WOLFMUX_QWEN_MODEL` · `WOLFMUX_KIMI_FAST_MODEL` · `WOLFMUX_MOONSHOT_FAST_MODEL` · `WOLFMUX_DEEPSEEK_FAST_MODEL` · `WOLFMUX_MINIMAX_FAST_MODEL` · `WOLFMUX_QWEN_FAST_MODEL` | the ids in `lib/providers.sh` | model pins per provider, for when a vendor changes its ids. GLM is not pinnable |
 | `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | the current ids | which model id each key means |
@@ -407,7 +466,7 @@ the same name wins for a launcher you start by hand.
 Launcher knobs are read from `~/.config/wolfmux/config` (a pane's environment comes from
 the tmux server, not from the shell you typed `teamctl spawn` in):
 `WOLFMUX_GLM_AUTH_MODE=env` switches workers to Z.ai's documented `ANTHROPIC_AUTH_TOKEN`
-variable — use it if workers report an authentication error in the default helper mode;
+variable, a last resort that cannot fix a wrong key ([below](#auth-modes-and-the-key-probe));
 `WOLFMUX_GLM_CONTEXT=1m` opts into the 1M window (uses quota faster); by default the
 launcher declares a 200k window, which is what keeps Claude Code from printing its
 "isn't described by this version's model catalog" notice in worker panes.
@@ -423,6 +482,30 @@ to that provider. Delete the file to make workers identical to your normal sessi
 
 What no local tool can prove: account-side switches. Keep claude.ai "extra usage" off,
 do not buy Codex credits, and keep the Z.ai cash balance at zero.
+
+## Auth modes and the key probe
+
+A provider worker gets its key one of two ways (`WOLFMUX_<PROVIDER>_AUTH_MODE`):
+
+- `helper` (default): Claude Code is given a Keychain-reading command, so the key is never in an
+  environment. Every provider worker also carries the inert login guard
+  (`CLAUDE_CODE_OAUTH_TOKEN`), so Claude Code prints `Both CLAUDE_CODE_OAUTH_TOKEN and apiKeyHelper set`.
+  That warning is expected and harmless, and it is not the cause of a 401 next to it.
+- `env`: the vendor's own variable, a last resort for an endpoint that refuses helper-mode headers.
+  It cannot fix a wrong key. With `ANTHROPIC_API_KEY` (Kimi Code) Claude Code asks "Do you want to use
+  this API key?" (default No) and remembers the answer, so an unattended worker waits at that prompt.
+  Claude Code documents no setting that pre-approves the key, and Wolfmux never edits your
+  `~/.claude.json`, so the prompt stays.
+
+`teamctl doctor --probe` answers "is the key accepted?" for every provider whose Keychain item exists.
+Per provider it sends ONE request over https: `POST <endpoint>/v1/messages` with an empty body. That asks
+for no completion, so nothing is generated or billed (the metered providers too), and it is not a model
+listing because `GET /v1/models` does not check the key (Z.ai answers it without one, Moonshot and Qwen
+have no such route). 200, 400, 422 and 429 mean accepted (the raw status is printed beside it), 401 and
+403 are a FAIL naming the Keychain slot and the console the key comes from, anything else is a warning.
+The key goes to curl on its stdin only, never into an argument, an environment, a file or the screen,
+and no redirect is followed. A `kimi` key that does not start with `sk-kim`, or a `qwen` key without
+`sk-sp-`, gets a warning of its own. Plain `teamctl doctor` stays offline and never reads a key value.
 
 ## Metered providers
 
@@ -502,7 +585,7 @@ security delete-generic-password -s zai-coding-plan
 tmux -L wolfmux ls                          # sessions on the team server
 tmux -L wolfmux kill-server                 # stop every team at once
 git worktree list && git worktree prune     # in a project
-git branch --list 'ai/*'                    # leftover worker branches (delete merged ones: git branch -d)
+git branch --list 'ai/*'                    # leftover worker branches, default template (delete merged ones: git branch -d)
 ls ~/.wolfmux/state ~/.wolfmux/worktrees    # per-project state and worktrees
 ```
 
@@ -516,9 +599,16 @@ ls ~/.wolfmux/state ~/.wolfmux/worktrees    # per-project state and worktrees
   mistakes and role confusion, not a deliberately hostile process.
 - With several teams, every lead works in your checkout on the branch that is checked out
   there. Teammates are apart in worktrees; leads are not. Let one lead integrate at a time.
-  For the same reason `--continue` on a lead resumes the most recent conversation of that
-  CLI in your checkout, which with two leads there (or a session of your own) may be
-  another one's. A teammate's `--continue` is its own: nobody else works in its worktree.
+- Each Claude-family agent is given its own conversation id when it starts, and `--continue`
+  reopens that id, so two leads in one folder come back in their own conversations. The
+  stored id is in `teamctl status --json` (`.agents[].session_id`), the lead's is kept with
+  the team across `teamctl destroy`, and `teamctl restart <role> --resume <session-id>` pins a
+  different one (an id without a transcript is refused). An agent that never said a word has
+  nothing to resume: `--continue` starts its conversation fresh under the same id. An agent
+  with no id on record (from before 1.12, or a first `start --continue`) falls back to the
+  newest conversation in the folder, which with two leads there may be the other one's, and
+  warns in one line. Codex-based agents take no id: they resume their own last conversation,
+  and in a shared folder that stays ambiguous.
 - Codex-based agents (`astra`, `codex:<id>`) have no worktree guard and no lead-approval
   mode: Codex offers no hook for either. They do send notifications.
 

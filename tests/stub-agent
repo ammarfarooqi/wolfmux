@@ -5,6 +5,8 @@ flags=""
 modelarg=""
 codexnotify=false
 name=""
+newsession=""
+resumed=""
 previous=""
 for arg in "$@"; do
   case "$arg" in
@@ -12,14 +14,43 @@ for arg in "$@"; do
   esac
   if [ "$previous" = "--name" ]; then name="$arg"; fi
   if [ "$previous" = "--model" ]; then modelarg="$arg"; fi
+  if [ "$previous" = "--session-id" ]; then newsession="$arg"; fi
+  if [ "$previous" = "--resume" ]; then resumed="$arg"; fi
   case "$arg" in notify=*_notify*) codexnotify=true ;; esac
   previous="$arg"
 done
+# What the real CLI refuses, the stand-in refuses too (measured with Claude Code 2.1.289): --resume of an id
+# that has no transcript in any folder, and --session-id of an id that already has one. The pane then ends,
+# as it does with the real thing, and a check that expected an agent finds none.
+has_transcript() {
+  local f
+  [ -n "${WOLFMUX_CLAUDE_PROJECTS:-}" ] || return 1
+  for f in "$WOLFMUX_CLAUDE_PROJECTS"/*/"$1".jsonl; do [ -f "$f" ] && return 0; done
+  return 1
+}
+case "$newsession" in
+  "" | [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+  *)
+    echo "Error: Invalid session ID. Must be a valid UUID."
+    exit 1
+    ;;
+esac
+if [ -n "$resumed" ] && ! has_transcript "$resumed"; then
+  echo "No conversation found with session ID: $resumed"
+  exit 1
+fi
+if [ -n "$newsession" ] && has_transcript "$newsession"; then
+  echo "Error: Session ID $newsession is already in use."
+  exit 1
+fi
 echo "STUB role=${TEAM_ROLE:-} actor=${BEADS_ACTOR:-} model=${WOLFMUX_MODEL:-} argc=$#"
 echo "STUB cwd=$PWD branch=$(git branch --show-current 2>/dev/null)"
 echo "STUB leaked=$(env | cut -d= -f1 | grep -E '^(ANTHROPIC_|OPENAI_|CLAUDECODE$|CLAUDE_CODE_CHILD_SESSION$)' | tr '\n' ' ')"
 echo "STUB flags=${flags:-none}"
+echo "STUB beadsdir=${BEADS_DIR:-none}"
 echo "STUB name=${name:-none}"
+echo "STUB session_id=${newsession:-none}"
+echo "STUB resumed=${resumed:-none}"
 last=""
 for arg in "$@"; do last="$arg"; done
 echo "STUB lastarg=$(printf '%s' "$last" | tr '\n' ' ' | cut -c1-200)"
@@ -32,6 +63,19 @@ case "$last" in *open,in_progress,blocked*"do not start over"*) echo "STUB kicko
 assignee="none" # whose inbox the kickoff names: in a named team that is <team>.<role>
 case "$last" in *"--assignee "*) assignee="${last#*--assignee }" && assignee="${assignee%% *}" ;; esac
 echo "STUB kickoff_assignee=$assignee"
+hint="no" # the 401 line a provider worker's kickoff carries: which Keychain slot, which endpoint, and the doctor command
+slot="none"
+endpoint="none"
+case "$last" in
+  *"doctor --probe"*)
+    hint="yes"
+    slot="${last#*the key in \'}" && slot="${slot%%\'*}"
+    endpoint="${last#*is rejected by }" && endpoint="${endpoint%%;*}"
+    ;;
+esac
+echo "STUB kickoff_probe_hint=$hint"
+echo "STUB kickoff_probe_slot=$slot"
+echo "STUB kickoff_probe_endpoint=$endpoint"
 if [ -n "${WOLFMUX_EXTRA_SETTINGS:-}" ] && [ -r "$WOLFMUX_EXTRA_SETTINGS" ]; then
   echo "STUB settings=$(jq -c '{teams: .env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, mode: .teammateMode, hook: (.hooks.PermissionRequest != null)}' "$WOLFMUX_EXTRA_SETTINGS")"
   echo "STUB guard=$(jq -c '(.hooks.PreToolUse // []) | map(.hooks[].command) | join(" ") | test("_guard")' "$WOLFMUX_EXTRA_SETTINGS")"
