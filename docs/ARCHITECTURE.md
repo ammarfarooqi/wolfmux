@@ -154,26 +154,66 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 
 A pane is a keyboard somebody may be using. Typing a notice into it mid-sentence
 submitted the human's unfinished text and the notice together as one message, which
-is what GitHub issue #9 reported. So before anything is typed, `tm_pane_human_busy`
-asks three cheap questions about the pane, and any yes means busy:
+is what GitHub issue #9 reported.
 
-| Check | How |
-|-------|-----|
-| somebody is at this pane and pressed a key moments ago | it is the active pane of the active window of an attached session, and that client's `#{client_activity}` is less than `WOLFMUX_NUDGE_HUMAN_IDLE` (5 s) old. tmux moves `client_activity` on real keystrokes only: not on pane output, not on `send-keys` from outside, and a detached session lists no client at all |
-| the input line already holds something | the row at `#{cursor_y}`, with box glyphs, whitespace and one leading prompt marker removed, is not empty (a Claude Code input row reads `│ > half typed │`) |
-| the pane is in copy mode or scrollback | `#{pane_in_mode}` is 1, so keys would drive the mode, not the prompt |
+**Why type at all, rather than use the status line or a popup?** Because the notice is
+for the AGENT in that pane, not for the human. The agent reads it as input and runs the
+inbox command it names. `display-message` and `display-popup` put text in front of a
+human only, so an agent would never see it, and the lead's pane — the one a human sits
+at, which is exactly where issue #9 happens — would stop being notified at all. Typing
+is the only channel that reaches the agent, so detect-and-defer is the shape the channel
+forces. Do not "simplify" it into a popup.
+
+Before anything is typed, `tm_pane_human_busy` asks three cheap questions, and any yes
+means busy:
+
+| Check | How | Needs a client attached? |
+|-------|-----|--------------------------|
+| the pane is in copy mode or scrollback | `#{pane_in_mode}` is 1, so keys would drive the mode, not the prompt | no |
+| somebody is at this pane and pressed a key moments ago | it is the active pane of the active window of an attached session, and that client's `#{client_activity}` is less than `WOLFMUX_NUDGE_HUMAN_IDLE` (5 s) old. tmux moves `client_activity` on real keystrokes only: not on pane output, not on `send-keys` from outside, and a detached session lists no client at all | yes, by construction |
+| the input line already holds something | the row at `#{cursor_y}`, captured with `-e`, with escape sequences and DIM runs removed, then box glyphs, non-breaking spaces, whitespace and ONE leading prompt marker removed, is not empty | **yes** |
+
+**Both human checks need a client on that pane's session.** With nobody attached, nobody
+can be typing, so whatever is on the input row is the TUI's own furniture, not a
+half-typed line. Without that gate an idle agent whose CLI shows a hint in its input box
+reads busy for as long as the hint shows, every nudge to it waits out the expiry and is
+dropped, and the agent silently stops being told about its work — worse than the bug
+being fixed. Dim text is ignored for the same reason: a TUI draws its placeholder dim,
+a human's typing is not dim. Measured on this machine's live panes, an idle Claude Code
+pane showed `❯<NBSP> ESC[2m close sprint 7, sprint 8 oct 9 to 15 ESC[0m` with zero
+clients on its session.
+
+A read that fails, or a cursor row that makes no sense, counts as **busy when a client is
+attached** and as free when none is: a false busy only delays, but a broken read must not
+silently stop an agent's nudges. Both directions are bounded by the expiry.
 
 Busy means the notice is **parked, not dropped**: a per-role marker under
 `~/.wolfmux/state/<project>/nudge/<role>.pending` holds it and ONE detached waiter per
-role looks again every `WOLFMUX_NUDGE_RETRY` (3 s) for up to `WOLFMUX_NUDGE_DEFER_MAX`
-(600 s). The first idle look delivers; the marker goes. Beads nudges that pile up
-while it waits **collapse into one line** (two different bead ids give the generic
-line, which names the whole inbox anyway); spawn, approval and policy notices each
-name their own event, so they queue instead. On expiry the marker is removed and
-`nudge-defer-expired` goes into `events.jsonl`: nothing is lost, because every agent
-sweeps its own inbox and the notice always ended with that inbox command.
-`teamctl nudge` says `deferred: …` and exits 3. `WOLFMUX_NUDGE_COLLISION_CHECK=0`
-brings the old blind typing back. The per-role lock is never held across the wait.
+role looks again every `WOLFMUX_NUDGE_RETRY` (3 s, floored at 1) for up to the marker's
+cap — `WOLFMUX_NUDGE_DEFER_MAX` (600 s), or `WOLFMUX_NUDGE_APPROVAL_DEFER_MAX` (60 s) for
+an approval notice, which is worthless once the worker has stopped waiting for the
+decision. It looks once BEFORE its first sleep, so an already-idle pane is notified at
+once. Beads nudges that pile up while it waits **collapse into one line** (two different
+bead ids, or an empty id beside a real one, give the generic line, which names the whole
+inbox anyway); spawn, approval and policy notices each name their own event, so they
+queue instead, and the pane is asked again before EVERY queued line, each line leaving
+the marker as it is typed so a stop part-way can never re-send what already went out.
+On expiry the marker is removed and `nudge-defer-expired` goes into `events.jsonl`.
+
+The per-role lock is never held across the wait. A marker whose waiter died is **reaped**
+by the next notice for that role (`nudge_pending_reap`, under the lock): without that it
+would swallow every later notice for ever. The waiter itself ignores `HUP`, `INT` and
+`TERM` — macOS has no `setsid(1)` — so closing the terminal that ran `teamctl` does not
+kill it. `teamctl nudge` says `deferred: …`, names the check that fired, and exits 3.
+`WOLFMUX_NUDGE_COLLISION_CHECK=0` brings the old blind typing back.
+
+One window stays open: `tm_type_line` sends the text, waits 300 ms so a TUI does not read
+the Enter as part of a paste, then sends Enter. A human who had been idle for
+`WOLFMUX_NUDGE_HUMAN_IDLE` seconds can start typing inside those 300 ms and have their
+first keystrokes land after the notice. Closing it needs tmux to report a key arriving
+mid-line, and there is no such channel. Measured with a watcher typing from the moment a
+notice appears, re-checking between queued lines cut the glued lines from 5 of 5 to 2 of
+5 and kept the other 3 for later.
 
 The message body never travels through tmux, so there is nothing to quote, escape
 or truncate. The same hook tells the lead when a worker closes a task or marks

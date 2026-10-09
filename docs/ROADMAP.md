@@ -4,7 +4,7 @@
 
 | Limit | Detail |
 |-------|--------|
-| Notifications are keystrokes | A notice is typed into a pane. A CLI that is mid-turn queues it; a CLI showing a modal dialog may swallow it. A pane somebody is typing in is left alone and the notice waits (up to 10 minutes), so it can be late or, after a long wait, not arrive at all. Nothing is lost — the bead stays open in the recipient's inbox — but the agent has to look. |
+| Notifications are keystrokes | A notice is typed into a pane, because the recipient is the agent in it and that is the only channel an agent reads. A CLI that is mid-turn queues it; a CLI showing a modal dialog may swallow it. A pane a human is typing in is left alone and the notice waits (up to 10 minutes, 60 s for an approval), so it can be late or, after a long wait, not arrive at all. The 300 ms between the text and the Enter cannot be closed with what tmux reports, so a human who starts typing inside it can still have a keystroke land after a notice. Nothing is lost — the bead stays open in the recipient's inbox — but the agent has to look. |
 | Embedded Beads is single-writer | Writers queue on a file lock. Fine for a handful of agents making occasional `bd` calls; a large swarm should use Beads server mode. |
 | Comments are silent | Beads fires no hook for `bd comment`. When someone must act, send a message. |
 | Same-user trust | Agents are not sandboxed from each other or from the account ([SECURITY.md](SECURITY.md#trust-model)). |
@@ -16,7 +16,7 @@
 | Codex lead permissions are coarse | The rule file allows every `teamctl` and `bd` invocation outside the sandbox (with a prompt on `destroy`). |
 | macOS only | Keychain, `/bin/bash` 3.2 paths, `security`, `shasum`. |
 | Rare duplicate notification | Two hooks racing over a stale debounce guard can both notify once. |
-| A TUI with placeholder text in its input box looks busy | The input-line check reads the row the cursor is on. A CLI that draws hint text there, rather than leaving the box empty, reads as "being typed in" for as long as it shows it, and its notices then wait out the 10 minutes and are dropped. Measured on 12 live Claude Code panes: an empty box is a bare `❯`, so Claude Code is fine. Codex was not measured this way. `WOLFMUX_NUDGE_COLLISION_CHECK=0` is the way out if some CLI does it. |
+| A styled placeholder on an ATTACHED pane can look busy | Claude Code draws hint text on its input row, dim (`ESC[2m`). The input-line check therefore only runs when a client is attached to that pane's session, and it ignores dim runs, so an unattended agent pane is never held up by its own hint. What is left: on a pane a human IS attached to, a placeholder drawn in a plain colour instead of dim (`ESC[38;5;246m` also appears on these panes) would read as typing and the notice would wait out its cap. Measured once, 2026-10-09, on this machine's live panes only. `WOLFMUX_NUDGE_COLLISION_CHECK=0` is the way out. |
 
 ## What a V2 could be
 

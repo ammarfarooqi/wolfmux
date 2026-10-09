@@ -217,13 +217,64 @@ tm_type_line() {
 WOLFMUX_BOX_GLYPHS='│ ┃ ║ ┊ ┋ ┆ ┇ ╎ ╏ ─ ━ ═ ╭ ╮ ╯ ╰ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ╔ ╗ ╚ ╝ ╠ ╣ █ ▌ ▐ ▏ ▕'
 # One of these at the start of the input line is the prompt, not something typed.
 WOLFMUX_PROMPT_MARKERS='> ❯ › $ % #'
+_TM_ESC=$'\033'
+# Claude Code writes a NON-BREAKING space after its ❯. [[:space:]] matches it in a
+# UTF-8 locale and not in C, so it is stripped by name instead of by luck: left in, it
+# would make every Claude Code input row read as typed-in.
+_TM_NBSP=$'\302\240'
+
+# tm_visible_text <row> — the row's text with every escape sequence removed AND every
+# DIM run (ESC[2m until a reset) removed with it. What comes back is only what somebody
+# could have typed.
+#
+# A TUI draws the placeholder in its input box dim; a human's own typing is not dim.
+# Measured on this machine's live panes: an idle Claude Code pane showed
+# "❯<NBSP> ESC[2m close sprint 7, sprint 8 oct 9 to 15 ESC[0m" with ZERO clients on its
+# session, so that text could not have been typed by anybody. Reading it as a half-typed
+# line is what made an idle agent look busy for as long as its hint showed.
+#
+# Byte semantics on purpose (LC_ALL=C): only single-byte characters are compared, and
+# every byte of a multibyte character is >= 0x80, so none of them can match by accident.
+# A row with no escapes in it comes back unchanged, which is the plain-text fallback.
+tm_visible_text() {
+  local LC_ALL=C row="$1" out="" dim=0 i=0 n c params
+  n="${#row}"
+  while [ "$i" -lt "$n" ]; do
+    c="${row:$i:1}"
+    if [ "$c" != "$_TM_ESC" ]; then
+      if [ "$dim" -eq 0 ]; then out="$out$c"; fi
+      i=$((i + 1))
+      continue
+    fi
+    i=$((i + 1))
+    if [ "${row:$i:1}" != "[" ]; then continue; fi # not a CSI: drop the ESC and move on
+    i=$((i + 1))
+    params=""
+    while [ "$i" -lt "$n" ]; do # a CSI runs to its final byte
+      c="${row:$i:1}"
+      i=$((i + 1))
+      case "$c" in [0-9\;]) params="$params$c" ;; *) break ;; esac
+    done
+    # Only SGR ("m") changes how the text looks. 2 turns dim on; 0, 22 and a bare
+    # ESC[m turn it off. Any other parameter leaves dim as it was.
+    if [ "$c" = "m" ]; then
+      case ";$params;" in
+        *";2;"*) dim=1 ;;
+        *";0;"* | *";22;"* | ";;") dim=0 ;;
+      esac
+    fi
+  done
+  printf '%s' "$out"
+}
 
 # tm_input_line_dirty <row> — 0 when the pane's input row holds more than an empty
-# prompt. Box glyphs and whitespace go first, then ONE leading prompt marker; anything
-# still left is somebody's half-typed text.
+# prompt. Escapes and dim runs go first, then box glyphs and whitespace, then ONE
+# leading prompt marker; anything still left is somebody's half-typed text.
 tm_input_line_dirty() {
-  local text="$1" glyph marker
+  local text glyph marker
+  text="$(tm_visible_text "$1")"
   for glyph in $WOLFMUX_BOX_GLYPHS; do text="${text//$glyph/}"; done
+  text="${text//$_TM_NBSP/}"
   text="${text//[[:space:]]/}"
   for marker in $WOLFMUX_PROMPT_MARKERS; do
     case "$text" in "$marker"*)
@@ -255,41 +306,74 @@ EOF
   printf '%s\n' $(($(now_epoch) - newest))
 }
 
+# Why a notice is typed in at all, rather than shown with display-message or a popup:
+# the notice is FOR THE AGENT in that pane, not for the human. The agent reads it as
+# input and runs the inbox command it names. The status line and a popup put text in
+# front of a human only, so an agent would never see it, and the lead's pane — the one a
+# human sits at, which is exactly where issue #9 happens — would stop being notified
+# altogether. Typing is the only channel that reaches the agent. Do not "simplify" this
+# into a popup: detect-and-defer is the shape the channel forces.
+
+TM_BUSY_REASON="" # which check said busy; the deferral message names it
+
 # tm_pane_human_busy <pane> — 0 when a human may be typing in this pane right now, so
-# nothing may be typed into it. Three tmux reads, no sleeps, no output of its own.
+# nothing may be typed into it. A few tmux reads, no sleeps, no output of its own.
+# Sets TM_BUSY_REASON.
 #
 # Busy when ANY of these holds:
+#   c. the pane is in copy mode or scrollback, where keys drive the mode, not the
+#      prompt. Checked whether or not anybody is watching.
 #   a. a human is AT this pane (active pane of the active window of an attached
-#      session) and pressed a key within WOLFMUX_NUDGE_HUMAN_IDLE seconds,
-#   b. the input line already holds something,
-#   c. the pane is in copy mode or scrollback, where keys drive the mode, not the prompt.
+#      session) and pressed a key within WOLFMUX_NUDGE_HUMAN_IDLE seconds.
+#   b. the input line already holds something.
 #
-# A false "busy" only delays the notice, so the checks lean towards busy; being busy
-# forever is bounded by the caller's deferral limit.
+# (a) and (b) BOTH require a client attached to the pane's session. With no client,
+# nobody can be typing there, so whatever is on the input row cannot be a half-typed
+# human line — it is the TUI's own furniture. Without that gate, an idle agent whose
+# CLI shows a hint in its input box reads busy for as long as the hint shows, every
+# nudge to it waits out the expiry and is dropped, and the agent silently stops being
+# told about its work. That is worse than the bug this fixes.
+#
+# A false "busy" only delays the notice, so the checks lean towards busy: a tmux read
+# that fails, or a cursor row we cannot make sense of, counts as busy WHEN a client is
+# attached. With no client it counts as free, because nobody can be typing there and a
+# broken read must not silently stop an agent's nudges. Both directions are bounded by
+# the caller's deferral limit.
 tm_pane_human_busy() {
   local pane="$1" fields rest in_mode pane_active win_active cy sess idle row
+  TM_BUSY_REASON=""
   [ -n "$pane" ] || return 1
   [ "${WOLFMUX_NUDGE_COLLISION_CHECK:-1}" = "1" ] || return 1
+  # Without this read we know neither the session nor whether anybody is attached to
+  # it, so there is no client to fail closed for.
   fields="$(tmx display-message -p -t "$pane" \
     '#{pane_in_mode}|#{pane_active}|#{window_active}|#{cursor_y}|#{session_name}' 2>/dev/null)" || return 1
   in_mode="${fields%%|*}" rest="${fields#*|}"
   pane_active="${rest%%|*}" rest="${rest#*|}"
   win_active="${rest%%|*}" rest="${rest#*|}"
   cy="${rest%%|*}" sess="${rest#*|}"
-  # (c) copy mode / scrollback
-  if [ "$in_mode" = "1" ]; then return 0; fi
-  # (a) the human's eyes and hands are on this pane
-  if [ "$pane_active" = "1" ] && [ "$win_active" = "1" ] && [ -n "$sess" ]; then
-    idle="$(tm_client_idle "$sess" 2>/dev/null || true)"
-    case "$idle" in
-      "" | *[!0-9]*) ;;
-      *) [ "$idle" -ge "${WOLFMUX_NUDGE_HUMAN_IDLE:-5}" ] || return 0 ;;
-    esac
+  # (c) copy mode / scrollback: keys would go to the mode, attached or not
+  if [ "$in_mode" = "1" ]; then
+    TM_BUSY_REASON="copy mode"
+    return 0
   fi
-  # (b) something is already on the input line
-  case "$cy" in "" | *[!0-9]*) return 1 ;; esac
-  row="$(tmx capture-pane -p -J -t "$pane" -S "$cy" -E "$cy" 2>/dev/null)" || return 1
-  tm_input_line_dirty "$row"
+  # No human on this session: nothing below can be about a human.
+  [ -n "$sess" ] || return 1
+  idle="$(tm_client_idle "$sess" 2>/dev/null || true)"
+  case "$idle" in "" | *[!0-9]*) return 1 ;; esac
+  # (a) the human's eyes and hands are on this pane
+  if [ "$pane_active" = "1" ] && [ "$win_active" = "1" ] &&
+    [ "$idle" -lt "${WOLFMUX_NUDGE_HUMAN_IDLE:-5}" ]; then
+    TM_BUSY_REASON="a keystroke ${idle}s ago"
+    return 0
+  fi
+  # (b) something is already on the input line. From here a read that fails is busy.
+  TM_BUSY_REASON="the input line is not empty"
+  case "$cy" in "" | *[!0-9]*) return 0 ;; esac
+  row="$(tmx capture-pane -p -J -e -t "$pane" -S "$cy" -E "$cy" 2>/dev/null)" || return 0
+  tm_input_line_dirty "$row" && return 0
+  TM_BUSY_REASON=""
+  return 1
 }
 
 # tm_capture <pane> <lines|all>

@@ -10,6 +10,13 @@ WOLFMUX_NUDGE_COLLISION_CHECK="${WOLFMUX_NUDGE_COLLISION_CHECK:-1}" # 0 brings b
 WOLFMUX_NUDGE_HUMAN_IDLE="${WOLFMUX_NUDGE_HUMAN_IDLE:-5}"           # seconds since the last keystroke that still count as "at the keyboard"
 WOLFMUX_NUDGE_RETRY="${WOLFMUX_NUDGE_RETRY:-3}"                     # how often a waiting notice looks again
 WOLFMUX_NUDGE_DEFER_MAX="${WOLFMUX_NUDGE_DEFER_MAX:-600}"           # how long it waits before giving up
+# An approval notice is worthless once the worker has stopped waiting for the decision
+# (WOLFMUX_APPROVAL_TIMEOUT, also 600), so it gets its own, shorter cap.
+WOLFMUX_NUDGE_APPROVAL_DEFER_MAX="${WOLFMUX_NUDGE_APPROVAL_DEFER_MAX:-60}"
+# ":-" substitutes for unset and empty, so an explicit 0 survives it. sleep 0 with
+# waited=$((waited + 0)) is a waiter that spins on tmux for ever and never expires.
+case "$WOLFMUX_NUDGE_RETRY" in "" | *[!0-9]*) WOLFMUX_NUDGE_RETRY=3 ;; esac
+[ "$WOLFMUX_NUDGE_RETRY" -ge 1 ] || WOLFMUX_NUDGE_RETRY=1
 
 session_name_for_project() {
   local stored candidate
@@ -924,7 +931,7 @@ cmd_destroy() {
 # pane. Every interpolated value is a validated role, a model label from the model
 # table, an approval id or a policy word; nothing free-form is ever typed.
 notify_lead() {
-  local kind="$1" pane text tries=0 fresh=0
+  local kind="$1" pane text tries=0 fresh=0 locked=0 cap
   pane="$(tm_pane_for_role "$SESSION" "$WOLFMUX_LEAD_ROLE")"
   [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
   case "$kind" in
@@ -942,27 +949,36 @@ notify_lead() {
       ;;
     *) return 1 ;;
   esac
+  cap="$WOLFMUX_NUDGE_DEFER_MAX"
+  if [ "$kind" = "approval" ]; then cap="$WOLFMUX_NUDGE_APPROVAL_DEFER_MAX"; fi
   # Serialize with other notices for the lead so two lines never interleave.
-  until nudge_begin "$WOLFMUX_LEAD_ROLE"; do
+  while [ "$tries" -lt 30 ]; do
+    if nudge_begin "$WOLFMUX_LEAD_ROLE"; then
+      locked=1
+      break
+    fi
     tries=$((tries + 1))
-    [ "$tries" -lt 30 ] || break
     sleep 0.2
   done
+  # A marker whose waiter died must not swallow this notice (see nudge_pending_reap).
+  if [ "$locked" -eq 1 ]; then nudge_pending_reap "$WOLFMUX_LEAD_ROLE" || true; fi
   # The lead is a pane a human sits in front of: never type over a half-typed line.
   # Each of these notices names its own event, so they queue instead of collapsing.
-  if tm_pane_human_busy "$pane"; then
+  # Without the lock we never type either: another notifier may be mid-line right now.
+  if [ "$locked" -eq 0 ] || tm_pane_human_busy "$pane"; then
     if ! nudge_pending_exists "$WOLFMUX_LEAD_ROLE"; then
       if nudge_pending_open "$WOLFMUX_LEAD_ROLE"; then fresh=1; fi
     fi
     if nudge_pending_exists "$WOLFMUX_LEAD_ROLE"; then
       nudge_pending_put_line "$WOLFMUX_LEAD_ROLE" "$text" || true
-      nudge_end "$WOLFMUX_LEAD_ROLE"
+      nudge_pending_put_cap "$WOLFMUX_LEAD_ROLE" "$cap" || true
+      if [ "$locked" -eq 1 ]; then nudge_end "$WOLFMUX_LEAD_ROLE"; fi
       if [ "$fresh" -eq 1 ]; then _nudge_defer_start "$WOLFMUX_LEAD_ROLE" "$pane"; fi
-      event_log notify-deferred "$WOLFMUX_LEAD_ROLE" "$kind"
+      event_log notify-deferred "$WOLFMUX_LEAD_ROLE" "$kind (${TM_BUSY_REASON:-no lock}, cap ${cap}s)"
       return 3
     fi
     # No marker and none could be made: say so rather than type over the human.
-    nudge_end "$WOLFMUX_LEAD_ROLE"
+    if [ "$locked" -eq 1 ]; then nudge_end "$WOLFMUX_LEAD_ROLE"; fi
     event_log notify-dropped "$WOLFMUX_LEAD_ROLE" "$kind (pane busy, no marker)"
     return 3
   fi
@@ -990,6 +1006,9 @@ _nudge_one() {
   pane="$(tm_pane_for_role "$SESSION" "$role")"
   [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
   nudge_begin "$role" || return 2
+  # A marker whose waiter died must not swallow this role's nudges for ever: reap it
+  # before looking, while the per-role lock is held (see nudge_pending_reap).
+  if nudge_pending_reap "$role"; then event_log nudge-defer-reaped "$role" "waiter gone"; fi
   # A notice is already waiting for this pane to go idle: add this bead to it and
   # let the one waiter deliver. Several queued nudges collapse into ONE line.
   if nudge_pending_exists "$role"; then
@@ -1010,7 +1029,7 @@ _nudge_one() {
       nudge_pending_put_bead "$role" "$bead" || true
       nudge_end "$role"
       _nudge_defer_start "$role" "$pane"
-      event_log nudge-deferred "$role" "$bead"
+      event_log nudge-deferred "$role" "$bead (${TM_BUSY_REASON:-busy})"
     elif nudge_pending_exists "$role"; then
       # A waiter appeared between the two checks: let it carry this bead too.
       nudge_pending_put_bead "$role" "$bead" || true
@@ -1023,6 +1042,11 @@ _nudge_one() {
   fi
   text="$(_nudge_text "$who" "$bead")"
   nudge_mark "$role"
+  # The 300 ms between the text and the Enter inside tm_type_line is a window: a human
+  # who had been idle for WOLFMUX_NUDGE_HUMAN_IDLE seconds could start typing inside it
+  # and have their first keystrokes land after the notice. It stays open, because
+  # closing it needs tmux to tell us a key arrived while we were mid-line, and there is
+  # no such channel. The queued path below does NOT accept it: it re-checks per line.
   tm_type_line "$pane" "$text"
   event_log nudge "$role" "$bead"
   nudge_end "$role"
@@ -1034,58 +1058,85 @@ _nudge_one() {
 _nudge_defer_start() {
   # errexit off inside the waiter: one tmux read that fails in passing must not
   # abandon a notice somebody is waiting for.
+  #
+  # macOS ships no setsid(1), so the waiter is kept alive the way that does work here:
+  # it ignores HUP, INT and TERM, so closing the terminal that ran teamctl, or a Ctrl-C
+  # in it, cannot kill it. A killed waiter leaves its marker behind, and before the reap
+  # (nudge_pending_reap) that marker swallowed every later notice for the role.
   (
     set +e
+    trap '' HUP INT TERM
     _nudge_defer_wait "$1" "$2" >/dev/null 2>&1 &
   )
   return 0
 }
 
-# _nudge_defer_wait <role> <pane> — look again every WOLFMUX_NUDGE_RETRY seconds for
-# at most WOLFMUX_NUDGE_DEFER_MAX. First look that comes back idle: deliver what the
-# marker holds, exactly once, and remove it. On expiry: remove it and log that. Nothing
-# is lost either way, because every notice ends with the agent's own inbox command.
+# _nudge_defer_wait <role> <pane> — look again every WOLFMUX_NUDGE_RETRY seconds for at
+# most the marker's cap (WOLFMUX_NUDGE_DEFER_MAX, or less for an approval notice). It
+# looks BEFORE the first sleep, so a pane that is already idle is notified at once.
+# First look that comes back idle: deliver what the marker holds, exactly once, and
+# remove it. On expiry: remove it and log that. Nothing is lost either way, because
+# every notice ends with the agent's own inbox command.
 _nudge_defer_wait() {
-  local role="$1" pane="$2" who waited=0 tries bead line delivered
+  local role="$1" pane="$2" who waited=0 tries bead line delivered busy_again cap
   who="$(team_identity "$TEAM" "$role")"
-  while [ "$waited" -lt "$WOLFMUX_NUDGE_DEFER_MAX" ]; do
-    sleep "$WOLFMUX_NUDGE_RETRY"
-    waited=$((waited + WOLFMUX_NUDGE_RETRY))
+  while :; do
     nudge_pending_exists "$role" || return 0 # someone else cleaned up
     nudge_pending_beat "$role"
+    cap="$(nudge_pending_cap "$role" "$WOLFMUX_NUDGE_DEFER_MAX")"
+    case "$cap" in "" | *[!0-9]*) cap="$WOLFMUX_NUDGE_DEFER_MAX" ;; esac
+    if [ "$waited" -ge "$cap" ]; then break; fi
     if [ "$(tm_pane_state "$pane")" != "running" ]; then
       nudge_pending_clear "$role"
       event_log nudge-defer-dropped "$role" "pane ended after ${waited}s"
       return 0
     fi
-    if tm_pane_human_busy "$pane"; then continue; fi
+    if tm_pane_human_busy "$pane"; then
+      sleep "$WOLFMUX_NUDGE_RETRY"
+      waited=$((waited + WOLFMUX_NUDGE_RETRY))
+      continue
+    fi
     tries=0
     until nudge_begin "$role"; do
       tries=$((tries + 1))
       [ "$tries" -lt 30 ] || break
       sleep 0.2
     done
-    # Taking the lock took a moment: the human may have started typing again.
-    if tm_pane_human_busy "$pane"; then
-      nudge_end "$role"
-      continue
-    fi
-    delivered=0
-    # Fixed notices first, in the order they happened; each names its own event.
-    while IFS= read -r line; do
+    delivered=0 busy_again=0
+    # Fixed notices first, in the order they happened; each names its own event. The
+    # pane is asked again before EVERY line, because the moment a notice appears is
+    # exactly when a human starts typing, and each line carries its own 300 ms window.
+    # Each line leaves the marker as it is typed, so stopping here, or being killed
+    # mid-delivery, can never re-send what already went out.
+    while nudge_pending_has_lines "$role"; do
+      if tm_pane_human_busy "$pane"; then
+        busy_again=1
+        break
+      fi
+      line="$(nudge_pending_shift_line "$role")" || break
       [ -n "$line" ] || continue
       tm_type_line "$pane" "$line"
       delivered=$((delivered + 1))
-    done <<EOF
-$(nudge_pending_lines "$role")
-EOF
-    if nudge_pending_has_bead "$role"; then
-      bead="$(nudge_pending_bead "$role")"
-      tm_type_line "$pane" "$(_nudge_text "$who" "$bead")"
-      delivered=$((delivered + 1))
-      event_log nudge "$role" "${bead:-collapsed} (waited ${waited}s)"
+    done
+    if [ "$busy_again" -eq 0 ] && nudge_pending_has_bead "$role"; then
+      if tm_pane_human_busy "$pane"; then
+        busy_again=1
+      else
+        bead="$(nudge_pending_bead "$role")"
+        tm_type_line "$pane" "$(_nudge_text "$who" "$bead")"
+        delivered=$((delivered + 1))
+        event_log nudge "$role" "${bead:-collapsed} (waited ${waited}s)"
+      fi
     fi
-    nudge_mark "$role"
+    if [ "$delivered" -gt 0 ]; then nudge_mark "$role"; fi
+    # Busy part-way through: leave the rest in the marker and keep waiting for it.
+    if [ "$busy_again" -eq 1 ]; then
+      nudge_end "$role"
+      event_log nudge-defer-partial "$role" "typed ${delivered}, rest still waiting (${TM_BUSY_REASON:-busy})"
+      sleep "$WOLFMUX_NUDGE_RETRY"
+      waited=$((waited + WOLFMUX_NUDGE_RETRY))
+      continue
+    fi
     nudge_pending_clear "$role"
     nudge_end "$role"
     [ "$delivered" -gt 0 ] || event_log nudge-defer-empty "$role" "marker held nothing"
@@ -1160,7 +1211,7 @@ cmd_nudge() {
     0) say "notified: $role" ;;
     2) say "skipped: $role was notified moments ago (debounce ${WOLFMUX_NUDGE_DEBOUNCE}s)" ;;
     3)
-      say "deferred: somebody is typing in ${role}'s pane. The notice follows by itself as soon as that pane is idle (it gives up after ${WOLFMUX_NUDGE_DEFER_MAX}s; the bead stays in the inbox either way)."
+      say "deferred: ${role}'s pane is busy (${TM_BUSY_REASON:-a notice is already waiting}). The notice follows by itself as soon as that pane is idle (it gives up after ${WOLFMUX_NUDGE_DEFER_MAX}s; the bead stays in the inbox either way)."
       return 3
       ;;
     *) die "'$role' has no running pane (its beads are waiting in Beads; start it with: teamctl restart $role)" ;;

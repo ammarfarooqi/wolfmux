@@ -420,16 +420,40 @@ Four knobs, shaped like `WOLFMUX_NUDGE_DEBOUNCE`: `WOLFMUX_NUDGE_HUMAN_IDLE` (5)
 `WOLFMUX_NUDGE_COLLISION_CHECK=0`, which brings the old blind typing back. `teamctl
 nudge` reports `deferred: …` and exits 3.
 
-Read against the machine's own 13 live panes (read-only, nothing typed), the check
-agreed with what was on each screen: 12 panes sitting at a bare `❯` read idle, and the
-one pane holding `❯ close sprint 7, sprint 8 oct 9 to 15` read busy. That last one is
-the bug caught in the act: a notice a second later would have joined that sentence.
+The first read of the machine's 13 live panes was done without `capture-pane -e`, and
+that hid the thing that mattered. Read again WITH it, the `❯` is followed by a
+non-breaking space, and the text beside it is dim (`ESC[2m`): it is Claude Code's own
+placeholder, not anybody's typing. One pane read as `❯ close sprint 7, sprint 8 oct 9 to
+15` and was written up here as "the bug caught in the act"; it was a placeholder, on a
+pane with a client attached, and that claim was wrong. A pane showing the same kind of
+hint with ZERO clients on its session held it for 15 minutes.
+
+So the check has two gates it did not have at first. The input-line question only
+applies when a client is attached to the pane's session: with nobody attached nobody can
+be typing, and without that gate an idle agent would have been "busy" for as long as its
+CLI showed a hint, every nudge to it waiting out the expiry and being dropped. And dim
+runs are removed before the row is judged, because a TUI draws its placeholder dim and a
+human's typing is not dim. A read that fails counts as busy when a client is attached and
+as free when none is.
+
+Three more things the first round got wrong, all found by review. A marker whose waiter
+had died was never reaped, so that role was never nudged again: both call sites now reap
+under the per-role lock, and the waiter ignores HUP/INT/TERM (macOS has no setsid) so a
+closed terminal does not kill it. The queued fixed notices were typed in a loop with no
+further checks: the pane is now asked again before every line and each line leaves the
+marker as it is typed, so a stop part-way neither glues onto a human's text nor re-sends
+what already went out. Measured with a watcher typing from the moment a notice appeared,
+that cut the glued lines from 5 of 5 to 2 of 5 and kept the other 3 for later. The 300 ms
+inside tm_type_line itself stays open; closing it needs tmux to report a key arriving
+mid-line, and there is no such channel.
 
 A minor version, not a patch: the notice is no longer guaranteed to be immediate, and
 `teamctl nudge` has an exit code it did not have.
 
-`tests/nudge-typing.sh`: new, 24 checks. `tests/smoke.sh`: 181 → 181. `tests/docs.sh`:
-28 → 28. v1.11.0.
+`tests/nudge-typing.sh`: new, 44 checks (24 in round 1, plus the client gate, the dim
+placeholder as a fixture row, the reaped marker, the queued fixed notices and a human who
+starts typing part-way through a delivery). `tests/smoke.sh`: 181 → 181.
+`tests/docs.sh`: 28 → 28. v1.11.0.
 
 ## Footprint on the machine
 
