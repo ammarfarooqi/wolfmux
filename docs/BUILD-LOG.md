@@ -550,7 +550,7 @@ wrote by hand was removed without the "still holds work" question. `build`, `dis
 unchanged there and still sweeps such a lane — it has no question to ask — which ROADMAP
 records as the one inconsistency.
 
-`tests/disk.sh`: 48 → 82.
+`tests/disk.sh`: 48 → 93.
 
 Version 1.14.0. Main was already 1.12.0 when this branch was written, and the nudge-typing
 fix (PR #10) takes 1.13.0, so this is the next free minor — and a new command plus three
@@ -566,6 +566,17 @@ a cross-repository lane is cleaned instead of skipped. And `--link-node-modules`
 lane to its own repository's `node_modules`, which is only ever a brand-new worktree:
 `--from-worktree` hands over one that already has the dependencies it installed, and that
 handover is not asked to clear the free-disk bar either, because it installs nothing.
+
+A lane in another repository is the highest-stakes path here — a deletion inside a worktree
+of a repository that is not the project — so it got its own fixture: a second throwaway
+repository, with its own `node_modules` and its own path with a space in it. `stop`, `prune`,
+`remove` and `--link-node-modules` are all exercised against it, in the same sweeps as this
+project's own lanes, and rule 4 is asked the hostile questions there too (that repository's
+root, its worktree directory, a parent traversal, and the lane measured against the wrong
+prefix — all refused, its `node_modules` intact). Writing it found one more inherited bug:
+`teamctl remove` read the teammate's repository out of the registry *after* deleting the
+record, so the `in <repository>` it meant to print was always empty. The value is read while
+the record still exists now.
 
 ## Footprint on the machine
 

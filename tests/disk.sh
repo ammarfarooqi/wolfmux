@@ -394,6 +394,63 @@ check "cleaning a lane whose node_modules is a link removes the link and never t
 check "remove asks about a lane holding an untracked dist that git neither tracks nor ignores" \
   'LATER="$(teamctl status --json | jq -r ".agents[] | select(.role == \"later\") | .workdir")" && teamctl stop later >/dev/null 2>&1 && /bin/mkdir -p "$LATER/dist" && printf "#!/bin/sh\necho ship\n" >"$LATER/dist/deploy.sh" && out="$(teamctl remove later 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "later still holds work" && printf "%s" "$out" | grep -q "?? dist/" && [ -f "$LATER/dist/deploy.sh" ]'
 
+echo "== a lane in ANOTHER repository (teamctl spawn --repo)"
+# The highest-stakes path in this change: a deletion inside a worktree of a repository that
+# is not this project. Rule 4 has to be asked about THAT repository's worktree directory,
+# not this project's, or the lane is either skipped (and hoards) or — worse — a path of the
+# other repository is measured against the wrong prefix.
+REPO2="$WORK/other repo" # the space is deliberate here too
+/bin/mkdir -p "$REPO2"
+(
+  cd "$REPO2" || exit 1
+  git init -q -b main
+  printf 'second\n' >README.md
+  printf 'node_modules/\n.next/\n' >.gitignore
+  git add -A
+  git -c user.name=disk -c user.email=disk@example.invalid commit -qm "initial commit"
+) >/dev/null 2>&1
+# What teamctl stores is the physical path git reports, and under $TMPDIR on macOS that is
+# not the path we built ("/var/…" is a symlink to "/private/var/…"). Compare like with like.
+REPO2="$(cd "$REPO2" && pwd -P)"
+/bin/mkdir -p "$REPO2/node_modules/rootpkg2"
+mkfile "$REPO2/node_modules/rootpkg2/index.js" 400
+teamctl policy link-node-modules off >/dev/null 2>&1
+teamctl spawn far glm53 --no-kickoff --repo "$REPO2" >/dev/null 2>&1
+sleep 1
+FAR="$(teamctl status --json | jq -r '.agents[] | select(.role == "far") | .workdir')"
+TREES2="$(dirname "$FAR")"
+check "the lane really is in the other repository's worktree directory, not this project's" \
+  '[ -n "$FAR" ] && [ -d "$FAR" ] && [ "$(teamctl status --json | jq -r ".agents[] | select(.role == \"far\") | .repo")" = "$REPO2" ] && case "$FAR" in "$TREES"*) exit 1 ;; esac && case "$TREES2" in "$WOLFMUX_DATA"/worktrees/*) ;; *) exit 1 ;; esac'
+mk_build_tree "$FAR"
+STOP2="$(teamctl stop far 2>&1)"
+check "stop clears a --repo lane's build caches and keeps its node_modules" \
+  '[ ! -e "$FAR/.next" ] && [ ! -e "$FAR/dist" ] && [ -d "$FAR/node_modules/pkg" ] && printf "%s" "$STOP2" | grep -q "freed:.*of build output"'
+# A mixed sweep: the --repo lane and this project's own lanes in one run.
+PRUNE2="$(teamctl prune 2>&1)"
+check "prune takes the --repo lane's node_modules, in the other repository, and names that repository" \
+  '[ ! -e "$FAR/node_modules" ] && printf "%s" "$PRUNE2" | grep -qE "^  far +[0-9.]+ (KB|MB|GB) +node_modules \(in .*other repo\)"'
+check "the same run leaves this project's running lane alone" '[ -d "$BUSY/node_modules/pkg" ]'
+check "and neither repository's own checkout was touched" \
+  '[ -f "$REPO2/node_modules/rootpkg2/index.js" ] && [ -f "$PROJECT/node_modules/rootpkg/index.js" ] && [ -f "$REPO2/README.md" ]'
+# Rule 4, asked about the second repository: anything that is not one of ITS lane worktrees.
+check "a path in the other repository that is not one of its lanes is refused: its root, its worktrees directory, a parent" \
+  '! lib_eval "disk_clean_worktree \"$REPO2\" all 1 \"$TREES2\" \"$REPO2\"" && ! lib_eval "disk_clean_worktree \"$TREES2\" all 1 \"$TREES2\" \"$REPO2\"" && ! lib_eval "disk_clean_worktree \"$TREES2/..\" all 1 \"$TREES2\" \"$REPO2\"" && ! lib_eval "disk_clean_worktree \"$FAR/../..\" all 1 \"$TREES2\" \"$REPO2\"" && [ -f "$REPO2/node_modules/rootpkg2/index.js" ]'
+check "and this project's worktree directory is not a prefix the other repository's lane is measured against" \
+  '! lib_eval "disk_clean_worktree \"$FAR\" all 1" && lib_eval "disk_clean_worktree \"$FAR\" all 1 || printf %s \"\$DISK_SKIP_REASON\"" | grep -q "it is not a lane of team"'
+# Rule 2 through the OTHER repository's git.
+check "a file that the other repository tracks is not deleted, even under a name on the list" \
+  '/bin/mkdir -p "$FAR/dist" && printf "committed\n" >"$FAR/dist/keep.txt" && git -C "$FAR" add -f dist/keep.txt >/dev/null 2>&1 && git -C "$FAR" -c user.name=disk -c user.email=disk@example.invalid commit -qm "the other repo commits its dist" && mkfile "$FAR/dist/bundle.js" 300 && /bin/mkdir -p "$FAR/node_modules/pkg" && mkfile "$FAR/node_modules/pkg/lib.js" 300 && teamctl prune >/dev/null 2>&1 && [ -f "$FAR/dist/keep.txt" ] && [ -f "$FAR/dist/bundle.js" ] && [ ! -e "$FAR/node_modules" ]'
+teamctl spawn far2 glm53 --no-kickoff --repo "$REPO2" --link-node-modules >/dev/null 2>&1
+sleep 1
+FAR2="$(teamctl status --json | jq -r '.agents[] | select(.role == "far2") | .workdir')"
+check "--link-node-modules on a --repo lane links to THAT repository's node_modules, not this project's" \
+  '[ -L "$FAR2/node_modules" ] && [ -f "$FAR2/node_modules/rootpkg2/index.js" ] && [ ! -e "$FAR2/node_modules/rootpkg" ] && [ "$(/usr/bin/readlink "$FAR2/node_modules")" = "$REPO2/node_modules" ]'
+teamctl stop far2 >/dev/null 2>&1
+check "cleaning it takes the link and never the other repository's copy" \
+  'teamctl prune >/dev/null 2>&1; [ ! -e "$FAR2/node_modules" ] && [ -f "$REPO2/node_modules/rootpkg2/index.js" ]'
+check "removing a --repo lane takes its worktree in the other repository and says where it was" \
+  'out="$(teamctl remove far2 --yes 2>&1)"; [ $? -eq 0 ] && [ ! -d "$FAR2" ] && printf "%s" "$out" | grep -q "in .*other repo" && printf "%s" "$out" | grep -qE "freed [0-9.]+ (KB|MB|GB)" && [ -f "$REPO2/node_modules/rootpkg2/index.js" ] && [ -f "$REPO2/README.md" ]'
+
 echo "== destroy --worktrees gets the gigabytes back too"
 DEST="$(teamctl destroy --worktrees --yes 2>&1)"
 check "destroy --worktrees takes each lane's build output before it decides what to remove" \

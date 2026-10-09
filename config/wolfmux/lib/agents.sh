@@ -1048,7 +1048,7 @@ _inside_worktrees() {
 # uncommitted files or commits that are not in your current branch is refused, and the
 # refusal lists them. With --force the same list is shown and one question is asked.
 cmd_remove() {
-  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding="" kb=0 swept=0 freed=0
+  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding="" kb=0 swept=0 freed=0 repo_of repo_note
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
@@ -1094,6 +1094,12 @@ cmd_remove() {
   for role in $roles; do
     path="$(reg_field "$role" workdir)"
     branch="$(reg_field "$role" branch)"
+    # Read while the record still exists: the line that reports the removal is printed
+    # after reg_delete, so asking the registry there answered "no repository" for every
+    # teammate, including the ones spawned with --repo.
+    repo_of="$(reg_field "$role" repo 2>/dev/null || true)"
+    repo_note=""
+    [ -z "$repo_of" ] || repo_note=" in $(short_path "$repo_of")"
     dirty="$(disk_work_dirty_count "$path")"
     unmerged=0
     if wt_branch_exists "$role" "$branch"; then unmerged="$(git_for_role "$role" rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
@@ -1159,7 +1165,7 @@ cmd_remove() {
     /bin/rm -f "$STATE_DIR/settings/$role.json"
     reg_delete "$role"
     event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged freed_kb=$((kb + swept))"
-    say "removed: $role  (worktree, branch $branch and record)$(repo="$(reg_field "$role" repo)"; [ -z "$repo" ] || printf ' in %s' "$(short_path "$repo")") — freed $(human_size "$((kb + swept))")"
+    say "removed: $role  (worktree, branch $branch and record)$repo_note — freed $(human_size "$((kb + swept))")"
   done
   layout_apply
   disk_cache_adjust "$freed"

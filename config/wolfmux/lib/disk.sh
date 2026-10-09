@@ -402,7 +402,7 @@ disk_lane_running() {
 # parked for days. A running lane is never touched. --dry-run reports and deletes
 # nothing, and needs no manager: looking is not changing.
 cmd_prune() {
-  local dry=0 kind="all" apply=1 role path rest total=0 floor=0 cleaned=0 skipped=0 running=0 hint=""
+  local dry=0 kind="all" apply=1 role path rest rnote total=0 floor=0 cleaned=0 skipped=0 running=0 hint=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --dry-run) dry=1 ;;
@@ -440,12 +440,17 @@ cmd_prune() {
   for role in $(reg_list); do
     [ "$(reg_field "$role" kind)" = "worker" ] || continue
     path="$(reg_field "$role" workdir)"
+    # A teammate spawned with --repo works in another repository, and its lane lives under
+    # that repository's worktree directory. The line says so, because "which node_modules
+    # was that" is the first question a mixed sweep raises.
+    rnote="$(reg_field "$role" repo 2>/dev/null || true)"
+    [ -z "$rnote" ] || rnote=" (in $(short_path "$rnote"))"
     # Every lane prune does not empty adds its whole remaining size to the floor below —
     # a running or skipped lane most of all, because it still holds its node_modules too.
     if disk_lane_running "$role"; then
       rest="$(disk_kb "$path")"
       floor=$((floor + rest))
-      printf '  %-18s %9s   running, left alone\n' "$role" "$(human_size "$rest")"
+      printf '  %-18s %9s   running, left alone%s\n' "$role" "$(human_size "$rest")" "$rnote"
       running=$((running + 1))
       continue
     fi
@@ -453,7 +458,7 @@ cmd_prune() {
       # The size is printed here too, because this is what one stray file is pinning.
       rest="$(disk_kb "$path")"
       floor=$((floor + rest))
-      printf '  %-18s %9s   skipped: %s\n' "$role" "$(human_size "$rest")" "$DISK_SKIP_REASON"
+      printf '  %-18s %9s   skipped: %s%s\n' "$role" "$(human_size "$rest")" "$DISK_SKIP_REASON" "$rnote"
       skipped=$((skipped + 1))
       continue
     fi
@@ -465,10 +470,10 @@ cmd_prune() {
     [ "$rest" -ge 0 ] || rest=0
     floor=$((floor + rest))
     if [ -z "$DISK_CLEANED" ]; then
-      printf '  %-18s %9s   nothing to take\n' "$role" "0 KB"
+      printf '  %-18s %9s   nothing to take%s\n' "$role" "0 KB" "$rnote"
     else
       cleaned=$((cleaned + 1))
-      printf '  %-18s %9s   %s\n' "$role" "$(human_size "$DISK_FREED_KB")" "$DISK_CLEANED"
+      printf '  %-18s %9s   %s%s\n' "$role" "$(human_size "$DISK_FREED_KB")" "$DISK_CLEANED" "$rnote"
     fi
   done
   say ""
