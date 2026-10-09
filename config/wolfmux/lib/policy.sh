@@ -13,6 +13,11 @@
 #                                           <model> --team <new>) and hand work over to them?
 #   worker-isolation    on | off            refuse a worker's tool calls that reach outside its
 #                                           own worktree and branch (lib/guard.sh)
+#   disk-guard          refuse | warn | off what `teamctl spawn` does when free disk is under
+#                                           disk-min-gb (lib/disk.sh)
+#   disk-min-gb         <whole number>      the free space a spawn asks for, in GB (0 = no limit)
+#   link-node-modules   off | on            link a new lane's node_modules to the project root's
+#                                           copy instead of letting it install its own
 #   branch-template     <template>          how this team names its workers' branches, with the
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
@@ -20,7 +25,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation lead-teams branch-template"
+POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules branch-template"
 
 policy_default() {
   case "$1" in
@@ -29,6 +34,9 @@ policy_default() {
     worker-spawn) printf '%s\n' "${WOLFMUX_WORKER_SPAWN:-off}" ;;
     worker-isolation) printf '%s\n' "${WOLFMUX_WORKER_ISOLATION:-on}" ;;
     lead-teams) printf '%s\n' "${WOLFMUX_LEAD_TEAMS:-on}" ;;
+    disk-guard) printf '%s\n' "${WOLFMUX_DISK_GUARD:-refuse}" ;;
+    disk-min-gb) printf '%s\n' "${WOLFMUX_DISK_MIN_GB:-$WOLFMUX_DISK_MIN_GB_DEFAULT}" ;;
+    link-node-modules) printf '%s\n' "${WOLFMUX_LINK_NODE_MODULES:-off}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     *) return 1 ;;
   esac
@@ -46,6 +54,17 @@ policy_valid() { # <key> <value>
     worker-spawn:on | worker-spawn:off) return 0 ;;
     worker-isolation:on | worker-isolation:off) return 0 ;;
     lead-teams:on | lead-teams:off) return 0 ;;
+    disk-guard:refuse | disk-guard:warn | disk-guard:off) return 0 ;;
+    link-node-modules:on | link-node-modules:off) return 0 ;;
+    # A number, not a word: whole gigabytes, 0 switches the limit off, and the ceiling is
+    # only there so that a slip of the hand cannot refuse every spawn for ever.
+    # A leading zero is refused on purpose. `test -le` reads base ten but shell arithmetic
+    # reads 08 as octal and aborts, so "disk-min-gb 08" used to break every spawn in the
+    # team with a raw bash error, and "010" quietly enforced 8 GB while printing 010.
+    disk-min-gb:*)
+      case "$2" in "" | *[!${_WM_DIGITS}]* | 0?*) return 1 ;; esac
+      [ "$2" -le 10000 ]
+      ;;
     *) return 1 ;;
   esac
 }
@@ -54,7 +73,9 @@ policy_choices() {
   case "$1" in
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
-    worker-spawn | worker-isolation | lead-teams) printf 'on|off\n' ;;
+    worker-spawn | worker-isolation | lead-teams | link-node-modules) printf 'on|off\n' ;;
+    disk-guard) printf 'refuse|warn|off\n' ;;
+    disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
   esac
 }
@@ -78,6 +99,12 @@ policy_get() {
   elif [ "$key" = "worker-isolation" ]; then
     printf 'on\n'
   elif [ "$key" = "lead-teams" ]; then
+    printf 'off\n'
+  elif [ "$key" = "disk-guard" ]; then
+    printf 'refuse\n'
+  elif [ "$key" = "disk-min-gb" ]; then
+    printf '%s\n' "$WOLFMUX_DISK_MIN_GB_DEFAULT"
+  elif [ "$key" = "link-node-modules" ]; then
     printf 'off\n'
   else
     printf 'ask\n'
@@ -243,6 +270,9 @@ cmd_policy() {
     say "  worker-spawn        $(policy_get worker-spawn)     (on|off)          may workers run 'teamctl spawn'?"
     say "  worker-isolation    $(policy_get worker-isolation)      (on|off)          refuse a worker's tool calls outside its own worktree and branch"
     say "  lead-teams          $(policy_get lead-teams)      (on|off)          may the lead found further teams and hand work over?"
+    say "  disk-guard          $(policy_get disk-guard)  (refuse|warn|off) what 'teamctl spawn' does under disk-min-gb free disk"
+    say "  disk-min-gb         $(policy_get disk-min-gb)       (number, GB)      free space a spawn asks for; 0 = no limit"
+    say "  link-node-modules   $(policy_get link-node-modules)     (on|off)          link a new lane's node_modules to its repository's copy"
     template="$(policy_get branch-template)"
     if [ -n "$template" ]; then
       say "  branch-template     $template     how this team names its workers' branches"

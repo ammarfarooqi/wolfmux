@@ -71,10 +71,10 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads. `--branch` names the branch exactly; `--ticket` supplies the key a [branch template](#branch-names-and-other-repositories) asks for; `--repo` puts the worktree and the branch in **another** git repository, with the guard still on. `--from-worktree <role>` gives the fresh teammate the stopped worker's built worktree, on a new branch (its branch and commits stay), so node_modules and build output survive and no install or build is repeated. The worktree must be clean; the work is refused and listed otherwise (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one, and sends no kickoff |
-| `teamctl stop <role>` | close its pane; worktree, branch and commits stay |
+| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]` | a new 🐶 teammate with its own pane, branch and worktree. Any model, whoever leads. Refused when free disk is under `disk-min-gb` (policy `disk-guard`). `--branch` names the branch exactly; `--ticket` supplies the key a [branch template](#branch-names-and-other-repositories) asks for; `--repo` puts the worktree and the branch in **another** git repository, with the guard still on. `--from-worktree <role>` gives the fresh teammate the stopped worker's built worktree, on a new branch (its branch and commits stay), so node_modules and build output survive and no install or build is repeated. The worktree must be clean; the work is refused and listed otherwise (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one, and sends no kickoff. `--link-node-modules` points a brand-new lane's `node_modules` at its repository's copy instead of installing 2+ GB of its own — one directory for every lane, so an install in any lane changes them all |
+| `teamctl stop <role>` | close its pane; worktree, branch and commits stay. Its build caches (`.next`, `dist`, …) are deleted, `node_modules` is kept, so `restart` stays cheap |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | start it again in the same worktree; `--continue` keeps its own conversation, `--resume` reopens the one you name (`teamctl status --json` prints each agent's `session_id`). When the team's tmux session is gone (a reboot), `restart lead` starts the team again |
-| `teamctl remove <role>… [--force] [--yes]` | take a stopped teammate off the books: worktree, branch, record. Refuses while it holds work that exists nowhere else, and lists it; `--force` discards it after one question |
+| `teamctl remove <role>… [--force] [--yes]` | take a stopped teammate off the books: worktree, branch, record, and the gigabytes they held. Refuses while it holds work that exists nowhere else, and lists it; `--force` discards it after one question |
 | `teamctl nudge <role>\|--all [--id <bead-id>] [--quiet]` | re-send the one-line notification into a pane. The Beads hook does this by itself |
 
 **Reviewing work**
@@ -91,16 +91,52 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl policy [<key> <value>]` | show or set, per team: `lead-permissions` skip\|ask · `worker-permissions` skip\|lead\|ask · `worker-spawn` on\|off · `worker-isolation` on\|off (the worktree guard) · `lead-teams` on\|off (may the lead found teams) · `branch-template` (how this team names its workers' branches) |
+| `teamctl policy [<key> <value>]` | show or set, per team: `lead-permissions` skip\|ask · `worker-permissions` skip\|lead\|ask · `worker-spawn` on\|off · `worker-isolation` on\|off (the worktree guard) · `lead-teams` on\|off (may the lead found teams) · `branch-template` (how this team names its workers' branches) · `disk-guard` refuse\|warn\|off · `disk-min-gb` a whole number of GB (0 = no limit) · `link-node-modules` on\|off |
 | `teamctl approvals [--all]` | teammates' permission requests waiting for the lead (`worker-permissions lead`) |
 | `teamctl approve <id>…\|--all` | allow them |
 | `teamctl deny <id> "<reason>"` | refuse one, with the reason the teammate is shown |
+
+**Disk**
+
+A lane worktree is cheap to make and expensive to keep: on one project here each one
+carried 2.3 GB of `node_modules`, 0.9 GB of `.next` and half a gigabyte of copied assets,
+nothing ever removed any of it, 27 parked lanes reached 65 GB, and the machine filled its
+disk and rebooted with every team's work in flight. So teamctl cleans up after its own
+worktrees.
+
+| Command | Does |
+|---------|------|
+| `teamctl prune [--team <name>] [--dry-run] [--keep-node-modules]` | take the build output of every **parked** lane of the team: `node_modules`, `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`. One line per lane and a total in GB. A **running** lane is never touched, nor is anything git tracks, nor a lane that holds other uncommitted or untracked files — that one is skipped and named. `--dry-run` reports and deletes nothing (anyone may run it; the real thing is the lead's). `--keep-node-modules` takes the build caches only |
+| `teamctl stop <role>` | the build caches of that lane; `node_modules` stays |
+| `teamctl remove <role>` · `teamctl destroy --worktrees` | all of it: the worktree is going away anyway |
+| `teamctl status` | free disk, what this team's lanes take, and the spawn guard |
+| `teamctl teams` | **measures** the lanes (a `du` per lane, seconds on a busy machine). `teamctl status` reads the number this leaves behind and never measures, so it stays instant |
+
+Most of a lane is not build output: measured on one machine, of 25 GB across 38 lane
+worktrees only about 4 GB sat in a directory on that list — the rest is the checkout itself,
+copied into every lane. `prune`'s "still held" line is that floor plus the whole of every
+lane it skipped or left running, and says that `teamctl remove <role>` is what gives back
+the part git tracks. `stop` deliberately keeps `node_modules`, so a lane parked for a week
+keeps it for the week unless somebody prunes ([a known gap](docs/ROADMAP.md)).
+
+`teamctl remove` refuses a lane that holds commits or files somebody wrote, and build output
+is not that: a `node_modules` (the `--link-node-modules` symlink included), the build caches
+and wolfmux's own cleanup trash are swept without a question. `build`, `dist` and `target`
+are the exception — when git neither tracks nor ignores one of them, remove asks, because a
+handwritten `dist/deploy.sh` lives exactly there.
+
+What is never deleted: a source file, a commit, git state, anything git tracks (a project
+that commits its `dist` keeps it), a worktree with uncommitted changes, your own checkout.
+A lane that lost its `node_modules` needs one `npm install` before its tools run again;
+nothing else of it changes. Each directory is renamed inside its own worktree before it is
+deleted, so a cleanup killed halfway leaves a `.wolfmux-removing-*` directory that the next
+run clears, never a half-deleted `node_modules` that looks installed.
 
 **Ending, deleting, checking**
 
 | Command | Does |
 |---------|------|
-| `teamctl destroy [--worktrees] [--yes]` | end the team. Every worktree is kept; `--worktrees` also removes teammates that hold nothing |
+| `teamctl destroy [--worktrees] [--yes]` | end the team. Every worktree is kept; `--worktrees` also removes teammates that hold nothing, and takes the build output of all of them first |
 | `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and give its disk space back: shows sizes and any uncommitted or unmerged work, asks, then removes the session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts. `--force` deletes that work too. Never touched: your checkout, other branches, Beads, other teams, the lead's own conversations |
 | `teamctl doctor [--probe]` | billing and credential isolation report: launchers, inherited keys, settings overrides, Keychain, logins. `--probe` also asks each provider whose key is set up whether its endpoint accepts it: one incomplete request each, nothing billed, only the HTTP status shown |
 | `teamctl version` · `teamctl help` | |
@@ -241,7 +277,7 @@ nothing global points anywhere.
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (327 isolated lifecycle checks, no model calls), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
+| `tests/` | `smoke.sh` (327 isolated lifecycle checks, no model calls), `disk.sh` (93 checks: the worktree cleanup, the spawn guard and every safety rule that keeps them off your work), `providers.sh` (the provider table: every provider's facts, keys and settings), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 

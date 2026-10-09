@@ -151,6 +151,93 @@ Not covered, on purpose: switching isolation off for one worker, an allow-list o
 writable paths, and founding a whole team in another repository. A team still belongs to
 one project; only a worker's worktree moves.
 
+## Disk: what a lane costs, and how it is given back
+
+One lane worktree on this project carried 2.3 GB of `node_modules`, 0.9 GB of `.next` and
+half a gigabyte of copied assets. Nothing used to remove any of it: not stopping the lane,
+not parking it for a week. 27 parked lanes of one project reached 65 GB, `~/.wolfmux`
+reached 102 GB, and the machine filled its disk and rebooted three times with every team's
+work in flight. So teamctl cleans up after its own worktrees.
+
+```bash
+teamctl status                       # free disk, and what this team's lanes take
+teamctl teams                        # measures it, team by team (a du per lane)
+teamctl prune --dry-run              # what the parked lanes hold, deleting nothing
+teamctl prune                        # take it
+teamctl prune --keep-node-modules    # build caches only, so a restart stays cheap
+```
+
+Who takes what:
+
+| Command | Takes |
+|---------|-------|
+| `teamctl stop <role>` | `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`. **Not** `node_modules`: `teamctl restart` has to stay the cheap thing it looks like |
+| `teamctl prune` | the same list **and** `node_modules`, for every parked lane. A parked lane is what hoards |
+| `teamctl remove <role>`, `teamctl destroy --worktrees` | all of it; the worktree is going away anyway. A `remove` that **refuses** — because the lane holds commits or files a person wrote — changes nothing at all: "nothing was removed" means the build output is still there too |
+
+Five rules hold for every one of those deletions, and they are in one place
+(`config/wolfmux/lib/disk.sh`):
+
+1. only a name on that one list — a directory a build command makes again from the sources;
+2. never a path git tracks in that worktree, whatever it is called (a project that commits
+   its `dist` keeps it);
+3. never a worktree with uncommitted changes to tracked files, or untracked files that are
+   not themselves build output: it is skipped, and the skip is printed with the reason;
+4. never a running lane, never a checkout of yours, and only inside a worktree wolfmux made
+   for that lane's own repository and team — a lane spawned with `--repo` is checked against
+   that repository's worktree directory, not this project's. Every path is resolved with
+   `pwd -P` and checked against that prefix, so an edited record or a symlink leading out
+   cannot aim a deletion elsewhere;
+5. `--dry-run` prints the same report and deletes nothing.
+
+A lane that lost its `node_modules` still has every source file and all of its git state;
+it needs one `npm install` (or whatever the project installs with) before its tools run
+again. Each directory is renamed inside its own worktree before it is deleted, and a rename
+is one atomic step, so a cleanup killed halfway leaves a `.wolfmux-removing-*` directory
+that the next run clears — never a `node_modules` that is half there and looks installed.
+
+**What prune cannot reach.** Most of a lane is usually not build output. Measured on one
+machine: of 25 GB across 38 lane worktrees, about 4 GB sat in a directory on the list; the
+rest was files git tracks, because the whole checkout is copied into every lane (one project
+copies 530 MB of `public/`, about 0.65 GB per lane before anything is installed). `prune`'s
+"still held" line is that floor plus the whole of every lane it skipped or left running —
+those are the expensive ones, because they keep their `node_modules` too. What git tracks
+comes back only with `teamctl remove <role>`; a lane left running is swept by the next prune
+once it is parked. And note that `stop` deliberately leaves `node_modules`, so a lane parked
+for a week keeps it for the week unless somebody prunes ([a known gap](ROADMAP.md)).
+
+**What `remove` asks about.** It refuses a lane that holds commits your branch does not have
+or files somebody wrote, and lists them. Build output is not "files somebody wrote": a
+`node_modules` (including the symlink `--link-node-modules` makes), the build caches and
+wolfmux's own cleanup trash are swept without a question. `build`, `dist` and `target` are
+the exception — when git neither tracks nor ignores one of those, `remove` treats it as work
+and asks, because a `dist/deploy.sh` somebody wrote by hand lives exactly there.
+
+**When prune refuses.** If a lane's record says it is running while the team's tmux session
+shows no pane for it, prune stops the whole sweep and touches nothing: it sweeps lanes
+unattended, and a wrong "parked" would take `node_modules` out from under a running build.
+`teamctl status` and `teamctl panes` show which is right; then `teamctl stop <role>` or
+`teamctl restart <role>` and run it again.
+
+**The guard.** `teamctl spawn` checks free disk before it makes anything. Under
+`disk-min-gb` (default 20) it refuses and names the number; `teamctl policy disk-guard warn`
+makes it a warning instead, `off` removes the check, and `teamctl policy disk-min-gb <n>`
+moves the limit (`0` = no limit).
+
+**Sharing one node_modules.** `teamctl spawn <role> <model> --link-node-modules` points the
+new lane's `node_modules` at its repository's copy instead of letting it install 2+ GB of
+its own; `teamctl policy link-node-modules on` does it for every spawn. It is off by default
+for a reason: that is ONE directory for every lane and for the checkout itself, so an
+`npm install` in any lane changes the dependencies of all of them, and two lanes that need
+different versions of a package cannot both be right. Only a brand-new worktree is linked;
+`--from-worktree` hands over a lane that already has the dependencies it installed, and a
+handover is not asked to clear the free-disk bar either, because it installs nothing.
+
+**Why `teamctl status` never measures.** A `du` over one lane's `node_modules` walks tens of
+thousands of files, and over 27 lanes it takes seconds. `status` runs every few minutes, so
+it only reads the number that the last command to change the lanes left behind (and says
+"not measured" when there is none). `teamctl teams` is the command that measures.
+
 ## Deleting a team, and what a team costs
 
 | What | Disk |
@@ -221,16 +308,16 @@ creation time in the lead's record, so the founder keeps its authority after one
 |---------|------|
 | `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. `--ticket` sets the team's default ticket key ([branch names](#branch-names-that-fit-your-repository)). Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's own conversation (the id stored with it), `--resume` reopens the one you name ([which conversation comes back](#finding-the-manager-and-being-told-when-someone-finishes)). With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
-| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)) |
+| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
-| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated. Refuses a running worker, and a worktree with uncommitted changes (lists them) (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one (and sends no kickoff) |
-| `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
-| `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
-| `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
+| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). Refused when free disk is under `disk-min-gb`. `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated. Refuses a running worker, and a worktree with uncommitted changes (lists them) (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one (and sends no kickoff). `--link-node-modules`: a brand-new lane shares its repository's `node_modules` instead of installing its own ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
+| `teamctl stop <role>` | close a pane; worktree, branch and commits stay. Its build caches go, `node_modules` stays |
+| `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch, record and the gigabytes they held. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
+| `teamctl prune [--team <name>] [--dry-run] [--keep-node-modules]` | the build output of every parked lane of the team, with a total in GB. Running lanes untouched; `--dry-run` deletes nothing; `--keep-node-modules` takes the build caches only ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
-| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use and share of the window, read from the transcript of the agent's own conversation; `-` when there is none) |
-| `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
+| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use and share of the window, read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
+| `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. This is the command that measures that disk. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
 | `teamctl panes` | tmux's view: command, pid, cwd |
 | `teamctl capture <role> [-n\|--lines N] [--all]`, `teamctl log <role>` | recent / full terminal output — for diagnosing a stuck agent, never for task state |
 | `teamctl focus <role>`, `teamctl attach` (alias `open`) | move your terminal |

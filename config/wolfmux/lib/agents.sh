@@ -430,7 +430,7 @@ cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
   local from_tree="" old_record="" old_branch="" old_pane dirty
   local want_branch="" ticket="" repo_arg="" repo="" spawn_repo trees repo_note=""
-  local pin=""
+  local pin="" link=0 linked=0
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -468,12 +468,13 @@ cmd_spawn() {
         shift
         ;;
       --no-kickoff) kickoff=0 ;;
+      --link-node-modules) link=1 ;;
       -*) die_usage "unknown option for spawn: $1" ;;
       *) if [ -z "$role" ]; then role="$1"; elif [ -z "$model" ]; then model="$1"; else die_usage "unexpected argument: $1"; fi ;;
     esac
     shift
   done
-  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff] [--resume <session-id>]   (models: $WOLFMUX_MODEL_KEYS)"
+  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]   (models: $WOLFMUX_MODEL_KEYS)"
   if [ -n "$from_tree" ] && [ -n "$repo_arg" ]; then die_usage "--repo and --from-worktree do not go together: a handed-over worktree stays in the repository it belongs to"; fi
   require_new_role_arg "$role"
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die_usage "'lead' is reserved; the lead is created by: teamctl start"
@@ -491,6 +492,10 @@ cmd_spawn() {
   # Handing a worktree over deletes another agent's record: that is the lead's call (or yours),
   # never a worker's, even with worker-spawn on (review of issues #4/#5).
   if [ -n "$from_tree" ]; then require_manager "spawn --from-worktree"; fi
+  # A new lane costs another node_modules and another build. Checked before the worktree is
+  # made, so a refusal leaves nothing behind. A handover reuses a worktree that is already
+  # there and installs nothing, so it is not asked to clear the bar (lib/disk.sh).
+  if [ -z "$from_tree" ]; then disk_guard_spawn; fi
   lock_acquire
 
   if reg_exists "$role"; then
@@ -567,6 +572,8 @@ cmd_spawn() {
     /bin/rm -f "$STATE_DIR/settings/$from_tree.json"
   else
     path="$(wt_create "$spawn_repo" "$trees/$role-$stamp" "$branch" "$base_commit")"
+    # Only a brand-new worktree: a handed-over one already has the dependencies it installed.
+    if disk_link_wanted "$link" && disk_link_node_modules "$spawn_repo" "$path"; then linked=1; fi
   fi
   new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}" "$repo" 1
   if [ -n "$pin" ]; then reg_set "$role" session_id "$pin"; fi
@@ -613,6 +620,9 @@ cmd_spawn() {
   say "worktree:  $(short_path "$path")"
   if [ -n "$from_tree" ]; then
     say "handed over: the worktree of $from_tree (its branch $old_branch and its commits are kept)"
+  fi
+  if [ "$linked" -eq 1 ]; then
+    say "deps:      node_modules linked to $(short_path "$spawn_repo")/node_modules — ONE directory for every lane, so an install in any lane changes them all"
   fi
 }
 
@@ -875,14 +885,21 @@ report_commits() {
 # report_files <worktree> <indent> <count> <shown> — the first <shown> changed files of a worktree
 report_files() {
   local listing
-  listing="$("$GIT_BIN" -C "$1" status --short 2>/dev/null || true)" # whole, in a variable: no pipe to close
+  # A caller that counted with something other than wt_dirty_count passes its own listing,
+  # so the number it printed and the lines below it cannot disagree (teamctl remove counts
+  # with disk_work_dirty_count: build output is not work).
+  if [ "$#" -ge 5 ]; then
+    listing="$5"
+  else
+    listing="$("$GIT_BIN" -C "$1" status --short 2>/dev/null || true)" # whole, in a variable: no pipe to close
+  fi
   printf '%s\n' "$listing" | sed -n "1,$4p" | sed "s/^/$2/"
   if [ "$3" -gt "$4" ]; then printf '%s… and %s more files\n' "$2" "$(($3 - $4))"; fi
 }
 
 # --- teamctl stop / restart ------------------------------------------------------------
 cmd_stop() {
-  local role="${1:-}" pane
+  local role="${1:-}" pane freed=""
   require_role_arg "$role"
   require_tools
   load_project
@@ -896,7 +913,17 @@ cmd_stop() {
     layout_apply
   fi
   reg_set "$role" pane_id "" state stopped
-  event_log stop "$role"
+  # A stopped lane keeps its worktree for as long as the role is on the books, which is
+  # where the disk went (issue #11). Its build caches are regenerable, so they go now;
+  # node_modules stays, because `teamctl restart` has to be the cheap thing it looks like.
+  if disk_clean_role "$role" caches 1 && [ -n "$DISK_CLEANED" ]; then
+    freed="$(human_size "$DISK_FREED_KB")"
+    say "freed:   $freed of build output ($DISK_CLEANED)"
+  elif [ -n "$DISK_SKIP_REASON" ]; then
+    say "kept:    its build output ($DISK_SKIP_REASON)"
+  fi
+  disk_cache_adjust "$DISK_FREED_KB"
+  event_log stop "$role" "${freed:+freed=$freed}"
   lock_release
   say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then founder_announce "stopped the lead of"; else founder_announce "stopped $role of"; fi
@@ -1021,7 +1048,7 @@ _inside_worktrees() {
 # uncommitted files or commits that are not in your current branch is refused, and the
 # refusal lists them. With --force the same list is shown and one question is asked.
 cmd_remove() {
-  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding=""
+  local force=0 assume_yes=0 roles="" role path branch dirty unmerged pane holding="" kb=0 swept=0 freed=0 repo_of repo_note
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --force) force=1 ;;
@@ -1047,6 +1074,13 @@ cmd_remove() {
   done
 
   lock_acquire
+  # What counts as "still holds work" here is disk_work_dirty_count, not wt_dirty_count: an
+  # untracked entry that is only build output is not work. Two of those are this tool's own
+  # doing — the node_modules symlink --link-node-modules puts in a lane, and the trash an
+  # interrupted cleanup leaves — and counting them made remove demand --force for a lane
+  # wolfmux had made that way. Nothing is swept before this question is answered: a command
+  # that then refuses must leave the lane exactly as it found it, and "nothing was removed"
+  # has to be true. The sweep happens further down, per lane, once that lane is going.
   # All or nothing: nobody is removed when one of them cannot be.
   if [ "$force" -ne 1 ]; then
     for role in $roles; do
@@ -1054,13 +1088,19 @@ cmd_remove() {
       branch="$(reg_field "$role" branch)"
       unmerged=0
       if wt_branch_exists "$role" "$branch"; then unmerged="$(git_for_role "$role" rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
-      if [ "$(wt_dirty_count "$path")" != "0" ] || [ "$unmerged" != "0" ]; then holding="$holding $role"; fi
+      if [ "$(disk_work_dirty_count "$path")" != "0" ] || [ "$unmerged" != "0" ]; then holding="$holding $role"; fi
     done
   fi
   for role in $roles; do
     path="$(reg_field "$role" workdir)"
     branch="$(reg_field "$role" branch)"
-    dirty="$(wt_dirty_count "$path")"
+    # Read while the record still exists: the line that reports the removal is printed
+    # after reg_delete, so asking the registry there answered "no repository" for every
+    # teammate, including the ones spawned with --repo.
+    repo_of="$(reg_field "$role" repo 2>/dev/null || true)"
+    repo_note=""
+    [ -z "$repo_of" ] || repo_note=" in $(short_path "$repo_of")"
+    dirty="$(disk_work_dirty_count "$path")"
     unmerged=0
     if wt_branch_exists "$role" "$branch"; then unmerged="$(git_for_role "$role" rev-list --count "HEAD..$branch" 2>/dev/null || printf 0)"; fi
     if [ -n "$holding" ] && [ "$dirty" = "0" ] && [ "$unmerged" = "0" ]; then continue; fi # reported below, removed never
@@ -1072,7 +1112,9 @@ cmd_remove() {
       fi
       if [ "$dirty" != "0" ]; then
         say "  $dirty uncommitted file$([ "$dirty" = "1" ] || printf s) in $(short_path "$path"):"
-        report_files "$path" '    ' "$dirty" 10
+        # The same list the count came from, so the number and the lines agree: build
+        # output is left out of both.
+        report_files "$path" '    ' "$dirty" 10 "$(disk_work_dirty_list "$path")"
       fi
       if [ "$force" -ne 1 ]; then
         say "  keep it:    commit in that worktree, then: git merge $branch"
@@ -1083,12 +1125,28 @@ cmd_remove() {
         confirm "Discard all of that and remove '$role'?" || { lock_release; die "aborted; nothing was removed (pass --yes to skip this question)"; }
       fi
     fi
+    # This lane is going now: every refusal and every question above is behind us. Take its
+    # build output first, so the symlink of a --link-node-modules lane and any leftover
+    # cleanup trash are gone before git is asked to remove the worktree (that is what used
+    # to make `git worktree remove` need --force here).
+    swept=0
+    if disk_clean_role "$role" all 1 && [ -n "$DISK_CLEANED" ]; then
+      swept="$DISK_FREED_KB"
+      say "$role: took $(human_size "$swept") of build output first ($DISK_CLEANED)"
+      disk_cache_adjust "$swept"
+    fi
     # A record is a file anyone can edit. Whatever it says, only a directory inside the
     # worktree directory of this teammate's own repository is ever deleted, and only a
     # branch teamctl created that is not checked out in that repository itself.
+    kb=0
     if [ -d "$path" ]; then
       if _inside_worktrees "$path" "$(worker_trees_dir "$role")"; then
+        # The whole worktree goes, node_modules and every other build directory with it,
+        # so what it took is what this frees. Measured before, reported after (issue #11).
+        kb="$(disk_kb "$path")"
         git_for_role "$role" worktree remove --force "$path" >/dev/null 2>&1 || /bin/rm -rf "$path"
+        if [ -d "$path" ]; then kb=0; fi
+        freed=$((freed + kb))
       else
         warn "$role: its record points outside $(short_path "$(worker_trees_dir "$role")") ($(short_path "$path")); that directory was left alone"
       fi
@@ -1106,10 +1164,11 @@ cmd_remove() {
     if [ -n "$pane" ]; then tmx kill-pane -t "$pane" 2>/dev/null || true; fi
     /bin/rm -f "$STATE_DIR/settings/$role.json"
     reg_delete "$role"
-    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged"
-    say "removed: $role  (worktree, branch $branch and record)$(repo="$(reg_field "$role" repo)"; [ -z "$repo" ] || printf ' in %s' "$(short_path "$repo")")"
+    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged freed_kb=$((kb + swept))"
+    say "removed: $role  (worktree, branch $branch and record)$repo_note — freed $(human_size "$((kb + swept))")"
   done
   layout_apply
+  disk_cache_adjust "$freed"
   lock_release
   [ -z "$holding" ] || die "nothing was removed:$holding still hold$([ "$(printf '%s' "$holding" | wc -w | tr -d ' ')" = "1" ] && printf s) work."
   founder_announce "removed $(printf '%s' "$roles" | sed 's/^ //; s/ /, /g') from"
@@ -1119,6 +1178,14 @@ _destroy_worker_artifacts() {
   local role="$1" path branch result
   path="$(reg_field "$role" workdir)"
   branch="$(reg_field "$role" branch)"
+  # Build output first. A project whose .gitignore does not list node_modules reports it
+  # as untracked, wt_remove_if_clean then calls the worktree dirty, and the gigabytes stay
+  # for ever (issue #11). Taking the allowlist first leaves a tree that is clean or really
+  # dirty, and the answer below is about work again.
+  if disk_clean_role "$role" all 1 && [ -n "$DISK_CLEANED" ]; then
+    say "  $role: freed $(human_size "$DISK_FREED_KB") of build output ($DISK_CLEANED)"
+    disk_cache_adjust "$DISK_FREED_KB"
+  fi
   result=0
   wt_remove_if_clean "$role" "$path" || result=$?
   case "$result" in
@@ -1307,7 +1374,7 @@ _purge_report() {
       report_files "$path" '          ' "$dirty" 15
     fi
   done
-  kb="$(disk_kb "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json")"
+  kb="$(disk_kb "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb")"
   PURGE_KB=$((PURGE_KB + kb))
   printf '  %-21s %9s   records, approvals, event log\n' "teamctl's state" "$(human_size "$kb")"
   say ""
@@ -1349,7 +1416,9 @@ _purge_team() {
   gitr worktree prune
   # The first team's directory is also the parent of the named teams: take its files, never teams/.
   /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge"
-  /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json"
+  # disk-kb is the remembered size of lanes that no longer exist; leaving it behind also
+  # left the team's state directory non-empty, so the rmdir of a named team did nothing.
+  /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb"
   /bin/rmdir "$WORKTREES_DIR" 2>/dev/null || true
 }
 

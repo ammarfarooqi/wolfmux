@@ -148,6 +148,7 @@ complete_first_word() {
   complete_emit "$prefix" remove "<role>...: take stopped workers off the books"
   complete_emit "$prefix" restart "<role>: run an agent again, fresh or with --continue"
   complete_emit "$prefix" destroy "end the team; --purge deletes it from disk"
+  complete_emit "$prefix" prune "take the build output of every parked lane of the team"
   complete_emit "$prefix" nudge "<role>: one fixed notification line in a pane"
   complete_emit "$prefix" policy "show or set what the team may do (permissions, spawning, isolation)"
   complete_emit "$prefix" layout "how the panes are arranged (lead-left, lead-top, tiled)"
@@ -180,10 +181,11 @@ complete_options() {
   local cmd="$1" prefix="$2" options="" option
   case "$cmd" in
     start) options="--no-attach --continue --handover --ticket --init-beads --skip-beads --lead-permissions --worker-permissions --worker-spawn --resume" ;;
-    spawn) options="--base --from-worktree --branch --ticket --repo --no-kickoff --resume" ;;
+    spawn) options="--base --from-worktree --branch --ticket --repo --no-kickoff --resume --link-node-modules" ;;
     restart) options="--continue --resume" ;;
     remove) options="--force --yes" ;;
     destroy) options="--worktrees --purge --force --keep-transcripts --yes" ;;
+    prune) options="--dry-run --keep-node-modules" ;;
     nudge) options="--quiet --all --id" ;;
     capture) options="--lines --all" ;;
     diff) options="--stat --names --commits --working" ;;
@@ -205,6 +207,9 @@ complete_options() {
       --id) complete_emit "$prefix" "$option" "<bead-id>: the bead this is about" ;;
       --lines) complete_emit "$prefix" "$option" "<count>: how many lines" ;;
       --resume) complete_emit "$prefix" "$option" "<session-id>: reopen the conversation you name" ;;
+      --link-node-modules) complete_emit "$prefix" "$option" "share the repository's node_modules instead of installing one" ;;
+      --dry-run) complete_emit "$prefix" "$option" "report what it would free, delete nothing" ;;
+      --keep-node-modules) complete_emit "$prefix" "$option" "take the build caches only" ;;
       *) complete_emit "$prefix" "$option" ;;
     esac
   done

@@ -84,6 +84,23 @@
 # Set this when your repository's hooks require a shape, e.g. a Jira key in every branch name.
 #WOLFMUX_BRANCH_TEMPLATE=feature-{ticket}-{role}-{ts}
 
+# --- disk (each lane worktree carries its own node_modules and build output) ---
+# What `teamctl spawn` does when free disk is under WOLFMUX_DISK_MIN_GB.
+#   refuse (default)  no lane is created; the message names the number and `teamctl prune --dry-run`
+#   warn              a warning, and the lane is created anyway
+#   off               no check at all
+#WOLFMUX_DISK_GUARD=warn
+# The free space a spawn asks for, in whole gigabytes — counted the way df and Finder do
+# NOT count them: 1 GB here is 1024 MB (a gibibyte), the same unit teamctl prints sizes in.
+# A lane costs about 3 GB once it has installed and built, so the default leaves room for
+# several more. 0 switches the limit off. No leading zero: write 8, not 08.
+#WOLFMUX_DISK_MIN_GB=20
+# Link a new lane's node_modules to the project root's copy instead of letting the lane
+# install 2+ GB of its own (`teamctl spawn --link-node-modules` does it for one lane).
+# Off by default: it is ONE directory for every lane and for your own checkout, so an
+# `npm install` in any lane changes the dependencies of all of them.
+#WOLFMUX_LINK_NODE_MODULES=off
+
 # How the panes are arranged (per team: `teamctl layout <name>`).
 #   lead-left (default)  the lead large on the left, workers stacked on the right
 #   lead-top             the lead across the top, workers side by side below
