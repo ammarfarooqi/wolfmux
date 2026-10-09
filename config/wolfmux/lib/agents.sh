@@ -5,6 +5,11 @@
 # and workers neither know nor care whether the lead is Fable or Astra.
 
 WOLFMUX_NUDGE_DEBOUNCE="${WOLFMUX_NUDGE_DEBOUNCE:-3}"
+# Nothing is ever typed into a pane a human may be typing in: the notice waits.
+WOLFMUX_NUDGE_COLLISION_CHECK="${WOLFMUX_NUDGE_COLLISION_CHECK:-1}" # 0 brings back the old blind typing
+WOLFMUX_NUDGE_HUMAN_IDLE="${WOLFMUX_NUDGE_HUMAN_IDLE:-5}"           # seconds since the last keystroke that still count as "at the keyboard"
+WOLFMUX_NUDGE_RETRY="${WOLFMUX_NUDGE_RETRY:-3}"                     # how often a waiting notice looks again
+WOLFMUX_NUDGE_DEFER_MAX="${WOLFMUX_NUDGE_DEFER_MAX:-600}"           # how long it waits before giving up
 
 session_name_for_project() {
   local stored candidate
@@ -919,7 +924,7 @@ cmd_destroy() {
 # pane. Every interpolated value is a validated role, a model label from the model
 # table, an approval id or a policy word; nothing free-form is ever typed.
 notify_lead() {
-  local kind="$1" pane text tries=0
+  local kind="$1" pane text tries=0 fresh=0
   pane="$(tm_pane_for_role "$SESSION" "$WOLFMUX_LEAD_ROLE")"
   [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
   case "$kind" in
@@ -943,6 +948,24 @@ notify_lead() {
     [ "$tries" -lt 30 ] || break
     sleep 0.2
   done
+  # The lead is a pane a human sits in front of: never type over a half-typed line.
+  # Each of these notices names its own event, so they queue instead of collapsing.
+  if tm_pane_human_busy "$pane"; then
+    if ! nudge_pending_exists "$WOLFMUX_LEAD_ROLE"; then
+      if nudge_pending_open "$WOLFMUX_LEAD_ROLE"; then fresh=1; fi
+    fi
+    if nudge_pending_exists "$WOLFMUX_LEAD_ROLE"; then
+      nudge_pending_put_line "$WOLFMUX_LEAD_ROLE" "$text" || true
+      nudge_end "$WOLFMUX_LEAD_ROLE"
+      if [ "$fresh" -eq 1 ]; then _nudge_defer_start "$WOLFMUX_LEAD_ROLE" "$pane"; fi
+      event_log notify-deferred "$WOLFMUX_LEAD_ROLE" "$kind"
+      return 3
+    fi
+    # No marker and none could be made: say so rather than type over the human.
+    nudge_end "$WOLFMUX_LEAD_ROLE"
+    event_log notify-dropped "$WOLFMUX_LEAD_ROLE" "$kind (pane busy, no marker)"
+    return 3
+  fi
   tm_type_line "$pane" "$text"
   nudge_mark "$WOLFMUX_LEAD_ROLE"
   nudge_end "$WOLFMUX_LEAD_ROLE"
@@ -951,6 +974,14 @@ notify_lead() {
 # --- teamctl nudge <role>|--all [--id <bead>] [--quiet] ------------------------------------------
 # The ONLY thing ever typed into an agent's prompt: one short, fixed line. Task and
 # message bodies stay in Beads, so there is nothing to quote, escape or truncate.
+_nudge_text() { # <identity> [bead]
+  if [ -n "${2:-}" ]; then
+    printf '[wolfmux] Beads update for %s (%s). Run: bd show %s -- then: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1" "$2" "$2" "$1"
+  else
+    printf '[wolfmux] Beads update for %s. Run: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1" "$1"
+  fi
+}
+
 _nudge_one() {
   local role="$1" bead="$2" pane text who
   # never yourself: the same role in the same team
@@ -959,21 +990,110 @@ _nudge_one() {
   pane="$(tm_pane_for_role "$SESSION" "$role")"
   [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
   nudge_begin "$role" || return 2
+  # A notice is already waiting for this pane to go idle: add this bead to it and
+  # let the one waiter deliver. Several queued nudges collapse into ONE line.
+  if nudge_pending_exists "$role"; then
+    nudge_pending_put_bead "$role" "$bead" || true
+    nudge_end "$role"
+    return 3
+  fi
   # Notified moments ago: one notice covers a burst of bead events, because the
   # notice always ends with the full inbox command.
   if [ $(($(now_epoch) - $(nudge_last "$role"))) -lt "$WOLFMUX_NUDGE_DEBOUNCE" ]; then
     nudge_end "$role"
     return 2
   fi
-  if [ -n "$bead" ]; then
-    text="[wolfmux] Beads update for $who ($bead). Run: bd show $bead -- then: bd list --assignee $who --status open,in_progress,blocked --include-infra"
-  else
-    text="[wolfmux] Beads update for $who. Run: bd list --assignee $who --status open,in_progress,blocked --include-infra"
+  # A human may be typing in there. Park the notice and wait instead of gluing it
+  # onto their half-typed line. The lock is NOT held across the wait.
+  if tm_pane_human_busy "$pane"; then
+    if nudge_pending_open "$role"; then
+      nudge_pending_put_bead "$role" "$bead" || true
+      nudge_end "$role"
+      _nudge_defer_start "$role" "$pane"
+      event_log nudge-deferred "$role" "$bead"
+    elif nudge_pending_exists "$role"; then
+      # A waiter appeared between the two checks: let it carry this bead too.
+      nudge_pending_put_bead "$role" "$bead" || true
+      nudge_end "$role"
+    else
+      nudge_end "$role"
+      event_log nudge-dropped "$role" "$bead (pane busy, no marker)"
+    fi
+    return 3
   fi
+  text="$(_nudge_text "$who" "$bead")"
   nudge_mark "$role"
   tm_type_line "$pane" "$text"
   event_log nudge "$role" "$bead"
   nudge_end "$role"
+}
+
+# _nudge_defer_start <role> <pane> — the one waiter for a role, fully detached: the
+# caller (a Beads hook, already backgrounded) must never wait on it and nothing it
+# does may reach the caller's terminal.
+_nudge_defer_start() {
+  # errexit off inside the waiter: one tmux read that fails in passing must not
+  # abandon a notice somebody is waiting for.
+  (
+    set +e
+    _nudge_defer_wait "$1" "$2" >/dev/null 2>&1 &
+  )
+  return 0
+}
+
+# _nudge_defer_wait <role> <pane> — look again every WOLFMUX_NUDGE_RETRY seconds for
+# at most WOLFMUX_NUDGE_DEFER_MAX. First look that comes back idle: deliver what the
+# marker holds, exactly once, and remove it. On expiry: remove it and log that. Nothing
+# is lost either way, because every notice ends with the agent's own inbox command.
+_nudge_defer_wait() {
+  local role="$1" pane="$2" who waited=0 tries bead line delivered
+  who="$(team_identity "$TEAM" "$role")"
+  while [ "$waited" -lt "$WOLFMUX_NUDGE_DEFER_MAX" ]; do
+    sleep "$WOLFMUX_NUDGE_RETRY"
+    waited=$((waited + WOLFMUX_NUDGE_RETRY))
+    nudge_pending_exists "$role" || return 0 # someone else cleaned up
+    nudge_pending_beat "$role"
+    if [ "$(tm_pane_state "$pane")" != "running" ]; then
+      nudge_pending_clear "$role"
+      event_log nudge-defer-dropped "$role" "pane ended after ${waited}s"
+      return 0
+    fi
+    if tm_pane_human_busy "$pane"; then continue; fi
+    tries=0
+    until nudge_begin "$role"; do
+      tries=$((tries + 1))
+      [ "$tries" -lt 30 ] || break
+      sleep 0.2
+    done
+    # Taking the lock took a moment: the human may have started typing again.
+    if tm_pane_human_busy "$pane"; then
+      nudge_end "$role"
+      continue
+    fi
+    delivered=0
+    # Fixed notices first, in the order they happened; each names its own event.
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      tm_type_line "$pane" "$line"
+      delivered=$((delivered + 1))
+    done <<EOF
+$(nudge_pending_lines "$role")
+EOF
+    if nudge_pending_has_bead "$role"; then
+      bead="$(nudge_pending_bead "$role")"
+      tm_type_line "$pane" "$(_nudge_text "$who" "$bead")"
+      delivered=$((delivered + 1))
+      event_log nudge "$role" "${bead:-collapsed} (waited ${waited}s)"
+    fi
+    nudge_mark "$role"
+    nudge_pending_clear "$role"
+    nudge_end "$role"
+    [ "$delivered" -gt 0 ] || event_log nudge-defer-empty "$role" "marker held nothing"
+    return 0
+  done
+  nudge_pending_clear "$role"
+  event_log nudge-defer-expired "$role" "gave up after ${waited}s; the bead is still in the inbox"
+  return 0
 }
 
 cmd_nudge() {
@@ -1039,6 +1159,10 @@ cmd_nudge() {
   case "$failed" in
     0) say "notified: $role" ;;
     2) say "skipped: $role was notified moments ago (debounce ${WOLFMUX_NUDGE_DEBOUNCE}s)" ;;
+    3)
+      say "deferred: somebody is typing in ${role}'s pane. The notice follows by itself as soon as that pane is idle (it gives up after ${WOLFMUX_NUDGE_DEFER_MAX}s; the bead stays in the inbox either way)."
+      return 3
+      ;;
     *) die "'$role' has no running pane (its beads are waiting in Beads; start it with: teamctl restart $role)" ;;
   esac
 }

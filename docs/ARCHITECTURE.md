@@ -54,8 +54,8 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 | `provider-env.sh` | the scrub lists, binary resolution, the login guard (every provider), config parsing |
 | `providers.sh` | the provider table: vendor, label, endpoint, Keychain service, billing, default model ids, context window, auth variable, key URL per provider |
 | `common.sh` | output, validation, tool lookup, **the model table**, project resolution |
-| `registry.sh` | the only module that touches state files; project lock; nudge debounce |
-| `tmuxctl.sh` | every tmux call |
+| `registry.sh` | the only module that touches state files; project lock; nudge debounce and deferred notices |
+| `tmuxctl.sh` | every tmux call, including "is a human typing in this pane" |
 | `worktree.sh` | worktree and branch creation, `worktrees`, `diff` |
 | `beads.sh` | Beads bootstrap (stealth init) and hook installation |
 | `policy.sh` | who is calling (`caller_role`), manager-only commands, the three policy keys |
@@ -146,9 +146,34 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 3. `beads-nudge` sees an assignee that is not the actor and calls
    `teamctl nudge backend --quiet --id <bead-id>` in the background
 4. `teamctl` validates role and id, debounces bursts (3 s, under a per-role guard),
-   and types **one fixed line** into the pane:
+   checks that nobody is typing in that pane, and types **one fixed line** into it:
    `[wolfmux] Beads update for backend (<id>). Run: bd show <id> -- then: bd list …`
 5. the worker runs the command it was shown and reads the body from Beads
+
+### Never into a half-typed line
+
+A pane is a keyboard somebody may be using. Typing a notice into it mid-sentence
+submitted the human's unfinished text and the notice together as one message, which
+is what GitHub issue #9 reported. So before anything is typed, `tm_pane_human_busy`
+asks three cheap questions about the pane, and any yes means busy:
+
+| Check | How |
+|-------|-----|
+| somebody is at this pane and pressed a key moments ago | it is the active pane of the active window of an attached session, and that client's `#{client_activity}` is less than `WOLFMUX_NUDGE_HUMAN_IDLE` (5 s) old. tmux moves `client_activity` on real keystrokes only: not on pane output, not on `send-keys` from outside, and a detached session lists no client at all |
+| the input line already holds something | the row at `#{cursor_y}`, with box glyphs, whitespace and one leading prompt marker removed, is not empty (a Claude Code input row reads `│ > half typed │`) |
+| the pane is in copy mode or scrollback | `#{pane_in_mode}` is 1, so keys would drive the mode, not the prompt |
+
+Busy means the notice is **parked, not dropped**: a per-role marker under
+`~/.wolfmux/state/<project>/nudge/<role>.pending` holds it and ONE detached waiter per
+role looks again every `WOLFMUX_NUDGE_RETRY` (3 s) for up to `WOLFMUX_NUDGE_DEFER_MAX`
+(600 s). The first idle look delivers; the marker goes. Beads nudges that pile up
+while it waits **collapse into one line** (two different bead ids give the generic
+line, which names the whole inbox anyway); spawn, approval and policy notices each
+name their own event, so they queue instead. On expiry the marker is removed and
+`nudge-defer-expired` goes into `events.jsonl`: nothing is lost, because every agent
+sweeps its own inbox and the notice always ended with that inbox command.
+`teamctl nudge` says `deferred: …` and exits 3. `WOLFMUX_NUDGE_COLLISION_CHECK=0`
+brings the old blind typing back. The per-role lock is never held across the wait.
 
 The message body never travels through tmux, so there is nothing to quote, escape
 or truncate. The same hook tells the lead when a worker closes a task or marks
@@ -295,7 +320,7 @@ One pixel drawing (`tools/wolf-art.py`) produces the terminal art in `lib/brand.
 ```
 ~/bin/                          teamctl + launchers
 ~/.config/wolfmux/              code, tmux.conf, TEAM_PROTOCOL.md, README.md, config, glm-worker-settings.json
-~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/
+~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/ (debounce stamps, <role>.lock, <role>.pending)
 ~/.wolfmux/worktrees/<project>/ one directory per worker
 <project>/.beads/               tasks and messages (Beads)
 macOS Keychain                  one service per provider: "zai-coding-plan" (Z.ai),

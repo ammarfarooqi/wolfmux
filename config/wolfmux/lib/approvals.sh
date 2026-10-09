@@ -164,7 +164,9 @@ cmd_permission_hook() {
   summary="$(printf '%s' "$input" | "$JQ_BIN" -r '(.tool_input.command // .tool_input.file_path // .tool_input.url // .tool_input.query // (.tool_input | tojson)) | tostring | .[0:400]' 2>/dev/null)"
   id="$(approval_create "$role" "${tool:-tool}" "${summary:-}" "$PWD")" || exit 0
   event_log approval-request "$role" "$id"
-  notify_lead approval "$id" "$role"
+  # A notice that could not be typed (the lead is typing: it waits) must never stop
+  # the worker from waiting for a decision.
+  notify_lead approval "$id" "$role" || true
 
   timeout="$(approval_timeout)"
   deadline=$(($(now_epoch) + timeout))

@@ -388,6 +388,49 @@ answered `no team session. Start one first: teamctl start fable`. That line drop
 `restart` of the lead without a session starts the team again, as the model that led it, and
 `--continue` goes with it; a worker's refusal names the exact two commands. `tests/smoke.sh`: 177 → 181.
 
+## 24. "A notice landed in the middle of my sentence" (v1.11)
+
+GitHub issue #9, reported on 2026-10-09 from the owner's own lead pane:
+
+```
+i said install bun if requir[wolfmux] Beads update ... include-infraed
+```
+
+`tm_type_line` typed its notice with `send-keys -l` and pressed Enter, without ever
+asking what was already on that pane's input line. Half-typed text and the notice went
+off as one message, several times a day.
+
+Two parts now. **Detect**: `tm_pane_human_busy` calls a pane busy when somebody is at it
+and pressed a key within 5 s, or its input line is not empty, or it is in copy mode.
+The keyboard question is answered by tmux's `#{client_activity}`, which was measured
+first: on the live socket, clients that had not been touched for 19 hours read as idle
+while their agents kept printing, a detached session lists no client, and `send-keys`
+from outside does not move it either. So it tracks input, not output, which is exactly
+the question. **Defer and collapse**: a busy pane is not typed into. The notice goes
+into a per-role marker and one detached waiter looks again every 3 s for up to 10
+minutes; the first idle look delivers. Beads nudges that pile up collapse into one
+generic line, because that line names the whole inbox anyway; spawn, approval and
+policy notices name their own event, so they queue. On expiry the marker is dropped
+with `nudge-defer-expired` in the event log: nothing is lost, the bead is still in the
+inbox. The per-role lock is deliberately not held across the wait, and `tm_type_line`
+stays the dumb primitive it was.
+
+Four knobs, shaped like `WOLFMUX_NUDGE_DEBOUNCE`: `WOLFMUX_NUDGE_HUMAN_IDLE` (5),
+`WOLFMUX_NUDGE_RETRY` (3), `WOLFMUX_NUDGE_DEFER_MAX` (600) and
+`WOLFMUX_NUDGE_COLLISION_CHECK=0`, which brings the old blind typing back. `teamctl
+nudge` reports `deferred: …` and exits 3.
+
+Read against the machine's own 13 live panes (read-only, nothing typed), the check
+agreed with what was on each screen: 12 panes sitting at a bare `❯` read idle, and the
+one pane holding `❯ close sprint 7, sprint 8 oct 9 to 15` read busy. That last one is
+the bug caught in the act: a notice a second later would have joined that sentence.
+
+A minor version, not a patch: the notice is no longer guaranteed to be immediate, and
+`teamctl nudge` has an exit code it did not have.
+
+`tests/nudge-typing.sh`: new, 24 checks. `tests/smoke.sh`: 181 → 181. `tests/docs.sh`:
+28 → 28. v1.11.0.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

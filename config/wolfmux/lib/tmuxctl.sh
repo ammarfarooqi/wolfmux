@@ -202,10 +202,94 @@ tm_pane_state() {
 
 # tm_type_line <pane> <text> — a short fixed notification, typed literally, then
 # submitted. The pause lets TUIs that batch fast input as a paste see Enter as a key.
+#
+# The primitive, and deliberately dumb: it types whatever it is given, wherever it is
+# pointed. Every caller that aims at a RUNNING agent's prompt asks tm_pane_human_busy
+# first, or a human's half-typed line and the notice are submitted glued together.
 tm_type_line() {
   tmx send-keys -t "$1" -l -- "$2"
   sleep 0.3
   tmx send-keys -t "$1" Enter
+}
+
+# Glyphs a TUI draws its input box out of. A Claude Code input row reads
+# "│ > half typed                 │", so they say nothing about what was typed.
+WOLFMUX_BOX_GLYPHS='│ ┃ ║ ┊ ┋ ┆ ┇ ╎ ╏ ─ ━ ═ ╭ ╮ ╯ ╰ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ ╔ ╗ ╚ ╝ ╠ ╣ █ ▌ ▐ ▏ ▕'
+# One of these at the start of the input line is the prompt, not something typed.
+WOLFMUX_PROMPT_MARKERS='> ❯ › $ % #'
+
+# tm_input_line_dirty <row> — 0 when the pane's input row holds more than an empty
+# prompt. Box glyphs and whitespace go first, then ONE leading prompt marker; anything
+# still left is somebody's half-typed text.
+tm_input_line_dirty() {
+  local text="$1" glyph marker
+  for glyph in $WOLFMUX_BOX_GLYPHS; do text="${text//$glyph/}"; done
+  text="${text//[[:space:]]/}"
+  for marker in $WOLFMUX_PROMPT_MARKERS; do
+    case "$text" in "$marker"*)
+      text="${text#"$marker"}"
+      break
+      ;;
+    esac
+  done
+  [ -n "$text" ]
+}
+
+# tm_client_idle <session> — seconds since the newest client attached to this session
+# last sent INPUT; 1 (and no output) when no client is attached at all.
+#
+# Verified on tmux 3.7c, this machine: #{client_activity} moves on real keystrokes
+# only. It does not move when the pane prints output (clients on the live wolfmux
+# socket read 19 hours idle while their agents keep writing), and it does not move
+# for send-keys from outside. A detached session lists no client, so a background
+# team pane is never read as busy.
+tm_client_idle() {
+  local newest="" act
+  while read -r act; do
+    case "$act" in "" | *[!0-9]*) continue ;; esac
+    if [ -z "$newest" ] || [ "$act" -gt "$newest" ]; then newest="$act"; fi
+  done <<EOF
+$(tmx list-clients -t "$1" -F '#{client_activity}' 2>/dev/null)
+EOF
+  [ -n "$newest" ] || return 1
+  printf '%s\n' $(($(now_epoch) - newest))
+}
+
+# tm_pane_human_busy <pane> — 0 when a human may be typing in this pane right now, so
+# nothing may be typed into it. Three tmux reads, no sleeps, no output of its own.
+#
+# Busy when ANY of these holds:
+#   a. a human is AT this pane (active pane of the active window of an attached
+#      session) and pressed a key within WOLFMUX_NUDGE_HUMAN_IDLE seconds,
+#   b. the input line already holds something,
+#   c. the pane is in copy mode or scrollback, where keys drive the mode, not the prompt.
+#
+# A false "busy" only delays the notice, so the checks lean towards busy; being busy
+# forever is bounded by the caller's deferral limit.
+tm_pane_human_busy() {
+  local pane="$1" fields rest in_mode pane_active win_active cy sess idle row
+  [ -n "$pane" ] || return 1
+  [ "${WOLFMUX_NUDGE_COLLISION_CHECK:-1}" = "1" ] || return 1
+  fields="$(tmx display-message -p -t "$pane" \
+    '#{pane_in_mode}|#{pane_active}|#{window_active}|#{cursor_y}|#{session_name}' 2>/dev/null)" || return 1
+  in_mode="${fields%%|*}" rest="${fields#*|}"
+  pane_active="${rest%%|*}" rest="${rest#*|}"
+  win_active="${rest%%|*}" rest="${rest#*|}"
+  cy="${rest%%|*}" sess="${rest#*|}"
+  # (c) copy mode / scrollback
+  if [ "$in_mode" = "1" ]; then return 0; fi
+  # (a) the human's eyes and hands are on this pane
+  if [ "$pane_active" = "1" ] && [ "$win_active" = "1" ] && [ -n "$sess" ]; then
+    idle="$(tm_client_idle "$sess" 2>/dev/null || true)"
+    case "$idle" in
+      "" | *[!0-9]*) ;;
+      *) [ "$idle" -ge "${WOLFMUX_NUDGE_HUMAN_IDLE:-5}" ] || return 0 ;;
+    esac
+  fi
+  # (b) something is already on the input line
+  case "$cy" in "" | *[!0-9]*) return 1 ;; esac
+  row="$(tmx capture-pane -p -J -t "$pane" -S "$cy" -E "$cy" 2>/dev/null)" || return 1
+  tm_input_line_dirty "$row"
 }
 
 # tm_capture <pane> <lines|all>

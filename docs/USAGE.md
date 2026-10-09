@@ -139,7 +139,7 @@ lead can never take over a team that already has a lead; a worker can never foun
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch and record. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl restart <role> [--continue]` | same worktree and branch; `--continue` resumes the CLI's last conversation |
-| `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
+| `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files |
 | `teamctl teams` | the short list per team: state, lead, number of agents, the disk its teammates' worktrees take, session |
 | `teamctl panes` | tmux's view: command, pid, cwd |
