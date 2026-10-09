@@ -15,7 +15,7 @@ _billing_of() {
 }
 
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir
+  local role kind pane state branch ahead dirty workdir model cctx repo session_id
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
     reg_exists "$role" || continue
     kind="$(reg_field "$role" kind)"
@@ -31,18 +31,43 @@ _status_rows() { # emits one JSON object per agent
       ahead="-"
     else
       branch="$(reg_field "$role" branch)"
-      ahead="$(wt_ahead "$(reg_field "$role" base_commit)" "$branch")"
+      ahead="$(wt_ahead "$role" "$(reg_field "$role" base_commit)" "$branch")"
     fi
+    repo="$(reg_field "$role" repo)" # empty: this project. A teammate spawned with --repo: that repository.
     dirty="$(wt_dirty_count "$workdir")"
-    "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$(reg_field "$role" model)" \
+    model="$(reg_field "$role" model)"
+    session_id="$(reg_field "$role" session_id)" # its own conversation: what --continue reopens, and what CONTEXT reads
+    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id"
+    if [ -n "$CTX_TOKENS" ]; then
+      cctx="$(ctx_display "$CTX_TOKENS" "$CTX_WINDOW")"
+    else
+      cctx="-"
+    fi
+    "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$model" \
       --arg label "$(reg_field "$role" label)" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
-      --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" \
+      --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
+      --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
+      --arg session_id "$session_id" \
       '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
-        branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir}'
+        session_id: $session_id,
+        branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir, repo: $repo,
+        context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
+        context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}'
   done
+}
+
+# ctx_display <tokens> <window> — "142k 71%": what the CONTEXT column shows. When the
+# window is unknown the share is 0% and the tokens still mean something on their own.
+ctx_display() {
+  awk -v t="$1" -v w="$2" 'BEGIN {
+    if (t >= 1000000) s = sprintf("%.1fM", t / 1000000);
+    else if (t >= 10000) s = sprintf("%.0fk", t / 1000);
+    else s = sprintf("%.1fk", t / 1000);
+    printf "%s %d%%\n", s, (w + 0 > 0 ? int(t * 100 / w) : 0)
+  }'
 }
 
 # teamctl status [--json]   (alias: workers)
@@ -57,21 +82,24 @@ role_column_width() {
 
 # _status_team_json — one team as an object (needs team_paths to have run)
 _status_team_json() {
+  local orphaned=0
   SESSION="$(session_name_for_project)"
   SESSION_LIVE=""
   if tm_session_exists "$SESSION"; then SESSION_LIVE=1; fi
+  if team_orphaned; then orphaned=1; fi
   _status_rows | "$JQ_BIN" -s --arg team "$TEAM" --arg root "$ROOT" --arg session "$SESSION" \
-    --arg running "${SESSION_LIVE:-0}" --arg lp "$(policy_get lead-permissions)" \
+    --arg running "${SESSION_LIVE:-0}" --arg founder "$(team_founder)" --arg orphaned "$orphaned" --arg lp "$(policy_get lead-permissions)" \
     --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
+      founder: $founder, orphaned: ($orphaned == "1"),
       policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt},
       approvals_pending: ($pending | tonumber), agents: .}'
 }
 
 # _status_team_text — one team as a small tree: the team, its wolf, its dogs
 _status_team_text() {
-  local rows width state hint=""
+  local rows width state hint="" repo_col="" role
   SESSION="$(session_name_for_project)"
   SESSION_LIVE=""
   if tm_session_exists "$SESSION"; then SESSION_LIVE=1; fi
@@ -84,6 +112,9 @@ _status_team_text() {
     state="running"
   fi
   say "TEAM $TEAM · $SESSION · $state"
+  if team_orphaned; then
+    say "  $(team_orphaned_note) Bring it back: teamctl restart lead$hint --continue · delete it: teamctl destroy$hint --purge"
+  fi
   say "  policy  $(policy_summary) · approvals pending: $(approvals_pending_count)"
   rows="$(_status_rows)"
   if [ -z "$rows" ]; then
@@ -91,18 +122,39 @@ _status_team_text() {
     return 0
   fi
   width="$(role_column_width)"
-  printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY WORKDIR
+  # The REPO column costs a whole column on every team, and almost every team has none:
+  # it appears only when a teammate really works in another repository (teamctl spawn --repo).
+  for role in $(reg_list); do
+    if [ -n "$(reg_field "$role" repo 2>/dev/null || true)" ]; then
+      repo_col=1
+      break
+    fi
+  done
+  if [ -n "$repo_col" ]; then
+    printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" REPO BRANCH AHEAD DIRTY CONTEXT WORKDIR
+  else
+    printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
+  fi
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
   # A metered agent is marked with a $ after its label (every token it uses is billed).
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .workdir] | join("|")' |
-    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty workdir; do
+  # CONTEXT is what the agent's transcript says the conversation holds: tokens, and the
+  # share of the window. A stopped worker's line is the reuse-or-respawn signal.
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // "")] | join("|")' |
+    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
       else
         printf '    %s %-*s' "$WOLFMUX_WORKER_MARK" "$width" "$role"
       fi
-      printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$(short_path "$workdir")"
+      if [ -n "$repo_col" ]; then
+        printf ' %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+      else
+        printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+      fi
     done
+  if [ -n "$repo_col" ]; then
+    say "  REPO: the repository a teammate's worktree and branch live in ('-' = this project). teamctl spawn <role> <model> --repo <path>"
+  fi
   if [ -n "$(printf '%s\n' "$rows" | "$JQ_BIN" -r 'select(.billing == "metered") | .role' | head -1)" ]; then
     say '  $ = metered: every token is billed to a prepaid balance, not to a plan or subscription (WOLFMUX_METERED=on, the owner'"'"'s decision)'
   fi
@@ -140,31 +192,58 @@ cmd_status() {
   say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
 }
 
-# teamctl teams — the short list
+# _teams_facts: for the loaded team: TEAMS_STATE, TEAMS_FOUNDER, TEAMS_LEAD, TEAMS_COUNT, TEAMS_KB
+_teams_facts() {
+  local role
+  SESSION="$(session_name_for_project)"
+  TEAMS_STATE="running"
+  if team_orphaned; then TEAMS_STATE="orphaned"; fi
+  TEAMS_FOUNDER="$(team_founder)"
+  TEAMS_LEAD="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
+  TEAMS_COUNT="$(reg_list | wc -l | tr -d ' ')"
+  # worktrees of this team's workers (the lead works in your own checkout and adds nothing)
+  TEAMS_KB=0
+  for role in $(reg_list); do
+    if [ "$(reg_field "$role" kind)" = "worker" ]; then TEAMS_KB=$((TEAMS_KB + $(disk_kb "$(reg_field "$role" workdir)"))); fi
+  done
+}
+
+# teamctl teams [--json]: the short list. STATE: running, or orphaned when the team's lead is not running
+# (its pane exited or is gone, or there is no session): nobody manages it then, and the note under the table
+# says who may act on it.
 cmd_teams() {
-  local team lead state count role kb
+  local json=0 team orphans="" hint
+  if [ "${1:-}" = "--json" ]; then json=1; fi
   require_tools
   load_project any
-  printf '%-16s %-12s %-16s %-7s %-8s %s\n' TEAM STATE LEAD AGENTS DISK SESSION
+  if [ "$json" -eq 1 ]; then
+    for team in $(team_list); do
+      team_paths "$team"
+      _teams_facts
+      "$JQ_BIN" -cn --arg team "$team" --arg state "$TEAMS_STATE" --arg lead "$TEAMS_LEAD" --arg agents "$TEAMS_COUNT" --arg kb "$TEAMS_KB" \
+        --arg founder "$TEAMS_FOUNDER" --arg session "$SESSION" \
+        '{team: $team, state: $state, orphaned: ($state == "orphaned"), founder: $founder, lead: $lead, agents: ($agents | tonumber),
+          disk_kb: ($kb | tonumber), session: $session}'
+    done | "$JQ_BIN" -s .
+    return 0
+  fi
+  printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' TEAM STATE LEAD AGENTS DISK FOUNDER SESSION
   for team in $(team_list); do
     team_paths "$team"
-    SESSION="$(session_name_for_project)"
-    if ! tm_session_exists "$SESSION"; then
-      state="not running"
-    elif [ "$(tm_alive_count "$SESSION")" -eq 0 ]; then
-      state="ended"
-    else
-      state="running"
+    _teams_facts
+    printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' "$team" "$TEAMS_STATE" "${TEAMS_LEAD:--}" "$TEAMS_COUNT" "$(human_size "$TEAMS_KB")" \
+      "$([ "$TEAMS_FOUNDER" = "operator" ] && printf you || printf '%s' "$TEAMS_FOUNDER")" "$SESSION"
+    if [ "$TEAMS_STATE" = "orphaned" ]; then
+      hint=""
+      if [ "$team" != "$WOLFMUX_DEFAULT_TEAM" ]; then hint=" --team $team"; fi
+      orphans="$orphans$team is $(team_orphaned_note) Bring it back: teamctl restart lead$hint --continue · delete it: teamctl destroy$hint --purge
+"
     fi
-    lead="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
-    count="$(reg_list | wc -l | tr -d ' ')"
-    # worktrees of this team's workers (the lead works in your own checkout and adds nothing)
-    kb=0
-    for role in $(reg_list); do
-      if [ "$(reg_field "$role" kind)" = "worker" ]; then kb=$((kb + $(disk_kb "$(reg_field "$role" workdir)"))); fi
-    done
-    printf '%-16s %-12s %-16s %-7s %-8s %s\n' "$team" "$state" "${lead:--}" "$count" "$(human_size "$kb")" "$SESSION"
   done
+  if [ -n "$orphans" ]; then
+    say ""
+    printf '%s' "$orphans"
+  fi
 }
 
 cmd_panes() {

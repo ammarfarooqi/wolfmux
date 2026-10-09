@@ -29,12 +29,17 @@ lead — including a worker that was spawned by another worker.
   reserved for the lead. `teamctl spawn` is too, unless the session header above says
   worker spawning is ON; then a worker may spawn a helper, and the lead is told
   automatically. If it is OFF and you need a helper, message the lead.
+- A lead that founded a team does not manage it while that team's lead runs. When that lead
+  is not running (`teamctl teams` shows the team as `orphaned`), the founder, and only the
+  founder, may `teamctl restart lead --team <name> --continue`, `stop`, `remove` and
+  `destroy --team <name> --purge`; the human is told each time. Not `policy`, `approve`, `deny`.
 
 ## Beads in 60 seconds
 
 ```bash
 bd list --assignee $TEAM_ROLE --status open,in_progress,blocked --include-infra     # YOUR INBOX: your tasks (new, claimed, blocked) + unread messages
-bd show <id>                                    # read one item in full
+bd show <id>                                    # read one item in full (wide markdown tables are cut
+                                                #   at the pane width: read those with bd show <id> --json)
 bd ready                                        # unblocked work nobody is doing yet
 bd list --status in_progress                    # who is doing what
 bd prime                                        # full Beads command reference
@@ -85,6 +90,8 @@ integration; you do not do the bulk implementation yourself.
 1. **Plan.** Break the goal into tasks small enough to review. Record them in Beads
    with dependencies (`bd dep add`) and acceptance criteria. Put shared contracts
    (API shapes, schemas, file ownership) into the task descriptions.
+   Read a bead whose body carries wide markdown tables with `bd show <id> --json`:
+   plain `bd show` cuts tables at the pane width.
 2. **Staff.** Spawn workers only when there is work for them:
    ```bash
    teamctl spawn backend glm53      # GLM-5.3: substantial implementation
@@ -106,11 +113,47 @@ integration; you do not do the bulk implementation yourself.
    task for it, and nothing else: not a subagent, not a new terminal.
    Create and assign the beads first, then spawn: a new worker reads its inbox on start.
    Give workers disjoint files where you can; say so in the task.
+
+   **Branch names, before you spawn.** If this repository enforces a shape for branch
+   names (a ticket key, a prefix), set it FIRST: a worker whose branch breaks a commit
+   hook will reach for the project's skip switch, and a skip switch used on every commit
+   protects nothing.
+   ```bash
+   teamctl policy                                                 # what this team uses now
+   teamctl policy branch-template 'feature-{ticket}-{role}-{ts}'  # set it once, for the team
+   teamctl spawn sam glm53 --ticket AFD-1844                      # the key for this worker
+   teamctl spawn sam glm53 --branch feature-AFD-1844-sam          # or the exact name
+   ```
+   Placeholders: `{team}` `{role}` `{ts}` `{ticket}`; `{ts}` is required. A template with
+   `{ticket}` and a spawn without `--ticket` is refused (exit 64) rather than guessed at.
+   The human can also give the whole team one default key: `teamctl start <model> --ticket <KEY>`.
+   Never tell a worker to commit with `--no-verify` or a skip switch: fix the branch name.
+
+   **Work in another repository.** A teammate can have its worktree and branch in a
+   different repository, with isolation still on:
+   ```bash
+   teamctl spawn srv glm53 --repo ../other-repo        # --base is resolved in THAT repository
+   ```
+   It stays a member of this team, with this project's Beads inbox, and the guard holds it
+   to that worktree. Do NOT switch `worker-isolation` off for cross-repository work.
 3. **Watch structured state, not terminals.** `teamctl status` (process + branch
-   state, who spawned whom, each agent's permission mode, pending approvals),
+   state, who spawned whom, each agent's permission mode, pending approvals, and
+   CONTEXT: how much of its window each agent's conversation holds),
    `bd list --status in_progress,blocked` (work state). Use
    `teamctl capture <role>` only to diagnose a stuck or crashed agent.
    `teamctl restart <role>` revives one; `teamctl stop <role>` parks one.
+   A worker on another provider (kimi, moonshot, deepseek, minimax, qwen, glm) that reports 401 or an
+   authentication error: `teamctl doctor --probe` says whether that provider's key is accepted. A FAIL
+   means the key in its Keychain slot is wrong or of the wrong kind; only the human can replace it.
+
+   Pick reuse against a fresh spawn from the CONTEXT column:
+   - context has room (say, under 70%): `teamctl restart <role>` keeps its
+     conversation. Brief it with a Beads message. Fastest, no cold start.
+   - context is nearly gone but the checkout is expensive (installed dependencies,
+     a build): `teamctl stop <role>`, then
+     `teamctl spawn <new-role> <model> --from-worktree <role>`: a fresh conversation
+     in the built worktree, on a new branch, without repeating install or build.
+   - otherwise: a plain `teamctl spawn <role> <model>` in a fresh worktree.
 4. **Decide permission requests** when `teamctl policy` shows
    `worker-permissions lead`. A notice `[wolfmux] Permission request A7 from backend`
    means a worker is blocked until you answer:

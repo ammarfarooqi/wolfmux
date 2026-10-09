@@ -5,12 +5,19 @@
 
 DOC_WARN=0
 DOC_FAIL=0
+DOC_PROBE=0  # 1 under --probe: the only mode in which doctor reads a key value
+DOC_PROBED=0 # requests the probe sent
 
 _ok() { printf '  %sok%s    %s\n' "$_C_GRN" "$_C_OFF" "$*"; }
 _note() { printf '  %s..%s    %s\n' "$_C_DIM" "$_C_OFF" "$*"; }
 _fail() {
   DOC_FAIL=$((DOC_FAIL + 1))
   printf '  %sFAIL%s  %s\n' "$_C_RED" "$_C_OFF" "$*"
+}
+# A result that is not a verdict (a probe nobody answered): counted, but not shouted.
+_warn() {
+  DOC_WARN=$((DOC_WARN + 1))
+  printf '  %swarn%s  %s\n' "$_C_YEL" "$_C_OFF" "$*"
 }
 # A billing or routing risk: loud on purpose.
 _risk() {
@@ -71,6 +78,17 @@ _doc_tools() {
     *) _fail "$(short_path "$WOLFMUX_BIN_DIR") is not on PATH in this shell (open a new terminal, or check the wolfmux block in ~/.zshrc)" ;;
   esac
   if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then _ok "team protocol  $(short_path "$WOLFMUX_HOME/TEAM_PROTOCOL.md")"; else _fail "team protocol file missing"; fi
+  # Tab completion: the shims install.sh puts in ~/.config/wolfmux/completion and the
+  # line in ~/.zshrc that sources them (ADR-0026).
+  if [ -r "$WOLFMUX_HOME/completion/teamctl.zsh" ]; then
+    if [ -f "$HOME/.zshrc" ] && grep -q 'completion/teamctl.zsh' "$HOME/.zshrc"; then
+      _ok "completion  installed; ~/.zshrc sources it (open a new terminal, then: teamctl <Tab>)"
+    else
+      _note "completion  installed; ~/.zshrc does not source it yet (re-run: ./install.sh)"
+    fi
+  else
+    _note "completion  not installed (re-run ./install.sh; teamctl completion <zsh|bash> prints the script)"
+  fi
 }
 
 _doc_fable() {
@@ -154,6 +172,114 @@ _doc_overlay() {
   fi
 }
 
+# --- teamctl doctor --probe ----------------------------------------------------------------------
+# For every provider whose key is in the Keychain: ONE request to that provider's endpoint, and
+# the HTTP status is all that is reported. Plain doctor stays offline and never reads a key value;
+# this is the only code in doctor that does (issue #1: a key of the wrong kind was reported ok).
+#
+# The request is an incomplete one on purpose: POST <endpoint>/v1/messages with the body {}.
+# It asks for no completion, so nothing is generated and nothing is billed, not even by a metered
+# provider. It is not a model listing because GET /v1/models does not tell: Z.ai answers it
+# without any key, Moonshot and Qwen have no such route (measured 2026-09-23, docs/adr/0024).
+# The six endpoints answer that POST with a fake key 401 (the key is checked first, the body
+# after), so a good key should get 400 or 422. That good-key side is inferred, not measured,
+# which is why the raw status is printed next to "accepted".
+#
+# The key reaches curl on its stdin and nowhere else: not its arguments, not the environment of
+# any process, not a file (a here-document or here-string is a temporary file in bash 3.2, so a
+# pipe from the printf builtin is used), and not the screen. curl reads no ~/.curlrc (-q), does
+# not follow a redirect, and is given an https address only.
+DOC_PROBE_TIMEOUT=15
+
+# _doc_probe_url_ok <url>: https, and nothing that could end a quoted value of curl's config
+_doc_probe_url_ok() {
+  case "$1" in https://*) ;; *) return 1 ;; esac
+  case "${1#https://}" in
+    "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}._~:/%-]*) return 1 ;;
+  esac
+}
+
+# _doc_probe_key_ok <key>: what an API key is made of. Anything else (a space, a quote, a
+# backslash, a line break) could add a line to curl's config, so it is not sent.
+_doc_probe_key_ok() {
+  case "$1" in
+    "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}._~+/=:-]*) return 1 ;;
+  esac
+}
+
+# _doc_probe_key <provider>: the key, on stdout: the one place in doctor that reads it
+_doc_probe_key() {
+  wolfmux_provider_info "$1" || return 1
+  /usr/bin/security find-generic-password -s "$PROVIDER_KEYCHAIN" -w 2>/dev/null
+}
+
+# _doc_probe_config <url> <key>: what curl reads from its stdin: the address, the two headers a
+# provider worker's key helper sends (a vendor reads one or the other), the API version, and an
+# empty JSON object. The key is an argument of the printf builtin, so no process ever has it.
+_doc_probe_config() {
+  printf 'url = "%s"\nheader = "x-api-key: %s"\nheader = "authorization: Bearer %s"\nheader = "anthropic-version: 2023-06-01"\nheader = "content-type: application/json"\ndata = "{}"\n' "$1" "$2" "$2"
+}
+
+# _doc_probe_send <curl> <url> <key>: prints the HTTP status, 000 when nobody answered;
+# returns 2, sending nothing, for an address that is not a plain https one
+_doc_probe_send() {
+  local curl_bin="$1" url="$2" key="$3" code
+  _doc_probe_url_ok "$url" || return 2
+  code="$(_doc_probe_config "$url" "$key" | "$curl_bin" -q -s -o /dev/null -w '%{http_code}' --max-time "$DOC_PROBE_TIMEOUT" --config - 2>/dev/null)" || true
+  case "$code" in [0-9][0-9][0-9]) ;; *) code=000 ;; esac
+  printf '%s\n' "$code"
+}
+
+# _doc_probe_provider <provider>: the report lines of one provider's probe (call it only for a
+# provider whose Keychain item exists)
+_doc_probe_provider() {
+  local p="$1" curl_bin url key code note source
+  wolfmux_provider_info "$p" || return 0
+  source="${PROVIDER_KEY_SOURCE:-Where to get one: $PROVIDER_KEY_URL}"
+  if ! _doc_probe_url_ok "$PROVIDER_BASE_URL"; then
+    _fail "probe: refusing to send a key to $PROVIDER_BASE_URL: the endpoint must be an https address of plain characters"
+    return 0
+  fi
+  curl_bin="$(find_tool curl /usr/bin/curl || true)"
+  if [ -z "$curl_bin" ]; then
+    _fail "probe: curl not found, so no key can be checked"
+    return 0
+  fi
+  if ! key="$(_doc_probe_key "$p")"; then
+    _warn "probe: could not read the key from '$PROVIDER_KEYCHAIN' (is the login keychain unlocked?): nothing was sent"
+    return 0
+  fi
+  if [ -z "$key" ]; then
+    _warn "probe: the Keychain item '$PROVIDER_KEYCHAIN' is empty: nothing was sent"
+    return 0
+  fi
+  if ! _doc_probe_key_ok "$key"; then
+    _warn "probe: the key in '$PROVIDER_KEYCHAIN' has a character no API key has (a space, a quote, a backslash or a line break), so nothing was sent. Store it again: security add-generic-password -U -s $PROVIDER_KEYCHAIN -a \"\$USER\" -l \"$PROVIDER_KEY_LABEL\" -w"
+    return 0
+  fi
+  if [ -n "$PROVIDER_KEY_PREFIX" ]; then
+    case "$key" in
+      "$PROVIDER_KEY_PREFIX"*) ;;
+      *) _warn "probe: the key in '$PROVIDER_KEYCHAIN' does not start with '$PROVIDER_KEY_PREFIX' (a $PROVIDER_LABEL key does). $source" ;;
+    esac
+  fi
+  url="${PROVIDER_BASE_URL%/}/v1/messages"
+  code="$(_doc_probe_send "$curl_bin" "$url" "$key")" || code=000
+  key=""
+  DOC_PROBED=$((DOC_PROBED + 1))
+  case "$code" in
+    2??) _ok "probe: key accepted by $PROVIDER_BASE_URL (HTTP $code)" ;;
+    400 | 422) _ok "probe: key accepted by $PROVIDER_BASE_URL (HTTP $code: past authentication, only the empty request was refused, as intended)" ;;
+    429) _ok "probe: key accepted by $PROVIDER_BASE_URL (HTTP $code: rate limited, but the key was read and not refused)" ;;
+    401 | 403)
+      _fail "probe: the key in '$PROVIDER_KEYCHAIN' is rejected by $PROVIDER_BASE_URL (HTTP $code)"
+      printf '                   %s\n' "$source"
+      ;;
+    000) _warn "probe: no answer from $PROVIDER_BASE_URL within $DOC_PROBE_TIMEOUT seconds (offline, or the endpoint is down): the key was not checked" ;;
+    *) _warn "probe: $PROVIDER_BASE_URL answered HTTP $code, which says nothing about the key: not checked" ;;
+  esac
+}
+
 # _doc_provider <provider>: one third-party provider that Claude Code can be pointed at. The
 # Z.ai key is the default workers' key, so a missing one is a risk; every other provider is
 # optional and a missing key is only a note. Prints names and locations, never a key.
@@ -177,7 +303,12 @@ _doc_provider() {
     if [ -x "$WOLFMUX_BIN_DIR/claude-$p" ]; then _doc_launcher "claude-$p"; else _note "launcher claude-$p is missing; ./install.sh links it"; fi
   fi
   if wolfmux_provider_key_exists "$p"; then
-    _ok "Keychain item '$PROVIDER_KEYCHAIN' exists (value not read)"
+    if [ "$DOC_PROBE" = 1 ]; then
+      _ok "Keychain item '$PROVIDER_KEYCHAIN' exists (value read for the probe below, never printed)"
+      _doc_probe_provider "$p"
+    else
+      _ok "Keychain item '$PROVIDER_KEYCHAIN' exists (value not read)"
+    fi
   elif [ "$p" = "glm" ]; then
     _risk "Z.ai credential is missing: no Keychain item '$PROVIDER_KEYCHAIN'. Workers cannot start. Add it:"
     printf '                   security add-generic-password -U -s %s -a "$USER" -l "Z.ai Coding Plan API key" -w\n' "$PROVIDER_KEYCHAIN"
@@ -185,11 +316,17 @@ _doc_provider() {
     _note "optional, not set up: no Keychain item '$PROVIDER_KEYCHAIN' (key from $PROVIDER_KEY_URL). To use it, add the key:"
     printf '                   security add-generic-password -U -s %s -a "$USER" -l "%s key" -w\n' "$PROVIDER_KEYCHAIN" "$PROVIDER_LABEL"
   fi
+  [ -z "$PROVIDER_KEY_SOURCE" ] || _note "key: $PROVIDER_KEY_SOURCE"
   _ok "endpoint  $PROVIDER_BASE_URL  (set only inside the launcher process)"
   mode="$(wolfmux_provider_setting "$p" AUTH_MODE)"
   case "${mode:-helper}" in
     helper) _ok "key delivery: apiKeyHelper (Keychain read on demand; the key never enters an agent's environment)" ;;
-    env) _note "key delivery: $PROVIDER_AUTH_VAR (the vendor's documented mode; the key is visible to an agent's subprocesses)" ;;
+    env)
+      _note "key delivery: $PROVIDER_AUTH_VAR (the vendor's documented mode; the key is visible to an agent's subprocesses)"
+      if [ "$PROVIDER_AUTH_VAR" = ANTHROPIC_API_KEY ]; then
+        _note "Claude Code asks 'Do you want to use this API key?' when a worker starts with $PROVIDER_AUTH_VAR, and an unattended worker waits at that prompt (default No). Helper mode has no such prompt; env mode cannot fix a rejected key: teamctl doctor --probe says whether the key is accepted."
+      fi
+      ;;
     *) _fail "WOLFMUX_${upper}_AUTH_MODE='$mode' in $(short_path "$WOLFMUX_HOME/config") is invalid (use helper or env)" ;;
   esac
   _ok "login guard on: nothing an agent on $PROVIDER_LABEL spawns can present your claude.ai login to $host"
@@ -232,7 +369,19 @@ _doc_provider() {
 
 _doc_providers() {
   local p
+  if [ "$DOC_PROBE" = 1 ]; then
+    _head "Key probe (teamctl doctor --probe)"
+    _note "for each provider whose key is set up below: ONE request goes to that provider's endpoint, over https, and only the HTTP status is shown. It is POST /v1/messages with an empty body (no model, no message): no completion is asked for, so nothing is generated and nothing is billed, not even by a metered provider. The key travels on curl's stdin only."
+  fi
   for p in $WOLFMUX_PROVIDERS; do _doc_provider "$p"; done
+  if [ "$DOC_PROBE" = 1 ]; then
+    _head "Key probe: summary"
+    if [ "$DOC_PROBED" -eq 0 ]; then
+      _note "probe: nothing was sent (no provider key is set up, or none could be read: see above)"
+    else
+      _note "probe: $DOC_PROBED request(s) sent; a key is only as good as the endpoint's answer above"
+    fi
+  fi
 }
 
 _doc_beads() {
@@ -285,6 +434,14 @@ _doc_policy() {
 
 cmd_doctor() {
   local p metered
+  DOC_PROBE=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --probe) DOC_PROBE=1 ;;
+      *) die_usage "unknown option for doctor: $1 (teamctl doctor [--probe])" ;;
+    esac
+    shift
+  done
   [ -n "$JQ_BIN" ] || die "jq is required for doctor"
   ROOT="$(resolve_root 2>/dev/null || true)"
   CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"

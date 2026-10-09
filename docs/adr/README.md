@@ -25,3 +25,10 @@ build; superseded decisions will link to their replacement.
 | [0018](0018-several-teams-per-project.md) | Several named teams in one project | accepted | 2026-09-20 |
 | [0019](0019-deleting-a-team-and-founding-one.md) | Deleting a whole team, and a lead founding a new one | accepted | 2026-09-20 |
 | [0020](0020-providers-beyond-the-three-subscriptions.md) | Providers beyond the three subscriptions: one table, one launcher, metered off until the owner says on | accepted | 2026-09-20 |
+| [0021](0021-branch-names-from-a-template.md) | Worker branch names come from a template, and only branches teamctl created are deleted | accepted | 2026-09-23 |
+| [0022](0022-a-worker-in-another-repository.md) | A worker's worktree can live in another repository, with isolation still on | accepted | 2026-09-23 |
+| [0023](0023-founder-recovers-an-orphaned-team.md) | A founder recovers or cleans up a team whose lead is not running | accepted | 2026-09-23 |
+| [0024](0024-doctor-probe-and-key-sources.md) | `teamctl doctor --probe`: an unbilled key check, and which console each Kimi key comes from | accepted | 2026-09-23 |
+| [0025](0025-context-use-and-worktree-handover.md) | Context use in status, and a fresh conversation in a built worktree | accepted | 2026-09-23 |
+| [0026](0026-tab-completion.md) | Tab completion: one backend inside teamctl and thin shims, and compinit is never switched on for the user | accepted | 2026-10-04 |
+| [0027](0027-every-agent-resumes-its-own-conversation.md) | Every agent resumes its own conversation, by id | accepted | 2026-10-04 |

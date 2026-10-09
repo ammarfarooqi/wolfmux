@@ -81,11 +81,13 @@ meta_put() {
   printf '%s\n' "$record" | "$JQ_BIN" . | _reg_write_atomic "$STATE_DIR/meta.json"
 }
 
-# event_log <type> <role> [detail] — one small O_APPEND write per event
+# event_log <type> <role> [detail]: one small O_APPEND write per event. by: the agent's role, or
+# EVENT_BY when an agent acts on a team that is not its own (a founder: its Beads identity, so that
+# "lead" in the log is never taken for the lead of the team it acted on), "operator" for you.
 event_log() {
   [ -d "$STATE_DIR" ] || return 0
   "$JQ_BIN" -cn --arg ts "$(now_iso)" --arg type "$1" --arg role "${2:-}" --arg detail "${3:-}" \
-    --arg by "${TEAM_ROLE:-operator}" '{ts: $ts, type: $type, role: $role, by: $by, detail: $detail}' \
+    --arg by "${EVENT_BY:-${TEAM_ROLE:-operator}}" '{ts: $ts, type: $type, role: $role, by: $by, detail: $detail}' \
     >>"$STATE_DIR/events.jsonl"
 }
 
@@ -298,7 +300,7 @@ lock_acquire() {
   done
   printf '%s\n' "$$" >"$lock/pid"
   LOCK_HELD="$lock"
-  trap 'lock_release' EXIT
+  trap 'teamctl_on_exit' EXIT # releases the lock, reports a crash (common.sh)
 }
 
 lock_release() {

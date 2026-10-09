@@ -94,7 +94,9 @@ if [ -f "$HOME/.zshrc" ] && grep -q '>>> wolfmux >>>' "$HOME/.zshrc"; then
     { if (holding) print held; if ($0 == "") { held = $0; holding = 1 } else { holding = 0; print } }
     END { if (holding) print held }
   ' "$HOME/.zshrc" >"$HOME/.zshrc.tmp.$$"
-  /bin/mv -f "$HOME/.zshrc.tmp.$$" "$HOME/.zshrc"
+  # Written through, not moved over it: a ~/.zshrc that is a symlink stays one, with its mode and owner.
+  /bin/cat "$HOME/.zshrc.tmp.$$" >"$HOME/.zshrc"
+  /bin/rm -f "$HOME/.zshrc.tmp.$$"
   note "removed the wolfmux block"
 else
   note "no wolfmux block"

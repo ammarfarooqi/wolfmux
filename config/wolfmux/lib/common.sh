@@ -2,7 +2,7 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-WOLFMUX_VERSION="1.11.0"
+WOLFMUX_VERSION="1.13.0"
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
 # This project was first called "ai-team". A team started under that name keeps
@@ -33,6 +33,18 @@ warn() { printf '%swarning:%s %s\n' "$_C_YEL" "$_C_OFF" "$*" >&2; }
 die() {
   printf '%steamctl:%s %s\n' "$_C_RED" "$_C_OFF" "$1" >&2
   exit "${2:-1}"
+}
+# teamctl_on_exit — the EXIT trap. Releases the project lock, and never lets a crash pass in
+# silence: set -e ends teamctl on the first failing command, and when that command was killed
+# by a signal (SIGPIPE: exit 141) nothing had printed a word (issue #6). Ctrl-C (130) is you,
+# a hangup (129) is a closed terminal: `destroy` run inside the team it ends closes its own pane.
+teamctl_on_exit() {
+  local rc=$?
+  lock_release 2>/dev/null || true
+  if [ "$rc" -gt 128 ] && [ "$rc" -ne 130 ] && [ "$rc" -ne 129 ]; then
+    printf '%steamctl:%s stopped unexpectedly (exit %s: signal %s) in: teamctl %s\nIt ended before it finished: check what it had done (teamctl status), then report this line.\n' \
+      "$_C_RED" "$_C_OFF" "$rc" "$((rc - 128))" "${TEAMCTL_ARGS:-}" >&2 2>/dev/null || true
+  fi
 }
 # die_usage "<message>" — wrong invocation (exit 64, EX_USAGE)
 die_usage() {
@@ -113,6 +125,15 @@ require_new_role_arg() {
   valid_role "$1" || die_usage "invalid role '$1' (use lowercase letters, digits and '-', max 32 chars)"
 }
 
+# A ticket key ends up in a branch name (teamctl spawn --ticket AFD-1844), so it is kept
+# to an alphabet git and every hook we know of accept. Capitals are the norm for Jira keys.
+valid_ticket() {
+  case "$1" in
+    "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}_-]* | -* | *-) return 1 ;;
+  esac
+  [ "${#1}" -le 64 ]
+}
+
 # Bead ids are echoed into a pane, so keep them to a harmless alphabet.
 valid_bead_id() {
   case "$1" in
@@ -188,6 +209,33 @@ model_info() {
   esac
 }
 
+# model_context_window <model-key> — the context window, in tokens, that status shows a share of.
+# A provider of the table declares its own (PROVIDER_CONTEXT); a model id that ends in [1m]
+# means 1M; everything else is counted as 200k. Never fails: the fallback is 200000.
+model_context_window() {
+  local key="$1" provider="${1%%:*}"
+  case " $WOLFMUX_PROVIDERS " in
+    *" $provider "*)
+      # The row's declared window holds for every id of that provider, pinned or not
+      # (glm has no pinned ids; its keys are glm53 and flash, handled below).
+      if [ "$key" = "$provider" ] || _model_info_provider "$key" 2>/dev/null; then
+        if wolfmux_provider_info "$provider" 2>/dev/null; then
+          printf '%s\n' "$PROVIDER_CONTEXT"
+          return 0
+        fi
+      fi
+      ;;
+  esac
+  if model_info "$key" 2>/dev/null; then
+    case "${MODEL_ID:-}" in
+      *\[1m\]) printf '1048576\n' ;;
+      *) printf '200000\n' ;;
+    esac
+  else
+    printf '200000\n'
+  fi
+}
+
 # What usage lines and "unknown model" errors list: the fixed keys, then whatever the provider
 # table holds (so a new provider is named everywhere without editing a string).
 WOLFMUX_MODEL_KEYS="glm53 flash fable opus sonnet haiku astra"
@@ -235,25 +283,30 @@ launcher_path() {
 }
 
 # --- project + state resolution -------------------------------------------------
-# resolve_root — main checkout of the current repository, also when called from a
-# linked worktree that lives outside it (every worker does).
-resolve_root() {
-  local common top
-  if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then
-    printf '%s\n' "$WOLFMUX_ROOT"
-    return 0
-  fi
-  [ -n "$GIT_BIN" ] || return 1
-  common="$("$GIT_BIN" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+# repo_root_of <directory> — main checkout of the repository that holds it, also when
+# the directory is a linked worktree that lives outside that checkout (every worker's is).
+repo_root_of() {
+  local dir="$1" common top
+  [ -n "$GIT_BIN" ] && [ -d "$dir" ] || return 1
+  common="$("$GIT_BIN" -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
   case "$common" in
     */.git)
       printf '%s\n' "${common%/.git}"
       ;;
     *)
-      top="$("$GIT_BIN" rev-parse --show-toplevel 2>/dev/null)" || return 1
+      top="$("$GIT_BIN" -C "$dir" rev-parse --show-toplevel 2>/dev/null)" || return 1
       printf '%s\n' "$top"
       ;;
   esac
+}
+
+# resolve_root — main checkout of the current repository.
+resolve_root() {
+  if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then
+    printf '%s\n' "$WOLFMUX_ROOT"
+    return 0
+  fi
+  repo_root_of "$PWD"
 }
 
 sanitize_name() {
@@ -277,8 +330,13 @@ project_key() {
 #               ~/.wolfmux/state/<project>/teams/<team>/        named
 #   worktrees   ~/.wolfmux/worktrees/<project>/<role>-<stamp>   default
 #               ~/.wolfmux/worktrees/<project>/teams/<team>/<role>-<stamp>
-#   branches    ai/<role>-<stamp>  ·  ai/<team>/<role>-<stamp>
+#   branches    ai/<role>-<stamp>  ·  ai/<team>/<role>-<stamp>   (the default branch template;
+#               a team can name its workers' branches differently: teamctl policy branch-template)
 #   Beads name  <role>             ·  <team>.<role>       (all teams share the project's Beads)
+#
+# A worker can also be given a worktree in ANOTHER repository (teamctl spawn --repo <path>):
+# its worktree, branch and base live there, under ~/.wolfmux/worktrees/<that repo>/teams/<team>/,
+# and its record says which repository that is. Everything else about the team is unchanged.
 WOLFMUX_DEFAULT_TEAM="default"
 
 # A team's name is part of its tmux session, its branches and its Beads names, so it is kept

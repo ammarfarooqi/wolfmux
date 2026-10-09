@@ -52,7 +52,9 @@ exports `ANTHROPIC_API_KEY`, which its documentation asks for; the others export
   exports `ANTHROPIC_AUTH_TOKEN`, which is Z.ai's documented method. Use it if the
   endpoint ever rejects helper mode (Claude Code sends a helper's value as both
   `x-api-key` and `Authorization: Bearer`). The trade-off: the key is then visible
-  to the worker's subprocesses.
+  to the worker's subprocesses. It is a last resort: it cannot fix a wrong key, and for
+  Kimi's `ANTHROPIC_API_KEY` Claude Code asks interactively before using it, with no
+  documented setting that pre-approves the key.
 
 ### The login guard — found by measurement
 
@@ -105,6 +107,15 @@ outside the launchers · key delivery mode, guard and overlay · `CLAUDE_CONFIG_
 
 It prints names and paths, never values. Exit `0` clean, `2` billing/routing
 warnings, `1` a missing requirement.
+
+`teamctl doctor --probe` is the one mode that reads a key value, and only for the providers whose
+Keychain item exists. It sends one incomplete request per provider (`POST /v1/messages`, body
+`{}`, so nothing is generated or billed) to the endpoint in the provider table, only over https,
+and prints only the HTTP status. The value is read in one function, handed to curl on its stdin
+(a pipe from a shell builtin: not an argument, not an environment variable, not a file), never
+printed, and refused if it has a character that could add a line to curl's config. curl reads no
+`~/.curlrc` and follows no redirect. It cannot send a key anywhere but the table's endpoint: the
+table has no setting for the address ([ADR-0024](adr/0024-doctor-probe-and-key-sources.md)).
 
 ## What cannot be proven locally
 
