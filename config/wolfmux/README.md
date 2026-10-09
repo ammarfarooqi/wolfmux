@@ -118,7 +118,7 @@ teamctl policy lead-permissions skip|ask        # default skip
 teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
 teamctl policy lead-teams on|off                # may the lead found further teams?  default on
 teamctl policy disk-guard refuse|warn|off       # what a spawn does on a full disk    default refuse
-teamctl policy disk-min-gb 20                   # free space a spawn asks for, in GB  default 20
+teamctl policy disk-min-gb 20                   # free space a spawn asks for (1 GB = 1024 MB)  default 20
 teamctl policy link-node-modules on|off         # share the root's node_modules       default off
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
@@ -357,7 +357,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
 | `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
 | `WOLFMUX_DISK_GUARD` | `refuse` | what `teamctl spawn` does when free disk is under the limit below: `refuse`, `warn`, `off` |
-| `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes. A lane costs about 3 GB once it has installed and built; `0` switches the check off |
+| `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes, where 1 GB is 1024 MB (a gibibyte — the unit teamctl prints sizes in). A lane costs about 3 GB once it has installed and built; `0` switches the check off; no leading zero (write `8`, not `08`) |
 | `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the project root's copy. One directory for all of them: an install in any lane changes them all |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |

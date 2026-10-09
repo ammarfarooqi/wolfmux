@@ -130,6 +130,20 @@ again. Each directory is renamed inside its own worktree before it is deleted, a
 is one atomic step, so a cleanup killed halfway leaves a `.wolfmux-removing-*` directory
 that the next run clears — never a `node_modules` that is half there and looks installed.
 
+**What prune cannot reach.** Most of a lane is usually not build output. Measured on one
+machine: of 25 GB across 38 lane worktrees, about 4 GB sat in a directory on the list; the
+rest was files git tracks, because the whole checkout is copied into every lane (one project
+copies 530 MB of `public/`, about 0.65 GB per lane before anything is installed). `prune`
+prints that floor on its "still held" line. `teamctl remove <role>` is the only thing that
+gives it back. And note that `stop` deliberately leaves `node_modules`, so a lane parked for
+a week keeps it for the week unless somebody prunes ([a known gap](ROADMAP.md)).
+
+**When prune refuses.** If a lane's record says it is running while the team's tmux session
+shows no pane for it, prune stops the whole sweep and touches nothing: it sweeps lanes
+unattended, and a wrong "parked" would take `node_modules` out from under a running build.
+`teamctl status` and `teamctl panes` show which is right; then `teamctl stop <role>` or
+`teamctl restart <role>` and run it again.
+
 **The guard.** `teamctl spawn` checks free disk before it makes anything. Under
 `disk-min-gb` (default 20) it refuses and names the number; `teamctl policy disk-guard warn`
 makes it a warning instead, `off` removes the check, and `teamctl policy disk-min-gb <n>`

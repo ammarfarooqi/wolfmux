@@ -424,6 +424,38 @@ install in any lane changes the dependencies of all of them.
 `tests/disk.sh`: new, 48 checks. `tests/smoke.sh`: 181 → 181 (the policy-defaults check now
 names the three new keys). `tests/docs.sh`: 28 → 28.
 
+Review found two blockers in it, both one line, neither a wrong-deletion path (a reviewer
+drove the code at the project root, `../..`, `/`, an empty path, a deleted `.git`, an
+exported `GIT_DIR`, symlinked `node_modules` and two concurrent prunes, and could not make
+it delete anything it must not). First: `policy_valid` accepted `08`, `test -le` read it as
+base ten and shell arithmetic read it as octal, so one typo made every `teamctl spawn` in
+that team die with a raw bash error — and `010` was quieter, printing `010` while enforcing
+8 GB. A leading zero is now refused, and the one arithmetic site uses `10#` as well.
+Second: a `--link-node-modules` symlink is untracked when `.gitignore` says `node_modules/`
+with the trailing slash, which is the common form, so `wt_dirty_count` called the lane dirty
+and `remove` pointed at `--force` — the discard-work door — for a lane the new flag had
+made; the same happened to a lane holding interrupted-cleanup trash. `remove` now runs the
+allowlist pass before the dirty check, the way `destroy --worktrees` already did, and keeps
+the `du`-before reporting; the question it asks is about work a person wrote again.
+
+Four more from the same review: `prune` no longer decides a lane is parked from the tmux
+lookup alone (it also reads the record's state and pane id, and refuses the whole sweep when
+the two disagree while the session is up — a wrong "parked" takes `node_modules` out from
+under a running build); the cached size now rejects a stamp in the future, which used to
+stay "fresh" for ever after a clock jump; `disk_confined` no longer treats another team's
+lane as the first team's, so the sentence in this file and in ARCHITECTURE is true for the
+default team too; and `tests/disk.sh` runs the libraries under `set -euo pipefail`, which is
+`bin/teamctl`'s own line and is why a green suite had missed an arithmetic abort.
+
+What the review also measured, and what is now in ROADMAP as a known gap: of 25 GB across
+the 38 lane worktrees on this machine, only about 4 GB was on the allowlist. The rest is
+files git tracks — one project copies 530 MB of `public/` into every lane, about 0.65 GB per
+lane before anything is installed — so `prune` now prints that floor and says that
+`teamctl remove <role>` is the only thing which gives it back. And nothing yet drains a lane
+that has been parked for days: `stop` leaves `node_modules` on purpose.
+
+`tests/disk.sh`: 48 → 68.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

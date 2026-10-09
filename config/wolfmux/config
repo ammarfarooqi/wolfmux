@@ -81,8 +81,10 @@
 #   warn              a warning, and the lane is created anyway
 #   off               no check at all
 #WOLFMUX_DISK_GUARD=warn
-# The free space a spawn asks for, in whole gigabytes. A lane costs about 3 GB once it has
-# installed and built, so the default leaves room for several more. 0 switches the limit off.
+# The free space a spawn asks for, in whole gigabytes — counted the way df and Finder do
+# NOT count them: 1 GB here is 1024 MB (a gibibyte), the same unit teamctl prints sizes in.
+# A lane costs about 3 GB once it has installed and built, so the default leaves room for
+# several more. 0 switches the limit off. No leading zero: write 8, not 08.
 #WOLFMUX_DISK_MIN_GB=20
 # Link a new lane's node_modules to the project root's copy instead of letting the lane
 # install 2+ GB of its own (`teamctl spawn --link-node-modules` does it for one lane).

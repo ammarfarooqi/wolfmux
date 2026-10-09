@@ -76,10 +76,16 @@ disk_real() { (cd "$1" 2>/dev/null && pwd -P) || true; }
 disk_confined() {
   local real base
   real="$(disk_real "$1")"
-  base="$(disk_real "$WORKTREES_DIR")"
+  base="$(disk_real "${WORKTREES_DIR:-}")"
   [ -n "$real" ] && [ -n "$base" ] || return 1
   [ "$real" != "$base" ] || return 1
   [ "$real" != "$(disk_real "$ROOT")" ] || return 1 # your own checkout, never
+  # The first team's worktree directory is also the parent of the named teams' ones
+  # (teams/<name>/<lane>), so for it the prefix alone would reach another team's lanes.
+  # Another team's lanes are that team's to clean.
+  if [ "${TEAM:-}" = "$WOLFMUX_DEFAULT_TEAM" ]; then
+    case "$real/" in "$base"/teams/*) return 1 ;; esac
+  fi
   case "$real/" in "$base"/?*/) return 0 ;; esac
   return 1
 }
@@ -95,7 +101,7 @@ disk_cleanable() {
     return 1
   fi
   if ! disk_confined "$path"; then
-    DISK_SKIP_REASON="it is not inside $(short_path "$WORKTREES_DIR")"
+    DISK_SKIP_REASON="it is not a lane of team '${TEAM:-?}' under $(short_path "${WORKTREES_DIR:-(no worktree directory resolved)}")"
     return 1
   fi
   if ! "$GIT_BIN" -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -148,8 +154,12 @@ disk_clean_worktree() {
   DISK_CLEANED=""
   disk_cleanable "$path" || return 1
   real="$(disk_real "$path")"
+  # What an interrupted cleanup left. It is counted and named like anything else, so the
+  # line a command prints says where the space came from instead of appearing out of thin air.
   for leftover in "$real"/.wolfmux-removing-*; do
     [ -e "$leftover" ] || continue
+    DISK_FREED_KB=$((DISK_FREED_KB + $(disk_kb "$leftover")))
+    case " $DISK_CLEANED " in *" cleanup-trash "*) ;; *) DISK_CLEANED="$DISK_CLEANED cleanup-trash" ;; esac
     if [ "$apply" -eq 1 ]; then /bin/rm -rf "$leftover"; fi
   done
   for name in $(disk_names "$kind"); do
@@ -237,6 +247,9 @@ disk_team_kb_cached() {
   stamp="${line%% *}"
   kb="${line##* }"
   case "${stamp:-x}${kb:-x}" in *[!0-9]*) return 0 ;; esac
+  # Both ends: a stamp in the future (a clock that went back, a garbled write) would
+  # otherwise stay "fresh" for ever and pin status to a number nobody can correct.
+  [ "$stamp" -le "$(now_epoch)" ] || return 0
   [ $(($(now_epoch) - stamp)) -le "$WOLFMUX_DISK_CACHE_SECONDS" ] || return 0
   printf '%s\n' "$kb"
 }
@@ -261,7 +274,9 @@ disk_guard_spawn() {
   free_kb="$(disk_free_kb)"
   # df could not say: the guard never becomes the reason a spawn fails.
   case "${free_kb:-x}" in "" | *[!0-9]*) return 0 ;; esac
-  [ "$free_kb" -lt $((min * 1048576)) ] || return 0
+  # 10# forces base ten. policy_valid already refuses a leading zero, and this is the one
+  # arithmetic site the value reaches, so neither a stored nor a configured "08" can abort it.
+  [ "$free_kb" -lt $((10#$min * 1048576)) ] || return 0
   if [ "$mode" = "warn" ]; then
     warn "$(human_size "$free_kb") free, under the $min GB this team asks for; spawning anyway (teamctl policy disk-guard = warn). Free space: teamctl prune --dry-run"
     return 0
@@ -289,13 +304,38 @@ disk_link_wanted() {
   [ "$(policy_get link-node-modules)" = "on" ]
 }
 
+# disk_lane_running <role> — is this lane alive? Answered from two places, because prune
+# sweeps many lanes unattended and a wrong "parked" would take node_modules out from under
+# a running build:
+#   0  a live pane is there, or the record says running while the team's session is up and
+#      no pane of its can be found — then we do not know, and not knowing is running
+#   1  a pane that has exited, a record that says stopped with no pane id, or no session at
+#      all (the machine rebooted: nothing of that team can be alive)
+# Sets DISK_LANE_DOUBT when the record and tmux disagree, so the caller can refuse the whole
+# sweep instead of guessing lane by lane.
+disk_lane_running() {
+  local role="$1" pane state pane_id
+  DISK_LANE_DOUBT=""
+  pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
+  if [ -n "$pane" ]; then
+    [ "$(tm_pane_state "$pane")" = "running" ] && return 0
+    return 1 # the pane is there and it has exited: we know
+  fi
+  state="$(reg_field "$role" state 2>/dev/null || true)"
+  pane_id="$(reg_field "$role" pane_id 2>/dev/null || true)"
+  if [ "$state" != "running" ] && [ -z "$pane_id" ]; then return 1; fi
+  tm_session_exists "$SESSION" || return 1 # no session: nothing of this team can be alive
+  DISK_LANE_DOUBT="its record says state=${state:-unknown} pane=${pane_id:-none}, and session $SESSION shows no pane for it"
+  return 0
+}
+
 # --- teamctl prune [--dry-run] [--keep-node-modules] ---------------------------------
 # Every PARKED lane of this team. A parked lane is what actually hoards: it keeps its
 # whole node_modules and .next for as long as nobody removes the role, and a lane is
 # parked for days. A running lane is never touched. --dry-run reports and deletes
 # nothing, and needs no manager: looking is not changing.
 cmd_prune() {
-  local dry=0 kind="all" apply=1 role path pane total=0 cleaned=0 skipped=0 running=0 hint=""
+  local dry=0 kind="all" apply=1 role path rest total=0 floor=0 cleaned=0 skipped=0 running=0 hint=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --dry-run) dry=1 ;;
@@ -321,21 +361,36 @@ cmd_prune() {
   fi
   say "  takes: $(disk_names "$kind" | tr '\n' ' ') ·  keeps: every source file, every commit, git state"
   say ""
+  # A doubtful lane stops the whole sweep before anything is deleted: one wrong "parked"
+  # costs a running build its dependencies, and prune is the command nobody is watching.
+  for role in $(reg_list); do
+    [ "$(reg_field "$role" kind)" = "worker" ] || continue
+    if disk_lane_running "$role" && [ -n "$DISK_LANE_DOUBT" ]; then
+      [ "$apply" -eq 0 ] || lock_release
+      die "cannot tell whether '$role' is running: $DISK_LANE_DOUBT. Nothing was touched. Look: teamctl status · teamctl panes. Then park it for real (teamctl stop $role$hint) or bring it back (teamctl restart $role$hint) and run prune again."
+    fi
+  done
   for role in $(reg_list); do
     [ "$(reg_field "$role" kind)" = "worker" ] || continue
     path="$(reg_field "$role" workdir)"
-    pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
-    if [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ]; then
+    if disk_lane_running "$role"; then
       printf '  %-18s %9s   running, left alone\n' "$role" "-"
       running=$((running + 1))
       continue
     fi
     if ! disk_clean_worktree "$path" "$kind" "$apply"; then
-      printf '  %-18s %9s   skipped: %s\n' "$role" "-" "$DISK_SKIP_REASON"
+      # The size is printed even here, because this is what one stray file is pinning.
+      printf '  %-18s %9s   skipped: %s\n' "$role" "$(human_size "$(disk_kb "$path")")" "$DISK_SKIP_REASON"
       skipped=$((skipped + 1))
       continue
     fi
     total=$((total + DISK_FREED_KB))
+    # What is left after the sweep is the floor: tracked files, mostly. prune can never
+    # take those (rule 2), so it says how much of it there is instead of looking finished.
+    rest="$(disk_kb "$path")"
+    if [ "$apply" -eq 0 ]; then rest=$((rest - DISK_FREED_KB)); fi
+    [ "$rest" -ge 0 ] || rest=0
+    floor=$((floor + rest))
     if [ -z "$DISK_CLEANED" ]; then
       printf '  %-18s %9s   nothing to take\n' "$role" "0 KB"
     else
@@ -355,6 +410,13 @@ cmd_prune() {
     event_log prune "" "kind=$kind freed_kb=$total lanes=$cleaned"
     disk_cache_adjust "$total"
     lock_release
+  fi
+  # Measured on this machine: of 25 GB in 38 lane worktrees only about 4 GB was on the
+  # allowlist. The rest is the checkout itself (one project copies 530 MB of public/ into
+  # every lane), and only taking the lane off the books gives that back.
+  if [ "$floor" -gt 0 ]; then
+    printf '  %-18s %9s   is in files git tracks: prune can never take those. Only teamctl remove <role>%s does.\n' \
+      "still held" "$(human_size "$floor")" "$hint"
   fi
   if [ "$skipped" -gt 0 ]; then
     say "  A skipped lane holds something that is not build output. Look: teamctl diff <role> --working · let it go: teamctl remove <role>"

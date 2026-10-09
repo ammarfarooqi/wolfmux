@@ -7,7 +7,7 @@ their first screen; everything else used stub agents or a localhost mock.
 
 ```bash
 tests/smoke.sh                 # 2 to 4 minutes, 181 checks, isolated from any running team
-tests/disk.sh                  # ~40 seconds, 48 checks, its own tmux server and state
+tests/disk.sh                  # ~1 minute, 68 checks, its own tmux server and state
 tests/providers.sh             # the provider table, 116 checks
 tests/docs.sh                  # ~2 seconds, 28 checks, starts nothing
 tests/migration.sh             # ~30 seconds, 24 checks, in a throwaway HOME
@@ -48,26 +48,46 @@ real team was live on the same machine; the real team was unaffected.
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
 
-## disk.sh: 48 of 48 pass (v1.12.0)
+## disk.sh: 68 of 68 pass (v1.12.0)
 
 Its own tmux server (`wolfmux-disk-test-<pid>`), its own state directory, a throwaway
 repository whose path contains a space, stub agents, and build trees of a few megabytes of
-`/dev/urandom` instead of real installs. Half the checks ask `lib/disk.sh` its questions
-directly, with teamctl's libraries loaded, so the numbers are compared as exact integers
-against an independent `du`; the other half go through the commands in a live throwaway team.
+`/dev/urandom` instead of real installs (`/dev/zero` compresses to nothing on APFS and would
+have made the freed-kilobyte checks meaningless). Half the checks ask `lib/disk.sh` its
+questions directly, with teamctl's libraries loaded under `set -euo pipefail` — `bin/teamctl`'s
+own line, so an arithmetic or `set -e` abort inside a library cannot pass unseen; the other
+half go through the commands in a live throwaway team.
 
 | Area | Checks |
 |------|--------|
 | the allowlist and the numbers | a dry run reports the **exact** kilobytes of the allowlisted directories (compared with `du -sk`) and deletes nothing · it names what it would take · `caches` leaves `node_modules` out of both the number and the deletion · `human_size` turns KB into MB and GB at the right places · applying `caches` deletes the caches and keeps `node_modules` · applying `all` takes both and leaves sources and git state untouched · nothing is left behind |
-| what is never deleted | a `dist` that git tracks survives, and is not counted as freed, while `node_modules` still goes · a worktree with an uncommitted change to a tracked file is refused with the reason, and untouched · a worktree with an untracked file that is not build output is refused, the file is named, and it is untouched · a path outside this project's worktree directory is refused · your own checkout is refused · the worktree directory itself is refused · a `node_modules` that is a symlink out: the link goes, never its target |
-| interruption | a leftover `.wolfmux-removing-*` is cleared by the next run and never makes the lane permanently unclean |
-| the commands | `stop` takes the build caches, keeps `node_modules` and says how much it freed · `stop` on a lane with unfinished work keeps its build output and says why · `prune --dry-run` prints a total, deletes nothing, leaves a running lane out and says so, and names the lane it skipped and why · a worker may run `--dry-run` but gets exit 77 for the real thing · `--keep-node-modules` takes the caches only · `prune` takes `node_modules` from the parked lane, reports the total, never touches the running lane or the skipped one, and leaves the sources and git state intact · `remove` takes the whole worktree and says what that freed · `destroy --worktrees` takes each lane's build output first and still keeps the lane that holds real work |
-| the guard | `status` shows free disk and what the guard is set to · `status` never measures and says so, `teams` measures, and `status` then shows the number · `status --json` carries `disk.free_kb` and the three new policy keys · under the threshold a spawn is refused with **exit 75**, names the number and `teamctl prune --dry-run`, and creates no branch and no record · `disk-guard warn` lets the same spawn through with a warning · `off` asks nothing · a non-numeric or negative `disk-min-gb`, and an unknown `disk-guard` or `link-node-modules` value, are refused with exit 64 · `disk-min-gb 0` switches the limit off without switching the guard off |
-| shared `node_modules` | `--link-node-modules` links the lane to the project's copy and says that an install in any lane changes them all · without the flag and with the policy off there is no link · `policy link-node-modules on` does it for every spawn · cleaning a linked lane removes the link and never the project's copy |
+| what is never deleted | a `dist` that git tracks survives, and is not counted as freed, while `node_modules` still goes · a worktree with an uncommitted change to a tracked file is refused with the reason, and untouched · a worktree with an untracked file that is not build output is refused, the file is named, and it is untouched · a path outside this project's worktree directory is refused · your own checkout is refused · the worktree directory itself is refused · a worktree whose `.git` file is gone is refused (git has to be the one that answers) · `…/..`, `…/../..` and `/` are refused, because `pwd -P` resolves first · **a named team's lane is never confined for the first team**, nor is the `teams/` directory itself · a `node_modules` that is a symlink out: the link goes, never its target · the refusal names the team and never trails off when no worktree directory resolved |
+| interruption | a leftover `.wolfmux-removing-*` is counted, named `cleanup-trash`, cleared by the next run, left alone by `--dry-run`, and never makes the lane permanently unclean |
+| the remembered lane size | a fresh number is used · garbage, a one-field line, an empty file and negative values are not · a stale number is dropped · **a stamp in the future is dropped** (a clock that went back used to pin status for ever) · a command that freed something corrects the number instead of measuring again, and never below zero |
+| a number that is not base ten | `policy disk-min-gb` refuses `08`, `010`, `09`, `twenty`, `-5`, `1e3` and `10001` with exit 64 · a leading zero in the environment or a stored record falls back to the default · and the one arithmetic site forces base ten anyway, so even `08` cannot abort a spawn |
+| the commands | `stop` takes the build caches, keeps `node_modules` and says how much it freed · `stop` on a lane with unfinished work keeps its build output and says why · `prune --dry-run` prints a total, deletes nothing, leaves the trash alone, leaves a running lane out and says so, names the lane it skipped and why, **shows that lane's size** and **the floor it can never take** · a worker may run `--dry-run` but gets exit 77 for the real thing · `--keep-node-modules` takes the caches only · `prune` takes `node_modules` from the parked lane, clears the trash, reports the total, never touches the running lane or the skipped one, and leaves the sources and git state intact · **`prune` refuses the whole sweep, dry run included, when a record says running and the session shows no pane for it, and touches nothing** · a hand-edited record pointing outside is skipped and that directory is untouched · `remove` sweeps the build output first (so cleanup trash never makes it ask for `--force`), takes the whole worktree and says what that freed · `destroy --worktrees` takes each lane's build output first and still keeps the lane that holds real work |
+| the guard | `status` shows free disk and what the guard is set to · `status` never measures and says so, `teams` measures, and `status` then shows the number · `status --json` carries `disk.free_kb` and the three new policy keys · under the threshold a spawn is refused with **exit 75**, names the number and `teamctl prune --dry-run`, and creates no branch and no record · `disk-guard warn` lets the same spawn through with a warning · `off` asks nothing at all · `disk-min-gb 0` switches the limit off without switching the guard off |
+| shared `node_modules` | `--link-node-modules` links the lane to the project's copy and says that an install in any lane changes them all · without the flag and with the policy off there is no link · `policy link-node-modules on` does it for every spawn · the linked `node_modules` really is what git calls untracked under a `node_modules/` ignore line (the case below) · **`remove` takes such a lane off the books without `--force`** and never the project's copy · cleaning a linked lane removes the link and never the project's copy |
 
 **Measured, not assumed.** One real lane `node_modules` on the owner's machine: 69,336
 files, 802 MB, `du -sk` 0.62 s warm. All 36 lane worktrees on that machine: 12.4 s. That is
 why `teamctl status` reads a cached number and `teamctl teams` is the command that measures.
+
+**Also measured, by the reviewer, read-only on the same machine.** 38 lane worktrees holding
+25 GB, of which about 4 GB sat in a directory on the allowlist. The other ~21 GB is files
+git tracks: in one project `public/` alone is 530 MB and 3,097 tracked files, copied into
+every lane, about 0.65 GB per lane before an agent installs anything. `prune` now prints
+that floor. For the issue's 27-lane case, `prune` would have returned roughly 27 × 2.9 GB;
+the ~18 GB of tracked files needs `teamctl remove`.
+
+**What the review could not break.** Driven directly at the project root, `$WORKTREES_DIR/../..`,
+`/`, an empty path, an emptied `WORKTREES_DIR`, a worktree with its `.git` file deleted, a
+`GIT_DIR` exported to point at another repository, a `node_modules` symlinked to the project
+root, a symlink inside `node_modules` pointing out, two `teamctl prune` runs at once, and
+`remove --force` / `destroy --worktrees` on a linked lane: every confinement attempt was
+refused, the root's `node_modules` survived every one, and the concurrent runs serialised on
+the project lock. Rule 4 refused even the one case (`GIT_DIR`) where rules 2 and 3 could be
+made to answer about the wrong repository.
 
 ## Live checks with the real CLIs
 

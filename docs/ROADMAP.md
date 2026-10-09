@@ -16,6 +16,8 @@
 | Codex lead permissions are coarse | The rule file allows every `teamctl` and `bd` invocation outside the sandbox (with a prompt on `destroy`). |
 | macOS only | Keychain, `/bin/bash` 3.2 paths, `security`, `shasum`. |
 | Rare duplicate notification | Two hooks racing over a stale debounce guard can both notify once. |
+| A lane parked for days keeps its `node_modules` until someone prunes | `teamctl stop` takes the build caches and deliberately leaves `node_modules`, so a restart stays cheap. Nothing then takes it back on its own: a lane parked for a week holds its 2.3 GB for the whole week unless the lead runs `teamctl prune`. Three things push without anyone remembering — stop takes the caches, remove and `destroy --worktrees` take everything, and `spawn` refuses under `disk-min-gb` with the command to run — but draining by age (stop taking `node_modules` once a lane has been parked longer than some period, or `prune --parked-since <days>`) is the case the original issue is really about and is still missing. |
+| `teamctl prune` cannot reach the biggest part of a lane | Measured on one machine: of 25 GB across 38 lane worktrees, about 4 GB sat in a directory on the allowlist. The rest is files git tracks — one project copies 530 MB of `public/` into every lane, about 0.65 GB per lane before an agent installs anything. Rule 2 protects those, correctly, so only `teamctl remove <role>` gives that back. `prune` prints how much it is, per sweep. |
 
 ## What a V2 could be
 

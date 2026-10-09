@@ -58,6 +58,9 @@ Start with `teamctl doctor`, then `teamctl status`, then `teamctl capture <role>
 | a `.wolfmux-removing-*` directory inside a worktree | a cleanup was killed halfway (the disk filled, the machine rebooted) | harmless; the next `teamctl prune` / `stop` / `remove` clears it. By hand: `/bin/rm -rf` that one directory |
 | `teamctl prune` says "skipped: it has untracked files that are not build output (X)" | the lane holds something that is not regenerable, so nothing of it is touched | look: `teamctl diff <role> --working`. Keep it: commit it in that worktree. Let the lane go: `teamctl remove <role>` |
 | `teamctl status` says "this team's lanes: not measured" | status never runs a `du` (over 36 lanes that is 12 s); it reads the number the last command left | `teamctl teams` measures it |
+| `teamctl prune` refuses: "cannot tell whether '<role>' is running" | its record says the agent is running and the team's tmux session shows no pane for it. prune sweeps lanes unattended, so it stops rather than guess | `teamctl status` and `teamctl panes` to see which is right, then `teamctl stop <role>` (park it for real) or `teamctl restart <role>` (bring it back), and run prune again |
+| `teamctl policy disk-min-gb 08` is refused | a leading zero is ambiguous: shell arithmetic would read `08` as octal and `010` as 8 | write it without the zero: `8`, `10`, `20` |
+| `teamctl prune` says "still held … is in files git tracks" | most of a lane is the checkout itself, not build output — one project copies 530 MB of `public/` into every lane | nothing to fix; `teamctl remove <role>` is the only thing that gives that part back |
 
 ## The disk is full
 

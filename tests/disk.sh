@@ -61,11 +61,14 @@ git -c user.name=disk -c user.email=disk@example.invalid commit -qm "initial com
 
 # lib_eval <shell code> — run it with teamctl's own libraries loaded and this project
 # resolved, so a rule can be asked a question directly instead of through a command.
+# `set -euo pipefail` is bin/teamctl's own line, not a weaker one: under plain `set -u` an
+# arithmetic abort or a failing command inside a library is invisible here, and that is
+# exactly the shape of the leading-zero bug these checks now cover.
 lib_eval() {
   (
     cd "$PROJECT" || exit 1
     bash -c '
-      set -u
+      set -euo pipefail
       for m in provider-env common registry tmuxctl worktree disk beads policy approvals agents views doctor brand notify layout guard; do
         . "$WOLFMUX_HOME/lib/$m.sh"
       done
@@ -163,7 +166,39 @@ check "a cleanup killed halfway leaves trash the next run clears, never a half-d
   'L="$(new_lane unit-trash)" && /bin/mkdir -p "$L/.wolfmux-removing-node_modules.999/pkg" && mkfile "$L/.wolfmux-removing-node_modules.999/pkg/x" 200 && lib_eval "disk_clean_worktree \"$L\" all 1" && [ -z "$(/bin/ls -A "$L" | grep wolfmux-removing)" ]'
 check "free disk is a plain number of kilobytes, and a label when df says nothing" \
   'lib_eval "disk_free_kb" | grep -Eq "^[0-9]+$" && lib_eval "disk_free_label" | grep -Eq "(KB|MB|GB)$"'
-for name in unit-1 unit-tracked unit-dirty unit-untracked unit-link unit-trash; do
+check "a worktree whose .git file is gone is refused: git has to be the one that answers" \
+  'L="$(new_lane unit-nogit)" && mk_build_tree "$L" && /bin/rm -f "$L/.git" && ! lib_eval "disk_clean_worktree \"$L\" all 1" && [ -d "$L/node_modules/pkg" ] && lib_eval "disk_clean_worktree \"$L\" all 1 || printf %s \"\$DISK_SKIP_REASON\"" | grep -q "git does not know"'
+check "a path that climbs out of the worktree directory is refused (pwd -P resolves it first)" \
+  '! lib_eval "disk_clean_worktree \"$TREES/..\" all 1" && ! lib_eval "disk_clean_worktree \"$TREES/../..\" all 1" && ! lib_eval "disk_clean_worktree \"$TREES/unit-1/../../..\" all 1" && ! lib_eval "disk_clean_worktree / all 1"'
+# The first team's worktree directory is the parent of the named teams' ones, so its prefix
+# alone would reach their lanes. It must not: another team's lanes are that team's to clean.
+check "a named team's lane is never confined for the first team, nor is the teams/ directory itself" \
+  '/bin/mkdir -p "$TREES/teams/other" && git -C "$PROJECT" worktree add -q -b ai/other/lane1 "$TREES/teams/other/lane1" HEAD >/dev/null 2>&1 && mk_build_tree "$TREES/teams/other/lane1" && ! lib_eval "disk_clean_worktree \"$TREES/teams/other/lane1\" all 1" && ! lib_eval "disk_clean_worktree \"$TREES/teams\" all 1" && [ -d "$TREES/teams/other/lane1/node_modules/pkg" ]'
+check "the refusal never trails off when there is no worktree directory to name" \
+  '! lib_eval "WORKTREES_DIR=; disk_cleanable \"$TREES/unit-1\"" && lib_eval "WORKTREES_DIR=; disk_cleanable \"$TREES/unit-1\" || printf %s \"\$DISK_SKIP_REASON\"" | grep -q "no worktree directory resolved"'
+git -C "$PROJECT" worktree remove --force "$TREES/teams/other/lane1" >/dev/null 2>&1
+git -C "$PROJECT" branch -D ai/other/lane1 >/dev/null 2>&1
+
+echo "== the remembered lane size"
+STATE="$(lib_eval 'printf "%s\n" "$STATE_DIR"')"
+/bin/mkdir -p "$STATE"
+cache_says() { printf '%s' "$1" >"$STATE/disk-kb"; lib_eval 'disk_team_kb_cached'; }
+check "a fresh number is used, and garbage, a short line and an empty file are not" \
+  '[ "$(cache_says "$(date +%s) 4096")" = "4096" ] && [ -z "$(cache_says "garbage")" ] && [ -z "$(cache_says "123")" ] && [ -z "$(cache_says "")" ] && [ -z "$(cache_says "-5 -5")" ]'
+check "a stale number is dropped, and so is one stamped in the future (a clock that went back)" \
+  '[ -z "$(cache_says "1000000000 4096")" ] && [ -z "$(cache_says "9999999999999 500")" ] && [ -z "$(cache_says "$(($(date +%s) + 86400)) 500")" ]'
+check "a command that just freed something corrects the number instead of measuring again, and never below zero" \
+  'printf "%s 4096\n" "$(date +%s)" >"$STATE/disk-kb" && lib_eval "disk_cache_adjust 1024" && [ "$(lib_eval "disk_team_kb_cached")" = "3072" ] && lib_eval "disk_cache_adjust 999999" && [ "$(lib_eval "disk_team_kb_cached")" = "0" ]'
+/bin/rm -f "$STATE/disk-kb"
+
+echo "== a number that is not base ten"
+check "policy refuses a leading zero: 08 would abort shell arithmetic, 010 would quietly mean 8" \
+  'for v in 08 010 09 twenty -5 1e3 10001; do teamctl policy disk-min-gb "$v" >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done'
+check "a leading zero in the environment or in a stored record falls back to the default, it never reaches the arithmetic" \
+  '[ "$(WOLFMUX_DISK_MIN_GB=08 lib_eval "policy_get disk-min-gb")" = "20" ] && [ "$(WOLFMUX_DISK_MIN_GB=010 lib_eval "policy_get disk-min-gb")" = "20" ]'
+check "and the one arithmetic site forces base ten anyway, so even 08 cannot abort a spawn" \
+  'lib_eval "policy_get() { case \"\$1\" in disk-guard) printf refuse ;; disk-min-gb) printf 08 ;; esac; printf \"\\n\"; }; disk_guard_spawn"'
+for name in unit-1 unit-tracked unit-dirty unit-untracked unit-link unit-trash unit-nogit; do
   git -C "$PROJECT" worktree remove --force "$TREES/$name" >/dev/null 2>&1
   git -C "$PROJECT" branch -D "ai/$name" >/dev/null 2>&1
 done
@@ -194,13 +229,30 @@ check "stop says the worktree, branch and commits are untouched, and they are" \
 check "stopping a lane that holds unfinished work keeps its build output and says why" \
   'teamctl restart messy >/dev/null 2>&1; sleep 1; teamctl stop messy 2>&1 | grep -q "kept:    its build output (it has uncommitted changes to tracked files)" && [ -d "$MESSY/.next" ]'
 
+/bin/mkdir -p "$PARKED/.wolfmux-removing-node_modules.999/pkg"
+mkfile "$PARKED/.wolfmux-removing-node_modules.999/pkg/x" 200
 DRY="$(teamctl prune --dry-run 2>&1)"
 check "prune --dry-run reports a total and deletes nothing" \
   'printf "%s" "$DRY" | grep -q "DRY RUN: nothing is deleted" && printf "%s" "$DRY" | grep -qE "^  total +[0-9.]+ (KB|MB|GB) +is what this would free" && [ -d "$PARKED/node_modules/pkg" ]'
+check "prune --dry-run leaves the interrupted-cleanup trash alone too" \
+  '[ -f "$PARKED/.wolfmux-removing-node_modules.999/pkg/x" ]'
 check "prune --dry-run leaves a running lane out of the total and says so" \
   'printf "%s" "$DRY" | grep -qE "^  busy +- +running, left alone"'
 check "prune --dry-run skips the lane that holds other changes, and names the reason" \
   'printf "%s" "$DRY" | grep -q "messy.*skipped: it has uncommitted changes to tracked files"'
+check "a skipped lane shows its size, so what one stray file is pinning is visible" \
+  'printf "%s" "$DRY" | grep -qE "^  messy +[0-9.]+ (KB|MB|GB) +skipped:"'
+check "prune says how much is in files it can never take, and that only remove gives that back" \
+  'printf "%s" "$DRY" | grep -qE "^  still held +[0-9.]+ (KB|MB|GB) +is in files git tracks" && printf "%s" "$DRY" | grep -q "Only teamctl remove <role> does"'
+# One signal is not enough for a command that sweeps many lanes unattended: a record that
+# claims a running agent while the session shows no pane of its means we do not know.
+RECORDS="$(/bin/ls -d "$WOLFMUX_DATA"/state/*/agents | head -1)"
+"$(command -v jq)" '.state = "running" | .pane_id = "%999"' "$RECORDS/parked.json" >"$RECORDS/parked.json.tmp" && /bin/mv "$RECORDS/parked.json.tmp" "$RECORDS/parked.json"
+check "prune refuses the whole sweep when a record and tmux disagree, and touches nothing" \
+  'out="$(teamctl prune 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "cannot tell whether .parked. is running" && printf "%s" "$out" | grep -q "Nothing was touched" && [ -d "$PARKED/node_modules/pkg" ]'
+check "the same doubt stops a dry run, so the report can never be read as a safe list" \
+  'teamctl prune --dry-run >/dev/null 2>&1; [ $? -ne 0 ]'
+teamctl stop parked >/dev/null 2>&1
 check "a worker may look (--dry-run) but not prune: the deleting is the lead's (exit 77)" \
   'TEAM_ROLE=busy teamctl prune --dry-run >/dev/null 2>&1 && { TEAM_ROLE=busy teamctl prune >/dev/null 2>&1; [ $? -eq 77 ]; }'
 
@@ -210,15 +262,30 @@ check "prune --keep-node-modules takes the caches only" \
 PRUNE="$(teamctl prune 2>&1)"
 check "prune takes node_modules from the parked lane and reports the freed total" \
   '[ ! -e "$PARKED/node_modules" ] && printf "%s" "$PRUNE" | grep -qE "^  total +[0-9.]+ (KB|MB|GB) +freed from 1 parked lane"'
+check "prune clears the interrupted-cleanup trash as well" \
+  '[ -z "$(/bin/ls -A "$PARKED" | grep wolfmux-removing)" ]'
 check "prune never touches a running lane" '[ -d "$BUSY/node_modules/pkg" ] && [ -d "$BUSY/.next" ]'
 check "prune never touches the lane it skipped" '[ -d "$MESSY/node_modules/pkg" ]'
 check "prune leaves the parked lane's sources and git state intact" \
   '[ -f "$PARKED/README.md" ] && [ -z "$(git -C "$PARKED" status --porcelain)" ]'
 check "prune says what to do about a skipped lane" 'printf "%s" "$PRUNE" | grep -q "teamctl remove <role>"'
 
+/bin/mkdir -p "$PARKED/.wolfmux-removing-node_modules.998/pkg"
+mkfile "$PARKED/.wolfmux-removing-node_modules.998/pkg/x" 200
 REMOVE="$(teamctl remove parked --yes 2>&1)"
 check "remove takes the whole worktree and says what that freed" \
   '[ ! -d "$PARKED" ] && printf "%s" "$REMOVE" | grep -qE "removed: parked .*freed [0-9]"'
+check "remove sweeps the build output first, so cleanup trash never makes it ask for --force" \
+  'printf "%s" "$REMOVE" | grep -q "parked: took .* of build output first" && ! printf "%s" "$REMOVE" | grep -q "still holds work"'
+# A record is a file anyone can edit; prune has to answer about the directory, not the record.
+STRAY="$WORK/stray-lane"
+/bin/mkdir -p "$STRAY"
+(cd "$STRAY" && git init -q -b main && echo x >f && git add -A && git -c user.name=d -c user.email=d@e.invalid commit -qm i) >/dev/null 2>&1
+mk_build_tree "$STRAY"
+"$(command -v jq)" --arg w "$STRAY" '.role = "forged" | .workdir = $w | .state = "stopped" | .pane_id = ""' "$RECORDS/busy.json" >"$RECORDS/forged.json"
+check "a hand-edited record whose workdir points outside is skipped, and that directory is untouched" \
+  'teamctl prune 2>&1 | grep -q "forged.*skipped: it is not a lane of team" && [ -d "$STRAY/node_modules/pkg" ] && [ -d "$STRAY/.next" ]'
+/bin/rm -f "$RECORDS/forged.json"
 
 echo "== the guard before a lane is created"
 check "status shows free disk and what the guard is set to" \
@@ -239,7 +306,7 @@ check "policy disk-guard warn lets the same spawn through, with the warning" \
   'printf "%s" "$WARN" | grep -q "spawning anyway" && teamctl status --json | jq -e ".agents[] | select(.role == \"late\") | .state == \"running\""'
 teamctl policy disk-guard off >/dev/null 2>&1
 check "policy disk-guard off asks nothing at all" \
-  'teamctl spawn later glm53 --no-kickoff 2>&1 | grep -q "spawned:   later" && ! teamctl spawn-nonsense 2>/dev/null'
+  'teamctl spawn later glm53 --no-kickoff 2>&1 | grep -q "spawned:   later" && ! teamctl spawn later glm53 2>&1 | grep -q "free on this disk"'
 check "a policy value that is not a number, or not one of the words, is refused (exit 64)" \
   'teamctl policy disk-min-gb twenty >/dev/null 2>&1; [ $? -eq 64 ] && { teamctl policy disk-min-gb -5 >/dev/null 2>&1; [ $? -eq 64 ]; } && { teamctl policy disk-guard maybe >/dev/null 2>&1; [ $? -eq 64 ]; } && { teamctl policy link-node-modules sometimes >/dev/null 2>&1; [ $? -eq 64 ]; }'
 teamctl policy disk-guard refuse >/dev/null 2>&1
@@ -259,6 +326,17 @@ check "without the flag, and with the policy off, a lane gets no link" \
 teamctl policy link-node-modules on >/dev/null 2>&1
 check "policy link-node-modules on does it for every spawn" \
   'teamctl spawn shared2 glm53 --no-kickoff >/dev/null 2>&1 && P="$(teamctl status --json | jq -r ".agents[] | select(.role == \"shared2\") | .workdir")" && [ -L "$P/node_modules" ]'
+teamctl stop shared2 >/dev/null 2>&1
+# .gitignore here says "node_modules/" with the trailing slash, the common form, which
+# matches directories only — so git calls the lane's node_modules SYMLINK untracked, and
+# remove used to refuse a lane the new flag had made, pointing at --force. --force is the
+# discard-work door; nobody should be trained to type it on an ordinary lane.
+SHARED2="$(teamctl status --json | jq -r '.agents[] | select(.role == "shared2") | .workdir')"
+check "a linked node_modules really is what git calls untracked (the case this covers)" \
+  '[ -L "$SHARED2/node_modules" ] && git -C "$SHARED2" status --porcelain | grep -q "?? node_modules"'
+R2="$(teamctl remove shared2 --yes 2>&1)"
+check "remove takes a --link-node-modules lane off the books without --force, and never the project's copy" \
+  '[ ! -d "$SHARED2" ] && ! printf "%s" "$R2" | grep -q "still holds work" && ! printf "%s" "$R2" | grep -q -- "--force" && [ -f "$PROJECT/node_modules/rootpkg/index.js" ]'
 teamctl stop shared >/dev/null 2>&1
 check "cleaning a lane whose node_modules is a link removes the link and never the project's copy" \
   'teamctl prune >/dev/null 2>&1; [ ! -e "$SHARED/node_modules" ] && [ -f "$PROJECT/node_modules/rootpkg/index.js" ]'

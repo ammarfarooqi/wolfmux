@@ -48,8 +48,11 @@ policy_valid() { # <key> <value>
     link-node-modules:on | link-node-modules:off) return 0 ;;
     # A number, not a word: whole gigabytes, 0 switches the limit off, and the ceiling is
     # only there so that a slip of the hand cannot refuse every spawn for ever.
+    # A leading zero is refused on purpose. `test -le` reads base ten but shell arithmetic
+    # reads 08 as octal and aborts, so "disk-min-gb 08" used to break every spawn in the
+    # team with a raw bash error, and "010" quietly enforced 8 GB while printing 010.
     disk-min-gb:*)
-      case "$2" in "" | *[!${_WM_DIGITS}]*) return 1 ;; esac
+      case "$2" in "" | *[!${_WM_DIGITS}]* | 0?*) return 1 ;; esac
       [ "$2" -le 10000 ]
       ;;
     *) return 1 ;;
@@ -62,7 +65,7 @@ policy_choices() {
     worker-permissions) printf 'skip|lead|ask\n' ;;
     worker-spawn | worker-isolation | lead-teams | link-node-modules) printf 'on|off\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
-    disk-min-gb) printf 'a whole number of GB (0 = no limit)\n' ;;
+    disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
   esac
 }
 

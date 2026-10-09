@@ -661,6 +661,18 @@ cmd_remove() {
   done
 
   lock_acquire
+  # Build output first, before anything is asked about work. These lanes are on their way
+  # out, and the question below is about commits and files a person wrote — not about the
+  # node_modules symlink that --link-node-modules put there, and not about the trash an
+  # interrupted cleanup left: both are untracked, both made wt_dirty_count call the lane
+  # dirty, and remove then refused a lane whose only "work" was our own doing. A lane that
+  # holds anything else is refused by rule 3 here as well, so nothing of a person's is taken.
+  for role in $roles; do
+    if disk_clean_role "$role" all 1 && [ -n "$DISK_CLEANED" ]; then
+      say "$role: took $(human_size "$DISK_FREED_KB") of build output first ($DISK_CLEANED)"
+      disk_cache_adjust "$DISK_FREED_KB"
+    fi
+  done
   # All or nothing: nobody is removed when one of them cannot be.
   if [ "$force" -ne 1 ]; then
     for role in $roles; do
