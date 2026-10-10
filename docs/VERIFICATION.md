@@ -332,6 +332,17 @@ them honest. The order the savings came in: bulk record read 6.17 → 2.54 s; fo
 lookup, team enumeration and orphan test, plus reading per-agent transcripts only for
 RUNNING agents, 2.54 → 1.5 s.
 
+### One pre-existing failure, seen while verifying this
+
+On the machine this was written on (2026-10-10), `tests/smoke.sh` reports **326 of 327**:
+the check "a crash is never silent … (issue #6)" fails. It fails **identically on the
+pristine base commit** `fc79251` with none of this work applied, and every assertion it
+makes passes when run on its own against either tree — the trap line is present, `PIPE`
+gives exit 141 with the right message, `exit 3` and `INT` add nothing, and `HUP` does not
+say "stopped unexpectedly". So it is this machine or the check itself, not the dashboard,
+and it is recorded here rather than left to look like a regression. The suite total is
+therefore 781 checks, 780 passing.
+
 ### Not verified in this suite
 
 - **A live Codex agent.** The `wrote` column reads the mtime of the file `agent_context`
