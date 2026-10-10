@@ -350,6 +350,27 @@ the next one carries its output. After a client attaches, or a server restarts, 
 is blank for up to `status-interval` seconds. It is inherent to how tmux runs `#()`. No
 document here claims the segment appears immediately.
 
+### The socket is handed in, never assumed
+
+`tmx` targets `$WOLFMUX_TMUX_SOCKET`, default `wolfmux`. A `#()` status job inherits the tmux
+**server's** environment, and nothing in it says which socket the job is being drawn on — so
+a badge that asked tmux itself would silently report the *default* socket's state instead of
+the one it is drawn on. On the live server the default happens to be the right answer, which
+is the same kind of luck as a bare `teamctl` on `PATH`, and this segment is silent on error,
+so it would never say otherwise. Found by the quiet-nudges lane in their own badge; same
+class of bug, same fix.
+
+So `tmux.conf` passes `#{socket_path}` to the segment, and the popup reads the socket out of
+`$TMUX` (which tmux sets inside a pane or a `display-popup`). A path that is not a socket is
+ignored and the previous behaviour stands, because a view that asked a socket which is not
+there would report an empty machine — worse than asking the default.
+
+Measured, and the difference is the proof: against a second tmux server carrying none of the
+suite's agents the segment reports `0run`; against the default, in the same run, it still
+reports this suite's own running agents. Were the argument ignored the two answers would be
+identical. Also checked: a non-socket path and a path that does not exist both fall back
+without failing and without the segment speaking out of turn.
+
 ### Measured, on the machine it was written on
 
 Taken with 2 projects, 20 teams, 75 agents on record and 12 of them running, under a system

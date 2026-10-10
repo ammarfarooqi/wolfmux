@@ -263,10 +263,42 @@ dash_tree_usage() {
 }
 
 # --- tmux: ONE list-panes for the whole view ------------------------------------------
+# DASH_SOCKET — the tmux socket to ask, when something told us which one. Empty means fall
+# back to tmx, which targets $WOLFMUX_TMUX_SOCKET.
+#
+# This exists because of a real trap. `tmx` targets $WOLFMUX_TMUX_SOCKET, default "wolfmux".
+# A #() status job inherits the tmux SERVER's environment, and nothing in it says which
+# socket the job is being drawn on — so a badge drawn on any other socket would silently
+# report the state of the default one. On the live server the default happens to be right,
+# which is the same kind of luck as a bare `teamctl` on PATH, and this badge is silent on
+# error so it would never say otherwise. So the socket is handed IN rather than assumed:
+# tmux.conf passes #{socket_path} to the badge, and the popup reads it out of $TMUX.
+# (Found by the quiet-nudges lane in their own badge; same class of bug, same fix.)
+DASH_SOCKET=""
+
+# dash_socket_set <path> — adopt that socket, if it really is one. Anything else is ignored
+# and the fallback stands: a view that asked a socket that is not there would report an
+# empty machine, which is worse than asking the default.
+dash_socket_set() {
+  [ -n "${1:-}" ] && [ -S "$1" ] || return 0
+  DASH_SOCKET="$1"
+}
+
+# dash_socket_from_tmux — inside a pane or a display-popup, tmux sets
+# TMUX=<socket-path>,<pid>,<session>, so the socket is there to be read.
+dash_socket_from_tmux() {
+  [ -n "${TMUX:-}" ] || return 0
+  dash_socket_set "${TMUX%%,*}"
+}
+
 # dash_panes — "session|role|pane|dead|pid" for every pane of the team server, newline
-# terminated. One call covers every project: every team shares the one wolfmux socket.
+# terminated. One call covers every project: every team shares one socket.
 dash_panes() {
   [ -n "$TMUX_BIN" ] || return 0
+  if [ -n "$DASH_SOCKET" ]; then
+    "$TMUX_BIN" -S "$DASH_SOCKET" list-panes -a -F '#{session_name}|#{@ai_role}|#{pane_id}|#{pane_dead}|#{pane_pid}' 2>/dev/null || true
+    return 0
+  fi
   tmx list-panes -a -F '#{session_name}|#{@ai_role}|#{pane_id}|#{pane_dead}|#{pane_pid}' 2>/dev/null || true
 }
 
@@ -547,6 +579,9 @@ cmd_dashboard() {
   done
   case "${interval:-x}" in "" | *[!0-9]* | 0) die_usage "--interval expects a number of seconds, 1 or more" ;; esac
   require_tools
+  # Opened from a key inside a team server, this runs in a display-popup, so tmux has told
+  # us which socket we are on: ask that one rather than assuming the default.
+  dash_socket_from_tmux
   if [ "$json" -eq 1 ]; then
     dash_collect $full
     return 0
@@ -632,8 +667,11 @@ dash_badge_record_count() {
 # line only, printable characters only, bounded length. tmux shows whatever it is given,
 # for as long as it is given it, so a half-written line or an error message would sit in
 # the status bar of every attached client until the server is restarted.
+# Takes the socket it is being drawn on as its one argument (tmux.conf passes
+# #{socket_path}); an older tmux.conf passes nothing and the fallback stands.
 cmd_overview_badge() {
   local out
+  dash_socket_set "${1:-}"
   out="$( (dash_badge_line) 2>/dev/null | head -n 1 | LC_ALL=C tr -dc 'A-Za-z0-9 .:/+-' | cut -c1-72)" || return 0
   [ -n "$out" ] || return 0
   printf '%s\n' "$out"

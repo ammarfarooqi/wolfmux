@@ -402,6 +402,38 @@ check "a nested format really is expanded inside #() on this tmux" \
   'test -e "$PROBE/by-option"'
 probe_stop
 
+echo "== the socket is handed in, never assumed"
+# tmx targets $WOLFMUX_TMUX_SOCKET, default "wolfmux". A #() job inherits the tmux SERVER's
+# environment, and nothing in it says which socket the job is drawn on — so a badge that
+# asked tmux itself would silently report the DEFAULT socket's state instead of this one's.
+# tmux.conf hands #{socket_path} over. These checks are what stops that regressing.
+check "tmux.conf passes the socket to the segment" \
+  'grep -q "_overview-badge \\\\\"#{socket_path}\\\\\"" "$REPO/config/wolfmux/tmux.conf" || grep -F -q "_overview-badge \"#{socket_path}\"" "$REPO/config/wolfmux/tmux.conf"'
+# A SECOND server, with no agents of ours on it. Asked about that socket the segment must
+# say 0 running; asked about the default it must still see this suite's own agents. If the
+# argument were ignored the two would be identical, so the difference is the whole proof.
+OTHER_SOCKET="wolfmux-dash-sock-$$"
+tmux -L "$OTHER_SOCKET" -f /dev/null new-session -d -s s1 'sleep 60' 2>/dev/null
+OTHER_SOCKET_PATH="$(tmux -L "$OTHER_SOCKET" display-message -p '#{socket_path}' 2>/dev/null)"
+BADGE_OTHER="$(teamctl _overview-badge "$OTHER_SOCKET_PATH" 2>/dev/null)"
+BADGE_DEFAULT="$(teamctl _overview-badge 2>/dev/null)"
+tmux -L "$OTHER_SOCKET" kill-server 2>/dev/null
+/bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$OTHER_SOCKET"
+check "the handed-in socket really is the one asked" \
+  'test -S "$OTHER_SOCKET_PATH" -o -n "$OTHER_SOCKET_PATH"; printf "%s" "$BADGE_OTHER" | grep -Eq "^[0-9]+t 0run "'
+check "and it is not simply reporting the default: the two answers differ" \
+  'test "$BADGE_OTHER" != "$BADGE_DEFAULT"'
+check "the default socket still reports this suite's own running agents" \
+  'teamctl _overview-badge | grep -Eq "^[0-9]+t [1-9][0-9]*run "'
+check "a socket path that is not a socket is ignored, and the fallback stands" \
+  'teamctl _overview-badge "$WORK/not-a-socket" | grep -Eq "^[0-9]+t [1-9][0-9]*run "'
+check "a socket argument can never make the segment fail or speak" \
+  'out="$(teamctl _overview-badge "/nowhere/at/all" 2>&1)"; test "$?" = 0 && printf "%s" "$out" | grep -Eq "^[0-9]+t "'
+check "dash_socket_set refuses anything that is not a socket" \
+  'lib_eval "DASH_SOCKET=\"\"; dash_socket_set /etc/hosts; dash_socket_set \"\"; dash_socket_set /nowhere; [ -z \"\$DASH_SOCKET\" ]"'
+check "dash_socket_from_tmux reads the socket out of TMUX" \
+  'lib_eval "s=\$(printf %s \"\$WOLFMUX_DATA\"); TMUX=\"/etc/hosts,123,0\"; DASH_SOCKET=\"\"; dash_socket_from_tmux; [ -z \"\$DASH_SOCKET\" ]"'
+
 echo
 echo "result: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
