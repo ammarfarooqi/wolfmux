@@ -13,6 +13,7 @@ tests/nudge-typing.sh          # ~90 seconds, 56 checks, its own tmux server and
 tests/inbox.sh                 # ~4 minutes, 102 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
+tests/dashboard.sh             # ~90 seconds, 90 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
@@ -290,6 +291,60 @@ check itself: its first version matched substrings, never saw `uninstall.sh --pu
 (that script did not parse its option as a `case` label; it does now, and refuses an option
 it does not know with exit 64 instead of ignoring it), and took comments in fenced
 examples for headings.
+
+## dashboard.sh: 90 of 90 pass (v1.16.0)
+
+The machine-wide view (`teamctl dashboard`, `prefix O`) and the status-bar segment
+(`teamctl _overview-badge`). Its own tmux server (`wolfmux-dash-test-<pid>`), its own state
+directory, two throwaway repositories — one whose path contains a space — and
+`tests/stub-agent` in place of every CLI. It was run while real teams were live on the same
+machine; they were unaffected, because the view is read-only and the suite's own socket and
+state are separate.
+
+| Area | Checks |
+|------|--------|
+| an empty machine | no state directory at all is valid JSON with no projects, not an error · the text view draws and says 0 teams · the segment prints `0t 0run 0stop` |
+| the machine-wide walk | the project and its root appear · the team appears with `session_running` · all three agents appear, **lead first** · each one's state · a worker reports its own branch and the lead reports none · cpu and memory are measured per agent from the process tree · the footer carries load, memory and free disk · a SECOND project in another repository appears, and the same two projects appear whichever project you run it from · the segment counts the teams and agents of both |
+| **equivalence: every fast path agrees with the helper it stands in for** | `dash_teams` lists exactly what `team_list` lists, in the same order · `dash_team_records` yields exactly the roles `reg_list` yields, in the same order, and the same field VALUES `reg_field` reads · `dash_pane_row` finds the pane `tm_pane_for_role` finds and agrees with `tm_pane_state` · it gives nothing for a role with no pane and **never matches one role inside a longer one** (`lead` inside `sublead`) · `dash_orphaned` agrees with `team_orphaned`, both while the lead runs and after it is stopped · `dash_meta_session` reads the session `meta_get` reads |
+| the lane total is read, never measured | with nothing measured the view says so and names `teamctl teams` · a fresh number is shown as a size, through `human_size` like every other view · a number older than the cache window is shown as `STALE` **with its age**, and still names what refreshes it · a garbled cache file falls back to not-measured instead of failing (the leading-zero shape that once broke `teamctl status`) · a missing file is the normal case |
+| the context column: three cases | a known window gives a count and a share · an unknown window, a zero window and a non-numeric window each give the count and **no share — never 0%** · no reading at all is a dash, not a zero · no `%` is ever printed for an unknown window · a team whose agent has an unknown window still renders |
+| when the transcript was last written | the context reader reports the file it opened (`CTX_FILE`), so there is no second piece of code working out where a transcript lives · the dashboard reports that file's mtime to the second · the column reaches the view for a running agent · an agent with no transcript reports nothing rather than a zero · the **Codex** rollout path reports its file too |
+| the budget | the segment never runs `du` · the segment never runs `ps` · the popup never runs `du` either (all three with `du` and `ps` shadowed on `PATH` by spies that would leave a marker) · the popup takes ONE `ps` for the whole view · the **process tree**, not the pane's own process, is what is summed · a tree with a cycle in it still terminates · a pid that is not in the snapshot is zero, and no pid at all is no reading rather than a zero |
+| the segment is silent on any error | a failing segment prints nothing and still exits 0 · one that somehow prints several lines is cut to one · **no control character ever reaches the status bar**, and neither the escape introducer nor the bell survives · an over-long line is bounded · without tmux it says nothing rather than claiming `0run` · a state directory that is not there is not an error, and the stopped count never goes negative when records and panes disagree |
+| a stopped agent, an orphaned team | a stopped worker is on record with no pane and reports no cpu reading rather than a zero · by default a stopped agent is not read from disk and the view says so · `--full` reads every agent and drops that note · the segment counts it stopped, not running · with its lead stopped the team is `orphaned`, as `teamctl teams` says |
+| one bad project never takes it down | an unreadable state directory (`chmod 000`) does not stop the view and is **named rather than silently dropped** · a project with nothing on record is reported apart from it, as a start that never became a team · a half-written `meta.json` does not stop the view · the segment survives all of it |
+| options, and read-only | `--interval` takes a number and refuses nonsense, zero and a missing value (exit 64) · an unknown option is a usage error naming the command · tab completion offers `dashboard` and every option its parser accepts · **the view changes nothing**: the whole JSON of every project is identical before and after drawing the popup and the segment |
+| the key | `prefix O` is bound to the popup, `status-right` carries the segment, and the other lane's `status-left` and `status-interval` are untouched |
+
+### Measured, on the machine it was written on
+
+Taken with 2 projects, 20 teams, 75 agents on record and 12 of them running, under a system
+load between 2 and 13.
+
+| | Measured | Note |
+|---|---|---|
+| the segment, own work | **18 ms** | 20 runs averaged; 82 ms per invocation in all, of which **64 ms is `teamctl`'s own startup** — sourcing eighteen library files, a cost every `teamctl` command pays, including the other lane's `_inbox-badge` |
+| the popup, full walk | **1.42 – 1.95 s** | budget was 2 s |
+| the popup, first version | 6.17 s | before the bulk reads: `reg_list` spawns a `jq` per record, `reg_field` one per field, `team_orphaned` asks tmux three times per team — about 600 processes |
+
+The 6.17 s is why the fast-path helpers exist, and the equivalence group above is what keeps
+them honest. The order the savings came in: bulk record read 6.17 → 2.54 s; fork-free pane
+lookup, team enumeration and orphan test, plus reading per-agent transcripts only for
+RUNNING agents, 2.54 → 1.5 s.
+
+### Not verified in this suite
+
+- **A live Codex agent.** The `wrote` column reads the mtime of the file `agent_context`
+  opened, and for the Codex family that is the rollout under `WOLFMUX_CODEX_SESSIONS`. No
+  Codex agent was running on this machine, so that path is verified against a rollout
+  **built by the test**, not against a live Codex session. The Claude path was verified both
+  ways: by the test, and live — a running agent's transcript showed `wrote 2s` and the
+  number tracked its turns.
+- **The unknown-window case against the real v1.14.1 code.** v1.14.1 is the commit that
+  makes `model_context_window` able to return nothing. This branch was written on v1.14.0,
+  so the three context cases are exercised against `dash_context_label` directly and
+  through a stubbed `agent_context`, not against the shipped 1.14.1 behaviour.
+- **More than about 25 teams or 75 agents on one machine**, which is what was here.
 
 ## Not verified
 

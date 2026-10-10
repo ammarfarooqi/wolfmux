@@ -160,6 +160,7 @@ complete_first_word() {
   complete_emit "$prefix" status "process + worktree state per role (alias: workers)"
   complete_emit "$prefix" workers "alias of status"
   complete_emit "$prefix" teams "the short list of this project's teams"
+  complete_emit "$prefix" dashboard "every team on this machine, across every project (prefix O opens it)"
   complete_emit "$prefix" panes "what tmux reports per pane"
   complete_emit "$prefix" capture "<role>: recent terminal output"
   complete_emit "$prefix" log "<role>: full scrollback (capture --all under another name)"
@@ -193,6 +194,7 @@ complete_options() {
     capture) options="--lines --all" ;;
     diff) options="--stat --names --commits --working" ;;
     status | teams) options="--json" ;;
+    dashboard) options="--json --once --interval --full" ;;
     approvals) options="--all" ;;
     doctor) options="--probe" ;;
   esac

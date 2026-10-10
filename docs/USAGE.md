@@ -263,6 +263,80 @@ Code transcripts (`--keep-transcripts` keeps those). Never touched: your checkou
 branches, Beads, other teams, the lead's own conversations (they live in your checkout's
 folder under `~/.claude/projects/`), Codex's sessions.
 
+## The dashboard: every team on the machine
+
+`teamctl status` and `teamctl teams` answer for ONE project — the one you are standing in.
+When several teams are running at once, across more than one repository, the question is
+usually "what is running on this machine, and what is it costing me?". That is
+`teamctl dashboard`, and inside a team session `prefix O` opens it as a popup.
+
+```bash
+teamctl dashboard                    # the popup's own view: redraws every 5 s, q closes it
+teamctl dashboard --once             # print it once and exit
+teamctl dashboard --once --full      # also read context and transcript times for stopped lanes
+teamctl dashboard --json             # the same facts as JSON
+teamctl dashboard --interval 15      # redraw less often
+```
+
+It walks every project with state under `~/.wolfmux/state/`, every team of each, and every
+agent of each team:
+
+```
+🐺 WOLFMUX DASHBOARD   2026-10-10T08:18:40Z
+ 2 projects · 20 teams (13 orphaned) · 75 agents: 12 running · 63 stopped · 0 exited
+
+PROJECT fanpro-studio-fe-099f81   ~/Documents/fpro/fanpro-studio-fe
+  TEAM nudge-fix            running      lead Opus 5       agents 1    lanes 4.2 GB
+      🐺 lead             Opus 5         running  cpu 2.4    mem 0.5G    ctx 490k 24%   wrote 2s     -
+  TEAM onboarding           running      lead Fable 5.1    agents 25   lanes not measured (teamctl teams measures it)
+      🐶 walk2            Opus 5         running  cpu 0.0    mem 0.4G    ctx 192k 19%   wrote 14m    ai/onboarding/walk2-…
+
+MACHINE  load 2.9 · memory 8.1 GB free · disk 109.4 GB free
+```
+
+**It is read-only.** It stops nothing, starts nothing and deletes nothing. You look, then
+you use the commands that act.
+
+What the columns actually mean, because two of them are easy to over-read:
+
+- **cpu / mem** — that agent's whole process tree, not just its pane's shell (an agent's
+  CLI is a child of that shell, so the shell on its own tells you nothing). It is a
+  process reading, not a claim about what the agent is doing.
+- **wrote** — when the agent's own transcript file was last written. A file timestamp,
+  nothing more. It does move on every turn an agent takes, which makes it the closest
+  honest answer to "is this one still going", and it is why there is no "idle" column:
+  tmux cannot tell a waiting agent from a working one, and terminal output is never parsed
+  for state.
+- **ctx** — what the conversation holds, from the same reader `teamctl status` uses. When
+  the model's window cannot be known you get the token count and no percentage, never a
+  made-up one.
+- **lanes** — the lane total `teamctl teams` last measured. The dashboard never measures
+  it: a `du` over a busy machine's lanes takes seconds, and this view redraws. When the
+  number is older than fifteen minutes it is shown as `STALE`, with its age, and
+  `teamctl teams` is named as the command that refreshes it.
+
+By default the two per-agent file reads — context and `wrote` — are taken only for agents
+that are RUNNING, which is what keeps a walk of a whole machine inside about a second.
+`--full` reads them for every agent on record.
+
+A project whose state cannot be read is named rather than silently dropped, and so is one
+that holds nothing at all (an abandoned `teamctl start`). One bad project never takes the
+view down.
+
+### The segment in the status bar
+
+`status-right` carries the same picture in one line, driven by `teamctl _overview-badge`:
+
+```
+20t 12run 63stop ld2.92 mem8G dsk109G
+```
+
+Teams, agents running, agents stopped (and `Nexit` when any pane has exited), then the
+machine's load, free memory and free disk. It redraws every few seconds for every attached
+client, so it opens no transcript, runs no `ps` and runs no `du`; it costs about 18 ms of
+work. If anything at all goes wrong it prints nothing: a status bar keeps whatever it is
+given until the server restarts, so a broken badge would be worse than no badge.
+
 ## Teams working together
 
 All teams of a project share its Beads, so they can talk: `-a review.lead` reaches the lead
@@ -315,13 +389,11 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch, record and the gigabytes they held. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl prune [--team <name>] [--dry-run] [--keep-node-modules]` | the build output of every parked lane of the team, with a total in GB. Running lanes untouched; `--dry-run` deletes nothing; `--keep-node-modules` takes the build caches only ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
-| `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
-| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
-| `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. This is the command that measures that disk. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane is not typed into at all while a client is attached to the team: the notice is filed and the agent is given it by its own hook (`filed: …`, exit 4) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | the pane notices filed for a role, oldest first. Default: the lead of this team. Reading them clears the `📨` count in the status bar; it does not change whether the agent has had them, and the agent having had them does not clear your count. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new. `prefix N` opens the same thing in a popup ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
-| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none) |
-| `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
+| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
+| `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. This is the command that measures that disk. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
+| `teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]` | every team on this machine, across every project, read-only; `prefix O` opens it as a popup and `q` closes it. See [The dashboard](#the-dashboard-every-team-on-the-machine). `--once` prints it and exits, `--interval` sets the redraw (default 5 s), `--full` also reads context and the transcript time for agents that are not running |
 | `teamctl panes` | tmux's view: command, pid, cwd |
 | `teamctl capture <role> [-n\|--lines N] [--all]`, `teamctl log <role>` | recent / full terminal output — for diagnosing a stuck agent, never for task state |
 | `teamctl focus <role>`, `teamctl attach` (alias `open`) | move your terminal |

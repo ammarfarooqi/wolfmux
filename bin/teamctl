@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk beads policy approvals agents views doctor brand notify inbox layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -84,6 +84,16 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
                                                       CONTEXT: what each agent's conversation holds (tokens, share of the window)
     teamctl teams [--json]                            the short list: state (running or orphaned), lead, agents, disk and founder per team
+    teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]
+                                                      EVERY team on this machine, across every project, in one read-only view:
+                                                      per agent its state, the cpu and memory of its process tree, context use and
+                                                      when its transcript was last written; per team its totals, state and cached
+                                                      lane disk; the machine's load, memory and free disk at the foot.
+                                                      prefix O opens it in a popup (q closes it). --once prints it and exits,
+                                                      --interval sets the redraw (default 5 s), --full reads context and the
+                                                      transcript time for teams whose session is not live too (slower).
+                                                      It never runs du: lane totals are what teamctl teams left behind, and the
+                                                      view says so when the number is stale.
     teamctl panes                                     what tmux reports per pane
     teamctl capture <role> [-n|--lines <count>] [--all]    recent terminal output
     teamctl log <role>                                full scrollback
@@ -192,6 +202,8 @@ main() {
     _permission-hook) cmd_permission_hook "$@" ;;
     status | workers) cmd_status "$@" ;;
     teams) cmd_teams "$@" ;;
+    dashboard) cmd_dashboard "$@" ;;
+    _overview-badge) cmd_overview_badge "$@" ;;
     _prompt) cmd_prompt "$@" ;;
     panes) cmd_panes "$@" ;;
     capture) cmd_capture "$@" ;;

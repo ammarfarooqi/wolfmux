@@ -231,6 +231,37 @@ integration; you do not do the bulk implementation yourself.
    change another agent's beads except to comment, never touch credentials or
    provider settings, never stop, restart or spawn agents unless the header says you may.
 
+## The machine, not just your team
+
+`teamctl status` and `teamctl teams` answer for the project you are in. When several teams
+are running at once, across more than one repository, `teamctl dashboard` answers for the
+whole machine, and `prefix O` opens it as a popup (`q` closes it).
+
+```bash
+teamctl dashboard                 # redraws every 5 s; q closes it
+teamctl dashboard --once          # print once and exit        --json for the same as JSON
+teamctl dashboard --once --full   # also read stopped lanes (slower)
+```
+
+Per agent: state, the CPU and memory of its process tree, context use, when its transcript
+was last written, branch. Per team: totals, state, lead, cached lane disk. At the foot: the
+machine's load, free memory and free disk. `status-right` carries a one-line version.
+
+Two things to read it correctly, because both are easy to over-read:
+
+- `cpu` / `mem` is a **process reading**, not a claim about what that agent is doing, and
+  `wrote` is a **file timestamp**, nothing more. There is no "idle" column because no
+  honest signal for one exists: tmux cannot tell a waiting agent from a working one, and
+  terminal output is never parsed for state.
+- `lanes` is the number `teamctl teams` last measured, shown as `STALE` with its age when
+  it is old. The dashboard never measures it — a `du` over a busy machine's lanes takes
+  seconds. Run `teamctl teams` when you want a current number.
+
+**It is read-only and it is for everyone.** It stops nothing, starts nothing and deletes
+nothing, so looking at another team costs that team nothing. It does not make you that
+team's manager: a team is still managed only by its own lead, and anything you want done to
+another team is still a Beads message to `<team>.lead`.
+
 ## Rules for everyone
 
 - Durable facts go into Beads; terminal scrollback is not a record.
