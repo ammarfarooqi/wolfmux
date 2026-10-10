@@ -780,6 +780,62 @@ by a JSON field. `tests/smoke.sh`: 327 → 333. `tests/docs.sh`: 36 → 36 (no n
 option, policy key or model key — the four keys already existed, only their declared window
 changed, and GLM's was made to read from one place instead of two). v1.14.1.
 
+## 29. The crash check lies when the suite is launched under nohup (v1.14.2)
+
+`tests/smoke.sh`'s check for issue #6 (a crash is never silent) was five assertions
+chained behind one description, sharing one pass/fail outcome: the exit handler's trap
+line is installed, SIGPIPE gives 141 with a message naming the signal and the command, a
+plain failure is silent and exits 3, Ctrl-C is silent and exits 130, and a closed terminal
+exits 129 and adds no "stopped unexpectedly" line. Two teams lost about an hour to this on
+the same day, because `check()` discards all output and prints only the description on a
+FAIL: the one line told them a crash check had failed, nothing about how far it got.
+`wolfmux-ux`'s lane supplied the counter-example that killed the first hypothesis (a race
+in `lock_release`) and pointed at the real cause: the lane had launched the suite under
+`nohup`.
+
+Under `nohup`, SIGHUP is set to be ignored before the shell starts, and a child process
+inherits that disposition — it cannot be killed by SIGHUP, so the fifth assertion's own
+child survives, prints `finished`, exits 0 instead of 129, and the chained check reports
+one opaque FAIL. Measured, same machine, same tree:
+
+| launch | plain | INT (Ctrl-C) | HUP (closed terminal) |
+|---|---|---|---|
+| run directly | `rc=3 len=0` | `rc=130 len=0` | `rc=129 len=53` (`Hangup: 1 …`) |
+| under `nohup` | `rc=3 len=0` | `rc=130 len=0` | `rc=0 len=8` (`finished`) |
+
+An inherited `SIG_IGN` cannot be undone by a `trap` inside the process — that is what
+"inherited" means — so the fix does not try to reset it. It detects it instead, but not
+with `trap -p HUP`: newer bash marks a signal that arrived already ignored with a phantom
+trap of its own, and `trap -p HUP` prints `trap -- '' SIGHUP` for that case there — but
+this machine's `/bin/bash` is 3.2.57, the one macOS ships, and 3.2 prints nothing for
+`trap -p HUP` either way, ignored or not (confirmed directly: `nohup bash -c 'trap -p
+HUP'` prints nothing on this box, while `nohup bash -c 'bash -c "kill -HUP \$\$;
+echo survived rc=\$?"'` does print `survived rc=0`, so the signal itself is neutered even
+though the trap table says nothing about it). Predicting the outcome from `trap -p` is
+exactly the kind of fact this bash cannot give up, so the fifth assertion reads its own
+probe's result instead of guessing ahead of it: rc 129 with no "stopped unexpectedly" line
+is a pass; rc 0 with `finished` printed is the known-neutered shape, and is skipped, with
+the reason printed (`SKIP ... (SIGHUP arrives ignored — launched under nohup?)`); anything
+else is a genuine FAIL, so a real regression in the handler still has somewhere to show up
+under nohup instead of being swallowed by the skip.
+
+The other four assertions are unchanged in substance, only split into their own `check()`
+calls so a failure now names which one broke. Proved deliberately: `teamctl_on_exit` in
+`common.sh` was edited to also exclude 141 from the "stopped unexpectedly" branch
+(`[ "$rc" -ne 141 ]` added alongside 130 and 129); against that regressed tree the SIGPIPE
+assertion's own check — "SIGPIPE gives 141 and the message names the signal and the
+command" — failed on its own (`PIPE rc=141 out=[]`, no message), while the trap-install,
+plain-failure and Ctrl-C assertions stayed green, confirming they test something that
+regression did not touch. Reverted before committing; `git diff` on `common.sh` is empty
+of that change.
+
+`tests/providers.sh` already had a `skip()`/`skipped` idiom (used when the owner's own
+`WOLFMUX_METERED` gate cannot be held closed for a check); `smoke.sh` had none, so it
+gained the same shape rather than a second one: `skipped=0`, `skip() { skipped=$((skipped
++ 1)); printf '  SKIP  %s\n        (%s)\n' "$1" "$2"; }`, and the final line now reads
+`result: $passed passed, $failed failed, $skipped skipped`. `tests/smoke.sh`: 333 → 337
+(the one check became five), 336 pass + 1 skip under `nohup`. v1.14.2.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
