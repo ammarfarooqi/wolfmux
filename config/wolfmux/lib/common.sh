@@ -2,7 +2,7 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-WOLFMUX_VERSION="1.14.0"
+WOLFMUX_VERSION="1.14.1"
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
 # This project was first called "ai-team". A team started under that name keeps
@@ -174,19 +174,19 @@ _model_info_provider() {
 }
 
 model_info() {
-  MODEL_KEY="$1" MODEL_ID="" MODEL_BILLING="subscription"
+  MODEL_KEY="$1" MODEL_ID="" MODEL_BILLING="subscription" MODEL_CONTEXT=""
   case "$1" in
     fable)
-      MODEL_LAUNCHER="claude-fable" MODEL_LABEL="Fable 5.1" MODEL_FAMILY="claude"
+      MODEL_LAUNCHER="claude-fable" MODEL_LABEL="Fable 5.1" MODEL_FAMILY="claude" MODEL_CONTEXT="1000000"
       ;;
     opus)
-      MODEL_LAUNCHER="claude-opus" MODEL_LABEL="Opus 5" MODEL_FAMILY="claude"
+      MODEL_LAUNCHER="claude-opus" MODEL_LABEL="Opus 5" MODEL_FAMILY="claude" MODEL_CONTEXT="1000000"
       ;;
     sonnet)
-      MODEL_LAUNCHER="claude-sonnet" MODEL_LABEL="Sonnet 5" MODEL_FAMILY="claude"
+      MODEL_LAUNCHER="claude-sonnet" MODEL_LABEL="Sonnet 5" MODEL_FAMILY="claude" MODEL_CONTEXT="1000000"
       ;;
     haiku)
-      MODEL_LAUNCHER="claude-haiku" MODEL_LABEL="Haiku 4.5" MODEL_FAMILY="claude"
+      MODEL_LAUNCHER="claude-haiku" MODEL_LABEL="Haiku 4.5" MODEL_FAMILY="claude" MODEL_CONTEXT="200000"
       ;;
     claude:*)
       valid_model_id "${1#claude:}" || return 1
@@ -200,10 +200,15 @@ model_info() {
       MODEL_LAUNCHER="codex-astra" MODEL_LABEL="GPT-6 Astra" MODEL_FAMILY="codex"
       ;;
     glm53)
-      MODEL_LAUNCHER="claude-glm" MODEL_LABEL="GLM-5.3" MODEL_FAMILY="claude" MODEL_BILLING="plan"
+      # The window is the glm provider row's, not a second number kept in step by hand:
+      # whoever updates PROVIDER_CONTEXT when Z.ai changes it does not also have to know
+      # this line exists.
+      wolfmux_provider_info glm || return 1
+      MODEL_LAUNCHER="claude-glm" MODEL_LABEL="GLM-5.3" MODEL_FAMILY="claude" MODEL_BILLING="plan" MODEL_CONTEXT="$PROVIDER_CONTEXT"
       ;;
     flash)
-      MODEL_LAUNCHER="claude-glm-flash" MODEL_LABEL="GLM-5.3 Flash" MODEL_FAMILY="claude" MODEL_BILLING="plan"
+      wolfmux_provider_info glm || return 1
+      MODEL_LAUNCHER="claude-glm-flash" MODEL_LABEL="GLM-5.3 Flash" MODEL_FAMILY="claude" MODEL_BILLING="plan" MODEL_CONTEXT="$PROVIDER_CONTEXT"
       ;;
     *) _model_info_provider "$1" ;;
   esac
@@ -211,7 +216,11 @@ model_info() {
 
 # model_context_window <model-key> — the context window, in tokens, that status shows a share of.
 # A provider of the table declares its own (PROVIDER_CONTEXT); a model id that ends in [1m]
-# means 1M; everything else is counted as 200k. Never fails: the fallback is 200000.
+# means 1M; a key of the model table above declares its own (MODEL_CONTEXT) — the four numbers
+# of Anthropic's model table (fable/opus/sonnet 1M, haiku 200k unchanged). Anything else — a
+# pinned claude:<id>/codex:<id> without the [1m] marker, astra, an unrecognised key — has no
+# known window: this prints nothing and returns 1, so the caller shows tokens with no share
+# rather than a percentage of a number nobody declared.
 model_context_window() {
   local key="$1" provider="${1%%:*}"
   case " $WOLFMUX_PROVIDERS " in
@@ -226,14 +235,12 @@ model_context_window() {
       fi
       ;;
   esac
-  if model_info "$key" 2>/dev/null; then
-    case "${MODEL_ID:-}" in
-      *\[1m\]) printf '1048576\n' ;;
-      *) printf '200000\n' ;;
-    esac
-  else
-    printf '200000\n'
-  fi
+  model_info "$key" 2>/dev/null || return 1
+  case "${MODEL_ID:-}" in
+    *\[1m\]) printf '1048576\n'; return 0 ;;
+  esac
+  [ -n "$MODEL_CONTEXT" ] || return 1
+  printf '%s\n' "$MODEL_CONTEXT"
 }
 
 # What usage lines and "unknown model" errors list: the fixed keys, then whatever the provider

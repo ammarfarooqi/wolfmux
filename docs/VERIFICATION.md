@@ -6,7 +6,7 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 5 to 7 minutes, 327 checks, isolated from any running team
+tests/smoke.sh                 # 5 to 7 minutes, 333 checks, isolated from any running team
 tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~90 seconds, 52 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/providers.sh             # the provider table, 134 checks
@@ -22,11 +22,12 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 327 of 327 pass (v1.14.0)
+## smoke.sh: 333 of 333 pass (v1.14.1)
 
 | Area | Checks |
 |------|--------|
 | launchers | `codex-astra` starts Codex by its real path, never through a symlink · `claude-opus`, `-sonnet`, `-haiku` are the subscription launcher pinned to their model, each pin configurable · `claude-glm` declares a 200k context window · `1m` uses the suffix instead, a number is declared, nonsense falls back with a warning · a context value from outside is scrubbed, never inherited |
+| context windows (v1.14.1) | the model table declares its own window for `fable`, `opus` and `sonnet` (1,000,000) and `haiku` (200,000, unchanged) · `glm53`/`flash` take theirs from the glm provider row (`PROVIDER_CONTEXT`), asserted against that row's own value, not a second literal · a pinned id with no `[1m]` suffix and `astra` have no declared window at all — `context_window` is 0, not a guessed 200,000, through the same `agent_context` path `status` actually uses · the CONTEXT column and `status --json`'s `context` string show the tokens with no percentage when the window is unknown · a real 232,010-token conversation (the exact request measured on a live Opus 5 agent) renders `232k 23%` on opus's 1M window, not the old fallback's 116% · a real 150,000-token conversation renders `150k 75%` on haiku's unchanged 200k window |
 | start | session running and lead registered · repository left clean by the stealth Beads init (no commit, no tracked file) |
 | spawn | two workers running · own branch each · worktrees outside the repository · `--base` recorded · `TEAM_ROLE` / `BEADS_ACTOR` / model set inside the pane · no provider or agent-session variable leaks into a pane · kickoff prompt present by default and absent with `--no-kickoff` · lead is pane 0 · pane titles are `<role> · <model>` |
 | validation | duplicate role refused · `lead` and malformed roles refused · a capital letter is refused under `C`, `en_AU.UTF-8` and `en_US.UTF-8` alike · a role an older version let through can still be listed and stopped · a role name can never leave the registry directory · flag without a value reports usage with exit 64 |

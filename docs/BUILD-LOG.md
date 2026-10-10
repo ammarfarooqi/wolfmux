@@ -685,6 +685,101 @@ prefix — all refused, its `node_modules` intact). Writing it found one more in
 record, so the `in <repository>` it meant to print was always empty. The value is read while
 the record still exists now.
 
+## 28. CONTEXT divides by a 200k guess (v1.14.1)
+
+`model_context_window()` in `common.sh` had one real rule and one accident wearing a rule's
+clothes: a provider row declares its own window (`PROVIDER_CONTEXT`), a model id ending in
+`[1m]` means 1M — and everything else, with no exception, was counted as 200,000. That
+"everything else" covered `fable`, `opus` and `sonnet` too, because nothing in the model
+table had ever said what their windows actually are. Opus 5's id is `claude-opus-5`; it does
+not end in `[1m]`; it was counted as 200k. `teamctl status` showed agents at 106%, 114% of a
+window they were nowhere near — the token side was right (one team checked an agent against
+its own transcript: `input_tokens` + both caches summed to exactly what status showed, and
+that request had succeeded, which a 200k-window model could not have accepted), so the
+denominator was what was wrong. Haiku's id does not end in `[1m]` either, and it was *also*
+counted as 200k — which happens to be its real window. One of our four Claude models made
+the fallback look correct, and that is the whole reason nobody caught the other three until
+an Opus agent went far enough past 200k for the lie to become visible to a human watching
+`teamctl status`.
+
+Two numbers must never be read as the same kind of fact here. The four Claude keys —
+`fable`, `opus`, `sonnet`, `haiku` — are **measured**, not just taken from a table: every
+Claude transcript on the machine (9,239 files) was scanned for the largest prompt each model
+id actually *accepted* (`input_tokens` + both caches, on a request that succeeded), which is
+a hard lower bound on that model's real window. Opus 5 997,197; Fable 5.1 993,042; Sonnet 5
+566,379; Haiku 4.5 199,238 — never once above 200,000 in 9,239 transcripts, which is the
+measurement that clears haiku of the bug entirely. Anthropic's own model table says 1M for
+all three of the first group, and the measurements agree everywhere they can reach it; for
+sonnet the measurement only proves "at least 566k" — its 1,000,000 comes from the table, not
+from anything seen on this machine, and the table below says so rather than implying the
+measurement reached further than it did. A provider row's window (`PROVIDER_CONTEXT`: glm,
+kimi, moonshot, deepseek, minimax, qwen) is a different kind of number again — **declared**
+by us in `lib/providers.sh`, because it is what we tell that provider's CLI to serve, not
+something read off a transcript. Kimi k3 was measured at 301,248 against the 1,048,576 we
+configure there, which proves nothing about whether 1,048,576 is correct; it only shows that
+nobody has filled it that far yet. GLM is declared the same way (`PROVIDER_CONTEXT="200000"`
+in the glm provider row) and has no measurement to compare it against at all — no GLM model
+appeared anywhere in the 9,239-transcript scan, so "declared, not measured" is not a hedge
+for GLM, it is the only kind of fact there is. `glm53` and `flash` in the model table take
+their window FROM that row (`wolfmux_provider_info glm` at lookup time) rather than
+repeating the number: a second literal in `common.sh` that happened to agree with the
+provider table today would have been the same bug, one step quieter, the day the two drifted.
+
+| key | measured (this machine, 9,239 transcripts) | window set | source |
+|---|---|---|---|
+| `opus` | 997,197 | 1,000,000 | measured + table agree |
+| `fable` | 993,042 | 1,000,000 | measured + table agree |
+| `sonnet` | 566,379 | 1,000,000 | table (measurement proves only ≥566k) |
+| `haiku` | 199,238 | 200,000 | unchanged — this is the one the old fallback got right |
+
+The fix gives the model table its own field, `MODEL_CONTEXT`, set per key next to the label
+it belongs to — one place to change when a model's window changes, same shape as the
+provider table's `PROVIDER_CONTEXT`. `model_context_window()` now returns the provider's
+number, the model table's number, or 1M for an `[1m]`-suffixed pinned id, in that order —
+and for everything else (a pinned `claude:<id>` / `codex:<id>` without the suffix, `astra`,
+anything it does not recognise) it prints nothing and returns 1. It never falls back to a
+number again. The one other place that fallback had a second, independent home was
+`agents.sh`'s `agent_context`: `[ -n "$CTX_WINDOW" ] || CTX_WINDOW="${computed:-200000}"` —
+the same `:-200000` shape, reachable even when `model_context_window` itself did the right
+thing. `CTX_WINDOW` now stays empty when the window is unknown, which is the only way a
+fix to the function alone could not have been silently undone one call site later.
+
+A first version of this gave `glm53` and `flash` their own `MODEL_CONTEXT="200000"` literal
+— the number they already got by accident, now written down on purpose, which was still
+wrong: it put the same fact in two places (`providers.sh`'s `PROVIDER_CONTEXT="200000"` for
+the glm row, and this new literal), with nothing to keep them in step. Review caught it
+before it shipped. Those two arms now call `wolfmux_provider_info glm` and take
+`MODEL_CONTEXT` from that row's `PROVIDER_CONTEXT` at lookup time, because `glm53` and
+`flash` are not themselves provider-table keys (`model_context_window`'s own provider
+branch resolves on `${key%%:*}`, and that is `glm53`, not `glm`, so it never fires for
+them) — one source of truth for a number two code paths both need.
+
+`ctx_display()` in `views.sh` decides what an unknown window looks like: when the window is
+0 or empty there is nothing to be a share of, so it prints the tokens alone (`213k`), never
+`213k 0%` — a wrong percentage reads as more confident than no percentage, and 0% is still a
+percentage. `status --json` keeps `context_tokens` and reports `context_window: 0`; it was
+already built to render `0` for an empty value, so the one change needed there was not
+feeding it a guessed `200000` any more.
+
+A first pass at the tests proved only the JSON field, with every planted record pointed at a
+`workdir` that does not exist (`context_tokens` null, so no percentage was ever rendered for
+any of them) — exactly the shape that would keep passing if a 200k denominator came back
+tomorrow and nobody noticed, because nothing had asserted the one number a human actually
+reads. `tests/smoke.sh` gained six checks in the end, covering both the direct lookup and the
+`agent_context` path `status` actually calls: the model table's own number for each of the
+four keys; that `glm53`/`flash` take theirs from the glm provider row rather than a second
+literal, asserted against that row's own `PROVIDER_CONTEXT` so the check follows a future
+change to it instead of failing on one; that a pinned id with no `[1m]` suffix and `astra`
+both report `context_window: 0`; that the CONTEXT column and the `context` field of
+`status --json` show tokens with no `%` sign when the window is unknown; and, with a real
+transcript this time, that 232,010 tokens — the exact request another team measured on a
+live Opus 5 agent — renders `232k 23%` on opus's 1,000,000-token window (`116%` under the old
+200k fallback), with a 150,000/200,000 haiku conversation rendering `150k 75%` alongside it
+so the one model whose window did not change is pinned by a rendered percentage too, not only
+by a JSON field. `tests/smoke.sh`: 327 → 333. `tests/docs.sh`: 36 → 36 (no new command,
+option, policy key or model key — the four keys already existed, only their declared window
+changed, and GLM's was made to read from one place instead of two). v1.14.1.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
