@@ -70,6 +70,16 @@ serves which model key (`fable`, `astra`, `glm53`, `flash`) and which CLI family
 belongs to. Nothing else in the code is model-specific, which is what makes the
 two leads interchangeable.
 
+Four of its keys also declare their own context window (`MODEL_CONTEXT`), the number
+`teamctl status`'s CONTEXT column shows a share of: `fable`, `opus` and `sonnet` are
+1,000,000 tokens, `haiku` 200,000 — Anthropic's model table, confirmed against this
+machine's own transcripts (the largest prompt each model has actually accepted; see
+`docs/BUILD-LOG.md` entry 28). A model id `model_context_window` cannot place — a
+pinned `claude:<id>` or `codex:<id>` without the `[1m]` marker, `astra`, anything
+unrecognised — has no declared window at all: the function returns nothing rather
+than a guess, and the CONTEXT column falls back to the token count alone, with no
+percentage.
+
 Beside it, the **provider table** in `lib/providers.sh` is the single place that knows a
 provider: vendor, endpoint, Keychain service, billing (`plan` or `metered`), default model
 ids, context window, auth variable, key URL. The model table, `teamctl`, `doctor`, the

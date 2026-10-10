@@ -86,7 +86,9 @@ boots, so assign work first, then spawn. Options: `--base <ref>`, `--branch <nam
 `--ticket <KEY>`, `--repo <path>`, `--no-kickoff`, and
 `--from-worktree <role>`: a fresh conversation in a stopped worker's built worktree, on a
 new branch (its branch and commits stay; node_modules and build output survive). The lead
-reads each agent's CONTEXT in `teamctl status` (tokens, share of the window) to choose
+reads each agent's CONTEXT in `teamctl status` (tokens, and the share of a known
+window — Fable 5.1, Opus 5 and Sonnet 5 are 1,000,000 tokens, Haiku 4.5 is 200,000;
+anything else shows tokens alone) to choose
 between `restart` (keep the conversation) and a fresh worker.
 
 **Branch names.** That shape is a template, and a team can set its own when the repository

@@ -499,8 +499,44 @@ check "status: the codex agent's column" 'teamctl status | grep -E "ctx-codex .*
 plant_ctx ctx-1m "claude:claude-opus-4-1[1m]" claude "/nonexistent/ctx"
 plant_ctx ctx-kimi kimi claude "/nonexistent/ctx"
 plant_ctx ctx-ds "deepseek:deepseek-v4-flash" claude "/nonexistent/ctx"
-check "status: the window is declared by the provider table, 1M for a model id that ends in [1m], 200k for the rest" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-1m\")][0].context_window == 1048576) and ([.agents[] | select(.role == \"ctx-kimi\")][0].context_window == 262144) and ([.agents[] | select(.role == \"ctx-ds\")][0].context_window == 786432) and ([.agents[] | select(.role == \"ctx-1m\")][0].context_tokens == null)"'
-/bin/rm -f "$CTX_AGENTS/ctx-old.json" "$CTX_AGENTS/ctx-codex.json" "$CTX_AGENTS/ctx-1m.json" "$CTX_AGENTS/ctx-kimi.json" "$CTX_AGENTS/ctx-ds.json"
+check "status: the window is declared by the provider table, 1M for a model id that ends in [1m], and nothing guessed for the rest" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-1m\")][0].context_window == 1048576) and ([.agents[] | select(.role == \"ctx-kimi\")][0].context_window == 262144) and ([.agents[] | select(.role == \"ctx-ds\")][0].context_window == 786432) and ([.agents[] | select(.role == \"ctx-1m\")][0].context_tokens == null)"'
+plant_ctx ctx-opus opus claude "/nonexistent/ctx"
+plant_ctx ctx-sonnet sonnet claude "/nonexistent/ctx"
+plant_ctx ctx-fable fable claude "/nonexistent/ctx"
+plant_ctx ctx-haiku haiku claude "/nonexistent/ctx"
+check "status: the model table declares its own window - fable, opus and sonnet are 1M, haiku stays 200k (v1.14.1)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-opus\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-sonnet\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-fable\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-haiku\")][0].context_window == 200000)"'
+plant_ctx ctx-unknown-pin "claude:claude-sonnet-9" claude "$BACKEND_DIR"
+plant_ctx ctx-astra-unknown astra claude "/nonexistent/ctx"
+check "status: a pinned id with no [1m] suffix and astra have no declared window - 0, not a guessed 200k (v1.14.1)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-unknown-pin\")][0].context_window == 0) and ([.agents[] | select(.role == \"ctx-astra-unknown\")][0].context_window == 0)"'
+check "status: an unknown window shows tokens with no percentage, in text and in json (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-unknown-pin\")][0] | .context_tokens != null and (.context | test(\"%\") | not)" && teamctl status | grep "ctx-unknown-pin " | grep -qv "%"'
+# glm53 and flash take their window FROM the glm provider row (PROVIDER_CONTEXT), not a second
+# literal in common.sh: asserted against that row's own value, so a future change to it is what
+# this check follows, not what makes it fail.
+plant_ctx ctx-glm53 glm53 claude "/nonexistent/ctx"
+plant_ctx ctx-flash-ctx flash claude "/nonexistent/ctx"
+check "status: glm53 and flash take their window from the glm provider row, not a second number kept in step by hand (v1.14.1)" 'glm_ctx="$(. "$REPO/config/wolfmux/lib/provider-env.sh"; wolfmux_provider_info glm >/dev/null 2>&1 && printf %s "$PROVIDER_CONTEXT")"; teamctl status --json | jq -e --argjson w "$glm_ctx" "([.agents[] | select(.role == \"ctx-glm53\")][0].context_window == \$w) and ([.agents[] | select(.role == \"ctx-flash-ctx\")][0].context_window == \$w)"'
+# The actual bug, not just the JSON field: a real conversation on a known model rendering a
+# correct share instead of over 100%. 232,010 tokens is the exact request another team measured
+# on a real Opus 5 agent, the one that proved the window is bigger than 200k (fanpro-studio-fe-
+# wisp-gwrv9c); under the old 200k-fallback code this row read 116%, not 23%.
+OPUS_REAL_DIR="$WORK/ctx-opus-real-tree"
+/bin/mkdir -p "$OPUS_REAL_DIR"
+/bin/mkdir -p "$(transcripts_of "$OPUS_REAL_DIR")"
+echo '{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_read_input_tokens":231411,"cache_creation_input_tokens":597}}}' >"$(transcripts_of "$OPUS_REAL_DIR")/opus-real.jsonl"
+plant_ctx ctx-opus-real opus claude "$OPUS_REAL_DIR"
+check "status: 232,010 tokens on opus's real 1M window renders 232k 23%, not the old fallback's 116% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-opus-real\")][0] | .context_tokens == 232010 and .context_window == 1000000 and .context == \"232k 23%\"" && teamctl status | grep -E "ctx-opus-real .*232k +23%"'
+# Haiku is the one model whose window did NOT change: pin it by a rendered percentage too, not
+# only by the JSON field.
+HAIKU_REAL_DIR="$WORK/ctx-haiku-real-tree"
+/bin/mkdir -p "$HAIKU_REAL_DIR"
+/bin/mkdir -p "$(transcripts_of "$HAIKU_REAL_DIR")"
+echo '{"type":"assistant","message":{"usage":{"input_tokens":50000,"cache_read_input_tokens":80000,"cache_creation_input_tokens":20000}}}' >"$(transcripts_of "$HAIKU_REAL_DIR")/haiku-real.jsonl"
+plant_ctx ctx-haiku-real haiku claude "$HAIKU_REAL_DIR"
+check "status: haiku's window is unchanged - a real 150k/200k conversation still renders 150k 75% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-haiku-real\")][0] | .context_tokens == 150000 and .context_window == 200000 and .context == \"150k 75%\"" && teamctl status | grep -E "ctx-haiku-real .*150k +75%"'
+/bin/rm -f "$CTX_AGENTS/ctx-old.json" "$CTX_AGENTS/ctx-codex.json" "$CTX_AGENTS/ctx-1m.json" "$CTX_AGENTS/ctx-kimi.json" "$CTX_AGENTS/ctx-ds.json" \
+  "$CTX_AGENTS/ctx-opus.json" "$CTX_AGENTS/ctx-sonnet.json" "$CTX_AGENTS/ctx-fable.json" "$CTX_AGENTS/ctx-haiku.json" \
+  "$CTX_AGENTS/ctx-unknown-pin.json" "$CTX_AGENTS/ctx-astra-unknown.json" "$CTX_AGENTS/ctx-glm53.json" "$CTX_AGENTS/ctx-flash-ctx.json" \
+  "$CTX_AGENTS/ctx-opus-real.json" "$CTX_AGENTS/ctx-haiku-real.json"
 
 echo "== a fresh conversation in an existing built worktree (spawn --from-worktree, issue #5)"
 teamctl spawn builder glm53 --no-kickoff >/dev/null 2>&1

@@ -60,13 +60,16 @@ _status_rows() { # emits one JSON object per agent
 }
 
 # ctx_display <tokens> <window> — "142k 71%": what the CONTEXT column shows. When the
-# window is unknown the share is 0% and the tokens still mean something on their own.
+# window is unknown (empty or 0 — nobody declared it, so there is nothing to be a share
+# of), there is no percentage: the tokens still mean something on their own, a wrong
+# share does not.
 ctx_display() {
   awk -v t="$1" -v w="$2" 'BEGIN {
     if (t >= 1000000) s = sprintf("%.1fM", t / 1000000);
     else if (t >= 10000) s = sprintf("%.0fk", t / 1000);
     else s = sprintf("%.1fk", t / 1000);
-    printf "%s %d%%\n", s, (w + 0 > 0 ? int(t * 100 / w) : 0)
+    if (w + 0 > 0) printf "%s %d%%\n", s, int(t * 100 / w);
+    else printf "%s\n", s
   }'
 }
 
@@ -146,7 +149,8 @@ _status_team_text() {
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
   # A metered agent is marked with a $ after its label (every token it uses is billed).
   # CONTEXT is what the agent's transcript says the conversation holds: tokens, and the
-  # share of the window. A stopped worker's line is the reuse-or-respawn signal.
+  # share of the window when the model's window is known (tokens alone otherwise — see
+  # ctx_display). A stopped worker's line is the reuse-or-respawn signal.
   printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // "")] | join("|")' |
     while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo; do
       if [ "$kind" = "lead" ]; then

@@ -1332,9 +1332,11 @@ EOF
 }
 
 # agent_context <workdir> <model-key> <family> [<session-id>] — sets CTX_TOKENS ("" = unknown),
-# CTX_REQUESTS and CTX_WINDOW for one agent. The window is declared by the model's
-# provider, is 1M for a model id that ends in [1m], else 200k; for codex the token_count
-# event's own window wins, since that is the one Codex actually serves.
+# CTX_REQUESTS and CTX_WINDOW ("" = unknown) for one agent. The window is declared by the
+# model's provider row, by the model table (model_context_window), or by a model id ending
+# in [1m] (1M); for codex the token_count event's own window wins, since that is the one
+# Codex actually serves. A model whose window none of those know stays "" — not a 200k
+# guess — so the caller shows tokens with no share of the wrong number.
 agent_context() {
   local computed
   CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0"
@@ -1344,7 +1346,7 @@ agent_context() {
     _ctx_of_claude "$1" "${4:-}"
   fi
   computed="$(model_context_window "$2" 2>/dev/null)" || computed=""
-  [ -n "$CTX_WINDOW" ] || CTX_WINDOW="${computed:-200000}"
+  [ -n "$CTX_WINDOW" ] || CTX_WINDOW="$computed"
   return 0
 }
 
