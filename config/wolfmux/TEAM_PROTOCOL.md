@@ -36,6 +36,11 @@ lead — including a worker that was spawned by another worker.
 
 ## Beads in 60 seconds
 
+**"Your inbox" is the Beads command below, always.** The work itself lives there and
+nowhere else. `teamctl inbox` (alias `teamctl notices`) is a different thing: the short
+pane notices filed for a role, which the human opens with `prefix N` — you are given
+yours automatically, by your own session's hooks, and never need to ask for them.
+
 ```bash
 bd list --assignee $TEAM_ROLE --status open,in_progress,blocked --include-infra     # YOUR INBOX: your tasks (new, claimed, blocked) + unread messages
 bd show <id>                                    # read one item in full (wide markdown tables are cut
@@ -72,15 +77,25 @@ bd close <id> -r read                                                    # mark 
 ```
 
 To reach everyone, send one message per role. Creating or assigning a bead
-notifies the assignee's pane automatically; you only ever see the one-line notice
+notifies the assignee automatically; you then see the one-line notice
 `[wolfmux] Beads update for <role> ...`. When you see it, run the command it names.
 Comments notify nobody: if someone must act, send a message.
 
-The notice never lands in a half-typed line: a pane somebody is typing in is left
+How that notice reaches you depends on where you are, and you may get it without a
+word appearing in your pane at all. It is filed first, then handed to you by your own
+session when your turn ends or when somebody prompts you (that is the
+`[wolfmux] You have team notices:` block). A worker's idle pane may also be typed into
+directly, and the human's own lead pane is typed into only while nobody is watching the
+team — otherwise the notice waits in the file, the human sees a `📨` count in the status
+bar, and you are given it by your session as above. The human can open the file at any
+time with `prefix N` or `teamctl inbox` (that command is the pane notices, NOT your
+Beads inbox).
+
+Nothing is ever typed over a half-typed line: a pane somebody is typing in is left
 alone and the notice arrives by itself once that pane is idle. Several notices that
 pile up in the meantime arrive as one line, which names the whole inbox instead of a
 single bead. So a notice can be a few seconds or a few minutes late, and after a long
-wait it may not come at all. Sweep your own inbox anyway; that is what it is for.
+wait it may not come at all. Sweep your own Beads inbox anyway; that is what it is for.
 
 ## LEAD
 

@@ -6,11 +6,11 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 5 to 7 minutes, 347 checks, isolated from any running team
-                                # (how many of those pass depends on how you launch it:
-                                #  see smoke.sh below for the rule)
+tests/smoke.sh                 # 5 to 7 minutes, PENDING_SMOKE_CHECKS checks, isolated from any running team
+                               # (PENDING_SMOKE_CLEAN pass clean; PENDING_SMOKE_NOHUP pass and PENDING_SMOKE_SKIP skipped under nohup: see smoke.sh below)
 tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
-tests/nudge-typing.sh          # ~90 seconds, 52 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
+tests/nudge-typing.sh          # ~90 seconds, 56 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
+tests/inbox.sh                 # ~3 minutes, 77 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
@@ -19,32 +19,23 @@ tests/credential-routing.sh    # manual; needs claude logged in; see the header 
 teamctl doctor
 ```
 
+PENDING_TOTAL_CHECKS checks in all, PENDING_TOTAL_PASS passing (v1.15.0).
+
+PENDING_NOHUP_SENTENCE
+
 `smoke.sh` tests the checkout it lives in. It uses its own tmux server
 (`wolfmux-test-<pid>`, `wolfmux-test-old-<pid>`), its own state directory, a throwaway repository whose path
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 347 checks, 0 failures — how many pass depends on the launch (issue #17)
+## smoke.sh: PENDING_SMOKE_CLEAN of PENDING_SMOKE_CHECKS pass (v1.15.0); PENDING_SMOKE_NOHUP pass, PENDING_SMOKE_SKIP skipped under `nohup` (issue #17)
 
-Two of the 347 checks kill the test's own child with a signal and expect it to die of it:
-one sends SIGINT, one sends SIGHUP. A detached launch can take that ability away before the
-test starts — an ignored signal cannot be un-ignored by a trap inside the process — so each
-of those checks reports a stated skip rather than a bare FAIL when its signal arrives
-already ignored.
-
-**The expectation is a rule, not a count: one skip per signal the launch leaves ignored.**
-The set a launch can take away is {HUP, INT, QUIT}; this suite asserts HUP and INT, `nohup`
-accounts for HUP, and a plain `&` from a non-interactive shell accounts for INT and QUIT.
-A new signal assertion added to that family raises the ceiling by one.
-
-Measured on the v1.14.4 tree (tag `v1.14.4`), one run per shape. Every figure carries its
-launch shape, because the same tree gives a different split in a different shape:
-
-| Launch | Result | Skipped |
-|--------|--------|---------|
-| foreground | 347 passed, 0 failed, 0 skipped | — |
-| `nohup … &` | 345 passed, 0 failed, 2 skipped | SIGINT and SIGHUP both arrive ignored |
-| plain `… &` | 346 passed, 0 failed, 1 skipped | SIGINT arrives ignored; SIGHUP is still default |
+Run foreground, all PENDING_SMOKE_CHECKS checks hold, including the one below that a
+detached run cannot reach. Run under `nohup` (how a lane actually launches it), SIGHUP
+arrives already set to be ignored and an ignored signal cannot be un-ignored by a trap
+inside the process, so the one check that sends itself SIGHUP and expects to be killed by it
+cannot hold either way: it is skipped, with the reason printed, instead of reporting a bare,
+unexplained FAIL.
 
 | Area | Checks |
 |------|--------|
@@ -66,7 +57,8 @@ launch shape, because the same tree gives a different split in a different shape
 | browser-writes (v1.14.3) | defaults to `ask`, `teamctl policy` shows it · at `ask` the settings document is unchanged (no `permissions` key, lead or worker — the default behaves exactly as before this policy existed) · set to `allow`, read back, back to `ask`, read back · an invalid value is refused (exit 64) and the stored value is unchanged · `allow` writes exactly `permissions.allow == ["mcp__claude-in-chrome__*"]` into the lead's settings with `env`/`hooks` untouched · a worker of the same team gets the identical rule, `env`/`hooks` untouched · back to `ask` removes the rule again |
 | approvals | lead mode starts a worker without bypass and with the hook · a request is filed and the lead is told · status shows it pending · a worker cannot approve its own request · approve → the CLI receives `allow` · deny → the CLI receives `deny` with the reason · no answer → no decision, so the normal prompt appears · ask mode has neither flag nor hook |
 | notifications | fixed line typed into the pane · debounced inside the window · hostile bead id (`x;rm -rf ~`) dropped, never typed |
-| never into a half-typed line (`tests/nudge-typing.sh`, 52 of 52 pass) | **a non-empty input row defers whether or not anybody is attached — a half-typed line survives a detach, so it is left alone, the notice waits, and the human's own line later goes off whole** · **a dim placeholder on a pane with nobody attached is the TUI's own furniture, not typing, so the notice is delivered at once and nothing is parked** · copy mode defers attached or not, and leaving it lets the notice through · **a marker whose waiter died is reaped by the next nudge, which is delivered, and its ghost bead is never typed (`nudge-defer-reaped`)** · with a client attached: a busy input line defers (exit 3, and the message names the check that fired), nothing is typed, the half-typed text stays unsubmitted, a marker is parked · three nudges while busy become exactly ONE generic line once the pane is idle, counted against a measured one-notice baseline, and the human's own line was submitted whole · a client that pressed a key seconds ago defers even with an empty input line, and the notice follows once they stop · **queued fixed notices (three policy changes on a busy lead pane): all arrive, in order, each exactly once, nothing glued, marker cleared** · **a human who keeps typing part-way through a five-notice delivery: nothing is delivered twice and nothing is lost** · a pane that never goes idle: the marker is cleaned up at the cap, nothing was typed, `nudge-defer-expired` in `events.jsonl` · `WOLFMUX_NUDGE_COLLISION_CHECK=0` types blind again · `WOLFMUX_NUDGE_RETRY=0` and nonsense are floored, so a waiter can never spin for ever · the input-line check itself, on plain rows and on rows as `capture-pane -e` really hands them over: **three rows copied verbatim from the live socket, a dim `ESC[2m` placeholder and a non-breaking space read CLEAN**, while typed text next to a dim hint reads dirty |
+| nothing is typed into the human's conversation (`tests/inbox.sh`, 77 of 77 pass) | **a client attached + an idle lead + a bead: exit 4, NOTHING typed into the lead pane, no waiter parked, the notice in the file as `new`+`undelivered`, the badge showing `📨 1`** · no client attached: the same bead IS typed, exit 0, naming its bead, and it is in the file too · **the Stop hook blocks ONCE: the reason carries the notices and the agent's own Beads command, the lines are marked delivered BEFORE it answers, a second turn ending at once says nothing (cooldown), and with the cooldown cleared it STILL says nothing because they are delivered — then a NEW notice blocks again, so neither guard starves the other** · UserPromptSubmit prints the notices for the model's context and does not repeat a delivered one · **the two states are independent in BOTH directions: `teamctl inbox` clears new-ness without touching delivered-ness, and the agent's hook clears delivered-ness without clearing the human's badge** · a typed notice is marked delivered, so no hook hands it over twice, while the human's count still stands · three events for ONE bead file one line (the badge reads 1, not 3) and a different bead is never collapsed · **a notice survives a waiter that died: the parked notice is gone from the typed path, the file still has it, and the agent is still given it by its Stop hook** · the badge prints NOTHING and exits 0 for: no notices, no session name, a session that does not exist, a root that is not a directory, an invalid team name, and a damaged inbox file · an approval adds the louder `🔔`, and reading clears both · **the badge END TO END: the shipped `status-left`, a real pty client, `refresh-client` — the segment ran and `📨` and `🔔` are in the DRAWN status line, and the first draw is blank (the documented limit)** · who is typed into, every combination of `off`/`workers`/`detached-lead`/`all` × lead/worker × claude/codex, including the Codex exception · a tmux read that cannot be made sense of counts as attached (fails closed) · the file itself: one line per notice, tabs and newlines stripped, long text cut, capped · `prefix N` bound to a popup, `prefix I` left alone, `prefix T` untouched, `status-interval` 5 · the stall notification: exactly ONE banner carrying the count for eleven notices inside the window, none with `WOLFMUX_NOTIFY=off`, none with `WOLFMUX_INBOX_STALL_NOTIFY=off`, and none for a worker |
+| never into a half-typed line (`tests/nudge-typing.sh`, 56 of 56 pass) | **the new rule itself: a client attached + an idle lead + a bead is exit 4 with nothing typed and nothing parked; no client attached and the same bead IS typed** · the queued-notice and mid-delivery blocks still drive a LEAD pane, with the client detached so it is still a typed path — every one of the original 52 checks kept and passing · **a non-empty input row defers whether or not anybody is attached — a half-typed line survives a detach, so it is left alone, the notice waits, and the human's own line later goes off whole** · **a dim placeholder on a pane with nobody attached is the TUI's own furniture, not typing, so the notice is delivered at once and nothing is parked** · copy mode defers attached or not, and leaving it lets the notice through · **a marker whose waiter died is reaped by the next nudge, which is delivered, and its ghost bead is never typed (`nudge-defer-reaped`)** · with a client attached: a busy input line defers (exit 3, and the message names the check that fired), nothing is typed, the half-typed text stays unsubmitted, a marker is parked · three nudges while busy become exactly ONE generic line once the pane is idle, counted against a measured one-notice baseline, and the human's own line was submitted whole · a client that pressed a key seconds ago defers even with an empty input line, and the notice follows once they stop · **queued fixed notices (three policy changes on a busy lead pane): all arrive, in order, each exactly once, nothing glued, marker cleared** · **a human who keeps typing part-way through a five-notice delivery: nothing is delivered twice and nothing is lost** · a pane that never goes idle: the marker is cleaned up at the cap, nothing was typed, `nudge-defer-expired` in `events.jsonl` · `WOLFMUX_NUDGE_COLLISION_CHECK=0` types blind again · `WOLFMUX_NUDGE_RETRY=0` and nonsense are floored, so a waiter can never spin for ever · the input-line check itself, on plain rows and on rows as `capture-pane -e` really hands them over: **three rows copied verbatim from the live socket, a dim `ESC[2m` placeholder and a non-breaking space read CLEAN**, while typed text next to a dim hint reads dirty |
 | Beads | a message to a role notifies its pane · body stored intact (`"quotes"`, `$HOME`, backticks) and never typed into the pane · a worker reads the shared database from its external worktree |
 | git | `diff` commits / stat / patch · uncommitted leftovers visible · main checkout untouched by worker commits · `worktrees` lists everyone |
 | the wolf | the session has the `client-attached` popup hook · the splash draws wolf, wordmark and team line · no colour codes outside a terminal · it works outside any project · only the manager pane has the mark and the amber border · the manager pane opens with the wolf · status line and tab title carry it · `WOLFMUX_SPLASH=off` removes the popup and the default restores it · a Claude lead is named `🐺 team/lead`, workers are not |
@@ -79,7 +71,7 @@ launch shape, because the same tree gives a different split in a different shape
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
 
-## disk.sh: 93 of 93 pass (v1.14.0)
+## disk.sh: 93 of 93 pass (v1.15.0)
 
 Its own tmux server (`wolfmux-disk-test-<pid>`), its own state directory, a throwaway
 repository whose path contains a space, stub agents, and build trees of a few megabytes of
@@ -240,7 +232,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
-## docs.sh: 36 of 36 pass (v1.14.0)
+## docs.sh: 36 of 36 pass (v1.15.0)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.

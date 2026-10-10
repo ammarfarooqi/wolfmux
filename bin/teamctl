@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk beads policy approvals agents views doctor brand notify layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk beads policy approvals agents views doctor brand notify inbox layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -63,6 +63,14 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
+  Notices  nothing is typed into YOUR conversation: a notice for an agent is filed, the status
+         bar shows 📨 and a count, and the agent is given it by its own Stop hook (see prefix N).
+         This is NOT an agent's Beads inbox — the work itself is always bd list --assignee <role>
+    teamctl inbox [<role>] [--all] [--json] [--keep]       (alias: notices)
+                                                      the pane notices filed for a role (default:
+                                                      the lead), newest last; reading them clears
+                                                      the badge. --all: every role of the team.
+                                                      --keep: leave them marked new
   Policy and permissions
     teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · browser-writes ask|allow
                                                       (DEFAULT ask; allow writes a Chrome-write ALLOW rule into every agent's
@@ -175,6 +183,7 @@ main() {
     destroy) cmd_destroy "$@" ;;
     prune) cmd_prune "$@" ;;
     nudge) cmd_nudge "$@" ;;
+    inbox | notices) cmd_inbox "$@" ;;
     policy) cmd_policy "$@" ;;
     layout) cmd_layout "$@" ;;
     approvals) cmd_approvals "$@" ;;
@@ -199,9 +208,12 @@ main() {
     _splash) cmd_splash "$@" ;;
     _notify) cmd_notify "$@" ;;
     _notify-pending) cmd_notify_pending "$@" ;;
+    _inbox-badge) cmd_inbox_badge "$@" ;;
+    _inbox-stop) cmd_inbox_stop "$@" ;;
+    _inbox-prompt) cmd_inbox_prompt "$@" ;;
     _open-team) cmd_open_team "$@" ;;
     _guard) cmd_guard "$@" ;;
-    send | inbox | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
+    send | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
     version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;
     *)

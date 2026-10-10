@@ -282,6 +282,115 @@ The message body never travels through tmux, so there is nothing to quote, escap
 or truncate. The same hook tells the lead when a worker closes a task or marks
 one blocked. Comments fire no hook, by Beads' design.
 
+### The notice inbox (v1.15.0)
+
+Everything above is about not typing a notice **over** something. Issue #11 is the
+different complaint underneath it: the lead's pane **is** the human's conversation, so a
+notice typed into it perfectly is still an interruption. The answer is to stop treating
+typing as the channel and make it one of five.
+
+`lib/inbox.sh` appends every notice to `$STATE_DIR/inbox/<role>` before anything else
+happens to it, one line per notice:
+
+```
+<epoch>\t<kind>\t<state>\t<text>        kind: beads | spawn | approval | policy
+```
+
+`<state>` is two letters because a notice has two readers with opposite needs, and the
+two facts are **independent**: the first letter is `n`ew or `s`een — whether the HUMAN
+has expanded it, which is what the status-bar count shows — and the second is
+`u`ndelivered or `d`elivered, whether the AGENT has been given it. Handing a notice to
+the agent must not clear the human's badge, and the human expanding it must not hide it
+from the agent. One `>>` append of one short line per notice, so two notifiers writing
+at the same moment cannot interleave; the read-modify-write paths take a per-role lock
+and give up rather than wait. Same rule as `lib/notify.sh`: a notice may never fail or
+delay a caller. The file is capped at 200 lines, oldest dropped.
+
+Who is **typed** into, and why each row is what it is:
+
+| pane | typed into | why |
+| --- | --- | --- |
+| a worker, Claude-family | yes, when idle (unchanged) | nobody is sitting in front of it, and it wakes the agent at once |
+| the lead, Claude-family, **no client attached** | yes | nobody is looking; the line only goes to scrollback, and the agent wakes at once. `#{client_activity}` moves on real keystrokes only, and a detached session lists no client at all, so "is anybody watching" is one cheap tmux read |
+| the lead, Claude-family, **a client attached** | **no** | this is the whole point. The badge carries it, the agent is given it by its hooks |
+| any pane, **Codex-family** (`astra`, `codex:<id>`) | yes, lead included | Codex has no hooks, so typing is the only channel that reaches that agent at all. A Codex lead is deliberately noisier than a Claude lead; this row is the exception to the one above, not an oversight |
+| the lead, an **approval**, a client attached | after a grace period, if still unread | an approval holds a WORKER until the lead answers; see below |
+
+`WOLFMUX_NUDGE_TYPE` is the single knob: `off` · `workers` · `detached-lead` (default) ·
+`all` (the pre-1.15.0 behaviour). Everything the v1.14.0 fix built is kept and only
+narrowed — the human-busy check, the per-role marker, the one detached waiter, the
+heartbeat, the stale takeover, the per-marker caps, the reap, and `trap '' HUP INT TERM`
+— because the typed paths above still go through all of it.
+
+**How the agent learns about the bead**, with nothing typed. `write_agent_settings`
+writes a per-agent Claude Code settings file at run time, and that is where the hooks
+go; nothing is added to `~/.claude/settings.json`.
+
+- `teamctl _inbox-stop` is a **second entry in the Stop array**, beside the notification
+  hook rather than instead of it. When the role's inbox holds undelivered notices it
+  answers `{"decision":"block","reason":"<the notices + the agent's own Beads command>"}`,
+  so the agent carries straight on and reads its beads. A loop is impossible for two
+  reasons and both are needed: the lines are marked delivered **before** the answer is
+  printed, so one notice can never block twice, and no turn is blocked again inside
+  `WOLFMUX_INBOX_STOP_COOLDOWN` (10 s), so a burst of beads one a second cannot block
+  one turn a second.
+- `teamctl _inbox-prompt` runs on **UserPromptSubmit**: Claude Code adds such a hook's
+  stdout to the model's context, so the notices arrive alongside whatever the human just
+  typed. No cooldown — a human pressed Enter.
+
+Neither hook fires for an agent that is simply **sitting idle**, and that is the hole in
+this design. A bead landing for an idle lead with a client attached would otherwise wait
+for the human. Two things close most of it:
+
+- **The badge.** `status-left` calls `teamctl _inbox-badge <session-name>` every 5 s. It
+  resolves the project and team from the session's own `@wolfmux_root` and
+  `@wolfmux_team` options, so it needs no working directory; it prints `📨 <count>`, plus
+  `🔔` when one of the new notices is an approval, and **nothing at all** on any error,
+  because a badge may never break a status bar. (U+1F4E8 rather than U+1F54A DOVE: the
+  dove is neither `Emoji_Presentation` nor East Asian Wide, so it needs U+FE0F to draw as
+  an emoji and tmux miscounts its width, which pushes the rest of the line about.
+  `WOLFMUX_INBOX_MARK` and `WOLFMUX_INBOX_APPROVAL_MARK` change both.)
+- **One desktop notification**, through the `notify_deliver` path that already exists, so
+  a click opens the team and nothing reaches the conversation. It is raised the moment we
+  **decline to type** for the lead, not after a timer: nothing can tell us whether the
+  agent's turn will ever end, so "it cannot reach the agent now" is the honest trigger,
+  and if the agent was mid-turn its Stop hook delivers the notice as well. It
+  **collapses** — one banner per role per `WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE` (120 s,
+  deliberately not the 3 s nudge debounce: a banner with a sound is the one channel that
+  interrupts whatever the human is doing, and this machine runs dozens of teams whose
+  Beads events fire on create, update and close) — and it carries the **count** from the
+  file, "team/lead: 4 notices waiting", rather than the one notice that triggered it.
+  Inside the window the notice still lands in the file and the badge still rises.
+  `WOLFMUX_INBOX_STALL_NOTIFY=off`, or `WOLFMUX_NOTIFY=off`, drops it.
+
+What is left, and it is a product decision rather than a bug: a client is attached, the
+human is looking at another pane, and the lead is idle. The bead waits for the badge to
+be noticed, for that notification, or for the human's next prompt. Nothing is lost — the
+bead is in Beads and the notice is in the file.
+
+**Approvals may not get slower than they were.** A permission request blocks a worker
+until the lead decides, which is why its deferral cap is 60 s rather than 600. So: a
+detached lead is typed into immediately, exactly as before; an attached lead gets the
+louder `🔔` mark at once, and if the request is **still unread**
+`WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) later it is typed in after all, through the same
+busy-and-park machinery as any other notice. `WOLFMUX_INBOX_APPROVAL_TYPE=never` leaves
+it to the badge, `always` types it at once. The existing 60 s cap and the worker's own
+fallback prompt are untouched underneath. An approval is the one notice that can still
+put a line in the human's conversation, and a blocked worker is the reason.
+
+**Consequence to be plain about**: `notify_lead`'s spawn and policy notices go through
+the same route, so an **approval request reaches an idle, attached lead only when the
+human expands it, when the desktop notification is noticed, or when the lead is next
+prompted** — plus the 20 s grace above. The worker's own 10-minute fallback prompt still
+covers the case underneath. No new timer was invented for it.
+
+`teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) is what the human
+reads, and `prefix N` opens it in a `display-popup -E`. Reading marks the notices
+not-new, which is what clears the badge, and leaves the delivered column alone. The key
+is `N` and not `I` because `config/wolfmux/tmux.conf` sources the user's own
+`~/.tmux.conf` first: every wolfmux binding comes later and wins inside the wolfmux
+server, and `I` is tmux-plugins/tpm's on a machine that has it.
+
 ### Completion
 
 Worker tests → commits on its branch → sends `Done: …` to the lead (summary, test

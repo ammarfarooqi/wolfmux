@@ -401,6 +401,12 @@ cmd_start() {
     die "could not create tmux session '$SESSION'"
   }
   # A half-configured session would be invisible to every later command: roll back.
+  # @wolfmux_teamctl: the status-bar badge and the prefix-N popup are tmux format
+  # strings, and tmux runs what they name through /bin/sh with whatever PATH the server
+  # was started with. Storing the absolute path here means neither has to find teamctl.
+  # tmux.conf sets the same option globally to the bare word, so a session started by an
+  # older teamctl falls back to PATH instead of running nothing.
+  inbox_tag_session "$SESSION" || true
   if ! { tm_set_session_root "$SESSION" "$ROOT" && tm_set_session_team "$SESSION" "$TEAM" && tm_tag "$pane" "$WOLFMUX_LEAD_ROLE" "$MODEL_LABEL"; }; then
     tmx kill-session -t "=$SESSION" 2>/dev/null || true
     reg_delete "$WOLFMUX_LEAD_ROLE"
@@ -666,6 +672,7 @@ build_role_prompt() {
   fi
   printf -- '- Your team: %s\n' "$TEAM"
   printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported). Your inbox: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$me" "$me"
+  printf -- '- "Your inbox" always means that Beads command: the work itself lives there and nowhere else. `teamctl inbox` is a different thing — the short pane notices filed for a role, which the human reads with prefix N; you are given yours automatically and never need to run it.\n'
   printf -- '- The manager of this team is the agent with TEAM_ROLE=lead; in Beads it is called "%s". Nobody else manages, approves or assigns.\n' "$lead"
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then
     printf -- '- This project has more than one team and they share one Beads database. Everyone in YOUR team is called "%s.<role>" there: assign and message with -a %s.<role> (your lead: -a %s). A plain "lead" is the lead of ANOTHER team, and the tasks of other teams are not yours.\n' "$TEAM" "$TEAM" "$lead"
@@ -738,6 +745,12 @@ cmd_prompt() {
 # any subagent a session names becomes a teammate whose "team lead" — and permission
 # approver — is that worker. The lead's file holds the notification hook and nothing
 # about teams or permissions: those stay exactly as you have them.
+#
+# Two of the hooks are how an agent learns about a bead without a keystroke anywhere
+# (lib/inbox.sh): `_inbox-stop` is a SECOND entry in the Stop array, next to the
+# notification hook rather than instead of it, and `_inbox-prompt` runs on
+# UserPromptSubmit. Nothing is added to ~/.claude/settings.json — this file is per
+# agent, written at run time, and goes when the team goes.
 write_agent_settings() {
   local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command=""
   /bin/mkdir -p "$STATE_DIR/settings"
@@ -746,7 +759,8 @@ write_agent_settings() {
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
   # Workers only: agent teams off, so a worker can never become a second manager.
   # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh).
-  # Everyone: notifications are teamctl's job inside a team (lib/notify.sh).
+  # Everyone: notifications are teamctl's job inside a team (lib/notify.sh), and the
+  #   notice inbox reaches the agent on Stop and on UserPromptSubmit (lib/inbox.sh).
   # Lead mode only: permission requests go to the lead.
   # Everyone, when the team's browser-writes policy says so (lib/policy.sh): an explicit
   # ALLOW rule for Chrome writes, so the permission check resolves before Claude Code's
@@ -754,11 +768,15 @@ write_agent_settings() {
   "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" \
     --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$(($(approval_timeout) + 30))" \
     --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" \
+    --arg inbox_stop "\"$TEAMCTL_SELF\" _inbox-stop" --arg inbox_prompt "\"$TEAMCTL_SELF\" _inbox-prompt" \
     --arg browser_allow "$(policy_get browser-writes)" '
     (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
     * {env: {ECC_DISABLED_HOOKS: $silence}}
-    * (if $notify_command != ""
-       then {hooks: {Stop: [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}]}} else {} end)
+    * {hooks: {
+         Stop: (
+           (if $notify_command != "" then [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}] else [] end)
+           + [{hooks: [{type: "command", command: $inbox_stop, timeout: 10}]}]),
+         UserPromptSubmit: [{hooks: [{type: "command", command: $inbox_prompt, timeout: 10}]}]}}
     * (if $guard_command != ""
        then {hooks: {PreToolUse: [{matcher: "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Bash|mcp__.*",
                                    hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
@@ -1529,11 +1547,20 @@ founder_record_purge() {
   (team_paths "${own:-$WOLFMUX_DEFAULT_TEAM}" && event_log destroy "" "purged team $victim, which it founded") || true
 }
 
-# notify_lead <spawn|approval|policy> <args...> — a fixed one-line notice in the lead's
-# pane. Every interpolated value is a validated role, a model label from the model
-# table, an approval id or a policy word; nothing free-form is ever typed.
+# notify_lead <spawn|approval|policy> <args...> — a fixed one-line notice FOR the lead.
+# Every interpolated value is a validated role, a model label from the model table, an
+# approval id or a policy word; nothing free-form is ever typed.
+#
+# Since v1.15.0 the notice is FILED first (lib/inbox.sh) and typed only where typing is
+# still the right channel. The lead's pane is the human's conversation, so with somebody
+# attached nothing goes into it: the status-bar badge carries the notice, the agent is
+# given it by its Stop or UserPromptSubmit hook, and the human can open it with prefix N.
+# An approval is the one exception, because a WORKER is blocked on the answer — see
+# WOLFMUX_INBOX_APPROVAL_TYPE.
+#
+#   0  typed    3  parked for a busy pane    4  filed only    1  no pane to notify
 notify_lead() {
-  local kind="$1" pane text tries=0 fresh=0 locked=0 cap
+  local kind="$1" pane text cap
   pane="$(tm_pane_for_role "$SESSION" "$WOLFMUX_LEAD_ROLE")"
   [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
   case "$kind" in
@@ -1558,9 +1585,39 @@ notify_lead() {
   esac
   cap="$WOLFMUX_NUDGE_DEFER_MAX"
   if [ "$kind" = "approval" ]; then cap="$WOLFMUX_NUDGE_APPROVAL_DEFER_MAX"; fi
-  # Serialize with other notices for the lead so two lines never interleave.
+  # The record, before anything is decided about typing: from here on nothing can lose
+  # the notice. The bead or the approval stays where it is too.
+  inbox_add "$WOLFMUX_LEAD_ROLE" "$kind" "$text"
+  if ! inbox_type_allowed "$WOLFMUX_LEAD_ROLE"; then
+    # An approval blocks a worker until the lead decides, so it may not get slower than
+    # it was in v1.14.0. grace: file it, and type it after all if it is still unread
+    # WOLFMUX_INBOX_APPROVAL_GRACE seconds later. always: type it now. never: the badge.
+    if [ "$kind" = "approval" ] && [ "$WOLFMUX_INBOX_APPROVAL_TYPE" = "always" ]; then
+      : # fall through to the typed path below
+    else
+      if [ "$kind" = "approval" ] && [ "$WOLFMUX_INBOX_APPROVAL_TYPE" = "grace" ]; then
+        _inbox_approval_grace_start "$WOLFMUX_LEAD_ROLE" "$pane" "$text" "$cap"
+        event_log inbox-filed "$WOLFMUX_LEAD_ROLE" "$kind (unread after ${WOLFMUX_INBOX_APPROVAL_GRACE}s is typed after all)"
+      else
+        event_log inbox-filed "$WOLFMUX_LEAD_ROLE" "$kind (nudge-type=$WOLFMUX_NUDGE_TYPE, a client is attached)"
+      fi
+      inbox_stall_notify "$WOLFMUX_LEAD_ROLE" "$kind"
+      return 4
+    fi
+  fi
+  _notify_type_or_park "$WOLFMUX_LEAD_ROLE" "$pane" "$text" "$cap" "$kind"
+}
+
+# _notify_type_or_park <role> <pane> <text> <cap> <kind> — type one fixed notice into a
+# pane, or park it for the one waiter if a human may be typing in there. Unchanged
+# v1.14.0 machinery, lifted out of notify_lead so the approval-grace path below uses
+# exactly the same code rather than a second copy of it.
+#   0 typed    3 parked (or dropped for want of a marker)
+_notify_type_or_park() {
+  local role="$1" pane="$2" text="$3" cap="$4" kind="$5" tries=0 locked=0 fresh=0
+  # Serialize with other notices for this role so two lines never interleave.
   while [ "$tries" -lt 30 ]; do
-    if nudge_begin "$WOLFMUX_LEAD_ROLE"; then
+    if nudge_begin "$role"; then
       locked=1
       break
     fi
@@ -1568,30 +1625,67 @@ notify_lead() {
     sleep 0.2
   done
   # A marker whose waiter died must not swallow this notice (see nudge_pending_reap).
-  if [ "$locked" -eq 1 ]; then nudge_pending_reap "$WOLFMUX_LEAD_ROLE" || true; fi
+  if [ "$locked" -eq 1 ]; then nudge_pending_reap "$role" || true; fi
   # The lead is a pane a human sits in front of: never type over a half-typed line.
   # Each of these notices names its own event, so they queue instead of collapsing.
   # Without the lock we never type either: another notifier may be mid-line right now.
   if [ "$locked" -eq 0 ] || tm_pane_human_busy "$pane"; then
-    if ! nudge_pending_exists "$WOLFMUX_LEAD_ROLE"; then
-      if nudge_pending_open "$WOLFMUX_LEAD_ROLE"; then fresh=1; fi
+    if ! nudge_pending_exists "$role"; then
+      if nudge_pending_open "$role"; then fresh=1; fi
     fi
-    if nudge_pending_exists "$WOLFMUX_LEAD_ROLE"; then
-      nudge_pending_put_line "$WOLFMUX_LEAD_ROLE" "$text" || true
-      nudge_pending_put_cap "$WOLFMUX_LEAD_ROLE" "$cap" || true
-      if [ "$locked" -eq 1 ]; then nudge_end "$WOLFMUX_LEAD_ROLE"; fi
-      if [ "$fresh" -eq 1 ]; then _nudge_defer_start "$WOLFMUX_LEAD_ROLE" "$pane"; fi
-      event_log notify-deferred "$WOLFMUX_LEAD_ROLE" "$kind (${TM_BUSY_REASON:-no lock}, cap ${cap}s)"
+    if nudge_pending_exists "$role"; then
+      nudge_pending_put_line "$role" "$text" || true
+      nudge_pending_put_cap "$role" "$cap" || true
+      if [ "$locked" -eq 1 ]; then nudge_end "$role"; fi
+      if [ "$fresh" -eq 1 ]; then _nudge_defer_start "$role" "$pane"; fi
+      event_log notify-deferred "$role" "$kind (${TM_BUSY_REASON:-no lock}, cap ${cap}s)"
       return 3
     fi
     # No marker and none could be made: say so rather than type over the human.
-    if [ "$locked" -eq 1 ]; then nudge_end "$WOLFMUX_LEAD_ROLE"; fi
-    event_log notify-dropped "$WOLFMUX_LEAD_ROLE" "$kind (pane busy, no marker)"
+    if [ "$locked" -eq 1 ]; then nudge_end "$role"; fi
+    event_log notify-dropped "$role" "$kind (pane busy, no marker)"
     return 3
   fi
   tm_type_line "$pane" "$text"
-  nudge_mark "$WOLFMUX_LEAD_ROLE"
-  nudge_end "$WOLFMUX_LEAD_ROLE"
+  inbox_mark_typed "$role" "$text" # the agent has it: no hook may hand it over again
+  nudge_mark "$role"
+  nudge_end "$role"
+  return 0
+}
+
+# _inbox_approval_grace_start <role> <pane> <text> <cap> — an approval is the ONE notice
+# that can still put a line in the human's conversation, and a blocked worker is the
+# reason: the request holds that worker until the lead answers, and the lead's own
+# WOLFMUX_NUDGE_APPROVAL_DEFER_MAX is 60 s. So the badge gets its louder mark at once,
+# and if the request is STILL unread WOLFMUX_INBOX_APPROVAL_GRACE seconds later it is
+# typed after all. Fully detached, like the nudge waiter, and for the same reasons:
+# macOS ships no setsid, so it ignores HUP, INT and TERM instead.
+_inbox_approval_grace_start() {
+  (
+    set +e
+    trap '' HUP INT TERM
+    _inbox_approval_grace_wait "$1" "$2" "$3" "$4" >/dev/null 2>&1 &
+  )
+  return 0
+}
+
+# _inbox_approval_grace_wait <role> <pane> <text> <cap>
+_inbox_approval_grace_wait() {
+  local role="$1" pane="$2" text="$3" cap="$4" waited=0
+  while [ "$waited" -lt "$WOLFMUX_INBOX_APPROVAL_GRACE" ]; do
+    sleep 1
+    waited=$((waited + 1))
+    # Read in the meantime (prefix N, or teamctl inbox): nothing is typed.
+    inbox_has_new_approval "$role" || {
+      event_log inbox-approval-read "$role" "expanded after ${waited}s; nothing was typed"
+      return 0
+    }
+    [ "$(tm_pane_state "$pane")" = "running" ] || return 0
+  done
+  # Still unread. Type it, through the same busy-and-park machinery as ever.
+  _notify_type_or_park "$role" "$pane" "$text" "$cap" approval || true
+  event_log inbox-approval-grace "$role" "still unread after ${WOLFMUX_INBOX_APPROVAL_GRACE}s: typed"
+  return 0
 }
 
 # --- teamctl nudge <role>|--all [--id <bead>] [--quiet] ------------------------------------------
@@ -1612,6 +1706,17 @@ _nudge_one() {
   who="$(team_identity "$TEAM" "$role")"
   pane="$(tm_pane_for_role "$SESSION" "$role")"
   [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
+  # The record first, so nothing below can lose the notice (lib/inbox.sh). The bead
+  # itself is in Beads either way; this is what the badge counts and what the agent's
+  # own Stop and UserPromptSubmit hooks hand over.
+  inbox_add "$role" beads "$(_nudge_text "$who" "$bead")"
+  # The lead's pane is the human's conversation. With somebody attached nothing goes
+  # into it: the badge, the hooks and prefix N carry the notice instead.
+  if ! inbox_type_allowed "$role"; then
+    event_log inbox-filed "$role" "${bead:-no bead} (nudge-type=$WOLFMUX_NUDGE_TYPE, a client is attached)"
+    inbox_stall_notify "$role" beads
+    return 4
+  fi
   nudge_begin "$role" || return 2
   # A marker whose waiter died must not swallow this role's nudges for ever: reap it
   # before looking, while the per-role lock is held (see nudge_pending_reap).
@@ -1655,6 +1760,7 @@ _nudge_one() {
   # closing it needs tmux to tell us a key arrived while we were mid-line, and there is
   # no such channel. The queued path below does NOT accept it: it re-checks per line.
   tm_type_line "$pane" "$text"
+  inbox_mark_typed "$role" "$text" # the agent has it: no hook may hand it over again
   event_log nudge "$role" "$bead"
   nudge_end "$role"
 }
@@ -1723,6 +1829,7 @@ _nudge_defer_wait() {
       line="$(nudge_pending_shift_line "$role")" || break
       [ -n "$line" ] || continue
       tm_type_line "$pane" "$line"
+      inbox_mark_typed "$role" "$line" # only this line: the rest may still need a hook
       delivered=$((delivered + 1))
     done
     if [ "$busy_again" -eq 0 ] && nudge_pending_has_bead "$role"; then
@@ -1730,7 +1837,9 @@ _nudge_defer_wait() {
         busy_again=1
       else
         bead="$(nudge_pending_bead "$role")"
-        tm_type_line "$pane" "$(_nudge_text "$who" "$bead")"
+        line="$(_nudge_text "$who" "$bead")"
+        tm_type_line "$pane" "$line"
+        inbox_mark_typed "$role" "$line"
         delivered=$((delivered + 1))
         event_log nudge "$role" "${bead:-collapsed} (waited ${waited}s)"
       fi
@@ -1824,6 +1933,10 @@ cmd_nudge() {
       case "$shown_cap" in "" | *[!0-9]*) shown_cap="$WOLFMUX_NUDGE_DEFER_MAX" ;; esac
       say "deferred: ${role}'s pane is busy (${TM_BUSY_REASON:-a notice is already waiting}). The notice follows by itself as soon as that pane is idle (it gives up after ${shown_cap}s; the bead stays in the inbox either way)."
       return 3
+      ;;
+    4)
+      say "filed: nothing was typed into ${role}'s pane (WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE, and a client is attached to this team). The notice is in its inbox: the status bar counts it, the agent is given it by its own Stop hook when its turn ends or when somebody prompts it, and you can read it now with: teamctl inbox $role"
+      return 4
       ;;
     *) die "'$role' has no running pane (its beads are waiting in Beads; start it with: teamctl restart $role)" ;;
   esac

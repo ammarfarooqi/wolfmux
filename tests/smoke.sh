@@ -314,7 +314,7 @@ FAKE_OSA="$WORK/fake-osascript"
 printf '#!/bin/bash\nprintf "%%s\\n" "$@" >"%s"\n' "$WORK/osa.args" >"$FAKE_OSA"
 /bin/chmod 755 "$FAKE_OSA"
 notify() { WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" _notify; }
-check "notify: every Claude agent gets the Stop hook; the plugin notifier is silenced, the user's own entry kept" 'teamctl capture backend --all | grep -q "STUB notify={\"stop\":true,\"silenced\":\"post:example,stop:desktop-notify\"}"'
+check "notify: every Claude agent gets the Stop hook; the plugin notifier is silenced, the user's own entry kept" 'teamctl capture backend --all | grep -q "STUB notify={\"stop\":true,\"notify\":true,\"silenced\":\"post:example,stop:desktop-notify\"}"'
 check "notify: goes to the attached terminal as OSC 9 — first line, markdown dropped" 'printf "%s" "{\"last_assistant_message\":\"\\n**Done:** built \`x\`\\nsecond line\"}" | TEAM_ROLE=backend WOLFMUX_NOTIFY_TTY="$WORK/tty1" notify && [ "$(/bin/cat "$WORK/tty1")" = "$(printf "\033]9;🐶 backend: Done: built x\007")" ]'
 check "notify: the manager is marked with the wolf" 'printf "%s" "{\"last_assistant_message\":\"merged\"}" | TEAM_ROLE=lead WOLFMUX_NOTIFY_TTY="$WORK/tty2" notify && grep -q "🐺 lead: merged" "$WORK/tty2"'
 check "notify: escape sequences in a message never reach the terminal" 'jq -cn "{last_assistant_message: \"ok \u001b]52;c;aGk=\u0007 \u001b[2J done\"}" | TEAM_ROLE=qa WOLFMUX_NOTIFY_TTY="$WORK/tty3" notify && [ "$(LC_ALL=C tr -cd "\033\007" <"$WORK/tty3" | wc -c | tr -d " ")" = 2 ]'
@@ -338,7 +338,15 @@ check "notify: a click opens a terminal on the team (script with the project and
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_NOTIFY lead
 teamctl restart qa >/dev/null 2>&1
 sleep 2
-check "notify: WOLFMUX_NOTIFY=lead keeps workers quiet (no hook, plugin notifier still silenced)" 'teamctl capture qa --all | grep "STUB notify=" | tail -1 | grep -q "{\"stop\":false,\"silenced\":\"post:example,stop:desktop-notify\"}"'
+# v1.15.0: the Stop array is never empty any more — lib/inbox.sh's hook is in it for every
+# agent, because that is how an agent learns about a bead without a keystroke. So this
+# asks what it always meant to ask: has this worker got the NOTIFICATION hook.
+check "notify: WOLFMUX_NOTIFY=lead keeps workers quiet (no notification hook; the inbox hook stays, plugin notifier still silenced)" 'teamctl capture qa --all | grep "STUB notify=" | tail -1 | grep -q "{\"stop\":true,\"notify\":false,\"silenced\":\"post:example,stop:desktop-notify\"}"'
+# The other half of the same property, read straight out of the settings file rather than
+# through the stub: WOLFMUX_NOTIFY governs DESKTOP notifications to the human, while the
+# inbox hooks deliver BEADS to the agent. Turning the first off must never turn the second
+# off, so they are unconditional and this says so.
+check "notify: WOLFMUX_NOTIFY=lead still leaves the worker its inbox hooks (beads reach an agent whatever the human's notifications do)" 'QA_SETTINGS="$(ls "$WOLFMUX_DATA"/state/*/settings/qa.json | head -1)"; jq -e "([.hooks.Stop[]?.hooks[]?.command] | map(select(test(\"_inbox-stop\"))) | length == 1) and ([.hooks.Stop[]?.hooks[]?.command] | map(select(test(\"_notify\\\"?$\"))) | length == 0) and (.hooks.UserPromptSubmit[0].hooks[0].command | test(\"_inbox-prompt\"))" "$QA_SETTINGS"'
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -gu WOLFMUX_NOTIFY
 teamctl restart qa >/dev/null 2>&1
 sleep 2

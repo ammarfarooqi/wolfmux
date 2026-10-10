@@ -318,7 +318,8 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes) |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
 | `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. This is the command that measures that disk. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
-| `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line |
+| `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane is not typed into at all while a client is attached to the team: the notice is filed and the agent is given it by its own hook (`filed: …`, exit 4) |
+| `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | the pane notices filed for a role, oldest first. Default: the lead of this team. Reading them clears the `📨` count in the status bar; it does not change whether the agent has had them, and the agent having had them does not clear your count. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new. `prefix N` opens the same thing in a popup ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none) |
 | `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
 | `teamctl panes` | tmux's view: command, pid, cwd |
@@ -451,11 +452,57 @@ each show their own.
 Notifications and the session names (`🐺 team/lead`, `🐶 team/<role>`) reach an agent when it starts:
 after an update, `teamctl restart <role> --continue`.
 
+## Quiet notices: nothing is typed into your conversation
+
+The lead's pane is where you talk to the lead. Until v1.15.0 every
+`[wolfmux] Beads update for <role> …` line was typed straight into it, so a notice
+could land in the middle of what you were saying. It does not any more.
+
+A notice now goes into a file first — `~/.wolfmux/state/<project>/[teams/<team>/]inbox/<role>`,
+one line each — and is read from there by whoever needs it:
+
+| who | how they get it | does it touch your conversation |
+| --- | --- | --- |
+| you, passively | `📨 3` on the left of the status line: notices nobody has expanded yet. `🔔` as well when one of them is a permission request waiting for your decision. Nothing at all at zero | no |
+| you, on demand | `prefix N`, or `teamctl inbox` / `teamctl inbox --all`. Reading them clears the count | no |
+| you, when an agent is stuck | one desktop notification, at most one per role every two minutes, carrying the count: "team/lead: 4 notices waiting". A click opens the team | no |
+| the agent | its own session hands them over when its turn ends, or when you next prompt it. In its transcript that is a `[wolfmux] You have team notices:` block | no |
+| the agent, typed | a worker's idle pane is still typed into, as before. Your lead pane is typed into only while **no client is attached** to the team — nobody is looking then, so the line costs nothing and the agent wakes at once | only when nobody is watching |
+
+Two things are tracked per notice, and they are independent: whether **you** have
+expanded it (that is the count in the status bar) and whether the **agent** has been
+given it. Reading your notices never hides them from the agent, and an agent reading
+them never clears your count.
+
+Two cases still put a line in your conversation on purpose:
+
+- **A permission request.** It holds a worker until you answer, so after
+  `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) unread it is typed in after all.
+  `WOLFMUX_INBOX_APPROVAL_TYPE=never` turns that off and leaves it to the badge;
+  `always` types it at once.
+- **A Codex pane** (`astra`, `codex:<model>`), whatever its role. Codex has no hook to
+  hand a notice over with, so typing is the only channel that reaches that agent at all.
+
+The knob for the rest is `WOLFMUX_NUDGE_TYPE`: `off` (never type into anybody),
+`workers`, `detached-lead` (the default — workers, plus the lead while nobody is
+attached) and `all` (the pre-1.15.0 behaviour). `WOLFMUX_INBOX_STALL_NOTIFY=off` drops
+the desktop notification, and `WOLFMUX_NOTIFY=off` already does.
+
+One case is known and left as it is: a client is attached, you are looking at another
+pane, and the lead is idle. Then the bead waits for you to notice the badge, for the
+desktop notification, or for your next prompt to the lead. Nothing is lost — the bead is
+in Beads and the notice is in the file.
+
 ## tmux, in the team session only
 
 Mouse: click to focus, drag a border to resize, wheel to scroll. `Ctrl-b` then
 arrows = move · `Ctrl`/`Alt`-arrows = resize · `z` = zoom · `T` = re-tile ·
-`q` = pane numbers · `d` = detach (the team keeps running).
+`N` = the team's notices in a popup · `q` = pane numbers · `d` = detach (the team
+keeps running).
+
+`prefix I` is deliberately **not** the notices key: `config/wolfmux/tmux.conf` sources
+your own `~/.tmux.conf` first, so a wolfmux binding would quietly win over yours, and
+`I` belongs to tmux-plugins/tpm on a machine that has it.
 
 ## Checking which model and account a pane really uses
 

@@ -291,6 +291,54 @@ Beads, other teams, or the lead's own conversations (they live in your checkout'
   `WOLFMUX_NOTIFY=all` (default) · `lead` · `off`.
 - Both reach an agent when it starts: after an update run `teamctl restart <role> --continue`.
 
+## Notices, and why they are not in your conversation
+
+The lead's pane is your conversation with the lead. Until v1.15.0 every
+`[wolfmux] Beads update for <role> …` line was typed into it, so a notice could land in
+the middle of a sentence you were writing. Now a notice is written to a file first —
+`~/.wolfmux/state/<project>/[teams/<team>/]inbox/<role>`, one line each — and read from
+there by whoever needs it.
+
+- **Passively**: `📨 3` next to the wolf on the status line is how many notices nobody
+  has expanded yet, across the whole team. `🔔` appears as well when one of them is a
+  permission request waiting for your decision. At zero there is nothing there at all.
+- **On demand**: `Ctrl-b N`, or `teamctl inbox` (the lead) / `teamctl inbox --all`
+  (every role) / `teamctl inbox <role>`. `--json` for a script, `--keep` to read them
+  without clearing the count. The alias `teamctl notices` is the same command.
+- **When an agent may be stuck**: one desktop notification, at most one per role every
+  two minutes, carrying the count rather than the single bead — "team/lead: 4 notices
+  waiting". Same notification path as a finished turn, so a click opens the team, and
+  `WOLFMUX_NOTIFY=off` silences it like the rest.
+- **The agent itself**: its own session hands the notices over when its turn ends, or
+  when you next prompt it. No keystroke anywhere. In its transcript it appears as a
+  `[wolfmux] You have team notices:` block, and the last line is always its own Beads
+  command, so a notice that lost its bead id still leads to the work.
+- **Typed, still**: a worker's idle pane is typed into as before. Your lead pane is
+  typed into only while **no client is attached** to the team — nobody is looking then,
+  the agent wakes at once, and the line only goes to scrollback.
+
+`teamctl inbox` is the pane notices. An agent's own inbox — the work — is always
+`bd list --assignee <role> --status open,in_progress,blocked --include-infra`.
+
+Two facts are kept per notice and they do not touch each other: whether **you** have
+expanded it (the status-bar count) and whether the **agent** has been given it. Reading
+yours never hides a notice from the agent; an agent reading one never clears your count.
+
+Two notices still reach your conversation on purpose:
+
+- **A permission request**, because it holds a worker until you answer. Unread after
+  `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) it is typed in after all.
+  `WOLFMUX_INBOX_APPROVAL_TYPE=never` leaves it to the badge, `always` types it at once.
+- **A Codex pane** (`astra`, `codex:<model-id>`), whatever its role — the lead included.
+  Codex has no hook to hand a notice over with, so typing is the only channel that
+  reaches that agent at all. A Codex lead is therefore deliberately noisier than a
+  Claude lead; `WOLFMUX_NUDGE_TYPE=off` is the way to silence even that.
+
+One case is known and left as it is: a client is attached, you are looking at another
+pane, and the lead is idle. The bead then waits for the badge to be noticed, for the
+desktop notification, or for your next prompt. Nothing is lost either way — the bead is
+in Beads and the notice is in the file.
+
 ## Git
 
 ```bash
@@ -557,8 +605,15 @@ Never run `codex login --with-api-key`, never export `ANTHROPIC_API_KEY` /
 ## tmux keys (team server only)
 
 Mouse: click = focus, drag border = resize, wheel = scroll. `Ctrl-b` then: arrows =
-move · `Ctrl`-arrows / `Alt`-arrows = resize · `z` = zoom · `T` = re-tile · `q` = pane
+move · `Ctrl`-arrows / `Alt`-arrows = resize · `z` = zoom · `T` = re-tile ·
+`N` = the team's notices in a popup · `q` = pane
 numbers · `d` = detach · `"` `%` `c` = new pane/window in the current directory.
+
+`config/wolfmux/tmux.conf` sources your own `~/.tmux.conf` **first**, so every wolfmux
+binding comes later and wins inside the wolfmux server. That is why the notices key is
+`N` and not `I`: `I` belongs to tmux-plugins/tpm on a machine that has it, and binding
+it here would have shadowed it in silence. `tmux -L wolfmux list-keys | grep ' <key> '`
+shows what a key really does inside a team.
 
 ## Uninstall (the CLIs stay untouched)
 

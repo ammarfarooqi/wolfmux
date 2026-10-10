@@ -75,7 +75,8 @@ need it. Tasks and messages are not teamctl's: they are Beads
 | `teamctl stop <role>` | close its pane; worktree, branch and commits stay. Its build caches (`.next`, `dist`, …) are deleted, `node_modules` is kept, so `restart` stays cheap |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | start it again in the same worktree; `--continue` keeps its own conversation, `--resume` reopens the one you name (`teamctl status --json` prints each agent's `session_id`). When the team's tmux session is gone (a reboot), `restart lead` starts the team again |
 | `teamctl remove <role>… [--force] [--yes]` | take a stopped teammate off the books: worktree, branch, record, and the gigabytes they held. Refuses while it holds work that exists nowhere else, and lists it; `--force` discards it after one question |
-| `teamctl nudge <role>\|--all [--id <bead-id>] [--quiet]` | re-send the one-line notification into a pane. The Beads hook does this by itself. A pane somebody is typing in is left alone: the notice waits for it to go idle (`deferred: …`, exit 3) |
+| `teamctl nudge <role>\|--all [--id <bead-id>] [--quiet]` | re-send the one-line notification into a pane. The Beads hook does this by itself. A pane somebody is typing in is left alone: the notice waits for it to go idle (`deferred: …`, exit 3). Your own lead pane is not typed into at all while you are watching the team: the notice is filed instead (`filed: …`, exit 4) |
+| `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias: `notices`) | the pane notices filed for a role, newest last. Default: the lead of this team. Reading them clears the `📨` count in the status bar; it does not change whether the agent has had them. `--all`: every role of the team. `--keep`: leave them marked new. `prefix N` opens this in a popup. This is the short notices, NOT an agent's Beads inbox — the work itself is always `bd list --assignee <role> …` |
 
 **Reviewing work**
 
