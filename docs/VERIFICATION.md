@@ -316,6 +316,40 @@ state are separate.
 | options, and read-only | `--interval` takes a number and refuses nonsense, zero and a missing value (exit 64) · an unknown option is a usage error naming the command · tab completion offers `dashboard` and every option its parser accepts · **the view changes nothing**: the whole JSON of every project is identical before and after drawing the popup and the segment |
 | the key | `prefix O` is bound to the popup, `status-right` carries the segment, and the other lane's `status-left` and `status-interval` are untouched |
 
+### How `tmux.conf` resolves `teamctl`, and how that was verified
+
+Both entries — `bind O` and the `status-right` segment — resolve `teamctl` through one
+shared spelling, agreed with the quiet-nudges lane and approved by the lead:
+
+```
+#{?@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl}
+```
+
+`teamctl` sets `@wolfmux_teamctl` to its own absolute path at team start, and the
+conditional falls back to a bare `teamctl` when it is unset, which is exactly the previous
+behaviour. So the file is correct on its own, in either merge order, and on a session
+started by an older `teamctl`. This module declares no `set -g @wolfmux_teamctl` of its own;
+the quiet-nudges region owns that line.
+
+Three checks in `tests/dashboard.sh` measure this against a real tmux server with a real pty
+client: with the option unset the bare `teamctl` on `PATH` runs; with it set that absolute
+path runs and `PATH` is not used; and a nested `#{...}` really is expanded inside `#()`.
+
+The method matters, because the obvious ones all give false negatives. Reading the result
+back through a format (`#{T:status-right}`, `#{E:status-left}`) returns **empty even in a run
+that demonstrably rendered**, and with no client attached tmux never runs the `#()` job at
+all — so a plain absolute-path *control* fails too, which is what makes the false negative
+convincing. Two things work: have the command **touch a marker file** (what the tests do, and
+what proves execution rather than rendering), or attach a real pty client, wait, force a
+refresh, and grep a captured typescript for a **literal marker** placed around the segment
+(what the lead used to prove the output also draws).
+
+**One consequence, documented rather than fixed:** tmux draws the status line *before* the
+`#()` job has produced anything, so the first rendered draw of the segment is **empty** and
+the next one carries its output. After a client attaches, or a server restarts, the segment
+is blank for up to `status-interval` seconds. It is inherent to how tmux runs `#()`. No
+document here claims the segment appears immediately.
+
 ### Measured, on the machine it was written on
 
 Taken with 2 projects, 20 teams, 75 agents on record and 12 of them running, under a system
@@ -334,14 +368,22 @@ RUNNING agents, 2.54 → 1.5 s.
 
 ### One pre-existing failure, seen while verifying this
 
-On the machine this was written on (2026-10-10), `tests/smoke.sh` reports **326 of 327**:
-the check "a crash is never silent … (issue #6)" fails. It fails **identically on the
-pristine base commit** `fc79251` with none of this work applied, and every assertion it
-makes passes when run on its own against either tree — the trap line is present, `PIPE`
-gives exit 141 with the right message, `exit 3` and `INT` add nothing, and `HUP` does not
-say "stopped unexpectedly". So it is this machine or the check itself, not the dashboard,
-and it is recorded here rather than left to look like a regression. The suite total is
-therefore 781 checks, 780 passing.
+On 2026-10-10 `tests/smoke.sh` reports **326 of 327**: the check "a crash is never silent …
+(issue #6)" fails. What is established about it:
+
+- It fails **identically on the pristine base commit** `fc79251`, in a detached worktree with
+  none of this work applied — 326 of 327 there too. **So it is not introduced by this
+  change.**
+- **Its four assertions all pass when run standalone** against either tree: the trap line is
+  present, `kill -PIPE` gives exit 141 with the expected message, `exit 3` and `kill -INT`
+  add nothing, and `kill -HUP` does not say "stopped unexpectedly".
+- That standalone result was obtained **independently** of `nudge-fix.lead`'s, at a different
+  commit. Two independent standalone passes against two in-suite failures narrows it to
+  something inside the suite run rather than the exit handler.
+- **The cause is not yet understood.** `nudge-fix.lead` is investigating, as the owner of
+  that check and that suite. Nothing further is asserted about it here.
+
+The suite total is therefore 781 checks, 780 passing.
 
 ### Not verified in this suite
 

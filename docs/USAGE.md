@@ -337,6 +337,13 @@ client, so it opens no transcript, runs no `ps` and runs no `du`; it costs about
 work. If anything at all goes wrong it prints nothing: a status bar keeps whatever it is
 given until the server restarts, so a broken badge would be worse than no badge.
 
+**It does not appear immediately, and that is normal.** tmux draws the status line *before*
+it has run the `#()` command, and fills the result in on a later refresh. So right after you
+attach a client, and after a tmux server restart, the segment is **blank for up to
+`status-interval` seconds** before it appears. Nothing is wrong and nothing is lost; it is
+inherent to the way tmux runs `#()`. Measured on tmux 3.7c: the first rendered draw of a
+`#()` segment is empty, the next one carries its output.
+
 ## Teams working together
 
 All teams of a project share its Beads, so they can talk: `-a review.lead` reaches the lead

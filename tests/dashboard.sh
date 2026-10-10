@@ -352,13 +352,55 @@ check "tab completion offers every option the parser accepts" \
 check "the view changes nothing: no team is stopped, started or removed by it" \
   'before=$(teamctl dashboard --json --once | jq -S ".projects"); teamctl dashboard --once >/dev/null; teamctl _overview-badge >/dev/null; after=$(teamctl dashboard --json --once | jq -S ".projects"); test "$before" = "$after"'
 
-echo "== the key that opens it"
+echo "== the key that opens it, and how tmux.conf finds teamctl"
 check "the tmux configuration binds prefix O to the popup" \
-  'grep -Eq "^bind O display-popup -E .*teamctl dashboard" "$REPO/config/wolfmux/tmux.conf"'
+  'grep -Eq "^bind O display-popup -E .*dashboard" "$REPO/config/wolfmux/tmux.conf"'
 check "status-right carries the segment" \
-  'grep -q "teamctl _overview-badge" "$REPO/config/wolfmux/tmux.conf"'
+  'grep -q "_overview-badge" "$REPO/config/wolfmux/tmux.conf"'
 check "the other lane's status-left and status-interval are left alone" \
   'test "$(grep -c "^set -g status-right " "$REPO/config/wolfmux/tmux.conf")" = 1'
+# The server inherits whatever PATH it was started with, so a bare `teamctl` in this file
+# works only while ~/bin happens to be on it. Every entry resolves it through ONE shared
+# user option instead, with a fallback that keeps this file correct on its own. Both
+# consumers must use the same mechanism, or the next reader will add a second one.
+check "the key and the segment resolve teamctl the same way: one mechanism, not two" \
+  'test "$(grep -c "@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl" "$REPO/config/wolfmux/tmux.conf")" = 2'
+check "neither entry calls a bare teamctl any more" \
+  '! grep -Eq "^(bind O|set -g status-right ).*[^}]teamctl (dashboard|_overview-badge)" "$REPO/config/wolfmux/tmux.conf"'
+# Measured, not assumed: these two are why the mechanism above is written that way. They
+# need a real client, because tmux runs #() only while it is drawing a status line.
+PROBE="$WORK/probe"
+/bin/mkdir -p "$PROBE/pathdir"
+printf '#!/bin/sh\ntouch "%s/by-option"\necho o\n' "$PROBE" >"$PROBE/stub"
+printf '#!/bin/sh\ntouch "%s/by-path"\necho p\n' "$PROBE" >"$PROBE/pathdir/teamctl"
+/bin/chmod +x "$PROBE/stub" "$PROBE/pathdir/teamctl"
+PROBE_SOCKET="wolfmux-dash-probe-$$"
+probe_run() { # <socket> — start a server with a real client and the conditional in status-right
+  PATH="$PROBE/pathdir:$PATH" tmux -L "$PROBE_SOCKET" -f /dev/null new-session -d -s p 'sleep 60'
+  tmux -L "$PROBE_SOCKET" set-option -g status-interval 1
+  tmux -L "$PROBE_SOCKET" set-option -g status-right '#(#{?@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl} badge)'
+  script -q /dev/null tmux -L "$PROBE_SOCKET" attach -t p >/dev/null 2>&1 &
+  PROBE_CLIENT=$!
+  sleep 4
+}
+probe_stop() {
+  # The braces keep the shell's own "Terminated" job notice off the report.
+  { kill "$PROBE_CLIENT" && wait "$PROBE_CLIENT"; } 2>/dev/null
+  tmux -L "$PROBE_SOCKET" kill-server 2>/dev/null
+  /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$PROBE_SOCKET"
+}
+probe_run
+check "with the option unset, tmux.conf's fallback runs the bare teamctl on PATH" \
+  'test -e "$PROBE/by-path" && test ! -e "$PROBE/by-option"'
+/bin/rm -f "$PROBE/by-path" "$PROBE/by-option"
+tmux -L "$PROBE_SOCKET" set-option -g @wolfmux_teamctl "$PROBE/stub" 2>/dev/null
+tmux -L "$PROBE_SOCKET" refresh-client -S 2>/dev/null
+sleep 5
+check "with the option set, that absolute path runs and PATH is not used" \
+  'test -e "$PROBE/by-option" && test ! -e "$PROBE/by-path"'
+check "a nested format really is expanded inside #() on this tmux" \
+  'test -e "$PROBE/by-option"'
+probe_stop
 
 echo
 echo "result: $passed passed, $failed failed"
