@@ -194,7 +194,7 @@ complete_options() {
     capture) options="--lines --all" ;;
     diff) options="--stat --names --commits --working" ;;
     status | teams) options="--json" ;;
-    dashboard) options="--json --once --interval --full" ;;
+    dashboard) options="--json --once --interval --full --socket" ;;
     approvals) options="--all" ;;
     doctor) options="--probe" ;;
   esac

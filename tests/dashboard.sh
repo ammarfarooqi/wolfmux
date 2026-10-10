@@ -431,8 +431,46 @@ check "a socket argument can never make the segment fail or speak" \
   'out="$(teamctl _overview-badge "/nowhere/at/all" 2>&1)"; test "$?" = 0 && printf "%s" "$out" | grep -Eq "^[0-9]+t "'
 check "dash_socket_set refuses anything that is not a socket" \
   'lib_eval "DASH_SOCKET=\"\"; dash_socket_set /etc/hosts; dash_socket_set \"\"; dash_socket_set /nowhere; [ -z \"\$DASH_SOCKET\" ]"'
-check "dash_socket_from_tmux reads the socket out of TMUX" \
-  'lib_eval "s=\$(printf %s \"\$WOLFMUX_DATA\"); TMUX=\"/etc/hosts,123,0\"; DASH_SOCKET=\"\"; dash_socket_from_tmux; [ -z \"\$DASH_SOCKET\" ]"'
+# A second server that stays up for the rest of this group: a REAL socket with none of this
+# suite's agents on it, which is what makes the two answers distinguishable.
+OTHER_SOCKET2="wolfmux-dash-sock2-$$"
+tmux -L "$OTHER_SOCKET2" -f /dev/null new-session -d -s s2 'sleep 90' 2>/dev/null
+OTHER_SOCKET_PATH2="$(tmux -L "$OTHER_SOCKET2" display-message -p '#{socket_path}' 2>/dev/null)"
+check "the second server really is a socket, or the checks below measure nothing" \
+  'test -S "$OTHER_SOCKET_PATH2"'
+check "the popup is handed the socket too, as an explicit --socket" \
+  'grep -F -q -- "dashboard --socket \"#{socket_path}\"" "$REPO/config/wolfmux/tmux.conf"'
+check "--socket asks that server: a second, agent-less one reads 0 running" \
+  'teamctl dashboard --json --once --socket "$OTHER_SOCKET_PATH2" | jq -e "[.projects[].teams[].agents[] | select(.state == \"running\")] | length == 0"'
+check "--socket needs a value, and a bad one falls back instead of reporting an empty machine" \
+  'teamctl dashboard --socket >/dev/null 2>&1; test "$?" = 64 && teamctl dashboard --json --once --socket /etc/hosts | jq -e "[.projects[].teams[].agents[] | select(.state == \"running\")] | length > 0"'
+# THE REGRESSION. The ordinary way a human runs this is from inside their OWN tmux session,
+# where $TMUX names their personal socket — a real socket, so every check on it passes. A
+# view that trusted it would list panes from that server, find nothing tagged @ai_role, and
+# report every team as having zero agents alive while the teams run fine on the wolfmux
+# socket. Teams still appear, because they come from the state directories, so it looks
+# plausible and is wrong. This is the check that would have caught it.
+check "TMUX pointing at a real NON-wolfmux socket does not steal the answer" \
+  'TMUX="$OTHER_SOCKET_PATH2,999,0" teamctl dashboard --json --once | jq -e "[.projects[].teams[].agents[] | select(.state == \"running\")] | length > 0"'
+check "and the same is true of the text view a human actually reads" \
+  'TMUX="$OTHER_SOCKET_PATH2,999,0" teamctl dashboard --once | grep -Eq "[1-9][0-9]* running"'
+# reads_tmux_env <file> — does that file READ the $TMUX environment variable in code, as
+# opposed to mentioning it in a comment? $TMUX_BIN and $WOLFMUX_TMUX_SOCKET are different
+# names, and the character class excludes them rather than a second filter that could rot.
+# One definition, used for the real check and for the two fixtures that prove it works.
+reads_tmux_env() {
+  grep -nE '[$]\{?TMUX\}?([^_A-Za-z]|$)' "$1" | grep -vE '^[0-9]+: *#' | grep -q .
+}
+printf 'x="$TMUX"\n' >"$WORK/guard-trips.sh"
+printf 'a="$TMUX_BIN"\nb="$WOLFMUX_TMUX_SOCKET"\n# $TMUX in a comment is fine\n' >"$WORK/guard-clean.sh"
+check "no code path reads the TMUX environment variable, so this cannot come back" \
+  '! reads_tmux_env "$REPO/config/wolfmux/lib/dashboard.sh"'
+check "that guard is not vacuous: it does trip on a real read of \$TMUX" \
+  'reads_tmux_env "$WORK/guard-trips.sh"'
+check "and it does not trip on TMUX_BIN, WOLFMUX_TMUX_SOCKET or a comment" \
+  '! reads_tmux_env "$WORK/guard-clean.sh"'
+tmux -L "$OTHER_SOCKET2" kill-server 2>/dev/null
+/bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$OTHER_SOCKET2"
 
 echo
 echo "result: $passed passed, $failed failed"

@@ -272,23 +272,28 @@ dash_tree_usage() {
 # report the state of the default one. On the live server the default happens to be right,
 # which is the same kind of luck as a bare `teamctl` on PATH, and this badge is silent on
 # error so it would never say otherwise. So the socket is handed IN rather than assumed:
-# tmux.conf passes #{socket_path} to the badge, and the popup reads it out of $TMUX.
+# So it is handed in from tmux.conf, which knows which server it is drawing: #{socket_path}
+# to the badge, and `dashboard --socket "#{socket_path}"` to the popup. Never read out of
+# the environment — see dash_socket_set for the trap that costs.
 # (Found by the quiet-nudges lane in their own badge; same class of bug, same fix.)
 DASH_SOCKET=""
 
 # dash_socket_set <path> — adopt that socket, if it really is one. Anything else is ignored
 # and the fallback stands: a view that asked a socket that is not there would report an
 # empty machine, which is worse than asking the default.
+#
+# The socket is only ever handed in — from tmux.conf, which knows which server it is
+# drawing, via #{socket_path}. It is NEVER inferred from the environment. $TMUX looks
+# tempting and is wrong: run `teamctl dashboard` from your own tmux session and $TMUX names
+# YOUR socket, which is a real socket, so every check on it passes and the view then lists
+# panes from your personal server, finds nothing tagged @ai_role, and reports every team as
+# having zero agents alive while the teams are running perfectly well on the wolfmux socket.
+# Teams still appear, because they come from the state directories, so the view looks
+# plausible and is wrong. With nothing handed in, `tmx` targets $WOLFMUX_TMUX_SOCKET, which
+# is the right answer for the command line.
 dash_socket_set() {
   [ -n "${1:-}" ] && [ -S "$1" ] || return 0
   DASH_SOCKET="$1"
-}
-
-# dash_socket_from_tmux — inside a pane or a display-popup, tmux sets
-# TMUX=<socket-path>,<pid>,<session>, so the socket is there to be read.
-dash_socket_from_tmux() {
-  [ -n "${TMUX:-}" ] || return 0
-  dash_socket_set "${TMUX%%,*}"
 }
 
 # dash_panes — "session|role|pane|dead|pid" for every pane of the team server, newline
@@ -561,7 +566,7 @@ dash_render() {
 
 # teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]
 cmd_dashboard() {
-  local json=0 once=0 interval=5 full="" doc key
+  local json=0 once=0 interval=5 full="" socket="" doc key
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1 ;;
@@ -573,15 +578,22 @@ cmd_dashboard() {
         shift
         ;;
       --interval=*) interval="${1#--interval=}" ;;
-      *) die_usage "usage: teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]" ;;
+      --socket)
+        [ "$#" -ge 2 ] || die_usage "--socket needs a path"
+        socket="$2"
+        shift
+        ;;
+      --socket=*) socket="${1#--socket=}" ;;
+      *) die_usage "usage: teamctl dashboard [--json] [--once] [--interval <seconds>] [--full] [--socket <path>]" ;;
     esac
     shift
   done
   case "${interval:-x}" in "" | *[!0-9]* | 0) die_usage "--interval expects a number of seconds, 1 or more" ;; esac
   require_tools
-  # Opened from a key inside a team server, this runs in a display-popup, so tmux has told
-  # us which socket we are on: ask that one rather than assuming the default.
-  dash_socket_from_tmux
+  # Handed in by tmux.conf's key binding, which knows which server it is drawing. Never
+  # inferred: see dash_socket_set for why reading $TMUX is wrong. Nothing handed in means
+  # tmx and $WOLFMUX_TMUX_SOCKET, which is right for the command line.
+  dash_socket_set "$socket"
   if [ "$json" -eq 1 ]; then
     dash_collect $full
     return 0

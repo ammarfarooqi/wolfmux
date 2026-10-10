@@ -84,7 +84,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
                                                       CONTEXT: what each agent's conversation holds (tokens, share of the window)
     teamctl teams [--json]                            the short list: state (running or orphaned), lead, agents, disk and founder per team
-    teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]
+    teamctl dashboard [--json] [--once] [--interval <seconds>] [--full] [--socket <path>]
                                                       EVERY team on this machine, across every project, in one read-only view:
                                                       per agent its state, the cpu and memory of its process tree, context use and
                                                       when its transcript was last written; per team its totals, state and cached
@@ -92,6 +92,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       prefix O opens it in a popup (q closes it). --once prints it and exits,
                                                       --interval sets the redraw (default 5 s), --full reads context and the
                                                       transcript time for teams whose session is not live too (slower).
+                                                      --socket asks that tmux server instead of the default one (the key binding
+                                                      hands its own #{socket_path} over; the socket is never guessed).
                                                       It never runs du: lane totals are what teamctl teams left behind, and the
                                                       view says so when the number is stale.
     teamctl panes                                     what tmux reports per pane
