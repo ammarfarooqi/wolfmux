@@ -24,17 +24,20 @@ teamctl doctor
 **950 checks across the nine countable suites, smoke counted once in its clean shape, and
 950 passing, 0 failing** (v1.16.1). Every figure measured under the heavy lock, in ONE
 acquisition, with `SIGHUP` and `SIGINT` reset to their defaults by a parent that then
-`exec`s, and **all nine at `PENDING_SHA`** — `smoke` 348, `disk` 93, `nudge-typing` 61,
+`exec`s, and **all nine at `ded20f1`** — `smoke` 348, `disk` 93, `nudge-typing` 61,
 `inbox` 107, `providers` 141, `docs` 36, `dashboard` 115, `migration` 36,
 `permissions` 13.
 
-v1.16.1 is the first release whose nine figures all come from ONE commit, so the
-two-commit argument v1.16.0 needed here is gone with it: there is no later Markdown edit
-to reason about, because the documents were written first and the suites were run on the
-tree that carries them. `smoke.sh` reads `README.md` in two checks that assert a pattern is
-**absent** from it (`tests/smoke.sh:174` and `:177`, the two inbox-command checks), and
-those ran against the shipping content. It reads neither this file nor
-`docs/BUILD-LOG.md` — zero references to either.
+All nine figures come from ONE commit and one acquisition, where v1.16.0 needed two of
+each. The tree being shipped is one commit later than `ded20f1`, and the difference is
+only the sha you are reading: `ded20f1` wrote these documents with a placeholder where its
+own sha had to go, which no commit can contain, and the next commit replaced that
+placeholder in this file and in `docs/BUILD-LOG.md`. No shell file, library or test
+differs — `git diff --name-only ded20f1 HEAD` is the whole check, and it names two
+Markdown files. `smoke.sh` reads `README.md` in two checks that assert a pattern is
+**absent** from it (`tests/smoke.sh:174` and `:177`, the two inbox-command checks);
+`README.md` is not one of those two files and its shipping content is what was measured. No
+suite reads this file or `docs/BUILD-LOG.md` — zero references to either.
 
 Three suites changed in this release and are the ones to look at first: `inbox` (102 to
 107) and `nudge-typing` (56 to 61) gained the idle-agent checks that v1.16.0 did not have
@@ -461,7 +464,7 @@ way to reproduce them. The total is 348 in every shape — only the pass/skip sp
 | HUP default, INT **ignored** | a bare `… &` from a non-interactive shell | 347 passed, 0 failed, 1 skipped (SIGINT) |
 | HUP ignored, INT ignored | `nohup … &` — **a lane's real launch** | 346 passed, 0 failed, 2 skipped |
 
-Row 1 was re-measured for v1.16.1 at `PENDING_SHA`, in one acquisition of the heavy lock, and
+Row 1 was re-measured for v1.16.1 at `ded20f1`, in one acquisition of the heavy lock, and
 is the figure the total at the top of this file uses. Rows 3 and 4 are v1.16.0's measurements
 at `083fe9f` and row 2 is v1.15.0's at `9d9f84b`: **v1.16.1 did not re-measure the three
 detached shapes.** They are carried because this release changes no signal handler and no
@@ -479,7 +482,7 @@ count is exactly the number of signals the launch left ignored — 0, 1, 1, 2 �
 rule, measured rather than argued. Together the four cover every combination of the two
 dispositions.
 
-Measured in the same acquisition, clean shape, at `PENDING_SHA`: `tests/inbox.sh` 107
+Measured in the same acquisition, clean shape, at `ded20f1`: `tests/inbox.sh` 107
 passed, 0 failed; `tests/nudge-typing.sh` 61 passed, 0 failed; `tests/providers.sh` 141
 passed, 0 failed, 0 skipped; `tests/docs.sh` 36 passed, 0 failed; `tests/dashboard.sh` 115
 passed, 0 failed, 0 skipped; `tests/disk.sh` 93 passed, 0 failed; `tests/migration.sh` 36
