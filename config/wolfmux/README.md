@@ -336,9 +336,11 @@ there by whoever needs it.
   when you next prompt it. No keystroke anywhere. In its transcript it appears as a
   `[wolfmux] You have team notices:` block, and the last line is always its own Beads
   command, so a notice that lost its bead id still leads to the work.
-- **Typed, still**: a worker's idle pane is typed into as before. Your lead pane is
-  typed into only while **no client is attached** to the team — nobody is looking then,
-  the agent wakes at once, and the line only goes to scrollback.
+- **Typed, still**: a worker's idle pane is typed into as before. Your lead pane is typed
+  into only while it is **quiet** — no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE`
+  (300 s), nothing half-typed on the input line, not in copy mode. With nobody attached
+  that is every idle moment, and the line only goes to scrollback. While you are working
+  in there the notice waits and goes in by itself once the pane is quiet.
 
 `teamctl inbox` is the pane notices. An agent's own inbox — the work — is always
 `bd list --assignee <role> --status open,in_progress,blocked --include-infra`.

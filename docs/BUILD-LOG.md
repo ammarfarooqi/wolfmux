@@ -1276,7 +1276,7 @@ tests/providers.sh, at f6e3698, 138 passed / 3 failed
 Two commits, one per defect, so a reviewer can take either without the other.
 
 Gates, all under the heavy lock in ONE acquisition with `HUP` and `INT` reset to their
-defaults by a parent that then `exec`s, at `ded20f1`, base `f6e3698` (v1.16.0):
+defaults by a parent that then `exec`s, at `PENDING_SHA`, base `f6e3698` (v1.16.0):
 `inbox` 107 / 0, `nudge-typing` 61 / 0, `providers` 141 / 0 / 0, `smoke` 348 / 0 / 0,
 `docs` 36 / 0, `disk` 93 / 0, `dashboard` 115 / 0 / 0, `migration` 36 / 0,
 `permissions` 13 / 0 — 950 passing, 0 failing. `bash -n` on every changed file.

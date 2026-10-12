@@ -1573,6 +1573,13 @@ founder_record_purge() {
 # An approval is the one exception, because a WORKER is blocked on the answer — see
 # WOLFMUX_INBOX_APPROVAL_TYPE.
 #
+# This is the one notice path v1.16.1 did NOT change. A BEADS notice for an attached lead
+# now waits for that pane to go quiet rather than stopping at the file (_nudge_one, and
+# ADR-0029 says why), because a bead for an idle agent has no other way in. These three
+# are addressed to the HUMAN first — a teammate appeared, a policy moved, somebody wants
+# permission — and the badge, the banner and prefix N all reach a human who is sitting
+# right there. Giving them the same treatment is a separate decision on a separate path.
+#
 #   0  typed    3  parked for a busy pane    4  filed only    1  no pane to notify
 notify_lead() {
   local kind="$1" pane text cap
