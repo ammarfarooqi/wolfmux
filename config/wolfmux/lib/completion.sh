@@ -150,6 +150,8 @@ complete_first_word() {
   complete_emit "$prefix" destroy "end the team; --purge deletes it from disk"
   complete_emit "$prefix" prune "take the build output of every parked lane of the team"
   complete_emit "$prefix" nudge "<role>: one fixed notification line in a pane"
+  complete_emit "$prefix" inbox "<role>: the pane notices filed for an agent (alias: notices)"
+  complete_emit "$prefix" notices "alias of inbox"
   complete_emit "$prefix" policy "show or set what the team may do (permissions, spawning, isolation)"
   complete_emit "$prefix" layout "how the panes are arranged (lead-left, lead-top, tiled)"
   complete_emit "$prefix" approvals "workers' permission requests waiting for the lead"
@@ -187,6 +189,7 @@ complete_options() {
     destroy) options="--worktrees --purge --force --keep-transcripts --yes" ;;
     prune) options="--dry-run --keep-node-modules" ;;
     nudge) options="--quiet --all --id" ;;
+    inbox | notices) options="--all --json --keep" ;;
     capture) options="--lines --all" ;;
     diff) options="--stat --names --commits --working" ;;
     status | teams) options="--json" ;;
@@ -359,7 +362,7 @@ cmd_complete() {
             1) complete_models "$cur" ;;
           esac
           ;;
-        stop | restart | capture | log | focus | diff | nudge)
+        stop | restart | capture | log | focus | diff | nudge | inbox | notices)
           [ "$position" -eq 0 ] && complete_roles "$cur"
           ;;
         remove)

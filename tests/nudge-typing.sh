@@ -15,6 +15,12 @@
 # client is attached. Gating it on a client reopened issue #9, because a line can be
 # left half-typed in a pane and the session then detached.
 #
+# From v1.15.0 a notice is FILED before any of this is decided (lib/inbox.sh), and the
+# LEAD's pane is typed into only while nobody is attached to the team. This suite still
+# drives a lead pane for the queued-notice and mid-delivery properties — it detaches the
+# client around those blocks rather than giving them up — and has one block of its own
+# for the new rule. The inbox itself is tests/inbox.sh.
+#
 # Fully isolated from any team you have running: its own tmux server (socket
 # wolfmux-test-nudge-<pid>), its own state directory, a throwaway git repository and
 # stub agents. It never touches the live "wolfmux" socket or a real role. The attached
@@ -230,6 +236,16 @@ check "human at the keyboard: one notice, not one per look" '[ $(($(notices qa "
 tmx select-pane -t "$LEAD_PANE" >/dev/null 2>&1
 sleep 4
 
+# From v1.15.0 the LEAD's pane is typed into only while no client is attached to the
+# team (WOLFMUX_NUDGE_TYPE=detached-lead; see tests/inbox.sh for that rule itself). The
+# two blocks below drive a lead pane on purpose — queued fixed notices arriving in order
+# and exactly once, and a human typing part-way through a five-notice delivery — and
+# those properties are exactly as important as they were. So they run with the client
+# detached, which is still a typed path, rather than being deleted or thinned.
+detach_client
+sleep 1
+check "setup: no client attached, so the lead pane is a typed path again (v1.15.0)" '[ "$(clients)" = "0" ]'
+
 echo "== queued fixed notices: in order, exactly once, re-checking before every line (BLOCKER 3)"
 LBEFORE="$(notices lead "Policy changed")"
 teamctl policy worker-spawn on >/dev/null 2>&1
@@ -292,6 +308,26 @@ sleep 10            # the waiter finds it idle again and finishes the queue
 check "mid-delivery: no notice was ever delivered twice" 'for k in "worker-isolation = on" "lead-teams = on" "worker-permissions = skip" "lead-permissions = skip" "worker-spawn = off"; do [ "$(notices lead "$k")" -le "$PER_LEAD" ] || exit 1; done'
 check "mid-delivery: every queued notice still arrived, none was lost on the way" 'for k in "worker-isolation = on" "lead-teams = on" "worker-permissions = skip" "lead-permissions = skip" "worker-spawn = off"; do [ "$(notices lead "$k")" -eq "$PER_LEAD" ] || exit 1; done'
 check "mid-delivery: the marker is empty at the end" '[ ! -d "$(pending_dir lead)" ]'
+
+echo "== the new rule itself: the lead pane is typed into only while nobody is watching"
+# The same bead, the same idle lead pane, twice: once with somebody looking and once
+# without. Issue #11 is the first of these two lines.
+attach_client
+tmx select-window -t "$WINDOW" >/dev/null 2>&1
+tmx select-pane -t "$PANE" >/dev/null 2>&1 # the human is looking at the WORKER pane
+sleep 4                                    # longer than WOLFMUX_NUDGE_HUMAN_IDLE
+LBEFORE="$(notices lead "Beads update for lead")"
+teamctl nudge lead --id watched-1 >"$WORK/watched-1.log" 2>&1
+WATCHED_STATUS=$?
+sleep 2
+check "a client attached + an idle lead + a bead: NOTHING is typed (exit 4, filed)" '[ "$WATCHED_STATUS" -eq 4 ] && grep -q "^filed:" "$WORK/watched-1.log" && [ "$(notices lead "Beads update for lead")" = "$LBEFORE" ] && ! teamctl capture lead --all | grep -q "watched-1"'
+check "a client attached: nothing was parked either, so nothing arrives later" '[ ! -d "$(pending_dir lead)" ]'
+detach_client
+sleep 1
+teamctl nudge lead --id unwatched-1 >"$WORK/unwatched-1.log" 2>&1
+UNWATCHED_STATUS=$?
+sleep 2
+check "no client attached + the same idle lead + a bead: it IS typed, exactly as before" '[ "$UNWATCHED_STATUS" -eq 0 ] && grep -q "notified: lead" "$WORK/unwatched-1.log" && teamctl capture lead --all | grep -q "Beads update for lead (unwatched-1)"'
 
 echo "== giving up: a pane that never goes idle"
 type_text "$PANE" "$HALF2"

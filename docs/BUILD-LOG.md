@@ -938,6 +938,119 @@ what they assumed.
 `tests/smoke.sh`: 347 → 347 (one `check` became one if/elif/else that reports pass, skip or
 FAIL — no assertion gained or lost). v1.14.4.
 
+## 32. "These messages should be hidden" (v1.15.0)
+
+An adversarial review of the finished branch found one more class of bug than the design
+review had, and it is worth recording which kind: not a wrong decision, but a PROXY
+standing in for the state it was supposed to represent. `WOLFMUX_NUDGE_TYPE=off` asked
+`inbox_type_allowed`, which the approval override never passed through, so the one knob
+whose whole job is silence still typed. The approval grace asked whether the human had
+read the notice when the question was whether the worker was still blocked. Both read
+correctly and both were wrong. The fix in each case was to ask the state itself.
+
+The other finding worth keeping is that `inbox_take_undelivered` moved its awk output over
+the record unguarded while its two siblings in the same file chained with `&&` — so the
+one function that could destroy notices was the one that looked most like the two that
+could not. Consistency inside a file is evidence, and a sibling that breaks it is where to
+look first.
+
+
+Entry 26 stopped a notice landing *in* a half-typed line. This is the complaint
+underneath it, GitHub issue #11, in the owner's own words on 2026-10-10:
+
+> regarding wolfmux there is another issue, i dont want to keep seeing these updates in
+> the mid of my convos these messages should be hidden and there could be some idication
+> here that message received or something and expand like a bird carrying letter emoji
+
+A notice typed into the lead's pane perfectly is still an interruption, because that
+pane **is** the conversation. So typing stopped being *the* channel and became one of
+five. Every notice is now appended to `$STATE_DIR/inbox/<role>` before anything else is
+decided about it, and read from there by the status-bar count, the `prefix N` popup, one
+desktop notification, the agent's Stop hook, and — where it is still right — typing.
+
+**The state column is two letters, and that was the design decision.** A notice has two
+readers who want opposite things: the human wants to know mail arrived and to read it
+when he chooses; the agent needs the text as input or it never runs the command. The
+first draft had one state and it was wrong in both directions — handing the notice to the
+agent cleared the human's badge, and the human reading it hid the notice from the agent.
+`nu`/`nd`/`su`/`sd` keeps them independent, and `tests/inbox.sh` asserts both directions.
+
+**The hole a reviewer found, and the two things that close it.** A Stop hook fires when a
+turn ends and `UserPromptSubmit` when somebody submits. **Neither fires for an agent
+sitting idle.** A bead landing for an idle lead with the human away would have waited
+until a human typed — which had already been rejected once, in round 2 of the v1.14.0
+review, for a popup proposal. The fix reuses v1.14.0's own measured fact: a detached
+session lists no client at all, so "is anybody watching" is one cheap tmux read. With
+nobody watching, the lead's pane is typed into exactly as before — nobody is looking, the
+line only goes to scrollback, and the agent wakes at once. With somebody watching, the
+badge carries it and the hooks deliver it. What is left is named rather than hidden: a
+client attached, the human looking at another pane, the lead idle. The mitigation is one
+desktop notification through the notifier that already existed (`notify_deliver`), so
+nothing new was built and nothing reaches the conversation.
+
+**That notification nearly became the same complaint with a different sound.** The first
+version debounced it with `WOLFMUX_NUDGE_DEBOUNCE`, which is 3 seconds — sized for typing
+one cheap line into a pane. A macOS banner is not cheap: it interrupts whatever you are
+doing, and this machine runs three projects and twenty-five teams whose Beads events fire
+on create, update and close. At 3 seconds a busy hour is dozens of banners. It now has
+its own knob at 120 seconds per role and **collapses**: one banner carrying the count out
+of the file ("default/lead: 4 notices waiting"), never one per bead. Ten beads inside two
+minutes raise exactly one, and `tests/inbox.sh` checks that number.
+
+**Two things measurement decided rather than preference.** The emoji: the owner asked for
+"a bird carrying letter", and U+1F54A DOVE is neither `Emoji_Presentation` nor East Asian
+Wide — it needs U+FE0F to draw as an emoji at all and tmux miscounts its width, which
+pushes the rest of the status line about. U+1F4E8 INCOMING ENVELOPE is both, so it gets
+two cells with no variation selector; `WOLFMUX_INBOX_MARK` is there for anybody who wants
+the bird and will accept the alignment. And the key: the brief said `prefix I`, and
+`tmux -L wolfmux list-keys` said `I` was already `run-shell …/tpm/bindings/install_plugins`.
+`config/wolfmux/tmux.conf` sources the user's own `~/.tmux.conf` **first**, so every
+wolfmux binding comes later and wins inside the wolfmux server: binding `I` would have
+taken TPM's key away in silence. `prefix N` instead, and the general fact is now a row in
+TROUBLESHOOTING.
+
+**Approvals were the one thing allowed to stay loud.** A permission request holds a
+*worker* until the lead answers, which is why its deferral cap is 60 s and not 600. A
+detached lead is typed into at once as before; an attached lead gets the louder `🔔` mark
+immediately, and if the request is still unread 20 s later it is typed in after all,
+through the same busy-and-park machinery as everything else. An approval is the one notice
+that can still put a line in the human's conversation, and a blocked worker is the reason.
+
+**A Codex lead is deliberately noisier than a Claude lead.** Codex has no hooks, so for an
+`astra` lead typing is the only channel that reaches the agent at all; silence there would
+mean it never learned about a bead. That row is in the ARCHITECTURE table so the next
+reader does not "fix" the inconsistency.
+
+Three things found by writing the tests rather than by reasoning: this machine's `awk` is
+the one true awk and has no `strftime`, so the listing formats its timestamps with
+`date -r` in a read loop; `grep -c pattern file || printf 0` prints `00` on no match,
+which made an assertion pass for the wrong reason; and `notify_deliver` writes OSC 9 with
+no newline, so several banners land on one line and have to be counted as occurrences.
+
+**One class of error cost four messages, and none of it was in the code.** Three readings of
+the same two test comments disagreed. The first said the function they name had been deleted:
+it had grepped names out of removed lines, which conflates a call with a definition, and its
+grep had silently searched one of the three directories it named. The second said the function
+still exists, so the comments must be true: it had read a definition and inferred a caller.
+The third traced `teamctl nudge lead` through `cmd_nudge` to `_nudge_one` and found the tests
+never reach that function at all, which is why both comments were wrong and why neither of the
+first two reasons was the reason. Only the trace settled it. The lesson generalises past this
+file: a comment that names the COMMAND a test runs cannot go stale this way, while one that
+names a function further down the chain will, the next time anybody edits the chain. The
+pattern was named by the team that had just been wrong about it in the opposite direction.
+
+`tests/inbox.sh`: a new suite, 102 checks. `tests/nudge-typing.sh`: 52 → 56, with 36 lines
+added and none deleted, so no existing check was removed or re-aimed. `tests/smoke.sh`:
+347 → 348 (one check added for the inbox hooks surviving `WOLFMUX_NOTIFY=lead`), 347 pass +
+1 skip under `nohup`. 818 checks across the eight suites, smoke counted once in its clean
+shape, 818 passing. Measured at `9d9f84b`, base v1.14.4 (`529936e`): the smoke pair in a
+clean launch with SIGHUP and SIGINT reset to their defaults, the rest in an earlier
+acquisition on the same commit, after the first smoke pair was voided by an inherited SIGINT
+disposition — a detached launch can leave {HUP, INT, QUIT} ignored, and an inherited
+`SIG_IGN` cannot be undone from inside the process. The void run's own arithmetic confirms
+nothing was dropped: 347 passed + 1 failed = 348, the same total the corrected run measured.
+v1.15.0.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
