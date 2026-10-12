@@ -53,15 +53,19 @@ real team was live on the same machine; the real team was unaffected.
 
 ## smoke.sh: PENDING_SMOKE_CHECKS checks, 0 failures (v1.16.0) — how many pass depends on the launch (issue #17)
 
-Measured at `PENDING_SHA`, base `PENDING_BASE`. Run through a parent that resets both
-`SIGHUP` and `SIGINT` to `DEFAULT`, all PENDING_SMOKE_CLEAN checks hold, including the ones
-below that a detached run cannot reach. Run under `nohup` or a bare `&` (how a lane actually
-launches it), those signals arrive already set to be ignored, and an ignored signal cannot be
-un-ignored by a trap inside the process, so a check that sends itself one and expects to be
-killed by it cannot hold either way: it is skipped, with the reason printed, instead of
-reporting a bare, unexplained FAIL. The launch shape is therefore part of every figure here —
-see [the skip rule](#the-signal-skip-rule-a-rule-not-a-number) for why the same tree reports a
-different pass/skip split with no check changing.
+Measured at `PENDING_SHA`, base `PENDING_BASE`, launched through a parent that resets both
+`SIGHUP` and `SIGINT` to `DEFAULT` (HUP default, INT default), where all
+PENDING_SMOKE_CLEAN checks hold — including the ones a detached run cannot reach.
+
+The shape is quoted with the figure because the split moves with it and the total does not.
+A check that sends itself a signal and expects to be killed by it cannot hold when the
+launch already set that signal to be ignored, since an inherited `SIG_IGN` cannot be undone
+from inside the process; it skips with its reason printed rather than reporting a bare,
+unexplained FAIL. The three shapes above are measured and named by their **dispositions**,
+which is the cause — a command is only a proxy for it. Worth being exact about one proxy,
+because it is easy to get backwards: a lane's real launch is `nohup … &` from a
+non-interactive shell, which leaves HUP **and** INT ignored and is therefore the two-skip
+shape, not the one-skip shape a plain `nohup` gives.
 
 | Area | Checks |
 |------|--------|
@@ -385,7 +389,7 @@ load between 2 and 13.
 
 | | Measured | Note |
 |---|---|---|
-| the segment, own work | **18 ms** | 20 runs averaged; 82 ms per invocation in all, of which **64 ms is `teamctl`'s own startup** — sourcing eighteen library files, a cost every `teamctl` command pays, including the other lane's `_inbox-badge` |
+| the segment, own work | **18 ms** | 20 runs averaged; 82 ms per invocation in all, of which **64 ms is `teamctl`'s own startup** — sourcing the eighteen library files the source list held when this was measured (nineteen on this base, so the share is now marginally higher), a cost every `teamctl` command pays, including the other lane's `_inbox-badge` |
 | the popup, full walk | **1.42 – 1.95 s** | budget was 2 s |
 | the popup, first version | 6.17 s | before the bulk reads: `reg_list` spawns a `jq` per record, `reg_field` one per field, `team_orphaned` asks tmux three times per team — about 600 processes |
 

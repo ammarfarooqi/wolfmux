@@ -1084,7 +1084,7 @@ stands in for. 6.17 → 2.54 s on the bulk record read; 2.54 → 1.5 s on fork-f
 team lookups plus reading per-agent transcripts only for agents that are RUNNING.
 
 **The segment costs 18 ms of work, inside 82 ms per invocation.** The other 64 ms is
-`teamctl`'s own startup — sourcing eighteen library files — which every `teamctl` command
+`teamctl`'s own startup — sourcing the eighteen library files held when measured, nineteen on this base — which every `teamctl` command
 pays and which this feature did not add. Worth knowing before anyone optimises the badge
 again: there is almost nothing left in it to win.
 
@@ -1136,12 +1136,12 @@ Kept as small as possible, since two other branches were in flight on the same f
 This release is the one that puts a SECOND `#()` job on the status line — v1.15.0's `📨`
 inbox badge on `status-left`, this one's overview badge on `status-right` — so the cost is
 worth stating where somebody reading this entry will meet it. The segment was measured at
-82 ms per invocation, of which **64 ms is `teamctl`'s own startup** (sourcing eighteen
-library files) and 18 ms is the segment's own work. At `status-interval 5` that is two
+82 ms per invocation, of which **64 ms is `teamctl`'s own startup** (sourcing the eighteen library files
+held when measured; this base has nineteen, so the share is a floor) and 18 ms is the segment's own work. At `status-interval 5` that is two
 `teamctl` invocations every 5 s per attached client, about 164 ms per 5 s per client, or
 roughly 3% of one core. Nothing here is optimised for it: the cost is `teamctl`'s startup
 rather than either badge's work, so the lever is a startup path that does not source all
-eighteen libraries to answer a one-line read. Recorded as a limit with a named lever in
+nineteen libraries to answer a one-line read. Recorded as a limit with a named lever in
 [ROADMAP.md](ROADMAP.md#known-limits-of-v1).
 
 `tests/dashboard.sh`: PENDING_DASH_CHECKS checks, all passing. Suite total

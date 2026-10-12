@@ -70,7 +70,7 @@ lib_eval() {
     cd "${2:-$PROJECT}" || exit 1
     bash -c '
       set -euo pipefail
-      for m in provider-env common registry tmuxctl worktree disk beads policy approvals agents views dashboard doctor brand notify layout guard; do
+      for m in provider-env common registry tmuxctl worktree disk beads policy approvals agents views dashboard doctor brand notify inbox layout guard; do
         . "$WOLFMUX_HOME/lib/$m.sh"
       done
       load_project any
@@ -232,17 +232,28 @@ check "a team whose agent has an unknown window still renders, with no share" \
 # be produced at all, so rather than fail for a reason that has nothing to do with this
 # code, they SKIP and print why — the same rule the suite already uses for a signal the
 # launch has made untestable.
-if lib_eval 'model_context_window astra' >/dev/null 2>&1; then
-  skip "the real reader produces an empty CTX_WINDOW for a model with no declared window" \
+# The genuinely-empty case lives on the CLAUDE path: _ctx_of_claude never sets CTX_WINDOW,
+# so agent_context fills it from model_context_window, which from v1.14.1 declares nothing
+# for a pinned id with no [1m]. The CODEX path cannot reach "" at all — its jq defaults a
+# missing model_context_window to 0 — so that side is a separate "0" case below. Both must
+# render without a share, and dash_context_label treats "" and 0 alike for that reason.
+# worker2 is used throughout so these rollouts never become the newest file for worker1,
+# whose own CTX_FILE check would then read this one instead.
+if lib_eval 'model_context_window claude:claude-test-9' >/dev/null 2>&1; then
+  skip "the real reader leaves CTX_WINDOW empty for a model with no declared window" \
     "this tree's model_context_window still declares a window for every model, so an empty CTX_WINDOW cannot be produced here: needs v1.14.1 or later"
   skip "and the dashboard cell for that agent shows the count with no share" \
     "same reason"
 else
-  check "the real reader produces an empty CTX_WINDOW for a model with no declared window" \
-    'lib_eval "team_paths default; w=\$(reg_field worker1 workdir); r=\$WOLFMUX_CODEX_SESSIONS/2026/02/02; mkdir -p \"\$r\"; f=\$r/rollout-2026-02-02T00-00-00-nowin.jsonl; printf \"%s\n%s\n\" \"{\\\"type\\\":\\\"session_meta\\\",\\\"payload\\\":{\\\"cwd\\\":\\\"\$w\\\"}}\" \"{\\\"type\\\":\\\"event_msg\\\",\\\"payload\\\":{\\\"type\\\":\\\"token_count\\\",\\\"info\\\":{\\\"last_token_usage\\\":{\\\"total_tokens\\\":142000}}}}\" > \"\$f\"; agent_context \"\$w\" astra codex \"\"; [ -n \"\$CTX_TOKENS\" ] && [ -z \"\$CTX_WINDOW\" ]"'
+  check "the real reader leaves CTX_WINDOW empty for a model with no declared window" \
+    'lib_eval "team_paths default; w=\$(reg_field worker2 workdir); s=nowin-0000-0000-0000-000000000001; d=\$(transcripts_dir \"\$w\"); mkdir -p \"\$d\"; printf \"%s\n\" \"{\\\"type\\\":\\\"assistant\\\",\\\"message\\\":{\\\"usage\\\":{\\\"input_tokens\\\":2000,\\\"cache_read_input_tokens\\\":140000,\\\"cache_creation_input_tokens\\\":0}}}\" > \"\$d/\$s.jsonl\"; agent_context \"\$w\" claude:claude-test-9 claude \"\$s\"; [ -n \"\$CTX_TOKENS\" ] && [ -z \"\$CTX_WINDOW\" ]"'
   check "and the dashboard cell for that agent shows the count with no share" \
-    'lib_eval "team_paths default; w=\$(reg_field worker1 workdir); r=\$WOLFMUX_CODEX_SESSIONS/2026/02/02; mkdir -p \"\$r\"; f=\$r/rollout-2026-02-02T00-00-00-nowin.jsonl; printf \"%s\n%s\n\" \"{\\\"type\\\":\\\"session_meta\\\",\\\"payload\\\":{\\\"cwd\\\":\\\"\$w\\\"}}\" \"{\\\"type\\\":\\\"event_msg\\\",\\\"payload\\\":{\\\"type\\\":\\\"token_count\\\",\\\"info\\\":{\\\"last_token_usage\\\":{\\\"total_tokens\\\":142000}}}}\" > \"\$f\"; agent_context \"\$w\" astra codex \"\"; out=\$(dash_context_label \"\$CTX_TOKENS\" \"\$CTX_WINDOW\"); [ \"\$out\" = 142k ] && case \"\$out\" in *%*) exit 1 ;; esac"'
+    'lib_eval "team_paths default; w=\$(reg_field worker2 workdir); s=nowin-0000-0000-0000-000000000001; d=\$(transcripts_dir \"\$w\"); mkdir -p \"\$d\"; printf \"%s\n\" \"{\\\"type\\\":\\\"assistant\\\",\\\"message\\\":{\\\"usage\\\":{\\\"input_tokens\\\":2000,\\\"cache_read_input_tokens\\\":140000,\\\"cache_creation_input_tokens\\\":0}}}\" > \"\$d/\$s.jsonl\"; agent_context \"\$w\" claude:claude-test-9 claude \"\$s\"; out=\$(dash_context_label \"\$CTX_TOKENS\" \"\$CTX_WINDOW\"); [ \"\$out\" = 142k ] && case \"\$out\" in *%*) exit 1 ;; esac"'
 fi
+# The Codex side of the same contract: a rollout that declares no window yields 0, not "",
+# and 0 must render exactly like "" — no share, never 0%.
+check "a Codex rollout with no declared window yields 0, and still renders with no share" \
+  'lib_eval "team_paths default; w=\$(reg_field worker2 workdir); r=\$WOLFMUX_CODEX_SESSIONS/2026/02/02; mkdir -p \"\$r\"; f=\$r/rollout-2026-02-02T00-00-00-nowin.jsonl; printf \"%s\n%s\n\" \"{\\\"type\\\":\\\"session_meta\\\",\\\"payload\\\":{\\\"cwd\\\":\\\"\$w\\\"}}\" \"{\\\"type\\\":\\\"event_msg\\\",\\\"payload\\\":{\\\"type\\\":\\\"token_count\\\",\\\"info\\\":{\\\"last_token_usage\\\":{\\\"total_tokens\\\":142000}}}}\" > \"\$f\"; agent_context \"\$w\" astra codex \"\"; [ \"\$CTX_WINDOW\" = 0 ] && out=\$(dash_context_label \"\$CTX_TOKENS\" \"\$CTX_WINDOW\"); [ \"\$out\" = 142k ]"'
 
 echo "== when the transcript was last written"
 # The honest activity signal: the mtime of the very file the context reader opens. No
@@ -401,8 +412,15 @@ check "the other lane's status-left and status-interval are left alone" \
 # works only while ~/bin happens to be on it. Every entry resolves it through ONE shared
 # user option instead, with a fallback that keeps this file correct on its own. Both
 # consumers must use the same mechanism, or the next reader will add a second one.
-check "the key and the segment resolve teamctl the same way: one mechanism, not two" \
-  'test "$(grep -c "@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl" "$REPO/config/wolfmux/tmux.conf")" = 2'
+# Asserted per ENTRY, not as a count of the whole file. A count was right while this
+# branch owned the only two use sites, and became wrong the moment v1.15.0's bind N and
+# status-left joined them in the same file — a test that breaks on another lane's merge
+# says nothing about this one's code. What matters is that each of MY two entries resolves
+# teamctl through the shared option, which is what these two greps check.
+check "the key resolves teamctl through the shared option" \
+  'grep -q "^bind O .*@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl" "$REPO/config/wolfmux/tmux.conf"'
+check "and the segment resolves it the same way: one mechanism, not two" \
+  'grep -q "^set -g status-right .*@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl" "$REPO/config/wolfmux/tmux.conf"'
 check "neither entry calls a bare teamctl any more" \
   '! grep -Eq "^(bind O|set -g status-right ).*[^}]teamctl (dashboard|_overview-badge)" "$REPO/config/wolfmux/tmux.conf"'
 # Measured, not assumed: these two are why the mechanism above is written that way. They
