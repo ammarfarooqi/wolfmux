@@ -21,12 +21,22 @@ tests/credential-routing.sh    # manual; needs claude logged in; see the header 
 teamctl doctor
 ```
 
-818 checks across the eight suites, smoke counted once in its clean shape, and 818 passing
-(v1.15.0). Measured at `9d9f84b`, base v1.14.4 (`529936e`):
-the smoke pair in a clean launch with SIGHUP and SIGINT reset to their defaults, the other
-seven suites in an earlier acquisition on the same commit, after an inherited SIGINT
-disposition voided the first smoke pair. The total counts the clean smoke run once — the
-`nohup` run is a second measurement of the same suite, not an eighth suite.
+**933 checks across the nine countable suites, smoke counted once in its clean shape, and
+933 passing, 0 failing** (v1.16.0). Every figure measured under the heavy lock with
+`SIGHUP` and `SIGINT` reset to their defaults by a parent that then `exec`s:
+`tests/smoke.sh` 348 at `083fe9f`; the other eight at `17d6829` — `disk` 93,
+`nudge-typing` 56, `inbox` 102, `providers` 134, `docs` 36, `dashboard` 115,
+`migration` 36, `permissions` 13.
+
+Those two commits differ **only** in three Markdown files (`README.md`,
+`docs/BUILD-LOG.md`, this file) and in no shell file, library or test —
+`git diff --name-only 083fe9f 17d6829` is the whole check — and `smoke.sh` asserts nothing
+about those documents, which is `docs.sh`'s job and was re-run at the later content. So the
+smoke figure carries; it is stated this way rather than as one commit because it is two.
+
+The total counts the clean smoke run once: the detached runs are further measurements of the
+same suite, not further suites. `tests/credential-routing.sh` is outside the total — it has
+no check count and is manual.
 
 **How many skips to expect is a rule, not a number:** one per signal the launch leaves
 ignored. A detached launch can leave {HUP, INT, QUIT} ignored — `nohup` accounts for HUP,
@@ -457,12 +467,17 @@ dispositions.
 Measured in the same acquisition, clean shape, at `083fe9f`: `tests/docs.sh` 36 passed,
 0 failed; `tests/dashboard.sh` 115 passed, 0 failed, 0 skipped.
 
-No suite total is quoted here, deliberately. Nothing in the repository runs the suites as a
-set, so no canonical total exists to check a figure against (see
-[ROADMAP.md](ROADMAP.md#known-limits-of-v1)); six of the nine suites were not run in this
-acquisition, and adding their recorded counts to three measured ones would produce exactly
-the kind of figure this release spent its time removing — one that looks measured and is
-not. The three numbers above are measured; the rest are each stated under their own suite.
+**What the suite total at the top of this file is, and is not.** Nothing in the repository
+runs the suites as a set — there is no runner, no build file and no CI (see
+[ROADMAP.md](ROADMAP.md#known-limits-of-v1)). So that 933 is a **hand-assembled sum of one
+measured acquisition**, not a figure any tool produces. It is therefore correct for the
+commit and the launch shape named beside it and for nothing else, and **nothing checks it
+afterwards**: the moment a suite grows, the sum goes stale silently and looks exactly as
+right as it did before. That is why every count in this document still carries its own suite
+name, sha and shape — those are the facts, and the total is a convenience derived from them.
+
+Read a bare total here as a claim about one acquisition, never as a property of the
+repository.
 
 ### Not verified in this suite
 
