@@ -52,6 +52,11 @@ spoke() {
 
 passed=0
 failed=0
+skipped=0
+skip() { # <description> <why>
+  skipped=$((skipped + 1))
+  printf '  SKIP  %s\n        (%s)\n' "$1" "$2"
+}
 check() { # <description> <command string>
   if eval "$2" >/dev/null 2>&1; then
     passed=$((passed + 1))
@@ -1036,7 +1041,25 @@ many_commits "$TIDY_TREE" 3000
 # teamctl guards its own tool calls, so no command crashes on demand: the handler that bin/teamctl
 # installs is run with the libraries, over a child killed by SIGPIPE (what `| head` did, issue #6).
 crash_with() { bash -c 'set -euo pipefail; for m in provider-env common registry; do . "$1/config/wolfmux/lib/$m.sh"; done; TEAMCTL_ARGS="destroy --team x --purge"; trap teamctl_on_exit EXIT; bash -c "$2"; echo finished' _ "$REPO" "$1" 2>&1; }
-check "a crash is never silent: bin/teamctl installs the exit handler, and it names the signal and the command; a plain failure, Ctrl-C or a closed terminal adds nothing (issue #6)" 'grep -q "^trap .teamctl_on_exit. EXIT" "$REPO/bin/teamctl" && crash_out="$(crash_with "kill -PIPE \$\$")"; [ $? -eq 141 ] && printf "%s" "$crash_out" | grep -q "stopped unexpectedly (exit 141: signal 13) in: teamctl destroy --team x --purge" && plain_out="$(crash_with "exit 3")"; [ $? -eq 3 ] && [ -z "$plain_out" ] && int_out="$(crash_with "kill -INT \$\$")"; [ $? -eq 130 ] && [ -z "$int_out" ] && hup_out="$(crash_with "kill -HUP \$\$")"; [ $? -eq 129 ] && ! printf "%s" "$hup_out" | grep -q "stopped unexpectedly"'
+check "a crash is never silent: bin/teamctl installs the exit handler (issue #6)" 'grep -q "^trap .teamctl_on_exit. EXIT" "$REPO/bin/teamctl"'
+check "a crash is never silent: SIGPIPE gives 141 and the message names the signal and the command (issue #6)" 'crash_out="$(crash_with "kill -PIPE \$\$")"; [ $? -eq 141 ] && printf "%s" "$crash_out" | grep -q "stopped unexpectedly (exit 141: signal 13) in: teamctl destroy --team x --purge"'
+check "a crash is never silent: a plain failure is silent and exits 3 (issue #6)" 'plain_out="$(crash_with "exit 3")"; [ $? -eq 3 ] && [ -z "$plain_out" ]'
+check "a crash is never silent: Ctrl-C is silent and exits 130 (issue #6)" 'int_out="$(crash_with "kill -INT \$\$")"; [ $? -eq 130 ] && [ -z "$int_out" ]'
+# An inherited SIG_IGN (what nohup leaves SIGHUP set to before the shell even starts) cannot
+# be undone by a trap inside the process, so this probe's own child cannot be killed by HUP
+# in that case: it survives, prints "finished" and exits 0 instead of 129. `trap -p HUP` was
+# tried as a cheap way to detect this ahead of time, but this macOS /bin/bash (3.2.57) prints
+# nothing for an inherited-ignored signal either way (that phantom-trap display is a 4.4+
+# behavior), so detection has to read the probe's own result instead of predicting it:
+HUP_DESC='a crash is never silent: a closed terminal exits 129 and adds no "stopped unexpectedly" line (issue #6)'
+hup_out="$(crash_with "kill -HUP \$\$")"; hup_rc=$?
+if [ "$hup_rc" -eq 129 ] && ! printf '%s' "$hup_out" | grep -q "stopped unexpectedly"; then
+  passed=$((passed + 1)); printf '  pass  %s\n' "$HUP_DESC"
+elif [ "$hup_rc" -eq 0 ] && printf '%s' "$hup_out" | grep -q '^finished$'; then
+  skip "$HUP_DESC" "SIGHUP arrives ignored — launched under nohup?"
+else
+  failed=$((failed + 1)); printf '  FAIL  %s\n' "$HUP_DESC"
+fi
 check "remove --force: a worker with thousands of unmerged commits is removed, not left behind by a silent exit 141" 'teamctl remove tidy --team scrap --force --yes && [ ! -e "$TIDY_TREE" ] && [ -z "$(git branch --list "ai/scrap/tidy-*")" ]'
 check "purge --force: session, worktrees, ai/ branches, records and transcripts of that team are gone" 'teamctl destroy --team scrap --purge --force && ! tmux -L "$WOLFMUX_TMUX_SOCKET" has-session -t "=$FIRST_SESSION-scrap" 2>/dev/null && [ ! -e "$BUSY_TREE" ] && [ ! -e "$TIDY_TREE" ] && [ -z "$(git branch --list "ai/scrap/*")" ] && [ ! -e "$SCRAP_STATE" ] && [ ! -e "$BUSY_TRANSCRIPTS" ] && [ -d "$WOLFMUX_CLAUDE_PROJECTS" ] && ! git worktree list | grep -q "/scrap/"'
 check "purge: nothing else is touched — other teams, their branches, your checkout, other transcripts" 'teamctl status --json --team review | jq -e ".session_running" && teamctl status --json --team default | jq -e ".session_running" && [ -n "$(git branch --list "ai/review/*")" ] && [ -z "$(git -C "$PROJECT" status --porcelain)" ] && [ -d "$WOLFMUX_CLAUDE_PROJECTS/-somebody-elses-project" ] && ! teamctl teams | grep -q "^scrap "'
@@ -1052,5 +1075,5 @@ check "rename: a Beads hook written under the old name is replaced" 'grep -q "wo
 check "rename: a hook that is not ours is still left alone" 'grep -q "somebody else wrote this" "$PROJECT/.beads/hooks/on_close"'
 
 echo
-echo "result: $passed passed, $failed failed"
+echo "result: $passed passed, $failed failed, $skipped skipped"
 [ "$failed" -eq 0 ]
