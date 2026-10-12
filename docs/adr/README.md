@@ -32,4 +32,5 @@ build; superseded decisions will link to their replacement.
 | [0025](0025-context-use-and-worktree-handover.md) | Context use in status, and a fresh conversation in a built worktree | accepted | 2026-09-23 |
 | [0026](0026-tab-completion.md) | Tab completion: one backend inside teamctl and thin shims, and compinit is never switched on for the user | accepted | 2026-10-04 |
 | [0027](0027-every-agent-resumes-its-own-conversation.md) | Every agent resumes its own conversation, by id | accepted | 2026-10-04 |
-| [0028](0028-notices-are-filed-not-typed.md) | A notice is filed, not typed into the human's conversation | accepted | 2026-10-10 |
+| [0028](0028-notices-are-filed-not-typed.md) | A notice is filed, not typed into the human's conversation | accepted, amended by [0029](0029-the-lead-pane-is-typed-into-when-it-is-quiet.md) | 2026-10-10 |
+| [0029](0029-the-lead-pane-is-typed-into-when-it-is-quiet.md) | The lead's pane is typed into when it is quiet, not never | accepted | 2026-10-12 |

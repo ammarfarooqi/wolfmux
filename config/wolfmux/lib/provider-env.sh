@@ -23,11 +23,26 @@ WOLFMUX_ZAI_KEYCHAIN_SERVICE="zai-coding-plan"
 WOLFMUX_GLM_GUARD_TOKEN="wolfmux-glm-worker-no-anthropic-credential"
 
 # Settings a launcher may take from ~/.config/wolfmux/config (KEY=value lines).
+#
+# A key that is NOT on this list is read out of that file and dropped, with no error and
+# no effect, so a knob this list does not know cannot be set persistently at all. That is
+# what happened to the notice knobs: they arrived in v1.14.0 and v1.15.0 and nobody added
+# them here, so `WOLFMUX_NUDGE_TYPE=all` in the config file did nothing and said nothing
+# (measured 2026-10-12). v1.16.1 adds the six that the user documents present as knobs
+# somebody may set: the notice rule and its quiet window, the collision-check escape
+# hatch, and the three approval/stall knobs. The timing knobs beside them
+# (WOLFMUX_NUDGE_DEBOUNCE, _RETRY, _HUMAN_IDLE, _DEFER_MAX, _APPROVAL_DEFER_MAX,
+# WOLFMUX_INBOX_STOP_COOLDOWN, _HANDOVER_MAX, _MAX, _TEXT_MAX, _LOCK_*,
+# _STALL_NOTIFY_DEBOUNCE) stay OFF the list on purpose: they are documented as mechanism,
+# not preference, each one is already settable per invocation for a measurement, and a
+# wrong persistent value would weaken a guard for every team on the machine at once.
 WOLFMUX_CONFIG_KEYS="WOLFMUX_GLM_AUTH_MODE WOLFMUX_GLM_CONTEXT WOLFMUX_FABLE_MODEL WOLFMUX_ASTRA_MODEL
 WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL
 WOLFMUX_LEAD_PERMISSIONS WOLFMUX_WORKER_PERMISSIONS WOLFMUX_WORKER_SPAWN WOLFMUX_WORKER_ISOLATION WOLFMUX_LEAD_TEAMS WOLFMUX_APPROVAL_TIMEOUT WOLFMUX_BRANCH_TEMPLATE
 WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES
-WOLFMUX_SPLASH WOLFMUX_NOTIFY WOLFMUX_LAYOUT WOLFMUX_TERMINAL"
+WOLFMUX_SPLASH WOLFMUX_NOTIFY WOLFMUX_LAYOUT WOLFMUX_TERMINAL
+WOLFMUX_NUDGE_TYPE WOLFMUX_NUDGE_LEAD_IDLE WOLFMUX_NUDGE_COLLISION_CHECK
+WOLFMUX_INBOX_APPROVAL_TYPE WOLFMUX_INBOX_APPROVAL_GRACE WOLFMUX_INBOX_STALL_NOTIFY"
 
 # Credential, endpoint, provider and model overrides understood by Claude Code.
 # Any of these, inherited by accident, can move traffic off the Claude subscription.

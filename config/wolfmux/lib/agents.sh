@@ -8,6 +8,12 @@ WOLFMUX_NUDGE_DEBOUNCE="${WOLFMUX_NUDGE_DEBOUNCE:-3}"
 # Nothing is ever typed into a pane a human may be typing in: the notice waits.
 WOLFMUX_NUDGE_COLLISION_CHECK="${WOLFMUX_NUDGE_COLLISION_CHECK:-1}" # 0 brings back the old blind typing
 WOLFMUX_NUDGE_HUMAN_IDLE="${WOLFMUX_NUDGE_HUMAN_IDLE:-5}"           # seconds since the last keystroke that still count as "at the keyboard"
+# The LEAD's pane, with somebody attached, is the human's own conversation. A notice may
+# go in there once it is quiet, but five seconds of quiet is a pause for thought, not an
+# empty chair: 300 keeps "not in the middle of my conversation" while still delivering to
+# a lead that has gone idle. Only check (a) — "a human is at this pane" — uses it; a
+# half-typed line and copy mode are busy at any width.
+WOLFMUX_NUDGE_LEAD_IDLE="${WOLFMUX_NUDGE_LEAD_IDLE:-300}"           # seconds of no keystroke before the human's own pane may be typed into
 WOLFMUX_NUDGE_RETRY="${WOLFMUX_NUDGE_RETRY:-3}"                     # how often a waiting notice looks again
 WOLFMUX_NUDGE_DEFER_MAX="${WOLFMUX_NUDGE_DEFER_MAX:-600}"           # how long it waits before giving up
 # An approval notice is worthless once the worker has stopped waiting for the decision
@@ -17,6 +23,10 @@ WOLFMUX_NUDGE_APPROVAL_DEFER_MAX="${WOLFMUX_NUDGE_APPROVAL_DEFER_MAX:-60}"
 # waited=$((waited + 0)) is a waiter that spins on tmux for ever and never expires.
 case "$WOLFMUX_NUDGE_RETRY" in "" | *[!0-9]*) WOLFMUX_NUDGE_RETRY=3 ;; esac
 [ "$WOLFMUX_NUDGE_RETRY" -ge 1 ] || WOLFMUX_NUDGE_RETRY=1
+# Nonsense here would make `[ "$idle" -lt "$window" ]` exit 2, which reads as NOT busy:
+# a typo in this knob would type into the human's conversation. tm_pane_human_busy
+# floors it a second time, for callers that pass their own number.
+case "$WOLFMUX_NUDGE_LEAD_IDLE" in "" | *[!0-9]*) WOLFMUX_NUDGE_LEAD_IDLE=300 ;; esac
 
 session_name_for_project() {
   local stored candidate
@@ -1563,6 +1573,13 @@ founder_record_purge() {
 # An approval is the one exception, because a WORKER is blocked on the answer — see
 # WOLFMUX_INBOX_APPROVAL_TYPE.
 #
+# This is the one notice path v1.16.1 did NOT change. A BEADS notice for an attached lead
+# now waits for that pane to go quiet rather than stopping at the file (_nudge_one, and
+# ADR-0029 says why), because a bead for an idle agent has no other way in. These three
+# are addressed to the HUMAN first — a teammate appeared, a policy moved, somebody wants
+# permission — and the badge, the banner and prefix N all reach a human who is sitting
+# right there. Giving them the same treatment is a separate decision on a separate path.
+#
 #   0  typed    3  parked for a busy pane    4  filed only    1  no pane to notify
 notify_lead() {
   local kind="$1" pane text cap
@@ -1735,7 +1752,7 @@ _nudge_text() { # <identity> [bead]
 }
 
 _nudge_one() {
-  local role="$1" bead="$2" pane text who
+  local role="$1" bead="$2" pane text who idle_window watched=0
   # never yourself: the same role in the same team
   if [ "$role" = "${TEAM_ROLE:-}" ] && [ "$TEAM" = "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" ]; then return 0; fi
   who="$(team_identity "$TEAM" "$role")"
@@ -1745,12 +1762,26 @@ _nudge_one() {
   # itself is in Beads either way; this is what the badge counts and what the agent's
   # own Stop and UserPromptSubmit hooks hand over.
   inbox_add "$role" beads "$(_nudge_text "$who" "$bead")"
-  # The lead's pane is the human's conversation. With somebody attached nothing goes
-  # into it: the badge, the hooks and prefix N carry the notice instead.
+  # Who may be typed into at all, and under which rule. Typing that is off by the knob
+  # (off, workers) stops here: the badge, the hooks and prefix N carry the notice.
+  #
+  # The attached LEAD is NOT that case. Its pane is the human's conversation, so the
+  # notice waits for that conversation to be quiet — but it does WAIT, in the marker,
+  # rather than stopping here. v1.15.0 returned at this point and that is issue #12: an
+  # idle agent has no turn boundary left, so its Stop hook never fires and a filed
+  # notice was never handed over at all. The only thing that changes for the lead is the
+  # width of the quiet it needs (WOLFMUX_NUDGE_LEAD_IDLE); everything below — the
+  # debounce, the one waiter, the collapse, inbox_mark_typed — is the same machinery
+  # v1.14.0 used, in the order v1.14.0 used it.
+  idle_window="$WOLFMUX_NUDGE_HUMAN_IDLE"
   if ! inbox_type_allowed "$role"; then
-    event_log inbox-filed "$role" "${bead:-no bead} (nudge-type=$WOLFMUX_NUDGE_TYPE, a client is attached)"
-    inbox_stall_notify "$role" beads
-    return 4
+    if ! inbox_type_when_idle "$role"; then
+      event_log inbox-filed "$role" "${bead:-no bead} (nudge-type=$WOLFMUX_NUDGE_TYPE, nothing is typed into this pane)"
+      inbox_stall_notify "$role" beads
+      return 4
+    fi
+    watched=1
+    idle_window="$WOLFMUX_NUDGE_LEAD_IDLE"
   fi
   nudge_begin "$role" || return 2
   # A marker whose waiter died must not swallow this role's nudges for ever: reap it
@@ -1760,7 +1791,13 @@ _nudge_one() {
   # let the one waiter deliver. Several queued nudges collapse into ONE line.
   if nudge_pending_exists "$role"; then
     nudge_pending_put_bead "$role" "$bead" || true
+    nudge_pending_put_idle "$role" "$idle_window" || true
     nudge_end "$role"
+    # The human hears about a watched notice that could not reach the agent now, once
+    # per WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE — the same banner v1.15.0 raised when it
+    # filed. A burst collapses into one, because the debounce is what suppresses the
+    # rest, not this branch being quiet.
+    [ "$watched" -eq 0 ] || inbox_stall_notify "$role" beads
     return 3
   fi
   # Notified moments ago: one notice covers a burst of bead events, because the
@@ -1771,32 +1808,40 @@ _nudge_one() {
   fi
   # A human may be typing in there. Park the notice and wait instead of gluing it
   # onto their half-typed line. The lock is NOT held across the wait.
-  if tm_pane_human_busy "$pane"; then
+  if tm_pane_human_busy "$pane" "$idle_window"; then
     if nudge_pending_open "$role"; then
       nudge_pending_put_bead "$role" "$bead" || true
+      nudge_pending_put_idle "$role" "$idle_window" || true
       nudge_end "$role"
       _nudge_defer_start "$role" "$pane"
       event_log nudge-deferred "$role" "$bead (${TM_BUSY_REASON:-busy})"
     elif nudge_pending_exists "$role"; then
       # A waiter appeared between the two checks: let it carry this bead too.
       nudge_pending_put_bead "$role" "$bead" || true
+      nudge_pending_put_idle "$role" "$idle_window" || true
       nudge_end "$role"
     else
       nudge_end "$role"
       event_log nudge-dropped "$role" "$bead (pane busy, no marker)"
     fi
+    [ "$watched" -eq 0 ] || inbox_stall_notify "$role" beads
     return 3
   fi
   text="$(_nudge_text "$who" "$bead")"
   nudge_mark "$role"
   # The 300 ms between the text and the Enter inside tm_type_line is a window: a human
-  # who had been idle for WOLFMUX_NUDGE_HUMAN_IDLE seconds could start typing inside it
-  # and have their first keystrokes land after the notice. It stays open, because
-  # closing it needs tmux to tell us a key arrived while we were mid-line, and there is
-  # no such channel. The queued path below does NOT accept it: it re-checks per line.
+  # who had been quiet for $idle_window seconds could start typing inside it and have
+  # their first keystrokes land after the notice. It stays open, because closing it
+  # needs tmux to tell us a key arrived while we were mid-line, and there is no such
+  # channel. The queued path below does NOT accept it: it re-checks per line.
   tm_type_line "$pane" "$text"
   inbox_mark_typed "$role" "$text" # the agent has it: no hook may hand it over again
-  event_log nudge "$role" "$bead"
+  if [ "$watched" -eq 0 ]; then
+    event_log nudge "$role" "$bead"
+  else
+    # Worth its own event: this is the line that used to be filed and never handed over.
+    event_log nudge "$role" "$bead (a client is attached; the pane was quiet for ${idle_window}s)"
+  fi
   nudge_end "$role"
 }
 
@@ -1826,20 +1871,25 @@ _nudge_defer_start() {
 # remove it. On expiry: remove it and log that. Nothing is lost either way, because
 # every notice ends with the agent's own inbox command.
 _nudge_defer_wait() {
-  local role="$1" pane="$2" who waited=0 tries bead line delivered busy_again cap
+  local role="$1" pane="$2" who waited=0 tries bead line delivered busy_again cap idlew
   who="$(team_identity "$TEAM" "$role")"
   while :; do
     nudge_pending_exists "$role" || return 0 # someone else cleaned up
     nudge_pending_beat "$role"
     cap="$(nudge_pending_cap "$role" "$WOLFMUX_NUDGE_DEFER_MAX")"
     case "$cap" in "" | *[!0-9]*) cap="$WOLFMUX_NUDGE_DEFER_MAX" ;; esac
+    # Read with the cap and for the same reason: the marker, not this process, says how
+    # quiet the pane must be. A notice parked for the lead's own pane keeps its wider
+    # window even if the waiter was started by a worker-rule notice (nudge_pending_idle).
+    idlew="$(nudge_pending_idle "$role" "$WOLFMUX_NUDGE_HUMAN_IDLE")"
+    case "$idlew" in "" | *[!0-9]*) idlew="$WOLFMUX_NUDGE_HUMAN_IDLE" ;; esac
     if [ "$waited" -ge "$cap" ]; then break; fi
     if [ "$(tm_pane_state "$pane")" != "running" ]; then
       nudge_pending_clear "$role"
       event_log nudge-defer-dropped "$role" "pane ended after ${waited}s"
       return 0
     fi
-    if tm_pane_human_busy "$pane"; then
+    if tm_pane_human_busy "$pane" "$idlew"; then
       sleep "$WOLFMUX_NUDGE_RETRY"
       waited=$((waited + WOLFMUX_NUDGE_RETRY))
       continue
@@ -1857,7 +1907,7 @@ _nudge_defer_wait() {
     # Each line leaves the marker as it is typed, so stopping here, or being killed
     # mid-delivery, can never re-send what already went out.
     while nudge_pending_has_lines "$role"; do
-      if tm_pane_human_busy "$pane"; then
+      if tm_pane_human_busy "$pane" "$idlew"; then
         busy_again=1
         break
       fi
@@ -1868,7 +1918,7 @@ _nudge_defer_wait() {
       delivered=$((delivered + 1))
     done
     if [ "$busy_again" -eq 0 ] && nudge_pending_has_bead "$role"; then
-      if tm_pane_human_busy "$pane"; then
+      if tm_pane_human_busy "$pane" "$idlew"; then
         busy_again=1
       else
         bead="$(nudge_pending_bead "$role")"
@@ -1970,7 +2020,7 @@ cmd_nudge() {
       return 3
       ;;
     4)
-      say "filed: nothing was typed into ${role}'s pane (WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE, and a client is attached to this team). The notice is in its inbox: the status bar counts it, the agent is given it by its own Stop hook when its turn ends or when somebody prompts it, and you can read it now with: teamctl inbox $role"
+      say "filed: nothing is ever typed into ${role}'s pane (WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE). The notice is in its inbox: the status bar counts it, the agent is given it by its own Stop hook when its turn ends or when somebody prompts it, and you can read it now with: teamctl inbox $role"
       return 4
       ;;
     *) die "'$role' has no running pane (its beads are waiting in Beads; start it with: teamctl restart $role)" ;;

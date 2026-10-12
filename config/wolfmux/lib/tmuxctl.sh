@@ -332,15 +332,18 @@ EOF
 
 TM_BUSY_REASON="" # which check said busy; the deferral message names it
 
-# tm_pane_human_busy <pane> — 0 when a human may be typing in this pane right now, so
-# nothing may be typed into it. A few tmux reads, no sleeps, no output of its own.
-# Sets TM_BUSY_REASON.
+# tm_pane_human_busy <pane> [idle-seconds] — 0 when a human may be typing in this pane
+# right now, so nothing may be typed into it. A few tmux reads, no sleeps, no output of
+# its own. Sets TM_BUSY_REASON.
 #
 # Busy when ANY of these holds:
 #   c. the pane is in copy mode or scrollback, where keys drive the mode, not the
 #      prompt. Checked whether or not anybody is watching.
 #   a. a human is AT this pane (active pane of the active window of an attached
-#      session) and pressed a key within WOLFMUX_NUDGE_HUMAN_IDLE seconds.
+#      session) and pressed a key within <idle-seconds> seconds, which defaults to
+#      WOLFMUX_NUDGE_HUMAN_IDLE. The LEAD's pane asks for a wider window
+#      (WOLFMUX_NUDGE_LEAD_IDLE), because that pane is the human's own conversation:
+#      five seconds without a keystroke there means he is reading, not that he left.
 #   b. the input line already holds something. Also checked whether or not anybody is
 #      attached: a half-typed line survives a detach.
 #
@@ -369,10 +372,13 @@ TM_BUSY_REASON="" # which check said busy; the deferral message names it
 # display-message: if that fails there is no session and no pane to fail closed for.
 # Every delay is bounded by the caller's deferral limit.
 tm_pane_human_busy() {
-  local pane="$1" fields rest in_mode pane_active win_active cy sess idle idle_rc row
+  local pane="$1" window="${2:-}" fields rest in_mode pane_active win_active cy sess idle idle_rc row
   TM_BUSY_REASON=""
   [ -n "$pane" ] || return 1
   [ "${WOLFMUX_NUDGE_COLLISION_CHECK:-1}" = "1" ] || return 1
+  # A window that is empty or not a number falls back to the default, like every other
+  # numeric knob in this project: a caller's bad arithmetic must not turn check (a) off.
+  case "$window" in "" | *[!0-9]*) window="${WOLFMUX_NUDGE_HUMAN_IDLE:-5}" ;; esac
   # Without this read we know neither the session nor whether anybody is attached to
   # it, so there is no client to fail closed for.
   fields="$(tmx display-message -p -t "$pane" \
@@ -401,7 +407,7 @@ tm_pane_human_busy() {
   # (a) the human's eyes and hands are on this pane. Needs a client: no client, no
   # keystroke to read. Checks (b) and (c) still apply to a detached pane.
   if [ -n "$idle" ] && [ "$pane_active" = "1" ] && [ "$win_active" = "1" ] &&
-    [ "$idle" -lt "${WOLFMUX_NUDGE_HUMAN_IDLE:-5}" ]; then
+    [ "$idle" -lt "$window" ]; then
     TM_BUSY_REASON="a keystroke ${idle}s ago"
     return 0
   fi

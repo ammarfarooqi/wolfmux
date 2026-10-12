@@ -396,7 +396,7 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch, record and the gigabytes they held. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl prune [--team <name>] [--dry-run] [--keep-node-modules]` | the build output of every parked lane of the team, with a total in GB. Running lanes untouched; `--dry-run` deletes nothing; `--keep-node-modules` takes the build caches only ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
-| `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane is not typed into at all while a client is attached to the team: the notice is filed and the agent is given it by its own hook (`filed: …`, exit 4) |
+| `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | the pane notices filed for a role, oldest first. Default: the lead of this team. Reading them clears the `📨` count in the status bar; it does not change whether the agent has had them, and the agent having had them does not clear your count. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new. `prefix N` opens the same thing in a popup ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
 | `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. This is the command that measures that disk. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
@@ -554,7 +554,7 @@ is a `set -g` overwrite, so re-sourcing is safe to repeat, and it re-reads your 
 `~/.tmux.conf` as well.
 | you, when an agent is stuck | one desktop notification, at most one per role every two minutes, carrying the count: "team/lead: 4 notices waiting". A click opens the team | no |
 | the agent | its own session hands them over when its turn ends, or when you next prompt it. In its transcript that is a `[wolfmux] You have team notices:` block | no |
-| the agent, typed | a worker's idle pane is still typed into, as before. Your lead pane is typed into only while **no client is attached** to the team — nobody is looking then, so the line costs nothing and the agent wakes at once | only when nobody is watching |
+| the agent, typed | a worker's idle pane is still typed into, as before. Your lead pane is typed into only while it is **quiet**: no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE` (5 minutes), nothing half-typed on its input line, not in copy mode. Otherwise the notice waits and goes in by itself once that pane is quiet | never while you are working in it |
 
 Two things are tracked per notice, and they are independent: whether **you** have
 expanded it (that is the count in the status bar) and whether the **agent** has been
@@ -574,14 +574,28 @@ Two cases still put a line in your conversation on purpose:
   hand a notice over with, so typing is the only channel that reaches that agent at all.
 
 The knob for the rest is `WOLFMUX_NUDGE_TYPE`: `off` (never type into anybody),
-`workers`, `detached-lead` (the default — workers, plus the lead while nobody is
-attached) and `all` (the pre-1.15.0 behaviour). `WOLFMUX_INBOX_STALL_NOTIFY=off` drops
-the desktop notification, and `WOLFMUX_NOTIFY=off` already does.
+`workers`, `detached-lead` (the default — workers, plus the lead's pane whenever it is
+quiet) and `all` (the pre-1.15.0 behaviour, which types in whatever you are doing).
+`WOLFMUX_NUDGE_LEAD_IDLE` is how quiet the lead's pane has to be first: 300 seconds, and
+only the keystroke check uses it — a half-typed line or copy mode is busy at any setting.
+`WOLFMUX_INBOX_STALL_NOTIFY=off` drops the desktop notification, and `WOLFMUX_NOTIFY=off`
+already does.
 
-One case is known and left as it is: a client is attached, you are looking at another
-pane, and the lead is idle. Then the bead waits for you to notice the badge, for the
-desktop notification, or for your next prompt to the lead. Nothing is lost — the bead is
-in Beads and the notice is in the file.
+These six — `WOLFMUX_NUDGE_TYPE`, `WOLFMUX_NUDGE_LEAD_IDLE`,
+`WOLFMUX_NUDGE_COLLISION_CHECK`, `WOLFMUX_INBOX_APPROVAL_TYPE`,
+`WOLFMUX_INBOX_APPROVAL_GRACE` and `WOLFMUX_INBOX_STALL_NOTIFY` — go in
+`~/.config/wolfmux/config` as `KEY=value` lines, which is where a knob has to live to
+reach an agent's pane: a pane's environment comes from the tmux server, not from the
+shell you typed `teamctl` in. Before v1.16.1 none of them was on that file's allowlist,
+so writing one there was read and dropped, with no error and no effect.
+
+**v1.16.0 and earlier left one case broken, and v1.16.1 is the fix.** A client attached
+and the lead idle meant the notice was filed and nothing else, and a filed notice reaches
+the agent through its **Stop** hook, which only fires when a turn ENDS. An agent that is
+already idle has no turn left to end, so the notice sat there: measured on 2026-10-12, a
+lead idle from 13:58Z never received P1 notices sent at 16:13Z or 16:53Z and was still
+asleep at 17:35Z. Now such a notice is typed in once the pane is quiet, so an idle lead
+wakes up by itself — and a lead you are in the middle of talking to still does not.
 
 ## tmux, in the team session only
 

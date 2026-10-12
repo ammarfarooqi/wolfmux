@@ -9,7 +9,11 @@
 # perfectly is still an interruption.
 #
 # What has to hold, and each of these is a check below:
-#   · a client is attached and the lead is idle -> NOTHING is typed into the lead pane
+#   · a client is attached and a human is WORKING in the lead pane -> nothing is typed
+#     into it; the notice waits in the marker and arrives once that pane is quiet
+#   · a client is attached and the lead pane is QUIET -> it IS typed (issue #12: a
+#     filed notice reaches an agent through its Stop hook, and an agent that is already
+#     idle has no turn boundary left, so filing alone never reached it)
 #   · no client attached -> it IS typed, exactly as v1.14.0 did it
 #   · the Stop hook blocks once and only once, and cannot loop
 #   · the badge is empty at zero, and never fails however broken its input is
@@ -40,6 +44,7 @@ export WOLFMUX_LAUNCHER_FLASH="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_GLM53="$REPO/tests/stub-agent"
 export WOLFMUX_NUDGE_RETRY=1
 export WOLFMUX_NUDGE_HUMAN_IDLE=3
+export WOLFMUX_NUDGE_LEAD_IDLE=3 # 300 in real use; the lead's pane asks for more quiet
 export WOLFMUX_NUDGE_DEFER_MAX=60
 export WOLFMUX_NUDGE_DEBOUNCE=0
 # The desktop notification goes into a file instead of onto a screen, and the two
@@ -149,22 +154,51 @@ printf 'junk with no tabs at all\n\n\t\t\n' >"$(inbox_file lead)"
 check "badge: a damaged inbox file -> prints nothing, exits 0" '[ -z "$(badge)" ] && teamctl _inbox-badge "$SESSION" >/dev/null 2>&1'
 /bin/rm -f "$(inbox_file lead)"
 
-echo "== a client attached and an idle lead: NOTHING is typed (this is issue #11)"
+echo "== a client attached and a QUIET lead pane: the notice is typed after all (issue #12)"
+# Measured in production on 2026-10-12: a lead idle from 13:58Z never received P1
+# notices sent at 16:13Z or 16:53Z, because v1.15.0 filed them and filing reaches the
+# agent through its Stop hook, which needs a turn boundary an idle agent does not have.
+# No suite had an IDLE agent in it, which is why 933 passing checks did not catch it.
 attach_client
 tmx select-window -t "$WINDOW" >/dev/null 2>&1
 tmx select-pane -t "$PANE" >/dev/null 2>&1 # the human is looking at the WORKER pane
-sleep 4                                    # longer than WOLFMUX_NUDGE_HUMAN_IDLE
+sleep 4                                    # longer than WOLFMUX_NUDGE_LEAD_IDLE
 check "setup: a client is attached" '[ "$(clients)" = "1" ]'
+AWAKE_BEFORE="$(notices lead "Beads update for lead")"
+teamctl nudge lead --id awake-1 >"$WORK/awake-1.log" 2>&1
+AWAKE_STATUS=$?
+sleep 2
+check "attached + a quiet lead pane: typed at once (exit 0), with no human keystroke" '[ "$AWAKE_STATUS" -eq 0 ] && grep -q "notified: lead" "$WORK/awake-1.log" && teamctl capture lead --all | grep -q "Beads update for lead (awake-1)"'
+check "attached + a quiet lead pane: typing marked it delivered, so no hook hands it over twice" '[ "$(state_of lead 1)" = "nd" ]'
+# Both directions, because a notice delivered TWICE looks like the agent being nagged
+# with nothing in the inbox to explain it, and that is worse than one delivered late.
+check "attached + a quiet lead pane: and the Stop hook therefore has nothing to say about it" '[ -z "$(hook lead _inbox-stop)" ]'
+check "attached + a quiet lead pane: the human still has it in the badge, unread" 'badge | grep -q "📨 1"'
+check "attached + a quiet lead pane: no banner — the notice reached the agent" '[ "$(banners)" = "0" ]'
+# The blocks below count the lead's inbox lines from the first one, so this episode
+# hands the file back empty rather than shifting every line number after it.
+teamctl inbox --all >/dev/null 2>&1
+: >"$(inbox_file lead)"
+: >"$WOLFMUX_NOTIFY_TTY"
+/bin/rm -f "$INBOX/.stall.lead"
+
+echo "== a client attached and a human WORKING in the lead pane: nothing is typed (issue #11)"
+# The complaint itself: "i dont want to keep seeing these updates in the mid of my
+# convos". A half-typed line is the deterministic form of "a human is working here", and
+# it holds for the whole region below — every lead notice from here to the detach waits
+# in the marker, undelivered, which is what the Stop-hook and badge checks need.
 BEFORE="$(notices lead "Beads update for lead")"
+tmx send-keys -t "$LEAD_PANE" -l "the human is mid-sentence" >/dev/null 2>&1
+sleep 0.5
 teamctl nudge lead --id quiet-1 >"$WORK/quiet-1.log" 2>&1
 QUIET_STATUS=$?
 sleep 2
-check "attached + idle lead: exit 4, and the message says the notice was filed" '[ "$QUIET_STATUS" -eq 4 ] && grep -q "^filed:" "$WORK/quiet-1.log"'
-check "attached + idle lead: NOTHING was typed into the lead pane" '[ "$(notices lead "Beads update for lead")" = "$BEFORE" ] && ! teamctl capture lead --all | grep -q "quiet-1"'
-check "attached + idle lead: no waiter was parked either, so nothing can arrive later" '[ ! -d "$(pending_dir lead)" ]'
-check "attached + idle lead: the notice IS in the file, new and undelivered" '[ "$(state_of lead 1)" = "nu" ] && grep -q "quiet-1" "$(inbox_file lead)"'
-check "attached + idle lead: the badge now shows the envelope and a count of 1" 'badge | grep -q "📨 1"'
-check "attached + idle lead: the event log says filed, not nudged" 'grep -q "inbox-filed" "$STATE_DIR/events.jsonl"'
+check "attached + a human in the lead pane: exit 3, and the message says the notice was deferred" '[ "$QUIET_STATUS" -eq 3 ] && grep -q "^deferred:" "$WORK/quiet-1.log"'
+check "attached + a human in the lead pane: NOTHING was typed into the lead pane" '[ "$(notices lead "Beads update for lead")" = "$BEFORE" ] && ! teamctl capture lead --all | grep -q "quiet-1"'
+check "attached + a human in the lead pane: a waiter IS parked, to deliver once that pane is quiet" '[ -d "$(pending_dir lead)" ]'
+check "attached + a human in the lead pane: the notice IS in the file, new and undelivered" '[ "$(state_of lead 1)" = "nu" ] && grep -q "quiet-1" "$(inbox_file lead)"'
+check "attached + a human in the lead pane: the badge now shows the envelope and a count of 1" 'badge | grep -q "📨 1"'
+check "attached + a human in the lead pane: the event log says deferred, not nudged" 'grep -q "nudge-deferred" "$STATE_DIR/events.jsonl"'
 
 echo "== and the human is told once, by a banner that carries the count"
 check "stall: exactly one desktop notification was raised" '[ "$(banners)" = "1" ]'
@@ -240,18 +274,24 @@ sleep 2
 # The real approval path needs a worker actually asking, so this reaches below it and drives
 # the CLI: `teamctl nudge lead` (cmd_nudge -> _nudge_one). That is also the point the check
 # below makes — a BEADS notice is not an approval, so the grace override has to leave it
-# filed however the approval knobs are set.
+# waiting for the pane however the approval knobs are set: the grace period belongs to the
+# approval that blocks a worker, and nothing else may borrow it.
 (
   cd "$PROJECT" || exit 1
   WOLFMUX_INBOX_APPROVAL_GRACE=2 WOLFMUX_INBOX_APPROVAL_TYPE=grace \
     teamctl nudge lead --id grace-probe >/dev/null 2>&1
 )
-check "approval: a bead notice is still only filed, grace or no grace" '[ "$(notices lead "Permission request")" = "$LBEFORE" ]'
+check "approval: a bead notice does not borrow the approval grace, so nothing is typed" '[ "$(notices lead "Permission request")" = "$LBEFORE" ] && ! teamctl capture lead --all | grep -q "grace-probe"'
 teamctl policy worker-permissions skip >/dev/null 2>&1
 sleep 1
 teamctl inbox --all >/dev/null 2>&1
 
 echo "== no client attached: the lead IS typed into, exactly as v1.14.0 did it"
+# The region above left a half-typed line in the lead pane and a waiter behind it. Both
+# have to go, or the next notice joins that marker instead of being typed into the pane.
+tmx send-keys -t "$LEAD_PANE" Enter >/dev/null 2>&1
+/bin/rm -rf "$(pending_dir lead)"
+sleep 1
 detach_client
 sleep 1
 check "setup: no client is attached now" '[ "$(clients)" = "0" ]'
@@ -360,6 +400,18 @@ echo "== who is typed into: every combination of the knob, the role and the fami
   # Codex has no hooks, so typing is the only channel that reaches it at all
   want 0 lead detached-lead 1 codex || exit 1
   want 0 lead workers 1 codex || exit 1
+  # inbox_type_when_idle: which NO means "wait for the pane", and which means "never".
+  # Only the attached lead under the default rule waits; off and workers mean never, or
+  # a knob called off would still put a line in the human's conversation.
+  when() { # <expect 0|1> <role> <nudge-type>
+    WOLFMUX_NUDGE_TYPE="$3"
+    if inbox_type_when_idle "$2"; then [ "$1" = "0" ]; else [ "$1" = "1" ]; fi
+  }
+  when 0 lead detached-lead || exit 1
+  when 1 qa detached-lead || exit 1
+  when 1 lead off || exit 1
+  when 1 lead workers || exit 1
+  when 1 lead all || exit 1
   # nonsense in the knob falls back to the default, it does not turn the gate off
   WOLFMUX_NUDGE_TYPE=junk
   . "$WOLFMUX_HOME/lib/inbox.sh"

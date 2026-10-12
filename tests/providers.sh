@@ -639,6 +639,40 @@ else
   skip "real curl: a redirect is not followed" "python3 is not available, or the mock did not start"
 fi
 
+echo "== the config file: an allow-listed key is taken, anything else is dropped"
+# Nothing tested wolfmux_load_config at all, which is why the notice knobs could sit off
+# WOLFMUX_CONFIG_KEYS unnoticed from v1.14.0 to v1.16.0: a key the list does not know is
+# read out of the file and dropped, with no error and no effect. Measured 2026-10-12 with
+# WOLFMUX_NUDGE_TYPE=all in the real config file, which the next nudge ignored.
+# Each case runs in its own subshell with its own WOLFMUX_HOME, so the file under test is
+# a throwaway one and none of this reaches ~/.config/wolfmux/config.
+/bin/mkdir -p "$WORK/cfg"
+cat >"$WORK/cfg/config" <<'EOF'
+# a comment, and a blank line follow
+
+WOLFMUX_NUDGE_TYPE=all
+WOLFMUX_NUDGE_LEAD_IDLE = 42
+WOLFMUX_INBOX_APPROVAL_TYPE=never
+WOLFMUX_NUDGE_DEBOUNCE=99
+WOLFMUX_NOT_A_SETTING=yes
+no equals sign here
+EOF
+load_cfg() { # <key> — print what the config file gives that key, or nothing
+  (
+    unset "$1"
+    WOLFMUX_HOME="$WORK/cfg"
+    wolfmux_load_config
+    printf '%s' "${!1:-}"
+  )
+}
+check "config: an allow-listed key is taken from the file" '[ "$(load_cfg WOLFMUX_NUDGE_TYPE)" = "all" ]'
+check "config: spaces around the = and the value are stripped" '[ "$(load_cfg WOLFMUX_NUDGE_LEAD_IDLE)" = "42" ]'
+check "config: the approval knob is on the list too" '[ "$(load_cfg WOLFMUX_INBOX_APPROVAL_TYPE)" = "never" ]'
+check "config: a key NOT on the list is dropped, which is the defect this guards" '[ -z "$(load_cfg WOLFMUX_NUDGE_DEBOUNCE)" ] && [ -z "$(load_cfg WOLFMUX_NOT_A_SETTING)" ]'
+check "config: an environment variable that is already set wins over the file" '[ "$(WOLFMUX_NUDGE_TYPE=off; WOLFMUX_HOME="$WORK/cfg" wolfmux_load_config; printf "%s" "$WOLFMUX_NUDGE_TYPE")" = "off" ]'
+check "config: every key on the list is a WOLFMUX_ name, so nothing else can be exported from that file" '! printf "%s\n" $WOLFMUX_CONFIG_KEYS | grep -qv "^WOLFMUX_"'
+check "config: no file at all is not an error" '(WOLFMUX_HOME="$WORK/nowhere"; wolfmux_load_config)'
+
 echo
 echo "result: $passed passed, $failed failed, $skipped skipped"
 [ "$failed" -eq 0 ]

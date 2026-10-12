@@ -497,6 +497,28 @@ inbox_type_allowed() {
   ! inbox_clients_attached "${SESSION:-}"
 }
 
+# inbox_type_when_idle <role> — 0 when inbox_type_allowed said no for ONE reason and one
+# reason only: this is the LEAD under the default detached-lead rule and somebody is
+# attached to the team. Such a notice may still be typed, but ONLY into a pane that is
+# quiet — no keystroke for WOLFMUX_NUDGE_LEAD_IDLE seconds, nothing on the input line,
+# no copy mode. The caller does that part (tm_pane_human_busy); this only says the
+# suppression is about a watching human rather than about the knob.
+#
+# Why it exists (issue #12): v1.15.0 answered "a client is attached" with filing only,
+# and filing reaches the agent through its Stop hook, which fires on a TURN BOUNDARY. An
+# agent that is already idle has no further boundary, so a notice filed for an idle lead
+# with a client attached was never handed over at all — measured in production on
+# 2026-10-12: a lead idle from 13:58Z never received P1 notices sent at 16:13Z or 16:53Z.
+# "Not while the human is working in that pane" is the requirement; "never" was not.
+#
+# off and workers are NOT this case: those say nothing is ever typed into that pane,
+# idle or not, and a knob called off that still types is worse than no knob.
+inbox_type_when_idle() {
+  [ "$WOLFMUX_NUDGE_TYPE" = "detached-lead" ] || return 1
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  return 0
+}
+
 # inbox_stall_notify <role> <kind> — the third human-facing channel, and the only
 # active one: a notice for the LEAD that could not be typed (a client is attached) may
 # be sitting in front of an agent that will never be asked anything, so no Stop hook

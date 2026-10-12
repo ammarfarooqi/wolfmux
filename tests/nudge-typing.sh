@@ -15,11 +15,14 @@
 # client is attached. Gating it on a client reopened issue #9, because a line can be
 # left half-typed in a pane and the session then detached.
 #
-# From v1.15.0 a notice is FILED before any of this is decided (lib/inbox.sh), and the
-# LEAD's pane is typed into only while nobody is attached to the team. This suite still
-# drives a lead pane for the queued-notice and mid-delivery properties — it detaches the
-# client around those blocks rather than giving them up — and has one block of its own
-# for the new rule. The inbox itself is tests/inbox.sh.
+# From v1.15.0 a notice is FILED before any of this is decided (lib/inbox.sh). v1.15.0
+# also stopped typing into an attached LEAD's pane altogether, and v1.16.1 narrowed that
+# to what the complaint actually asked for (issue #12): with a client attached the lead's
+# pane is typed into only while it is QUIET — no keystroke for WOLFMUX_NUDGE_LEAD_IDLE
+# seconds, nothing on the input line, no copy mode. This suite still drives a lead pane
+# for the queued-notice and mid-delivery properties — it detaches the client around those
+# blocks rather than giving them up — and has one block of its own for the new rule, with
+# the negative twin next to it. The inbox itself is tests/inbox.sh.
 #
 # Fully isolated from any team you have running: its own tmux server (socket
 # wolfmux-test-nudge-<pid>), its own state directory, a throwaway git repository and
@@ -43,6 +46,7 @@ export WOLFMUX_LAUNCHER_GLM53="$REPO/tests/stub-agent"
 # Short waits so the suite stays quick; the defaults are 3 / 5 / 600 / 60.
 export WOLFMUX_NUDGE_RETRY=1
 export WOLFMUX_NUDGE_HUMAN_IDLE=3
+export WOLFMUX_NUDGE_LEAD_IDLE=3 # 300 in real use; the lead's pane asks for more quiet
 export WOLFMUX_NUDGE_DEFER_MAX=60
 export WOLFMUX_NUDGE_DEBOUNCE=0 # the debounce has its own check in smoke.sh
 # Run from an agent's pane, the environment carries that agent's team and session.
@@ -309,19 +313,58 @@ check "mid-delivery: no notice was ever delivered twice" 'for k in "worker-isola
 check "mid-delivery: every queued notice still arrived, none was lost on the way" 'for k in "worker-isolation = on" "lead-teams = on" "worker-permissions = skip" "lead-permissions = skip" "worker-spawn = off"; do [ "$(notices lead "$k")" -eq "$PER_LEAD" ] || exit 1; done'
 check "mid-delivery: the marker is empty at the end" '[ ! -d "$(pending_dir lead)" ]'
 
-echo "== the new rule itself: the lead pane is typed into only while nobody is watching"
-# The same bead, the same idle lead pane, twice: once with somebody looking and once
-# without. Issue #11 is the first of these two lines.
+echo "== the new rule itself: the lead pane is typed into only while it is QUIET"
+# Issue #12, and the three episodes below are the whole rule. v1.15.0 answered "a client
+# is attached" with filing only, and a filed notice reaches the agent through its Stop
+# hook, which fires on a TURN BOUNDARY. An agent that is already IDLE has no further
+# boundary, so the notice was never handed over at all. So: a client attached and the
+# lead's pane quiet delivers; a half-typed line in it does not; a human sitting in it
+# who has just pressed a key does not either.
 attach_client
 tmx select-window -t "$WINDOW" >/dev/null 2>&1
-tmx select-pane -t "$PANE" >/dev/null 2>&1 # the human is looking at the WORKER pane
-sleep 4                                    # longer than WOLFMUX_NUDGE_HUMAN_IDLE
+tmx select-pane -t "$LEAD_PANE" >/dev/null 2>&1 # the human is looking at the LEAD pane
+sleep 4                                         # longer than WOLFMUX_NUDGE_LEAD_IDLE
 LBEFORE="$(notices lead "Beads update for lead")"
-teamctl nudge lead --id watched-1 >"$WORK/watched-1.log" 2>&1
+teamctl nudge lead --id idle-1 >"$WORK/idle-1.log" 2>&1
+IDLE_LEAD_STATUS=$?
+sleep 2
+check "a client attached + an IDLE lead pane + a bead: it IS typed, with no human keystroke" '[ "$IDLE_LEAD_STATUS" -eq 0 ] && grep -q "notified: lead" "$WORK/idle-1.log" && teamctl capture lead --all | grep -q "Beads update for lead (idle-1)"'
+check "a client attached + an idle lead pane: the event log says the pane was quiet, not that it was filed" 'grep -q "a client is attached; the pane was quiet" "$STATE_DIR/events.jsonl"'
+
+# The negative twin, so the fix cannot be "type always": a half-typed line in the
+# human's own pane. Nothing is glued onto it, however idle the agent is, and the notice
+# still arrives once that line is gone.
+type_text "$LEAD_PANE" "$HALF2"
+sleep 0.5
+LPARKED="$(notices lead "Beads update for lead")"
+teamctl nudge lead --id parked-1 >"$WORK/parked-1.log" 2>&1
+PARKED_STATUS=$?
+sleep 2
+check "a client attached + a half-typed line in the lead pane: nothing typed, the notice is parked" '[ "$PARKED_STATUS" -eq 3 ] && grep -q "^deferred:" "$WORK/parked-1.log" && [ -d "$(pending_dir lead)" ] && [ "$(notices lead "Beads update for lead")" = "$LPARKED" ]'
+check "a client attached + a half-typed line: the human's own text is untouched" 'cursor_row "$LEAD_PANE" | grep -qF "$HALF2"'
+submit "$LEAD_PANE" # the line goes, the pane is quiet again
+sleep 6
+check "a client attached + the pane then goes quiet: the parked notice arrives by itself" 'teamctl capture lead --all | grep -q "Beads update for lead (parked-1)" && [ ! -d "$(pending_dir lead)" ]'
+
+# And the requirement that is in tension with the first episode: "i dont want to keep
+# seeing these updates in the mid of my convos". A human AT the lead pane who pressed a
+# key inside WOLFMUX_NUDGE_LEAD_IDLE holds the notice back, so a pause for thought
+# mid-conversation is never typed over. The window is measured against this client's
+# real #{client_activity} rather than a faked keystroke: send-keys does not move it, so
+# a test cannot type as the human — it widens the window past the client's real idle
+# time instead, which is the same comparison the code makes.
+CLIENT_ACT="$(tmx list-clients -t "$SESSION" -F '#{client_activity}' 2>/dev/null | head -1)"
+WIDE=$(($(date +%s) - CLIENT_ACT + 120))
+tmx select-pane -t "$LEAD_PANE" >/dev/null 2>&1
+LWATCHED="$(notices lead "Beads update for lead")"
+WOLFMUX_NUDGE_LEAD_IDLE="$WIDE" teamctl nudge lead --id watched-1 >"$WORK/watched-1.log" 2>&1
 WATCHED_STATUS=$?
 sleep 2
-check "a client attached + an idle lead + a bead: NOTHING is typed (exit 4, filed)" '[ "$WATCHED_STATUS" -eq 4 ] && grep -q "^filed:" "$WORK/watched-1.log" && [ "$(notices lead "Beads update for lead")" = "$LBEFORE" ] && ! teamctl capture lead --all | grep -q "watched-1"'
-check "a client attached: nothing was parked either, so nothing arrives later" '[ ! -d "$(pending_dir lead)" ]'
+check "a client attached + the human AT the lead pane inside WOLFMUX_NUDGE_LEAD_IDLE: nothing is typed" '[ "$WATCHED_STATUS" -eq 3 ] && grep -q "keystroke" "$WORK/watched-1.log" && [ "$(notices lead "Beads update for lead")" = "$LWATCHED" ] && ! teamctl capture lead --all | grep -q "watched-1"'
+check "a client attached + the human at the lead pane: it waits in the marker, which carries the wide window" '[ -d "$(pending_dir lead)" ] && [ "$(cat "$(pending_dir lead)/idle" 2>/dev/null)" = "$WIDE" ]'
+# That waiter would sit out its cap against a window no later check wants: take the
+# marker away, and it stops at its next look (nudge_pending_exists).
+/bin/rm -rf "$(pending_dir lead)"
 detach_client
 sleep 1
 teamctl nudge lead --id unwatched-1 >"$WORK/unwatched-1.log" 2>&1
