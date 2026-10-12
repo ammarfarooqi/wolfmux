@@ -225,7 +225,8 @@ the added permission rules removed · uninstall refused while a team was running
 ## permissions.sh — 13 of 13 pass (v1.16.0)
 
 `install.sh` and `uninstall.sh` against `~/.claude/settings.json` in a throwaway `HOME`
-(no team, no CLI, nothing of yours read). Written first: 4 of the 9 failed before the change.
+(no team, no CLI, nothing of yours read). Written first, when it had 9 checks: 4 of the 9
+failed before the change.
 
 | Area | Checks |
 |------|--------|
