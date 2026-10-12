@@ -1027,6 +1027,18 @@ the one true awk and has no `strftime`, so the listing formats its timestamps wi
 which made an assertion pass for the wrong reason; and `notify_deliver` writes OSC 9 with
 no newline, so several banners land on one line and have to be counted as occurrences.
 
+**One class of error cost four messages, and none of it was in the code.** Three readings of
+the same two test comments disagreed. The first said the function they name had been deleted:
+it had grepped names out of removed lines, which conflates a call with a definition, and its
+grep had silently searched one of the three directories it named. The second said the function
+still exists, so the comments must be true: it had read a definition and inferred a caller.
+The third traced `teamctl nudge lead` through `cmd_nudge` to `_nudge_one` and found the tests
+never reach that function at all, which is why both comments were wrong and why neither of the
+first two reasons was the reason. Only the trace settled it. The lesson generalises past this
+file: a comment that names the COMMAND a test runs cannot go stale this way, while one that
+names a function further down the chain will, the next time anybody edits the chain. The
+pattern was named by the team that had just been wrong about it in the opposite direction.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

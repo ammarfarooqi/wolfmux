@@ -237,8 +237,10 @@ WOLFMUX_INBOX_APPROVAL_GRACE=2 teamctl policy worker-permissions lead >/dev/null
 sleep 1
 teamctl spawn probe flash --no-kickoff >/dev/null 2>&1
 sleep 2
-# The real approval path needs a worker asking; drive notify_lead directly instead, which
-# is the function every one of those callers uses.
+# The real approval path needs a worker actually asking, so this reaches below it and drives
+# the CLI: `teamctl nudge lead` (cmd_nudge -> _nudge_one). That is also the point the check
+# below makes — a BEADS notice is not an approval, so the grace override has to leave it
+# filed however the approval knobs are set.
 (
   cd "$PROJECT" || exit 1
   WOLFMUX_INBOX_APPROVAL_GRACE=2 WOLFMUX_INBOX_APPROVAL_TYPE=grace \
@@ -470,7 +472,8 @@ echo "== the eight findings of the v1.15.0 review, each asserted against its own
 
 # F2 -- off MEANS off. The matrix above tests inbox_type_allowed directly, and the
 # approval override never passes through it, so the matrix was exhaustive and blind at
-# the same time. This drives notify_lead itself, with a client attached.
+# the same time. This drives `teamctl nudge lead` (cmd_nudge -> _nudge_one) with a client
+# attached, so the knob and the override are read on the live path instead of in isolation.
 attach_client
 sleep 1
 : >"$WOLFMUX_NOTIFY_TTY"
