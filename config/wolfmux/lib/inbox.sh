@@ -60,6 +60,14 @@ WOLFMUX_INBOX_APPROVAL_GRACE="${WOLFMUX_INBOX_APPROVAL_GRACE:-20}"
 # The window is shared by every team on the machine (the stamp lives under
 # $WOLFMUX_DATA, keyed by role): one per team would have let 25 teams ring 25 times.
 WOLFMUX_INBOX_STALL_NOTIFY="${WOLFMUX_INBOX_STALL_NOTIFY:-on}"
+
+# How many notices ONE hook may hand over. WOLFMUX_INBOX_MAX notices of
+# WOLFMUX_INBOX_TEXT_MAX each is up to ~80 KB in a single Stop-hook reason, and it needs
+# nothing to go wrong: an attached lead, an idle agent, a busy hour, and the first prompt
+# gets the lot. The oldest batch goes first and the REST STAY UNDELIVERED, so the next
+# turn takes the next batch and nothing is dropped — a cap that marked them delivered
+# without showing them would be the lost-notice bug again, in a new place.
+WOLFMUX_INBOX_HANDOVER_MAX="${WOLFMUX_INBOX_HANDOVER_MAX:-20}"
 WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE="${WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE:-120}"
 
 # Who is typed into at all. off: nobody, ever. workers: workers only. detached-lead:
@@ -81,6 +89,7 @@ esac
 # approval into an attached pane at once, which is the opposite of what it asks for.
 # Anything that is not all digits falls back to the default, exactly as the word does.
 for _wm_knob in WOLFMUX_INBOX_STOP_COOLDOWN:10 WOLFMUX_INBOX_APPROVAL_GRACE:20 \
+  WOLFMUX_INBOX_HANDOVER_MAX:20 \
   WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE:120 WOLFMUX_INBOX_MAX:200 \
   WOLFMUX_INBOX_TEXT_MAX:400 WOLFMUX_INBOX_LOCK_TRIES:10 WOLFMUX_INBOX_LOCK_STALE:15; do
   _wm_name="${_wm_knob%%:*}"
@@ -184,10 +193,16 @@ inbox_add() {
   # for an identical kind+text. WOLFMUX_INBOX_MAX is 200, so the tail is cheap.
   if [ -f "$file" ]; then
     # tail is PIPED in, never interpolated: a notice's text is arbitrary (it comes from a
-    # bead title) and must not pass through the shell again.
-    if tail -n 40 "$file" 2>/dev/null | LC_ALL=C /usr/bin/awk -F'\t' \
-      -v kind="$kind" -v text="$text" -v now="$(now_epoch)" \
+    # bead title) and must not pass through the shell again. The text reaches awk through
+    # the ENVIRONMENT rather than -v for a second reason: awk processes escape sequences
+    # in a -v assignment, so a title containing a literal \n or \t arrived at awk as a
+    # real newline or tab and the comparison silently failed — measured. That would file
+    # the same notice twice, or leave a typed notice undelivered for a hook to hand over
+    # again. ENVIRON is taken verbatim. Every text comparison in this file does this.
+    if tail -n 40 "$file" 2>/dev/null | WM_TEXT="$text" LC_ALL=C /usr/bin/awk -F'\t' \
+      -v kind="$kind" -v now="$(now_epoch)" \
       -v window="${WOLFMUX_NUDGE_DEBOUNCE:-3}" '
+        BEGIN { text = ENVIRON["WM_TEXT"] }
         NF >= 4 && $2 == kind && $4 == text && (now - $1) < window && (now - $1) >= 0 {
           found = 1
           exit
@@ -267,7 +282,8 @@ inbox_is_new() {
   [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
   file="$(inbox_file "$1")"
   [ -f "$file" ] || return 1
-  LC_ALL=C /usr/bin/awk -F'\t' -v want="$2" '
+  WM_WANT="$2" LC_ALL=C /usr/bin/awk -F'\t' '
+    BEGIN { want = ENVIRON["WM_WANT"] }
     NF >= 4 && $4 == want && substr($3, 1, 1) == "n" { found = 1; exit }
     END { exit(found ? 0 : 1) }' "$file" 2>/dev/null
 }
@@ -355,12 +371,19 @@ inbox_requeue() {
 }
 
 inbox_mark_typed() {
-  local role="$1" text="$2" file
+  local role="$1" text file
+  # Normalised the same way inbox_add normalised it before storing, because the four call
+  # sites pass the RAW string. It matched only because every notice today is a short fixed
+  # line; the first one over WOLFMUX_INBOX_TEXT_MAX, or carrying a control character,
+  # would stop being marked delivered and would then be handed over a second time by the
+  # Stop hook — the same defect as the typed notice that was never marked at all.
+  text="$(inbox_text "$2")"
   [ -n "$role" ] && [ -n "$text" ] || return 0
   file="$(inbox_file "$role")"
   [ -f "$file" ] || return 0
   inbox_lock "$role" || return 0
-  LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v want="$text" '
+  WM_WANT="$text" LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' '
+    BEGIN { want = ENVIRON["WM_WANT"] }
     NF >= 4 && $4 == want && substr($3, 2, 1) == "u" { $3 = substr($3, 1, 1) "d" }
     { print }' "$file" >"$(inbox_tmp "$role" typed)" 2>/dev/null && /bin/mv -f "$(inbox_tmp "$role" typed)" "$file" 2>/dev/null
   /bin/rm -f "$(inbox_tmp "$role" typed)" 2>/dev/null || true
@@ -388,11 +411,13 @@ inbox_take_undelivered() {
   file="$(inbox_file "$role")"
   [ -f "$file" ] || return 0
   inbox_lock "$role" || return 0
-  LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v out="$(inbox_tmp "$role" taken)" '
+  LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v out="$(inbox_tmp "$role" taken)" \
+    -v cap="$WOLFMUX_INBOX_HANDOVER_MAX" '
     NF < 4 { print > out; next }
-    substr($3, 2, 1) == "u" {
+    substr($3, 2, 1) == "u" && taken < cap {
       print $4
       $3 = substr($3, 1, 1) "d"
+      taken++
     }
     { print > out }' "$file" >"$(inbox_tmp "$role" texts)" 2>/dev/null &&
     /bin/mv -f "$(inbox_tmp "$role" taken)" "$file" 2>/dev/null &&
@@ -569,9 +594,15 @@ _inbox_hook_ready() {
 # inbox_hook_body <identity> <notices> — what the agent is told. The notices are the
 # lines teamctl itself wrote; the last line is always the agent's own inbox command, so
 # a notice that lost its bead id still leads to the work.
+# inbox_hook_body <identity> <notices> [<still-waiting>] — what the agent is told. A
+# third argument says how many notices this hand-over could not carry, so a capped batch
+# does not look like the whole of it.
 inbox_hook_body() {
-  printf '%s\n%s\nRead it now: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' \
-    "[wolfmux] You have team notices:" "$2" "$1"
+  printf '%s\n%s\n' "[wolfmux] You have team notices:" "$2"
+  if [ -n "${3:-}" ] && [ "$3" != "0" ]; then
+    printf '%s more waiting; they come with your next turn, or see them all now: teamctl inbox\n' "$3"
+  fi
+  printf 'Read it now: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1"
 }
 
 # cmd_inbox_stop — internal (`teamctl _inbox-stop`): a Claude Code Stop hook, added as a
@@ -596,7 +627,7 @@ cmd_inbox_stop() {
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0
   now_epoch >"$stamp" 2>/dev/null || true
-  if "$JQ_BIN" -n --arg reason "$(inbox_hook_body "$INBOX_IDENTITY" "$notices")" \
+  if "$JQ_BIN" -n --arg reason "$(inbox_hook_body "$INBOX_IDENTITY" "$notices" "$(inbox_count_undelivered "$INBOX_ROLE")")" \
     '{decision: "block", reason: $reason}' 2>/dev/null; then
     event_log inbox-stop "$INBOX_ROLE" "blocked once with $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
   else
@@ -620,7 +651,7 @@ cmd_inbox_prompt() {
   [ "$(inbox_count_undelivered "$INBOX_ROLE")" != "0" ] || return 0
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0
-  if inbox_hook_body "$INBOX_IDENTITY" "$notices"; then
+  if inbox_hook_body "$INBOX_IDENTITY" "$notices" "$(inbox_count_undelivered "$INBOX_ROLE")"; then
     event_log inbox-prompt "$INBOX_ROLE" "handed over $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
   else
     inbox_requeue "$INBOX_ROLE" "$notices"

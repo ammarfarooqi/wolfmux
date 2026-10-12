@@ -421,7 +421,7 @@ RENDER_TTY="$WORK/render-typescript"
 tmx set-option -t "$SESSION" status-interval 1 >/dev/null 2>&1
 # The same spelling the shipped file uses, with a marker around it so the segment can be
 # told apart from anything else tmux draws.
-tmx set-option -g status-left 'WOLFBADGE[#(#{?@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl} _inbox-badge "#{session_name}" "#{@wolfmux_root}" "#{@wolfmux_team}")]' >/dev/null 2>&1
+tmx set-option -g status-left 'WOLFBADGE[#("#{?@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl}" _inbox-badge "#{session_name}" "#{@wolfmux_root}" "#{@wolfmux_team}")]' >/dev/null 2>&1
 tmx set-option -g status-left-length 120 >/dev/null 2>&1
 script -q "$RENDER_TTY" tmux -L "$WOLFMUX_TMUX_SOCKET" attach -t "$SESSION" >/dev/null 2>&1 &
 RENDER_PID=$!
@@ -436,6 +436,32 @@ check "badge end to end: the count and the approval bell are what was drawn" 'gr
 # The honest other half of the same measurement, and a documented limit: tmux draws the
 # status line BEFORE the job has produced anything, so the first draw is empty.
 check "badge end to end: the first draw is blank, which is why ROADMAP carries that limit" 'grep -aq "WOLFBADGE\[\]" "$RENDER_TTY"'
+# F9 -- and now the case the quoting is FOR: a teamctl whose own path contains a space.
+# $TEAMCTL_SELF is an absolute path built from `dirname $0`, so an install under
+# `~/My bin/` used to split into two words. The badge swallows every error by design, so
+# the symptom was a blank badge for ever and a popup saying `My: command not found` --
+# silently absent and undebuggable. Same pty-client harness, because nothing else proves
+# a #() job ran.
+SPACED_DIR="$WORK/My bin"
+/bin/mkdir -p "$SPACED_DIR"
+printf '#!/bin/sh\nexec "%s/bin/teamctl" "$@"\n' "$REPO" >"$SPACED_DIR/teamctl"
+chmod +x "$SPACED_DIR/teamctl"
+tmx set-option -t "=$SESSION:" @wolfmux_teamctl "$SPACED_DIR/teamctl" >/dev/null 2>&1
+printf '%s\tbeads\tnu\t[wolfmux] Beads update for lead (spaced-1)\n' "$(date +%s)" >>"$(inbox_file lead)"
+RENDER_TTY2="$WORK/render-typescript-spaced"
+tmx set-option -t "$SESSION" status-interval 1 >/dev/null 2>&1
+tmx set-option -g status-left 'WOLFSPACED[#("#{?@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl}" _inbox-badge "#{session_name}" "#{@wolfmux_root}" "#{@wolfmux_team}")]' >/dev/null 2>&1
+tmx set-option -g status-left-length 120 >/dev/null 2>&1
+script -q "$RENDER_TTY2" tmux -L "$WOLFMUX_TMUX_SOCKET" attach -t "$SESSION" >/dev/null 2>&1 &
+RENDER_PID2=$!
+disown "$RENDER_PID2" 2>/dev/null || true
+sleep 5
+tmx refresh-client >/dev/null 2>&1
+sleep 3
+kill "$RENDER_PID2" 2>/dev/null
+sleep 1
+check "F9: a teamctl path with a space still runs the badge (quoted program field)" 'grep -ao "WOLFSPACED\[[^]]*\]" "$RENDER_TTY2" 2>/dev/null | grep -q "📨"'
+tmx set-option -t "=$SESSION:" @wolfmux_teamctl "$REPO/bin/teamctl" >/dev/null 2>&1
 tmx set-option -gu status-left >/dev/null 2>&1
 tmx set-option -t "$SESSION" status-interval 5 >/dev/null 2>&1
 teamctl inbox --all >/dev/null 2>&1
@@ -697,6 +723,106 @@ check "F8: three teams inside one window ring ONCE, not once each" '[ "$F8_STATU
 ) >/dev/null 2>&1
 F5A_STATUS=$?
 check "F5: a DECIDED request is never typed; one still pending after the grace is" '[ "$F5A_STATUS" -eq 0 ]'
+
+# The text sweep the F6 ruling asked for: a notice text is arbitrary (it comes from a bead
+# title) and must survive every comparison in the file. awk processes escapes in a -v
+# assignment, so a title holding a literal backslash-n used to arrive as a real newline
+# and every match silently failed -- filing the same notice twice, or leaving a typed one
+# undelivered to be handed over again.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/ftext"
+  WOLFMUX_NUDGE_DEBOUNCE=30
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  # a literal backslash-n, a backslash-t, and a lone backslash: all legal in a bead title
+  odd='task C:\new\table and a trailing \'
+  inbox_add lead beads "$odd"
+  inbox_add lead beads "$odd"                   # the dedupe must still catch it
+  [ "$(wc -l <"$STATE_DIR/inbox/lead" | tr -d ' ')" = "1" ] || exit 1
+  # the stored line is the text VERBATIM, not an interpreted version of it
+  [ "$(cut -f4 "$STATE_DIR/inbox/lead")" = "$odd" ] || exit 1
+  # and it can be found, marked delivered and re-queued by its own text
+  inbox_is_new lead "$odd" || exit 1
+  inbox_mark_typed lead "$odd"
+  [ "$(inbox_count_undelivered lead)" = "0" ] || exit 1
+  inbox_requeue lead "$odd"
+  [ "$(inbox_count_undelivered lead)" = "1" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+FTEXT_STATUS=$?
+check "a bead title holding backslash escapes still dedupes, matches and re-queues" '[ "$FTEXT_STATUS" -eq 0 ]'
+
+# F11 -- one hook may not inject ~80 KB. The oldest batch goes, the rest STAY
+# undelivered for the next turn, and the body says how many are still waiting. A cap that
+# marked them delivered without showing them would be the lost-notice bug in a new place.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/f11"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  WOLFMUX_INBOX_HANDOVER_MAX=5
+  i=1
+  while [ $i -le 12 ]; do
+    printf '%s\tbeads\tnu\tnotice %s\n' "$(now_epoch)" "$i" >>"$STATE_DIR/inbox/lead"
+    i=$((i + 1))
+  done
+  first="$(inbox_take_undelivered lead)"
+  [ "$(printf '%s\n' "$first" | grep -c .)" = "5" ] || exit 1          # capped
+  [ "$(inbox_count_undelivered lead)" = "7" ] || exit 1                 # rest kept
+  printf '%s\n' "$first" | grep -q "notice 1" || exit 1                 # oldest first
+  printf '%s\n' "$first" | grep -q "notice 6" && exit 1
+  # the body says how many are still waiting
+  inbox_hook_body lead "$first" "$(inbox_count_undelivered lead)" | grep -q "7 more waiting" || exit 1
+  # the next turn takes the next batch, and nothing was lost across the two
+  second="$(inbox_take_undelivered lead)"
+  [ "$(printf '%s\n' "$second" | grep -c .)" = "5" ] || exit 1
+  printf '%s\n' "$second" | grep -q "notice 6" || exit 1
+  third="$(inbox_take_undelivered lead)"
+  [ "$(printf '%s\n' "$third" | grep -c .)" = "2" ] || exit 1
+  [ "$(inbox_count_undelivered lead)" = "0" ] || exit 1
+  # and an uncapped body carries no such line
+  inbox_hook_body lead "$third" 0 | grep -q "more waiting" && exit 1
+  exit 0
+) >/dev/null 2>&1
+F11_STATUS=$?
+check "F11: one hand-over is capped, the rest stay undelivered, and the body says so" '[ "$F11_STATUS" -eq 0 ]'
+
+# The reviewer's trap 1: inbox_mark_typed was called with the RAW text while inbox_add
+# stored a normalised one, so the first notice over the length cap would stop being marked
+# delivered and be handed over twice.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/ftrap1"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  long="$(printf '[wolfmux] Beads update for lead ('; i=0; while [ $i -lt 500 ]; do printf 'x'; i=$((i+1)); done; printf ')')"
+  inbox_add lead beads "$long"
+  [ "$(inbox_count_undelivered lead)" = "1" ] || exit 1
+  inbox_mark_typed lead "$long"          # the RAW, over-length string, as the callers pass it
+  [ "$(inbox_count_undelivered lead)" = "0" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+FTRAP1_STATUS=$?
+check "a notice longer than the text cap is still marked delivered when it is typed" '[ "$FTRAP1_STATUS" -eq 0 ]'
 
 # F4 -- the numeric knobs are validated like the word above them. The cooldown is the
 # dangerous one: a non-numeric value made the Stop hook return without delivering on

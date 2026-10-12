@@ -338,6 +338,14 @@ go; nothing is added to `~/.claude/settings.json`.
   stdout to the model's context, so the notices arrive alongside whatever the human just
   typed. No cooldown — a human pressed Enter.
 
+One hand-over carries at most `WOLFMUX_INBOX_HANDOVER_MAX` (20) notices. The cap matters
+because `WOLFMUX_INBOX_MAX` × `WOLFMUX_INBOX_TEXT_MAX` is ~80 KB, reachable with nothing
+going wrong — an attached lead, an idle agent, a busy hour — and the first prompt would
+otherwise hand over the lot. The OLDEST batch goes first and the rest stay **undelivered**,
+so the next turn takes the next batch and the body says how many are still waiting. A cap
+that marked them delivered without showing them would be the lost-notice bug in a new
+place, which is why it is written this way round.
+
 Neither hook fires for an agent that is simply **sitting idle**, and that is the hole in
 this design. A bead landing for an idle lead with a client attached would otherwise wait
 for the human. Two things close most of it:
