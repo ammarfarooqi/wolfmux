@@ -297,7 +297,7 @@ examples for headings.
 
 ## dashboard.sh: PENDING_DASH_CHECKS of PENDING_DASH_CHECKS pass (v1.16.0)
 
-Measured at `PENDING_SMOKE_SHA`, base `PENDING_BASE`. This suite starts its own tmux
+Measured at `PENDING_SHA`, base `PENDING_BASE`. This suite starts its own tmux
 server and never uses `nohup`, so it has no signal-skip split and its launch shape does
 not move the figure.
 
@@ -427,7 +427,7 @@ stating, because both have cost this project time:
 perl -e '$SIG{HUP}="DEFAULT"; $SIG{INT}="DEFAULT"; exec @ARGV' bash tests/smoke.sh
 ```
 
-Measured on the tree that ships, at `PENDING_SMOKE_SHA`, base `PENDING_BASE`:
+Measured on the tree that ships, at `PENDING_SHA`, base `PENDING_BASE`:
 
 | Launch shape | smoke.sh result |
 |---|---|

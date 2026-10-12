@@ -1135,7 +1135,7 @@ Kept as small as possible, since two other branches were in flight on the same f
 
 `tests/dashboard.sh`: PENDING_DASH_CHECKS checks, all passing. Suite total
 PENDING_TOTAL_BEFORE → PENDING_TOTAL_CHECKS, of which PENDING_TOTAL_PASS pass and
-PENDING_SMOKE_SKIP skip. Measured at `PENDING_SMOKE_SHA`, base `PENDING_BASE`, clean
+PENDING_SMOKE_SKIP skip. Measured at `PENDING_SHA`, base `PENDING_BASE`, clean
 launch shape (`HUP` and `INT` reset) — see `docs/VERIFICATION.md` for why the shape is
 part of the figure.
 
