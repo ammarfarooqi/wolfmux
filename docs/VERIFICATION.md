@@ -20,7 +20,7 @@ teamctl doctor
 ```
 
 818 checks across the eight suites, smoke counted once in its clean shape, and 818 passing
-(v1.15.0). Measured at `3124991`, base v1.14.3 (`891a5e6`):
+(v1.15.0). Measured at `9d9f84b`, base v1.14.4 (`529936e`):
 the smoke pair in a clean launch with SIGHUP and SIGINT reset to their defaults, the other
 seven suites in an earlier acquisition on the same commit, after an inherited SIGINT
 disposition voided the first smoke pair. The total counts the clean smoke run once — the
@@ -37,15 +37,20 @@ different skip count means a different launch rather than a different tree.
 tests/smoke.sh's check "a crash is never silent ... (issue #6)" does not fail under nohup
 since v1.14.2: it SKIPS, with the reason printed ("SIGHUP arrives ignored — launched under
 nohup?"), because nohup leaves SIGHUP set to ignore and an inherited SIG_IGN cannot be
-undone from inside the process. A foreground run is 348 of 348; a run under nohup is 347
-passed, 1 skipped. Nothing is wrong in either shape.
+undone from inside the process. Three launch shapes were measured at `9d9f84b`, and the
+rule held in each: a clean foreground run (HUP default, INT default) is 348 passed, 0
+failed, 0 skipped; a real `nohup` run (HUP ignored, INT default) is 347 passed, 0 failed,
+1 skipped; a `nohup … &` from a non-interactive shell (HUP ignored, INT ignored) is 346
+passed, 0 failed, 2 skipped — the second skip is the SIGINT arm, which v1.14.4 gave a skip
+path of its own. The total is 348 in every shape; only the pass/skip split moves, each skip
+names its own signal, and nothing is wrong in any of the three.
 
 `smoke.sh` tests the checkout it lives in. It uses its own tmux server
 (`wolfmux-test-<pid>`, `wolfmux-test-old-<pid>`), its own state directory, a throwaway repository whose path
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 348 of 348 pass (v1.15.0); 347 pass, 1 skipped under `nohup` (issue #17)
+## smoke.sh: 348 checks, 0 failures (v1.15.0) — how many pass depends on the launch (issue #17)
 
 Run foreground, all 348 checks hold, including the one below that a
 detached run cannot reach. Run under `nohup` (how a lane actually launches it), SIGHUP

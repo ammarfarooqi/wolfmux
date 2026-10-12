@@ -1043,7 +1043,7 @@ pattern was named by the team that had just been wrong about it in the opposite 
 added and none deleted, so no existing check was removed or re-aimed. `tests/smoke.sh`:
 347 → 348 (one check added for the inbox hooks surviving `WOLFMUX_NOTIFY=lead`), 347 pass +
 1 skip under `nohup`. 818 checks across the eight suites, smoke counted once in its clean
-shape, 818 passing. Measured at `3124991`, base v1.14.3 (`891a5e6`): the smoke pair in a
+shape, 818 passing. Measured at `9d9f84b`, base v1.14.4 (`529936e`): the smoke pair in a
 clean launch with SIGHUP and SIGINT reset to their defaults, the rest in an earlier
 acquisition on the same commit, after the first smoke pair was voided by an inherited SIGINT
 disposition — a detached launch can leave {HUP, INT, QUIT} ignored, and an inherited
