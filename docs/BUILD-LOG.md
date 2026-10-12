@@ -1039,6 +1039,18 @@ file: a comment that names the COMMAND a test runs cannot go stale this way, whi
 names a function further down the chain will, the next time anybody edits the chain. The
 pattern was named by the team that had just been wrong about it in the opposite direction.
 
+`tests/inbox.sh`: a new suite, 102 checks. `tests/nudge-typing.sh`: 52 → 56, with 36 lines
+added and none deleted, so no existing check was removed or re-aimed. `tests/smoke.sh`:
+347 → 348 (one check added for the inbox hooks surviving `WOLFMUX_NOTIFY=lead`), 347 pass +
+1 skip under `nohup`. 818 checks across the eight suites, smoke counted once in its clean
+shape, 818 passing. Measured at `3124991`, base v1.14.3 (`891a5e6`): the smoke pair in a
+clean launch with SIGHUP and SIGINT reset to their defaults, the rest in an earlier
+acquisition on the same commit, after the first smoke pair was voided by an inherited SIGINT
+disposition — a detached launch can leave {HUP, INT, QUIT} ignored, and an inherited
+`SIG_IGN` cannot be undone from inside the process. The void run's own arithmetic confirms
+nothing was dropped: 347 passed + 1 failed = 348, the same total the corrected run measured.
+v1.15.0.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
