@@ -26,7 +26,8 @@ teamctl doctor
 `SIGHUP` and `SIGINT` reset to their defaults by a parent that then `exec`s:
 `tests/smoke.sh` 348 at `083fe9f`; the other eight at `17d6829` — `disk` 93,
 `nudge-typing` 56, `inbox` 102, `providers` 134, `docs` 36, `dashboard` 115,
-`migration` 36, `permissions` 13.
+`migration` 36, `permissions` 13. Of those eight, `docs` 36 and `dashboard` 115 were measured
+at `083fe9f` and re-run at `17d6829`, with the same figures both times.
 
 Those two commits differ **only** in three Markdown files (`README.md`,
 `docs/BUILD-LOG.md`, this file) and in no shell file, library or test —
@@ -470,15 +471,16 @@ Measured in the same acquisition, clean shape, at `083fe9f`: `tests/docs.sh` 36 
 
 **What the suite total at the top of this file is, and is not.** Nothing in the repository
 runs the suites as a set — there is no runner, no build file and no CI (see
-[ROADMAP.md](ROADMAP.md#known-limits-of-v1)). So that 933 is a **hand-assembled sum of one
-measured acquisition**, not a figure any tool produces. It is therefore correct for the
-commit and the launch shape named beside it and for nothing else, and **nothing checks it
+[ROADMAP.md](ROADMAP.md#known-limits-of-v1)). So that 933 is a **hand-assembled sum of two
+measured acquisitions**, each figure carrying the commit and launch shape it was measured in,
+not a figure any tool produces. It is therefore correct for those commits and those launch
+shapes and for nothing else, and **nothing checks it
 afterwards**: the moment a suite grows, the sum goes stale silently and looks exactly as
 right as it did before. That is why every count in this document still carries its own suite
 name, sha and shape — those are the facts, and the total is a convenience derived from them.
 
-Read a bare total here as a claim about one acquisition, never as a property of the
-repository.
+Read a bare total here as a claim about the two acquisitions those nine figures came from,
+never as a property of the repository.
 
 ### Not verified in this suite
 
