@@ -517,6 +517,84 @@ one checked out in your checkout.
 
 What teams do not have apart: your checkout. Every lead works in the project root.
 
+## The dashboard: one view of the whole machine
+
+`status` and `teams` are per project. `teamctl dashboard` (`lib/dashboard.sh`, `prefix O`)
+walks every project with state under `$WOLFMUX_DATA/state/`, every team of each, and every
+agent of each team, and `status-right` carries a one-line summary of the same picture
+(`teamctl _overview-badge`). Both are strictly read-only: they take no action on any team.
+
+### The house rule: show what is known, say nothing where it is not
+
+**Never a number that looks precise and is not.** This decided three things in this module,
+and it is worth stating once because it keeps being the right answer:
+
+- There is **no "idle" column**, because there is no honest signal for one.
+  `#{pane_activity}` is empty on tmux 3.7c; a whole team shares one window, so
+  `#{window_activity}` cannot speak for a single agent; and an agent waiting at its prompt
+  and an agent working both run `node`. The alternative was to parse pane output, which
+  `lib/views.sh` forbids outright. So the view reports the states tmux really knows —
+  running, stopped, exited — and two measurements under their own names.
+- **`cpu` / `mem` is a process reading, not a claim about what the agent is doing.** It is
+  the whole process tree under the pane's pid, because an agent's CLI is a *child* of that
+  pane's shell and the shell alone would report every agent asleep.
+- **`wrote` is a file timestamp, nothing more** — the mtime of the very transcript file the
+  context reader opened (`CTX_FILE`, set by `agent_context`). It happens to move on every
+  turn an agent takes, which is what makes it useful, but it is not labelled as activity.
+- **Context shows three cases, not two**: a known share, a token count with *no* share when
+  the model's window genuinely cannot be known, and nothing at all when there is no
+  transcript. A percentage of a guessed window is worse than no percentage, so the share is
+  dropped rather than invented — never `0%`, never `100%`. `ctx_display` does the
+  formatting and decides the share; the dashboard only decides whether it may be shown.
+
+### Two costs it is built around
+
+**It never runs `du`.** A `du` over a busy machine's lane worktrees takes seconds, which is
+why `teamctl status` never measures either. Lane totals are the number `teamctl teams`
+left behind in `state/<project>/disk-kb`, under the same fifteen-minute rule
+(`disk_team_kb_cached`); when the number is older than that the view shows it as `STALE`
+with its age and names `teamctl teams` as what refreshes it. A missing number is normal and
+says so.
+
+**One `ps` and one `tmux list-panes` for the whole view**, never one per agent — and
+neither of them at all on the badge's path, which redraws every few seconds for every
+attached client. The badge opens no transcript either; it costs about 18 ms of work.
+
+### The fast path, and the test that keeps it honest
+
+Every other view answers for one team, where a `jq` process per field is invisible. This
+one walks 25 teams and 74 agents, and measured 6.1 s that way — `reg_list` spawns a `jq`
+per record, `reg_field` one per field, and `team_orphaned` asks tmux three times per team.
+So four helpers answer the *same* question from data already in hand, by globbing and bash
+string matching instead of a process each:
+
+| fast path | stands in for |
+|-----------|---------------|
+| `dash_team_records` | `reg_list` + `reg_field` (one slurped read, the registry's own sort key) |
+| `dash_teams` | `team_list` |
+| `dash_orphaned` | `team_orphaned` |
+| `dash_pane_row` | `tm_pane_for_role` + `tm_pane_state` |
+
+`tests/dashboard.sh` asserts that **each one agrees with the helper it replaces**. If they
+ever diverge the suite fails, which is the point: these are faster routes to the same
+answer, not second opinions. Everything else is reused as it stands — `agent_context`,
+`ctx_display`, `disk_team_kb_cached`, `disk_free_kb`, `team_paths`, `human_size`,
+`short_path`.
+
+Two further details that are not obvious from the code. The project root comes from the
+first readable `meta.json`, **including a team's**: the project-level one belongs to the
+default team and is simply absent on a project that only ever had named teams. And a
+project that cannot be read, or holds nothing at all, is *named* in the output rather than
+dropped — the two are reported separately, because "I cannot read this" and "there is
+nothing here" are different things to tell whoever is looking.
+
+### The badge may never break a status bar
+
+tmux displays whatever a `#()` command prints, for as long as it is given it, so a
+half-written line or an error message would sit in the status bar of every attached client
+until the server restarted. `cmd_overview_badge` therefore prints **nothing at all** on any
+failure: one line only, printable characters only, bounded length.
+
 ## Arrangement and coming back
 
 `lib/layout.sh`: `lead-left` (default: the lead is tmux's main pane at 55 % of the width,

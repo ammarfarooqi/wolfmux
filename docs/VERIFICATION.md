@@ -7,24 +7,41 @@ their first screen; everything else used stub agents or a localhost mock.
 
 ```bash
 tests/smoke.sh                 # 5 to 7 minutes, 348 checks, isolated from any running team
-                               # (348 pass clean; 347 pass and 1 skipped under nohup: see smoke.sh below)
+                               # (how many PASS depends on the launch: one skip per signal it
+                               #  leaves ignored — see smoke.sh below)
 tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~90 seconds, 56 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/inbox.sh                 # ~4 minutes, 102 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
+tests/dashboard.sh             # ~90 seconds, 115 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```
 
-818 checks across the eight suites, smoke counted once in its clean shape, and 818 passing
-(v1.15.0). Measured at `9d9f84b`, base v1.14.4 (`529936e`):
-the smoke pair in a clean launch with SIGHUP and SIGINT reset to their defaults, the other
-seven suites in an earlier acquisition on the same commit, after an inherited SIGINT
-disposition voided the first smoke pair. The total counts the clean smoke run once — the
-`nohup` run is a second measurement of the same suite, not an eighth suite.
+**933 checks across the nine countable suites, smoke counted once in its clean shape, and
+933 passing, 0 failing** (v1.16.0). Every figure measured under the heavy lock with
+`SIGHUP` and `SIGINT` reset to their defaults by a parent that then `exec`s:
+`tests/smoke.sh` 348 at `083fe9f`; the other eight at `17d6829` — `disk` 93,
+`nudge-typing` 56, `inbox` 102, `providers` 134, `docs` 36, `dashboard` 115,
+`migration` 36, `permissions` 13. Of those eight, `docs` 36 and `dashboard` 115 were measured
+at `083fe9f` and re-run at `17d6829`, with the same figures both times.
+
+Those two commits differ **only** in three Markdown files (`README.md`,
+`docs/BUILD-LOG.md`, this file) and in no shell file, library or test —
+`git diff --name-only 083fe9f 17d6829` is the whole check. `smoke.sh` does read one of those
+three: `README.md`, in two checks that assert a pattern is **absent** from it
+(`tests/smoke.sh:174` and `:177`, the two inbox-command checks). Both were re-run against the
+shipping content and both hold, and `README.md` did not change again after `17d6829`. It reads
+neither this file nor `docs/BUILD-LOG.md` — zero references to either — so the later edits to
+those two cannot reach it. That is why the 348 measured at `083fe9f` is still true of the tree
+being tagged; it is stated as two commits rather than one because it is two.
+
+The total counts the clean smoke run once: the detached runs are further measurements of the
+same suite, not further suites. `tests/credential-routing.sh` is outside the total — it has
+no check count and is manual.
 
 **How many skips to expect is a rule, not a number:** one per signal the launch leaves
 ignored. A detached launch can leave {HUP, INT, QUIT} ignored — `nohup` accounts for HUP,
@@ -37,27 +54,31 @@ different skip count means a different launch rather than a different tree.
 tests/smoke.sh's check "a crash is never silent ... (issue #6)" does not fail under nohup
 since v1.14.2: it SKIPS, with the reason printed ("SIGHUP arrives ignored — launched under
 nohup?"), because nohup leaves SIGHUP set to ignore and an inherited SIG_IGN cannot be
-undone from inside the process. Three launch shapes were measured at `9d9f84b`, and the
-rule held in each: a clean foreground run (HUP default, INT default) is 348 passed, 0
-failed, 0 skipped; a real `nohup` run (HUP ignored, INT default) is 347 passed, 0 failed,
-1 skipped; a `nohup … &` from a non-interactive shell (HUP ignored, INT ignored) is 346
-passed, 0 failed, 2 skipped — the second skip is the SIGINT arm, which v1.14.4 gave a skip
-path of its own. The total is 348 in every shape; only the pass/skip split moves, each skip
-names its own signal, and nothing is wrong in any of the three.
+undone from inside the process. Four launch shapes were measured, and the rule held in each:
+row 2 of the four-shape table at the end of this file was measured at `9d9f84b`, the other
+three at `083fe9f`. The splits are quoted there, each beside the dispositions it was measured
+under, rather than restated here — and nothing is wrong in any of the four.
 
 `smoke.sh` tests the checkout it lives in. It uses its own tmux server
 (`wolfmux-test-<pid>`, `wolfmux-test-old-<pid>`), its own state directory, a throwaway repository whose path
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 348 checks, 0 failures (v1.15.0) — how many pass depends on the launch (issue #17)
+## smoke.sh: 348 checks, 0 failures (v1.16.0) — how many pass depends on the launch (issue #17)
 
-Run foreground, all 348 checks hold, including the one below that a
-detached run cannot reach. Run under `nohup` (how a lane actually launches it), SIGHUP
-arrives already set to be ignored and an ignored signal cannot be un-ignored by a trap
-inside the process, so the one check that sends itself SIGHUP and expects to be killed by it
-cannot hold either way: it is skipped, with the reason printed, instead of reporting a bare,
-unexplained FAIL.
+Measured at `083fe9f`, base `e431740`, launched through a parent that resets both
+`SIGHUP` and `SIGINT` to `DEFAULT` (HUP default, INT default), where all
+348 checks hold — including the ones a detached run cannot reach.
+
+The shape is quoted with the figure because the split moves with it and the total does not.
+A check that sends itself a signal and expects to be killed by it cannot hold when the
+launch already set that signal to be ignored, since an inherited `SIG_IGN` cannot be undone
+from inside the process; it skips with its reason printed rather than reporting a bare,
+unexplained FAIL. The four shapes are measured and named by their **dispositions**,
+which is the cause — a command is only a proxy for it. Worth being exact about one proxy,
+because it is easy to get backwards: a lane's real launch is `nohup … &` from a
+non-interactive shell, which leaves HUP **and** INT ignored and is therefore the two-skip
+shape, not the one-skip shape a plain `nohup` gives.
 
 | Area | Checks |
 |------|--------|
@@ -93,7 +114,7 @@ unexplained FAIL.
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
 
-## disk.sh: 93 of 93 pass (v1.15.0)
+## disk.sh: 93 of 93 pass (v1.16.0)
 
 Its own tmux server (`wolfmux-disk-test-<pid>`), its own state directory, a throwaway
 repository whose path contains a space, stub agents, and build trees of a few megabytes of
@@ -201,10 +222,11 @@ Second install run changed nothing · existing `allow` entries not duplicated an
 `deny` preserved · install then uninstall left `~/.zshrc` byte-identical · exactly
 the added permission rules removed · uninstall refused while a team was running.
 
-## permissions.sh — 13 of 13 pass (2026-09-20)
+## permissions.sh — 13 of 13 pass (v1.16.0)
 
 `install.sh` and `uninstall.sh` against `~/.claude/settings.json` in a throwaway `HOME`
-(no team, no CLI, nothing of yours read). Written first: 4 of the 9 failed before the change.
+(no team, no CLI, nothing of yours read). Written first, when it had 9 checks: 4 of the 9
+failed before the change.
 
 | Area | Checks |
 |------|--------|
@@ -216,7 +238,7 @@ the added permission rules removed · uninstall refused while a team was running
 Not covered: a rule of yours that is spelled exactly like a retired one cannot be told apart
 from ours and is taken out as well; the installer names it and the backup holds it.
 
-## migration.sh: 36 of 36 pass (v1.12.0)
+## migration.sh: 36 of 36 pass (v1.16.0)
 
 A throwaway `HOME` gets v1.1 installed from git history, a team started with it (lead +
 one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
@@ -254,7 +276,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
-## docs.sh: 36 of 36 pass (v1.15.0)
+## docs.sh: 36 of 36 pass (v1.16.0)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.
@@ -290,6 +312,190 @@ check itself: its first version matched substrings, never saw `uninstall.sh --pu
 (that script did not parse its option as a `case` label; it does now, and refuses an option
 it does not know with exit 64 instead of ignoring it), and took comments in fenced
 examples for headings.
+
+## dashboard.sh: 115 of 115 pass (v1.16.0)
+
+Measured at `083fe9f`, base `e431740`. This suite starts its own tmux
+server and never uses `nohup`, so it has no signal-skip split and its launch shape does
+not move the figure.
+
+The machine-wide view (`teamctl dashboard`, `prefix O`) and the status-bar segment
+(`teamctl _overview-badge`). Its own tmux server (`wolfmux-dash-test-<pid>`), its own state
+directory, two throwaway repositories — one whose path contains a space — and
+`tests/stub-agent` in place of every CLI. It was run while real teams were live on the same
+machine; they were unaffected, because the view is read-only and the suite's own socket and
+state are separate.
+
+| Area | Checks |
+|------|--------|
+| an empty machine | no state directory at all is valid JSON with no projects, not an error · the text view draws and says 0 teams · the segment prints `0t 0run 0stop` |
+| the machine-wide walk | the project and its root appear · the team appears with `session_running` · all three agents appear, **lead first** · each one's state · a worker reports its own branch and the lead reports none · cpu and memory are measured per agent from the process tree · the footer carries load, memory and free disk · a SECOND project in another repository appears, and the same two projects appear whichever project you run it from · the segment counts the teams and agents of both |
+| **equivalence: every fast path agrees with the helper it stands in for** | `dash_teams` lists exactly what `team_list` lists, in the same order · `dash_team_records` yields exactly the roles `reg_list` yields, in the same order, and the same field VALUES `reg_field` reads · `dash_pane_row` finds the pane `tm_pane_for_role` finds and agrees with `tm_pane_state` · it gives nothing for a role with no pane and **never matches one role inside a longer one** (`lead` inside `sublead`) · `dash_orphaned` agrees with `team_orphaned`, both while the lead runs and after it is stopped · `dash_meta_session` reads the session `meta_get` reads |
+| the lane total is read, never measured | with nothing measured the view says so and names `teamctl teams` · a fresh number is shown as a size, through `human_size` like every other view · a number older than the cache window is shown as `STALE` **with its age**, and still names what refreshes it · a garbled cache file falls back to not-measured instead of failing (the leading-zero shape that once broke `teamctl status`) · a missing file is the normal case |
+| the context column: three cases | a known window gives a count and a share · an unknown window, a zero window and a non-numeric window each give the count and **no share — never 0%** · no reading at all is a dash, not a zero · no `%` is ever printed for an unknown window · a team whose agent has an unknown window still renders |
+| when the transcript was last written | the context reader reports the file it opened (`CTX_FILE`), so there is no second piece of code working out where a transcript lives · the dashboard reports that file's mtime to the second · the column reaches the view for a running agent · an agent with no transcript reports nothing rather than a zero · the **Codex** rollout path reports its file too |
+| the budget | the segment never runs `du` · the segment never runs `ps` · the popup never runs `du` either (all three with `du` and `ps` shadowed on `PATH` by spies that would leave a marker) · the popup takes ONE `ps` for the whole view · the **process tree**, not the pane's own process, is what is summed · a tree with a cycle in it still terminates · a pid that is not in the snapshot is zero, and no pid at all is no reading rather than a zero |
+| the segment is silent on any error | a failing segment prints nothing and still exits 0 · one that somehow prints several lines is cut to one · **no control character ever reaches the status bar**, and neither the escape introducer nor the bell survives · an over-long line is bounded · without tmux it says nothing rather than claiming `0run` · a state directory that is not there is not an error, and the stopped count never goes negative when records and panes disagree |
+| a stopped agent, an orphaned team | a stopped worker is on record with no pane and reports no cpu reading rather than a zero · by default a stopped agent is not read from disk and the view says so · `--full` reads every agent and drops that note · the segment counts it stopped, not running · with its lead stopped the team is `orphaned`, as `teamctl teams` says |
+| one bad project never takes it down | an unreadable state directory (`chmod 000`) does not stop the view and is **named rather than silently dropped** · a project with nothing on record is reported apart from it, as a start that never became a team · a half-written `meta.json` does not stop the view · the segment survives all of it |
+| options, and read-only | `--interval` takes a number and refuses nonsense, zero and a missing value (exit 64) · an unknown option is a usage error naming the command · tab completion offers `dashboard` and every option its parser accepts · **the view changes nothing**: the whole JSON of every project is identical before and after drawing the popup and the segment |
+| the key | `prefix O` is bound to the popup, `status-right` carries the segment, and the other lane's `status-left` and `status-interval` are untouched |
+
+### How `tmux.conf` resolves `teamctl`, and how that was verified
+
+Both entries — `bind O` and the `status-right` segment — resolve `teamctl` through one
+shared spelling, agreed with the quiet-nudges lane and approved by the lead:
+
+```
+#{?@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl}
+```
+
+`teamctl` sets `@wolfmux_teamctl` to its own absolute path at team start, and the
+conditional falls back to a bare `teamctl` when it is unset, which is exactly the previous
+behaviour. So the file is correct on its own, in either merge order, and on a session
+started by an older `teamctl`. This module declares no `set -g @wolfmux_teamctl` of its own;
+the quiet-nudges region owns that line.
+
+Three checks in `tests/dashboard.sh` measure this against a real tmux server with a real pty
+client: with the option unset the bare `teamctl` on `PATH` runs; with it set that absolute
+path runs and `PATH` is not used; and a nested `#{...}` really is expanded inside `#()`.
+
+The method matters, because the obvious ones all give false negatives. Reading the result
+back through a format (`#{T:status-right}`, `#{E:status-left}`) returns **empty even in a run
+that demonstrably rendered**, and with no client attached tmux never runs the `#()` job at
+all — so a plain absolute-path *control* fails too, which is what makes the false negative
+convincing. Two things work: have the command **touch a marker file** (what the tests do, and
+what proves execution rather than rendering), or attach a real pty client, wait, force a
+refresh, and grep a captured typescript for a **literal marker** placed around the segment
+(what the lead used to prove the output also draws).
+
+**One consequence, documented rather than fixed:** tmux draws the status line *before* the
+`#()` job has produced anything, so the first rendered draw of the segment is **empty** and
+the next one carries its output. After a client attaches, or a server restarts, the segment
+is blank for up to `status-interval` seconds. It is inherent to how tmux runs `#()`. No
+document here claims the segment appears immediately.
+
+### The socket is handed in, never assumed
+
+`tmx` targets `$WOLFMUX_TMUX_SOCKET`, default `wolfmux`. A `#()` status job inherits the tmux
+**server's** environment, and nothing in it says which socket the job is being drawn on — so
+a badge that asked tmux itself would silently report the *default* socket's state instead of
+the one it is drawn on. On the live server the default happens to be the right answer, which
+is the same kind of luck as a bare `teamctl` on `PATH`, and this segment is silent on error,
+so it would never say otherwise. Found by the quiet-nudges lane in their own badge; same
+class of bug, same fix.
+
+So `tmux.conf` passes `#{socket_path}` to the segment, and the popup reads the socket out of
+`$TMUX` (which tmux sets inside a pane or a `display-popup`). A path that is not a socket is
+ignored and the previous behaviour stands, because a view that asked a socket which is not
+there would report an empty machine — worse than asking the default.
+
+Measured, and the difference is the proof: against a second tmux server carrying none of the
+suite's agents the segment reports `0run`; against the default, in the same run, it still
+reports this suite's own running agents. Were the argument ignored the two answers would be
+identical. Also checked: a non-socket path and a path that does not exist both fall back
+without failing and without the segment speaking out of turn.
+
+### Measured, on the machine it was written on
+
+Taken with 2 projects, 20 teams, 75 agents on record and 12 of them running, under a system
+load between 2 and 13.
+
+| | Measured | Note |
+|---|---|---|
+| the segment, own work | **18 ms** | 20 runs averaged; 82 ms per invocation in all, of which **64 ms is `teamctl`'s own startup** — sourcing the eighteen library files the source list held when this was measured (nineteen on this base, so the share is now marginally higher), a cost every `teamctl` command pays, including the other lane's `_inbox-badge` |
+| the popup, full walk | **1.42 – 1.95 s** | budget was 2 s |
+| the popup, first version | 6.17 s | before the bulk reads: `reg_list` spawns a `jq` per record, `reg_field` one per field, `team_orphaned` asks tmux three times per team — about 600 processes |
+
+The 6.17 s is why the fast-path helpers exist, and the equivalence group above is what keeps
+them honest. The order the savings came in: bulk record read 6.17 → 2.54 s; fork-free pane
+lookup, team enumeration and orphan test, plus reading per-agent transcripts only for
+RUNNING agents, 2.54 → 1.5 s.
+
+### The signal-skip rule: a rule, not a number
+
+An earlier draft of this document described the check "a crash is never silent … (issue
+#6)" as a **failure** of unknown cause, and recorded a pass count that assumed it. That
+description was correct when it was written and is no longer true: the cause was found and
+fixed upstream, so this section now records the rule that replaced it.
+
+`nohup` leaves `SIGHUP` ignored in the child, and an inherited `SIG_IGN` cannot be undone
+from inside the process. A background job started from a non-interactive shell inherits
+`SIGINT` and `SIGQUIT` as `SIG_IGN` the same way — a bare `&` alone is enough. The check
+cannot test a signal the launch has already made untestable, so rather than fail it now
+**skips, and prints its reason**: v1.14.2 did this for `SIGHUP` and v1.14.4 for `SIGINT`.
+
+So the skip count is a **rule, not a figure**:
+
+> One skip per signal the launch leaves ignored.
+
+A detached launch can leave `{HUP, INT, QUIT}` ignored and skip up to three. Launched
+through a parent that resets the signals, nothing is skipped. Two consequences worth
+stating, because both have cost this project time:
+
+- **A pass count without its launch shape is not a fact.** The same tree, the same sha and
+  the same checks report a different pass/skip split under a different launch. A figure
+  quoted without its shape becomes false without any count changing — which is how a
+  stale `327 of 327` survived three releases in this file.
+- **Launched wrong, checks skip for reasons that have nothing to do with the code under
+  test.** To reproduce the clean-shape figures above, launch the suite through a parent
+  that resets both signals:
+
+```bash
+perl -e '$SIG{HUP}="DEFAULT"; $SIG{INT}="DEFAULT"; exec @ARGV' bash tests/smoke.sh
+```
+
+Base `e431740` (v1.15.0).
+Each shape is named by its **dispositions**, which are the cause; the command is only the
+way to reproduce them. The total is 348 in every shape — only the pass/skip split moves:
+
+| Dispositions | How to reproduce it | smoke.sh |
+|---|---|---|
+| HUP default, INT default | a parent that resets both, then `exec` | **348 passed, 0 failed, 0 skipped** |
+| HUP ignored, INT default | a real `nohup` run | 347 passed, 0 failed, 1 skipped (SIGHUP) |
+| HUP default, INT **ignored** | a bare `… &` from a non-interactive shell | 347 passed, 0 failed, 1 skipped (SIGINT) |
+| HUP ignored, INT ignored | `nohup … &` — **a lane's real launch** | 346 passed, 0 failed, 2 skipped |
+
+Rows 1, 3 and 4 were measured here at `083fe9f`, in one acquisition of the heavy lock; row 2
+is v1.15.0's own measurement at `9d9f84b`. Zero FAIL lines in every run.
+
+Rows 2 and 3 are the point of the table. They skip the SAME NUMBER of checks for
+DIFFERENT signals, and row 3 is the one that proves the two skip paths are **independent**:
+with HUP left at its default the SIGHUP check PASSES while the SIGINT check skips, so
+v1.14.4's SIGINT arm is not riding on v1.14.2's SIGHUP arm. Across the four shapes the skip
+count is exactly the number of signals the launch left ignored — 0, 1, 1, 2 — which is the
+rule, measured rather than argued. Together the four cover every combination of the two
+dispositions.
+
+Measured in the same acquisition, clean shape, at `083fe9f`: `tests/docs.sh` 36 passed,
+0 failed; `tests/dashboard.sh` 115 passed, 0 failed, 0 skipped.
+
+**What the suite total at the top of this file is, and is not.** Nothing in the repository
+runs the suites as a set — there is no runner, no build file and no CI (see
+[ROADMAP.md](ROADMAP.md#known-limits-of-v1)). So that 933 is a **hand-assembled sum of two
+measured acquisitions**, each figure carrying the commit and launch shape it was measured in,
+not a figure any tool produces. It is therefore correct for those commits and those launch
+shapes and for nothing else, and **nothing checks it
+afterwards**: the moment a suite grows, the sum goes stale silently and looks exactly as
+right as it did before. That is why every count in this document still carries its own suite
+name, sha and shape — those are the facts, and the total is a convenience derived from them.
+
+Read a bare total here as a claim about the two acquisitions those nine figures came from,
+never as a property of the repository.
+
+### Not verified in this suite
+
+- **A live Codex agent.** The `wrote` column reads the mtime of the file `agent_context`
+  opened, and for the Codex family that is the rollout under `WOLFMUX_CODEX_SESSIONS`. No
+  Codex agent was running on this machine, so that path is verified against a rollout
+  **built by the test**, not against a live Codex session. The Claude path was verified both
+  ways: by the test, and live — a running agent's transcript showed `wrote 2s` and the
+  number tracked its turns.
+- **The unknown-window case against the real v1.14.1 code.** v1.14.1 is the commit that
+  makes `model_context_window` able to return nothing. This branch was written on v1.14.0,
+  so the three context cases are exercised against `dash_context_label` directly and
+  through a stubbed `agent_context`, not against the shipped 1.14.1 behaviour.
+- **More than about 25 teams or 75 agents on one machine**, which is what was here.
 
 ## Not verified
 

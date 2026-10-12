@@ -122,6 +122,23 @@ instead of installing their own.
 | you use bash, not zsh | install.sh wires only the zsh shim into `~/.zshrc` | `echo 'eval "$(teamctl completion bash)"' >> ~/.bashrc` (not `source <(…)`: macOS bash 3.2 cannot source a process substitution) |
 | Tab offers commands but not roles or teams | the backend resolves the project through the directory you are in | `cd` into the project (the main checkout or any of its worktrees) and try again |
 
+## The dashboard and the status-bar segment
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| the overview segment is blank for a few seconds right after I attach, or after a tmux restart | tmux draws the status line **before** it has run the `#()` command and fills the result in on a later refresh | nothing is wrong: it appears within `status-interval` seconds. This is inherent to how tmux runs `#()` and is not fixable from here — measured on 3.7c, the first rendered draw of a `#()` segment is empty and the next carries its output |
+| the segment is missing from `status-right` | the running tmux server was started before this version, so it still has the old `status-right`, or `teamctl` cannot be resolved | `./install.sh`, then either start a new team or re-read the file for a running one: `tmux -L wolfmux source-file ~/.config/wolfmux/tmux.conf`. The segment prints nothing rather than an error when it fails, so a blank one is by design, not a crash. First wait a few seconds — see the row above |
+| `prefix O` or the segment does nothing on a team started by an older `teamctl` | `tmux.conf` resolves `teamctl` through the `@wolfmux_teamctl` session option, which only a newer `teamctl` sets; without it the entry falls back to a bare `teamctl`, which needs `~/bin` on the PATH the tmux **server** was started with | start a fresh team (the option is set at `teamctl start`), or set it on the running server by hand: `tmux -L wolfmux set-option -g @wolfmux_teamctl "$(command -v teamctl)"` |
+| the segment shows nothing at all while teams are clearly running | `teamctl _overview-badge` failed and stayed silent on purpose (a badge may never break a status bar) | run it by hand to see the real error: `teamctl _overview-badge; echo "exit=$?"`. Most often tmux cannot be found on the `PATH` tmux itself uses, in which case it reports nothing rather than claim `0run` |
+| `lanes not measured (teamctl teams measures it)` for every team | nothing has measured them since the last install, which is the normal state | run `teamctl teams` in that project. The dashboard never measures: a `du` over a busy machine's lanes takes seconds and this view redraws |
+| `lanes … STALE 3h old` | the cached number is older than fifteen minutes, the same window `teamctl status` uses | `teamctl teams` refreshes it. It is shown stale on purpose: a stale number presented as current is worse than no number |
+| `prefix O` does nothing | the running server predates the binding | `tmux -L wolfmux source-file ~/.config/wolfmux/tmux.conf`, or run `teamctl dashboard` directly |
+| the popup is slow to open | it is reading a transcript per RUNNING agent, and there are many | it already skips stopped lanes by default; `--interval 15` redraws less often. `--full` is the slow one by design. A walk of 2 projects, 20 teams and 75 agents measured about 1.5 s |
+| `ctx` shows a token count and no percentage | that model's context window genuinely cannot be known (a pinned `claude:<id>` without `[1m]`, `astra`, anything unrecognised) | nothing to fix: a percentage of a guessed window is worse than none, so the share is left off rather than invented |
+| a project is listed as `state could not be read` | its state directory is not readable — another user's, or permissions changed | `ls -ld ~/.wolfmux/state/<project>`. One unreadable project never takes the view down; it is named rather than silently dropped |
+| a project is listed as `a start that never became a team` | a `teamctl start` left a state directory with no `meta.json` and no agent records | harmless. Remove it if you like: `rm -rf ~/.wolfmux/state/<project>` |
+| `cpu 0.0` for an agent you believe is working | it is a process reading taken at one instant, not a claim about the agent | look at `wrote` instead: that is when the agent's transcript file was last written, and it moves on every turn. There is deliberately no "idle" column — see [ARCHITECTURE.md](ARCHITECTURE.md#the-house-rule-show-what-is-known-say-nothing-where-it-is-not) |
+
 ## Useful one-liners
 
 ```bash

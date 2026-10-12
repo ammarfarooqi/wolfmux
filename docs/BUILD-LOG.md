@@ -1050,6 +1050,110 @@ disposition — a detached launch can leave {HUP, INT, QUIT} ignored, and an inh
 `SIG_IGN` cannot be undone from inside the process. The void run's own arithmetic confirms
 nothing was dropped: 347 passed + 1 failed = 348, the same total the corrected run measured.
 v1.15.0.
+## 33. "I need a team overview and status button" (v1.16)
+
+The owner, on 2026-10-10: *"also i need team overview and status button here to see the
+total number of teams and everything working and how much resources they consuming like
+dashboard kinda thing"*. Several teams were running at once across more than one
+repository, and `teamctl status` and `teamctl teams` each answer for ONE project — the one
+you are standing in.
+
+New module `config/wolfmux/lib/dashboard.sh`, one command `teamctl dashboard`, one internal
+`teamctl _overview-badge` for the status bar, and `prefix O` to open the popup. Read-only:
+it takes no action on any team. Full description in
+[ARCHITECTURE.md](ARCHITECTURE.md#the-dashboard-one-view-of-the-whole-machine).
+
+### What the measurements changed about the design
+
+Three numbers did most of the designing, and each one is in the code as a comment because
+the next reader will otherwise undo it:
+
+**A `du` over this machine's lane worktrees is about twelve seconds.** That is already why
+`teamctl status` never measures. A view that redraws can afford it even less, so lane
+totals are the number `teamctl teams` left behind, under the same fifteen-minute rule, and
+the view shows a stale number *as stale* with its age rather than refreshing it.
+
+**The first popup took 6.17 s, against a 2 s budget.** The cause was not the work, it was
+the process count: `reg_list` spawns a `jq` per agent record to sort them, `reg_field` one
+per field, and `team_orphaned` asks tmux three times per team. Seven fields across 74
+agents is about 600 processes. Every one of those helpers is correct and right for the view
+it was written for — one team, where a process per field is invisible. So four of them got
+a bulk equivalent in `dash_team_records`, `dash_teams`, `dash_orphaned` and
+`dash_pane_row`, and `tests/dashboard.sh` asserts each one still agrees with the helper it
+stands in for. 6.17 → 2.54 s on the bulk record read; 2.54 → 1.5 s on fork-free pane and
+team lookups plus reading per-agent transcripts only for agents that are RUNNING.
+
+**The segment costs 18 ms of work, inside 82 ms per invocation.** The other 64 ms is
+`teamctl`'s own startup — sourcing the eighteen library files held when measured, nineteen on this base — which every `teamctl` command
+pays and which this feature did not add. Worth knowing before anyone optimises the badge
+again: there is almost nothing left in it to win.
+
+### The things it deliberately does not say
+
+The request was to see "everything working", and the honest answer is that nothing on this
+machine can tell a waiting agent from a working one. `#{pane_activity}` came back **empty**
+from the live tmux (3.7c), a whole team shares one window so `#{window_activity}` cannot
+speak for one agent, and both states run `node`. `lib/views.sh` forbids parsing pane output
+for state. So there is no "idle" column. Instead there are two measurements under their own
+names: `cpu`/`mem`, the agent's whole process tree — a process reading, not a claim about
+what the agent is doing — and `wrote`, the mtime of the very transcript file the context
+reader opened, which is a file timestamp and nothing more. It moves on every turn an agent
+takes, which is what makes it the useful column.
+
+The same principle settled the context column, and independently settled an argument in the
+v1.14.1 branch: **show what is known, say nothing where it is not, never a number that
+looks precise and is not.** Where a model's context window genuinely cannot be known the
+column shows the token count and no percentage, rather than a share of a guessed 200k.
+
+### Two things that were wrong before the tests caught them
+
+`skipped_projects` was always empty. The loop that built the output was the left side of a
+pipeline, so everything it assigned — including that list — stayed in the subshell and
+never reached the JSON. A project whose state could not be read therefore vanished without
+a word, which is the one thing a view of "every team on this machine" must not do. It is
+collected into a variable now, and an unreadable project and an empty one are reported
+*separately*, because "I cannot read this" and "there is nothing here" are different things
+to tell whoever is looking.
+
+The project root is read from the first readable `meta.json` **including a team's**. The
+project-level one belongs to the default team and is simply absent on a project that only
+ever had named teams — which was true of every project on this machine, so the first
+version found no root anywhere and skipped all three.
+
+### Changes outside the new module
+
+Kept as small as possible, since two other branches were in flight on the same files:
+
+- `lib/agents.sh`: four lines. `agent_context` and both context readers now record the file
+  they opened in `CTX_FILE`, so the `wrote` column reuses that lookup instead of a second
+  piece of code working out where a transcript lives.
+- `lib/common.sh`: line 5 only, `WOLFMUX_VERSION` to 1.16.0.
+- `bin/teamctl`: the module in the source list, two dispatch cases, one usage block.
+- `lib/completion.sh`: the subcommand and its options.
+- `config/wolfmux/tmux.conf`: `status-right`, `status-right-length` and `bind O`.
+  `status-left` and `status-interval` belong to the quiet-nudges branch and are untouched.
+
+This release is the one that puts a SECOND `#()` job on the status line — v1.15.0's `📨`
+inbox badge on `status-left`, this one's overview badge on `status-right` — so the cost is
+worth stating where somebody reading this entry will meet it. The segment was measured at
+82 ms per invocation, of which **64 ms is `teamctl`'s own startup** (sourcing the eighteen library files
+held when measured; this base has nineteen, so the share is a floor) and 18 ms is the segment's own work. At `status-interval 5` that is two
+`teamctl` invocations every 5 s per attached client, about 164 ms per 5 s per client, or
+roughly 3% of one core. Nothing here is optimised for it: the cost is `teamctl`'s startup
+rather than either badge's work, so the lever is a startup path that does not source all
+nineteen libraries to answer a one-line read. Recorded as a limit with a named lever in
+[ROADMAP.md](ROADMAP.md#known-limits-of-v1).
+
+`tests/dashboard.sh`: 115 checks, all passing. Also in the same acquisition:
+`tests/smoke.sh` 348 passed / 0 failed / 0 skipped and `tests/docs.sh` 36 passed /
+0 failed. No suite total is given: nothing runs the suites as a set, so the six suites
+not run here would have to be added from their own records to produce one. Measured at
+`083fe9f`, base `e431740` (v1.15.0), clean
+launch shape (`HUP` and `INT` reset) — see `docs/VERIFICATION.md` for why the shape is
+part of the figure.
+
+Version 1.16.0. The chain is 1.14.1 (the CONTEXT fix) → 1.15.0 (quiet nudges) → 1.16.0,
+and this builds on 1.15.0.
 
 ## Footprint on the machine
 

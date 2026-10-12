@@ -1286,7 +1286,7 @@ transcripts_dir() {
 # plus what the prompt cache holds), and how many assistant turns with usage the tail holds.
 _ctx_of_claude() {
   local tdir file f m newest="" newest_m=0 stats last="" reqs=0 line
-  CTX_TOKENS="" CTX_REQUESTS=""
+  CTX_TOKENS="" CTX_REQUESTS="" CTX_FILE=""
   if [ -n "${2:-}" ]; then
     # Its own conversation, by id. Never the newest file of the folder: every lead of a project works
     # in the same folder, and so do your own sessions, so the newest one is usually somebody else's.
@@ -1301,6 +1301,10 @@ _ctx_of_claude() {
     done
   fi
   [ -n "$newest" ] || return 0
+  # The file this reader opened, for a caller that wants its timestamp rather than its
+  # contents (teamctl dashboard shows when the transcript was last written). Set here, so
+  # there is never a second piece of code working out where an agent's transcript lives.
+  CTX_FILE="$newest"
   # -R first: jq's own parser must never see a raw line, a half-written one included;
   # fromjson? then decodes what parses and yields nothing for what does not.
   stats="$(tail -n 400 "$newest" 2>/dev/null | "$JQ_BIN" -Rr '
@@ -1328,7 +1332,7 @@ EOF
 # looked at; none of them matches, or the event shape is unknown, and nothing is reported.
 _ctx_of_codex() {
   local base="${WOLFMUX_CODEX_SESSIONS:-${CODEX_HOME:-$HOME/.codex}/sessions}" f real cands stats last="" reqs=0 line meta
-  CTX_TOKENS="" CTX_REQUESTS="" CTX_WINDOW=""
+  CTX_TOKENS="" CTX_REQUESTS="" CTX_WINDOW="" CTX_FILE=""
   [ -d "$base" ] || return 0
   real="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
   cands="$(find "$base" -type f -name 'rollout-*.jsonl' -exec stat -f '%m%t%N' {} + 2>/dev/null | sort -rn | cut -f2- | sed -n '1,25p')" || cands=""
@@ -1347,7 +1351,8 @@ _ctx_of_codex() {
     done <<EOF
 $stats
 EOF
-    break # the newest rollout of this worktree is the one
+    CTX_FILE="$f" # the rollout this reader opened: its timestamp is what dashboard shows
+    break         # the newest rollout of this worktree is the one
   done <<EOF
 $cands
 EOF
@@ -1366,7 +1371,7 @@ EOF
 # guess — so the caller shows tokens with no share of the wrong number.
 agent_context() {
   local computed
-  CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0"
+  CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0" CTX_FILE=""
   if [ "$3" = "codex" ]; then
     _ctx_of_codex "$1"
   else

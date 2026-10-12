@@ -222,6 +222,29 @@ teamctl focus backend       # jump to a pane            teamctl nudge backend   
 
 Process state comes from tmux, work state from Beads; terminal text is never parsed.
 
+### Every team on the machine at once
+
+`status` and `teams` answer for the project you are in. `teamctl dashboard` answers for the
+whole machine — every project, every team, every agent — and `prefix O` opens it as a popup
+(`q` closes it).
+
+```bash
+teamctl dashboard                 # the popup's view: redraws every 5 s
+teamctl dashboard --once          # print once and exit        --json for the same as JSON
+teamctl dashboard --once --full   # also read context and transcript times for stopped lanes
+teamctl dashboard --interval 15   # redraw less often
+```
+
+Per agent: state, the CPU and memory of its whole process tree, context use, when its
+transcript was last written, branch. Per team: totals, state, lead, cached lane disk. At the
+foot: load, free memory, free disk. `status-right` carries the short version of it.
+
+It is read-only, and it never measures disk: lane totals are the number `teams` left
+behind, shown as `STALE` with their age when they are old. Two columns are measurements
+under their own names, not verdicts: `cpu`/`mem` is a process reading, not a claim about
+what the agent is doing, and `wrote` is a file timestamp, nothing more. There is no "idle"
+column because there is no honest signal for one.
+
 ## Several teams in one project
 
 ```bash
@@ -608,7 +631,8 @@ Never run `codex login --with-api-key`, never export `ANTHROPIC_API_KEY` /
 
 Mouse: click = focus, drag border = resize, wheel = scroll. `Ctrl-b` then: arrows =
 move · `Ctrl`-arrows / `Alt`-arrows = resize · `z` = zoom · `T` = re-tile ·
-`N` = the team's notices in a popup · `q` = pane
+`N` = the team's notices in a popup · `O` = the dashboard popup, every team on the
+machine (`q` closes it) · `q` = pane
 numbers · `d` = detach · `"` `%` `c` = new pane/window in the current directory.
 
 `config/wolfmux/tmux.conf` sources your own `~/.tmux.conf` **first**, so every wolfmux
