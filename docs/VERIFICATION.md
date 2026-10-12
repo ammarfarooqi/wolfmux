@@ -114,7 +114,7 @@ shape, not the one-skip shape a plain `nohup` gives.
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
 
-## disk.sh: 93 of 93 pass (v1.15.0)
+## disk.sh: 93 of 93 pass (v1.16.0)
 
 Its own tmux server (`wolfmux-disk-test-<pid>`), its own state directory, a throwaway
 repository whose path contains a space, stub agents, and build trees of a few megabytes of
@@ -222,7 +222,7 @@ Second install run changed nothing · existing `allow` entries not duplicated an
 `deny` preserved · install then uninstall left `~/.zshrc` byte-identical · exactly
 the added permission rules removed · uninstall refused while a team was running.
 
-## permissions.sh — 13 of 13 pass (2026-09-20)
+## permissions.sh — 13 of 13 pass (v1.16.0)
 
 `install.sh` and `uninstall.sh` against `~/.claude/settings.json` in a throwaway `HOME`
 (no team, no CLI, nothing of yours read). Written first: 4 of the 9 failed before the change.
@@ -237,7 +237,7 @@ the added permission rules removed · uninstall refused while a team was running
 Not covered: a rule of yours that is spelled exactly like a retired one cannot be told apart
 from ours and is taken out as well; the installer names it and the backup holds it.
 
-## migration.sh: 36 of 36 pass (v1.12.0)
+## migration.sh: 36 of 36 pass (v1.16.0)
 
 A throwaway `HOME` gets v1.1 installed from git history, a team started with it (lead +
 one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
@@ -275,7 +275,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
-## docs.sh: 36 of 36 pass (v1.15.0)
+## docs.sh: 36 of 36 pass (v1.16.0)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.
@@ -444,7 +444,7 @@ stating, because both have cost this project time:
 perl -e '$SIG{HUP}="DEFAULT"; $SIG{INT}="DEFAULT"; exec @ARGV' bash tests/smoke.sh
 ```
 
-Measured at `083fe9f`, base `e431740` (v1.15.0), in one acquisition of the heavy lock.
+Base `e431740` (v1.15.0).
 Each shape is named by its **dispositions**, which are the cause; the command is only the
 way to reproduce them. The total is 348 in every shape — only the pass/skip split moves:
 
@@ -455,8 +455,8 @@ way to reproduce them. The total is 348 in every shape — only the pass/skip sp
 | HUP default, INT **ignored** | a bare `… &` from a non-interactive shell | 347 passed, 0 failed, 1 skipped (SIGINT) |
 | HUP ignored, INT ignored | `nohup … &` — **a lane's real launch** | 346 passed, 0 failed, 2 skipped |
 
-Row 2 is v1.15.0's own measurement at `9d9f84b`; rows 1, 3 and 4 were measured here at
-`083fe9f`. Zero FAIL lines in every run.
+Rows 1, 3 and 4 were measured here at `083fe9f`, in one acquisition of the heavy lock; row 2
+is v1.15.0's own measurement at `9d9f84b`. Zero FAIL lines in every run.
 
 Rows 2 and 3 are the point of the table. They skip the SAME NUMBER of checks for
 DIFFERENT signals, and row 3 is the one that proves the two skip paths are **independent**:
