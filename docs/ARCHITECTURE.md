@@ -314,7 +314,7 @@ Who is **typed** into, and why each row is what it is:
 | the lead, Claude-family, **no client attached** | yes | nobody is looking; the line only goes to scrollback, and the agent wakes at once. `#{client_activity}` moves on real keystrokes only, and a detached session lists no client at all, so "is anybody watching" is one cheap tmux read |
 | the lead, Claude-family, **a client attached** | **no** | this is the whole point. The badge carries it, the agent is given it by its hooks |
 | any pane, **Codex-family** (`astra`, `codex:<id>`) | yes, lead included | Codex has no hooks, so typing is the only channel that reaches that agent at all. A Codex lead is deliberately noisier than a Claude lead; this row is the exception to the one above, not an oversight |
-| the lead, an **approval**, a client attached | after a grace period, if still unread | an approval holds a WORKER until the lead answers; see below |
+| the lead, an **approval**, a client attached | after a grace period, if still pending | an approval holds a WORKER until the lead answers; see below |
 
 `WOLFMUX_NUDGE_TYPE` is the single knob: `off` · `workers` · `detached-lead` (default) ·
 `all` (the pre-1.15.0 behaviour). Everything the v1.14.0 fix built is kept and only
@@ -371,11 +371,21 @@ bead is in Beads and the notice is in the file.
 **Approvals may not get slower than they were.** A permission request blocks a worker
 until the lead decides, which is why its deferral cap is 60 s rather than 600. So: a
 detached lead is typed into immediately, exactly as before; an attached lead gets the
-louder `🔔` mark at once, and if the request is **still unread**
+louder `🔔` mark at once, and if the request is **still pending**
 `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) later it is typed in after all, through the same
 busy-and-park machinery as any other notice. `WOLFMUX_INBOX_APPROVAL_TYPE=never` leaves
-it to the badge, `always` types it at once. The existing 60 s cap and the worker's own
-fallback prompt are untouched underneath. An approval is the one notice that can still
+it to the badge, `always` types it at once, and `WOLFMUX_NUDGE_TYPE=off` outranks all
+three. The existing 60 s cap and the worker's own fallback prompt are untouched
+underneath.
+
+**Pending, not unread, and the difference matters.** The timer asks the approvals store
+whether the request is still `pending`; approved, denied and expired all cancel it,
+because in each of those nothing is blocked any more. It deliberately does NOT ask
+whether the human has read the notice: `prefix N` prints `--all` and marks every role's
+notices seen, so a glance at a *worker's* line used to cancel the typing of an approval
+the human had never read, handing a blocked worker back to the attention the grace
+exists to avoid. A store that cannot be read fails towards typing — a stalled worker is
+the harm, one line in a pane is the cost. An approval is the one notice that can still
 put a line in the human's conversation, and a blocked worker is the reason.
 
 **Consequence to be plain about**: `notify_lead`'s spawn and policy notices go through

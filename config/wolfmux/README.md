@@ -326,9 +326,11 @@ yours never hides a notice from the agent; an agent reading one never clears you
 
 Two notices still reach your conversation on purpose:
 
-- **A permission request**, because it holds a worker until you answer. Unread after
-  `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) it is typed in after all.
-  `WOLFMUX_INBOX_APPROVAL_TYPE=never` leaves it to the badge, `always` types it at once.
+- **A permission request**, because it holds a worker until you answer. Still PENDING
+  after `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) and it is typed in after all. What stops
+  that is the request being answered or expiring, not your having looked at it: reading
+  the popup unblocks no worker. `WOLFMUX_INBOX_APPROVAL_TYPE=never` leaves it to the
+  badge, `always` types it at once, and `WOLFMUX_NUDGE_TYPE=off` beats all three.
 - **A Codex pane** (`astra`, `codex:<model-id>`), whatever its role — the lead included.
   Codex has no hook to hand a notice over with, so typing is the only channel that
   reaches that agent at all. A Codex lead is therefore deliberately noisier than a

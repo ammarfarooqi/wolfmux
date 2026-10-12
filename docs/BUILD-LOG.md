@@ -940,6 +940,21 @@ FAIL — no assertion gained or lost). v1.14.4.
 
 ## 32. "These messages should be hidden" (v1.15.0)
 
+An adversarial review of the finished branch found one more class of bug than the design
+review had, and it is worth recording which kind: not a wrong decision, but a PROXY
+standing in for the state it was supposed to represent. `WOLFMUX_NUDGE_TYPE=off` asked
+`inbox_type_allowed`, which the approval override never passed through, so the one knob
+whose whole job is silence still typed. The approval grace asked whether the human had
+read the notice when the question was whether the worker was still blocked. Both read
+correctly and both were wrong. The fix in each case was to ask the state itself.
+
+The other finding worth keeping is that `inbox_take_undelivered` moved its awk output over
+the record unguarded while its two siblings in the same file chained with `&&` — so the
+one function that could destroy notices was the one that looked most like the two that
+could not. Consistency inside a file is evidence, and a sibling that breaks it is where to
+look first.
+
+
 Entry 26 stopped a notice landing *in* a half-typed line. This is the complaint
 underneath it, GitHub issue #11, in the owner's own words on 2026-10-10:
 

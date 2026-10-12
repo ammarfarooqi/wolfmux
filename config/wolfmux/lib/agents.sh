@@ -1592,11 +1592,22 @@ notify_lead() {
     # An approval blocks a worker until the lead decides, so it may not get slower than
     # it was in v1.14.0. grace: file it, and type it after all if it is still unread
     # WOLFMUX_INBOX_APPROVAL_GRACE seconds later. always: type it now. never: the badge.
+    #
+    # BUT off means off. This override used to sit outside the WOLFMUX_NUDGE_TYPE
+    # decision, so `off` plus an attached client plus a worker asking permission still
+    # put a line in the human's conversation 20 s later — while USAGE.md, the manual and
+    # this library's own header all promised `off` types into nobody, ever. A knob called
+    # off that still types is worse than no knob, so the code follows the documents.
+    if [ "$WOLFMUX_NUDGE_TYPE" = "off" ]; then
+      event_log inbox-filed "$WOLFMUX_LEAD_ROLE" "$kind (nudge-type=off, nothing is ever typed)"
+      inbox_stall_notify "$WOLFMUX_LEAD_ROLE" "$kind"
+      return 4
+    fi
     if [ "$kind" = "approval" ] && [ "$WOLFMUX_INBOX_APPROVAL_TYPE" = "always" ]; then
       : # fall through to the typed path below
     else
       if [ "$kind" = "approval" ] && [ "$WOLFMUX_INBOX_APPROVAL_TYPE" = "grace" ]; then
-        _inbox_approval_grace_start "$WOLFMUX_LEAD_ROLE" "$pane" "$text" "$cap"
+        _inbox_approval_grace_start "$WOLFMUX_LEAD_ROLE" "$pane" "$text" "$cap" "$2"
         event_log inbox-filed "$WOLFMUX_LEAD_ROLE" "$kind (unread after ${WOLFMUX_INBOX_APPROVAL_GRACE}s is typed after all)"
       else
         event_log inbox-filed "$WOLFMUX_LEAD_ROLE" "$kind (nudge-type=$WOLFMUX_NUDGE_TYPE, a client is attached)"
@@ -1653,38 +1664,57 @@ _notify_type_or_park() {
   return 0
 }
 
-# _inbox_approval_grace_start <role> <pane> <text> <cap> — an approval is the ONE notice
-# that can still put a line in the human's conversation, and a blocked worker is the
-# reason: the request holds that worker until the lead answers, and the lead's own
-# WOLFMUX_NUDGE_APPROVAL_DEFER_MAX is 60 s. So the badge gets its louder mark at once,
-# and if the request is STILL unread WOLFMUX_INBOX_APPROVAL_GRACE seconds later it is
-# typed after all. Fully detached, like the nudge waiter, and for the same reasons:
+# _inbox_approval_grace_start <role> <pane> <text> <cap> <approval-id> — an approval is
+# the ONE notice that can still put a line in the human's conversation, and a blocked
+# worker is the reason: the request holds that worker until the lead answers, and the
+# lead's own WOLFMUX_NUDGE_APPROVAL_DEFER_MAX is 60 s. So the badge gets its louder mark
+# at once, and if the request is still PENDING WOLFMUX_INBOX_APPROVAL_GRACE seconds later
+# it is typed after all. Fully detached, like the nudge waiter, and for the same reasons:
 # macOS ships no setsid, so it ignores HUP, INT and TERM instead.
 _inbox_approval_grace_start() {
   (
     set +e
     trap '' HUP INT TERM
-    _inbox_approval_grace_wait "$1" "$2" "$3" "$4" >/dev/null 2>&1 &
+    _inbox_approval_grace_wait "$1" "$2" "$3" "$4" "$5" >/dev/null 2>&1 &
   )
   return 0
 }
 
-# _inbox_approval_grace_wait <role> <pane> <text> <cap>
+# _inbox_approval_grace_wait <role> <pane> <text> <cap> <approval-id>
+#
+# What cancels the typing is the request no longer being PENDING — not the human having
+# looked at it. The timer exists because a worker is blocked, so the only thing that
+# should stop it is the thing that unblocks the worker: approved, denied or expired. A
+# glance at the popup unblocks nobody, and `prefix N` prints --all and marks every role's
+# notices seen, so "has the human looked?" let a glance at a WORKER's line cancel the
+# typing of an approval the human had never read (reviewer F5). Asking the approvals
+# store whether it is still pending replaces that proxy with the state itself.
+#
+# If the store cannot be read, this FAILS TOWARDS TYPING: a stalled worker is the harm,
+# one line in a pane is the cost.
 _inbox_approval_grace_wait() {
-  local role="$1" pane="$2" text="$3" cap="$4" waited=0
+  local role="$1" pane="$2" text="$3" cap="$4" id="$5" waited=0 status
   while [ "$waited" -lt "$WOLFMUX_INBOX_APPROVAL_GRACE" ]; do
     sleep 1
     waited=$((waited + 1))
-    # Read in the meantime (prefix N, or teamctl inbox): nothing is typed.
-    inbox_has_new_approval "$role" || {
-      event_log inbox-approval-read "$role" "expanded after ${waited}s; nothing was typed"
+    if [ -n "$id" ]; then
+      status="$(approval_field "$id" status 2>/dev/null || true)"
+      case "$status" in
+        approved | denied | expired)
+          event_log inbox-approval-settled "$role" "$id is $status after ${waited}s; nothing was typed"
+          return 0
+          ;;
+      esac
+      # anything else — pending, or a store we could not read — keeps the timer running
+    fi
+    [ "$(tm_pane_state "$pane")" = "running" ] || {
+      event_log inbox-approval-pane-gone "$role" "pane not running after ${waited}s; nothing was typed"
       return 0
     }
-    [ "$(tm_pane_state "$pane")" = "running" ] || return 0
   done
-  # Still unread. Type it, through the same busy-and-park machinery as ever.
+  # Still pending. Type it, through the same busy-and-park machinery as ever.
   _notify_type_or_park "$role" "$pane" "$text" "$cap" approval || true
-  event_log inbox-approval-grace "$role" "still unread after ${WOLFMUX_INBOX_APPROVAL_GRACE}s: typed"
+  event_log inbox-approval-grace "$role" "$id still pending after ${WOLFMUX_INBOX_APPROVAL_GRACE}s: typed"
   return 0
 }
 

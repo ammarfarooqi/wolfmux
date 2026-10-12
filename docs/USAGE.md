@@ -476,10 +476,13 @@ them never clears your count.
 
 Two cases still put a line in your conversation on purpose:
 
-- **A permission request.** It holds a worker until you answer, so after
-  `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) unread it is typed in after all.
-  `WOLFMUX_INBOX_APPROVAL_TYPE=never` turns that off and leaves it to the badge;
-  `always` types it at once.
+- **A permission request.** It holds a worker until you answer, so if it is still
+  PENDING after `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) it is typed in after all.
+  Answering it (`teamctl approve` / `deny`), or its expiring, stops that — looking at it
+  does not, because a glance unblocks no worker.
+  `WOLFMUX_INBOX_APPROVAL_TYPE=never` turns the typing off and leaves it to the badge;
+  `always` types it at once. `WOLFMUX_NUDGE_TYPE=off` outranks all three: nothing is
+  typed, pending or not.
 - **A Codex pane** (`astra`, `codex:<model>`), whatever its role. Codex has no hook to
   hand a notice over with, so typing is the only channel that reaches that agent at all.
 

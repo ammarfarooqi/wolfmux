@@ -12,8 +12,10 @@
 # So every notice is appended to a per-role file first, and only then does anything
 # else happen with it. The file is the record; the status-bar badge, the popup, the
 # Stop hook, the UserPromptSubmit hook and the typed fallback are five ways of reading
-# the same lines. Nothing is lost on any path: the bead stays in Beads and the line
-# stays here whatever happens.
+# the same lines. A notice is not lost by being read: the bead stays in Beads, and a
+# line leaves this file only when a replacement record has been written successfully —
+# every read-modify-write here is chained with && for that reason, and the two hooks put
+# the agent's letter back if the answer they were marking for then fails.
 #
 #   $STATE_DIR/inbox/<role>     one notice per line (STATE_DIR is already per project
 #                               AND per team, so the file name needs the role only)
@@ -55,6 +57,8 @@ WOLFMUX_INBOX_APPROVAL_GRACE="${WOLFMUX_INBOX_APPROVAL_GRACE:-20}"
 # sound is the one channel that interrupts whatever the human is doing, and this machine
 # runs 3 projects and 25 teams whose Beads events fire on create, update and close. At 3
 # seconds a busy hour is dozens of banners — the same complaint with a different sound.
+# The window is shared by every team on the machine (the stamp lives under
+# $WOLFMUX_DATA, keyed by role): one per team would have let 25 teams ring 25 times.
 WOLFMUX_INBOX_STALL_NOTIFY="${WOLFMUX_INBOX_STALL_NOTIFY:-on}"
 WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE="${WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE:-120}"
 
@@ -67,6 +71,25 @@ case "$WOLFMUX_NUDGE_TYPE" in
   off | workers | detached-lead | all) ;;
   *) WOLFMUX_NUDGE_TYPE="detached-lead" ;;
 esac
+
+# The numeric knobs get the same treatment as the word above, and for a sharper reason:
+# `[` exits 2 on a non-numeric operand, and every caller here treats a non-zero as its
+# benign branch. So WOLFMUX_INBOX_STOP_COOLDOWN=off — a reasonable thing for somebody to
+# try, meaning "no cooldown" — made cmd_inbox_stop return without delivering on EVERY
+# turn for the life of the team: the agent would never again be told about a bead by its
+# Stop hook, silently. A non-numeric grace ran the wait loop zero times and typed an
+# approval into an attached pane at once, which is the opposite of what it asks for.
+# Anything that is not all digits falls back to the default, exactly as the word does.
+for _wm_knob in WOLFMUX_INBOX_STOP_COOLDOWN:10 WOLFMUX_INBOX_APPROVAL_GRACE:20 \
+  WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE:120 WOLFMUX_INBOX_MAX:200 \
+  WOLFMUX_INBOX_TEXT_MAX:400 WOLFMUX_INBOX_LOCK_TRIES:10 WOLFMUX_INBOX_LOCK_STALE:15; do
+  _wm_name="${_wm_knob%%:*}"
+  eval "_wm_val=\"\${$_wm_name}\""
+  case "$_wm_val" in
+    "" | *[!0-9]*) eval "$_wm_name=\"${_wm_knob#*:}\"" ;;
+  esac
+done
+unset _wm_knob _wm_name _wm_val
 
 # The marks the status bar shows, both settable. U+1F4E8 INCOMING ENVELOPE is the
 # default because it is the one "bird carrying letter" mark a terminal can be relied on
@@ -81,6 +104,14 @@ WOLFMUX_INBOX_APPROVAL_MARK="${WOLFMUX_INBOX_APPROVAL_MARK:-🔔}"
 
 inbox_dir() { printf '%s\n' "$STATE_DIR/inbox"; }
 inbox_file() { printf '%s\n' "$STATE_DIR/inbox/$1"; }
+
+# inbox_tmp <role> <what> — a scratch path for a read-modify-write of a role's record.
+# It MUST start with a dot: inbox_roles' glob arm lists this directory, and a plain
+# "<role>.taken.$$" is a sibling of "<role>" holding a COPY of the record, so the badge
+# counted the same notices once per temp file lying around (reviewer F3: one notice read
+# as 3). Dotfiles are skipped there, and known_role_name is applied as well — either
+# alone would have prevented it, and neither was there.
+inbox_tmp() { printf '%s\n' "$STATE_DIR/inbox/.tmp.$1.$2.$$"; }
 
 # inbox_tag_session <session> — remember where teamctl is, for the two tmux format
 # strings that have to run it (status-left's badge and the prefix-N popup). tmux runs
@@ -145,12 +176,23 @@ inbox_add() {
   case "$kind" in beads | spawn | approval | policy) ;; *) kind="beads" ;; esac
   /bin/mkdir -p "$(inbox_dir)" 2>/dev/null || return 0
   file="$(inbox_file "$role")"
+  # One logical Beads change fires create AND update, so the same notice arrives twice
+  # within a second or two and the badge would read 2 for one bead. Comparing against
+  # the LAST line only was not enough: two beads for the same role interleave as
+  # A-create, B-create, A-update, and then A-update's predecessor is B, the comparison
+  # misses, and A is filed twice (reviewer F6). So the whole debounce window is scanned
+  # for an identical kind+text. WOLFMUX_INBOX_MAX is 200, so the tail is cheap.
   if [ -f "$file" ]; then
-    last="$(tail -n 1 "$file" 2>/dev/null || true)"
-    if [ "${last#*"$(printf '\t')"}" != "$last" ] &&
-      [ "$(printf '%s' "$last" | cut -f2)" = "$kind" ] &&
-      [ "$(printf '%s' "$last" | cut -f4-)" = "$text" ] &&
-      [ $(($(now_epoch) - $(_inbox_num_or_zero "$(printf '%s' "$last" | cut -f1)"))) -lt "${WOLFMUX_NUDGE_DEBOUNCE:-3}" ]; then
+    # tail is PIPED in, never interpolated: a notice's text is arbitrary (it comes from a
+    # bead title) and must not pass through the shell again.
+    if tail -n 40 "$file" 2>/dev/null | LC_ALL=C /usr/bin/awk -F'\t' \
+      -v kind="$kind" -v text="$text" -v now="$(now_epoch)" \
+      -v window="${WOLFMUX_NUDGE_DEBOUNCE:-3}" '
+        NF >= 4 && $2 == kind && $4 == text && (now - $1) < window && (now - $1) >= 0 {
+          found = 1
+          exit
+        }
+        END { exit(found ? 0 : 1) }' 2>/dev/null; then
       return 0
     fi
   fi
@@ -162,9 +204,9 @@ inbox_add() {
   lines="$(printf '%s' "$lines" | tr -d ' ')"
   case "$lines" in "" | *[!0-9]*) return 0 ;; esac
   if [ "$lines" -gt $((WOLFMUX_INBOX_MAX + 50)) ] && inbox_lock "$role"; then
-    tail -n "$WOLFMUX_INBOX_MAX" "$file" >"$file.trim.$$" 2>/dev/null &&
-      /bin/mv -f "$file.trim.$$" "$file" 2>/dev/null
-    /bin/rm -f "$file.trim.$$" 2>/dev/null || true
+    tail -n "$WOLFMUX_INBOX_MAX" "$file" >"$(inbox_tmp "$role" trim)" 2>/dev/null &&
+      /bin/mv -f "$(inbox_tmp "$role" trim)" "$file" 2>/dev/null
+    /bin/rm -f "$(inbox_tmp "$role" trim)" 2>/dev/null || true
     inbox_unlock "$role"
   fi
   return 0
@@ -184,6 +226,7 @@ inbox_roles() {
     [ -f "$file" ] || continue
     role="$(basename "$file")"
     case "$role" in .*) continue ;; esac
+    known_role_name "$role" || continue
     case " $seen " in *" $role "*) continue ;; esac
     printf '%s\n' "$role"
   done
@@ -211,6 +254,22 @@ inbox_has_new_approval() {
   LC_ALL=C /usr/bin/awk -F'\t' '
     NF >= 4 && $2 == "approval" && substr($3, 1, 1) == "n" { found = 1; exit }
     END { exit found ? 0 : 1 }' "$file" 2>/dev/null
+}
+
+# inbox_is_new <role> <text> — is THIS record still unexpanded? The grace waiter used to
+# ask inbox_has_new_approval, which answers "does this role have ANY new approval", and
+# cmd_inbox marks seen for every role it prints — so with --all (prefix N, the key the
+# feature advertises) a human glancing at a WORKER's line cancelled the typing of an
+# approval they had never seen, and a blocked worker then waited on the human's
+# attention, which is the one thing the grace exists to avoid (reviewer F5).
+inbox_is_new() {
+  local file
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  file="$(inbox_file "$1")"
+  [ -f "$file" ] || return 1
+  LC_ALL=C /usr/bin/awk -F'\t' -v want="$2" '
+    NF >= 4 && $4 == want && substr($3, 1, 1) == "n" { found = 1; exit }
+    END { exit(found ? 0 : 1) }' "$file" 2>/dev/null
 }
 
 # inbox_count_lines <role> — usable records in the file, however damaged the rest is
@@ -254,8 +313,8 @@ _inbox_restate() {
       else state = substr(state, 1, 1) letter
       $3 = state
       print
-    }' "$file" >"$file.new.$$" 2>/dev/null && /bin/mv -f "$file.new.$$" "$file" 2>/dev/null
-  /bin/rm -f "$file.new.$$" 2>/dev/null || true
+    }' "$file" >"$(inbox_tmp "$role" new)" 2>/dev/null && /bin/mv -f "$(inbox_tmp "$role" new)" "$file" 2>/dev/null
+  /bin/rm -f "$(inbox_tmp "$role" new)" 2>/dev/null || true
   inbox_unlock "$role"
   return 0
 }
@@ -271,6 +330,30 @@ inbox_mark_seen() { _inbox_restate "$1" 1 s; }
 # Matched on the text rather than on all undelivered lines, because the queued path types
 # one fixed notice at a time and may stop part-way: the lines it has not reached must
 # stay undelivered so a hook can still carry them if the marker expires.
+# inbox_requeue <role> <texts> — put the agent letter back to 'u' for these exact
+# records. The hooks mark delivered BEFORE they answer, which is what makes "the Stop
+# hook cannot loop" true and is deliberate. The cost is that a failure AFTER the mark
+# would lose those notices for good: nothing re-queues them, and the next hook sees
+# nothing undelivered (reviewer F7). So when the answer itself fails, the letters go
+# back and the next turn hands them over again. Text matching, so a notice that arrived
+# in between keeps its own state.
+inbox_requeue() {
+  local role="$1" texts="$2" file
+  [ -n "$role" ] && [ -n "$texts" ] || return 0
+  file="$(inbox_file "$role")"
+  [ -f "$file" ] || return 0
+  inbox_lock "$role" || return 0
+  printf '%s\n' "$texts" >"$(inbox_tmp "$role" want)" 2>/dev/null &&
+    LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v wantfile="$(inbox_tmp "$role" want)" '
+      BEGIN { while ((getline line < wantfile) > 0) want[line] = 1 }
+      NF >= 4 && substr($3, 2, 1) == "d" && ($4 in want) { $3 = substr($3, 1, 1) "u" }
+      { print }' "$file" >"$(inbox_tmp "$role" requeue)" 2>/dev/null &&
+    /bin/mv -f "$(inbox_tmp "$role" requeue)" "$file" 2>/dev/null
+  /bin/rm -f "$(inbox_tmp "$role" requeue)" "$(inbox_tmp "$role" want)" 2>/dev/null || true
+  inbox_unlock "$role"
+  return 0
+}
+
 inbox_mark_typed() {
   local role="$1" text="$2" file
   [ -n "$role" ] && [ -n "$text" ] || return 0
@@ -279,8 +362,8 @@ inbox_mark_typed() {
   inbox_lock "$role" || return 0
   LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v want="$text" '
     NF >= 4 && $4 == want && substr($3, 2, 1) == "u" { $3 = substr($3, 1, 1) "d" }
-    { print }' "$file" >"$file.typed.$$" 2>/dev/null && /bin/mv -f "$file.typed.$$" "$file" 2>/dev/null
-  /bin/rm -f "$file.typed.$$" 2>/dev/null || true
+    { print }' "$file" >"$(inbox_tmp "$role" typed)" 2>/dev/null && /bin/mv -f "$(inbox_tmp "$role" typed)" "$file" 2>/dev/null
+  /bin/rm -f "$(inbox_tmp "$role" typed)" 2>/dev/null || true
   inbox_unlock "$role"
   return 0
 }
@@ -290,21 +373,32 @@ inbox_mark_typed() {
 # two hooks firing together cannot both hand over the same notice. The human's column is
 # untouched: the badge stays until he expands it himself.
 # Prints nothing when there is nothing, or when the lock could not be taken.
+# Every step is chained with &&, and that is load-bearing rather than tidy: awk writes
+# the replacement record incrementally, so `[ -f ]` is true as soon as it has written its
+# FIRST line. A move guarded only by that test renames a half-written file over the
+# record and destroys every line awk had not reached — measured by the reviewer at 40,000
+# records in and 11,773 out when awk was killed mid-run (ENOSPC is the realistic cause on
+# this machine, and `mv` is a rename, so it succeeds even when the write that killed awk
+# was a disk-full write). Nothing is printed to the agent unless the record was replaced,
+# either, so a successful awk whose move failed cannot hand over notices that are still
+# marked undelivered. _inbox_restate and inbox_mark_typed have always chained this way;
+# this function was the one sibling that did not.
 inbox_take_undelivered() {
   local role="$1" file
   file="$(inbox_file "$role")"
   [ -f "$file" ] || return 0
   inbox_lock "$role" || return 0
-  LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v out="$file.taken.$$" '
+  LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v out="$(inbox_tmp "$role" taken)" '
     NF < 4 { print > out; next }
     substr($3, 2, 1) == "u" {
       print $4
       $3 = substr($3, 1, 1) "d"
     }
-    { print > out }' "$file" >"$file.texts.$$" 2>/dev/null
-  if [ -f "$file.taken.$$" ]; then /bin/mv -f "$file.taken.$$" "$file" 2>/dev/null || true; fi
-  [ -f "$file.texts.$$" ] && /bin/cat "$file.texts.$$" 2>/dev/null
-  /bin/rm -f "$file.texts.$$" "$file.taken.$$" 2>/dev/null || true
+    { print > out }' "$file" >"$(inbox_tmp "$role" texts)" 2>/dev/null &&
+    /bin/mv -f "$(inbox_tmp "$role" taken)" "$file" 2>/dev/null &&
+    [ -f "$(inbox_tmp "$role" texts)" ] &&
+    /bin/cat "$(inbox_tmp "$role" texts)" 2>/dev/null
+  /bin/rm -f "$(inbox_tmp "$role" texts)" "$(inbox_tmp "$role" taken)" 2>/dev/null || true
   inbox_unlock "$role"
   return 0
 }
@@ -366,12 +460,25 @@ inbox_stall_notify() {
   [ "$WOLFMUX_INBOX_STALL_NOTIFY" = "on" ] || return 0
   [ "$role" = "$WOLFMUX_LEAD_ROLE" ] || return 0
   notify_wanted lead || return 0
-  stamp="$(inbox_dir)/.stall.$role"
-  /bin/mkdir -p "$(inbox_dir)" 2>/dev/null || return 0
+  # The stamp is MACHINE-WIDE, not per team, and that is the whole point of the knob.
+  # $STATE_DIR/inbox is per project AND per team, so a stamp kept there gave every team
+  # its own 120-second window: 25 teams on record is up to 25 banners a window, about
+  # twelve a minute, each with a sound. That is the complaint this release is named
+  # after, arriving through the one channel we deliberately kept loud (reviewer F8).
+  # Keyed by role, under $WOLFMUX_DATA, so every team shares one window.
+  stamp="$WOLFMUX_DATA/.stall.$role"
+  /bin/mkdir -p "$WOLFMUX_DATA" 2>/dev/null || return 0
+  # Read and write under one lock: two notifiers arriving together both used to pass the
+  # window and both rang. mkdir is the atomic test-and-set, as elsewhere in this file.
+  /bin/mkdir "$stamp.lock" 2>/dev/null || return 0
   last="$(/bin/cat "$stamp" 2>/dev/null || printf '0')"
   case "$last" in "" | *[!0-9]*) last=0 ;; esac
-  [ $(($(now_epoch) - last)) -ge "$WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE" ] || return 0
+  if [ $(($(now_epoch) - last)) -lt "$WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE" ]; then
+    /bin/rmdir "$stamp.lock" 2>/dev/null || true
+    return 0
+  fi
   now_epoch >"$stamp" 2>/dev/null || true
+  /bin/rmdir "$stamp.lock" 2>/dev/null || true
   team="${TEAM:-$WOLFMUX_DEFAULT_TEAM}"
   count="$(inbox_count_new "$role")"
   case "$count" in "" | *[!0-9]*) count=1 ;; esac
@@ -489,9 +596,16 @@ cmd_inbox_stop() {
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0
   now_epoch >"$stamp" 2>/dev/null || true
-  "$JQ_BIN" -n --arg reason "$(inbox_hook_body "$INBOX_IDENTITY" "$notices")" \
-    '{decision: "block", reason: $reason}' 2>/dev/null || true
-  event_log inbox-stop "$INBOX_ROLE" "blocked once with $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
+  if "$JQ_BIN" -n --arg reason "$(inbox_hook_body "$INBOX_IDENTITY" "$notices")" \
+    '{decision: "block", reason: $reason}' 2>/dev/null; then
+    event_log inbox-stop "$INBOX_ROLE" "blocked once with $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
+  else
+    # The one path that reaches the agent failed after the lines were marked delivered.
+    # Put them back, or they are lost for good: the next hook would see nothing to hand
+    # over. The cooldown stamp stays, so this cannot become a loop either.
+    inbox_requeue "$INBOX_ROLE" "$notices"
+    event_log inbox-stop-failed "$INBOX_ROLE" "jq failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) re-queued" 2>/dev/null || true
+  fi
   return 0
 }
 
@@ -506,8 +620,12 @@ cmd_inbox_prompt() {
   [ "$(inbox_count_undelivered "$INBOX_ROLE")" != "0" ] || return 0
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0
-  inbox_hook_body "$INBOX_IDENTITY" "$notices"
-  event_log inbox-prompt "$INBOX_ROLE" "handed over $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
+  if inbox_hook_body "$INBOX_IDENTITY" "$notices"; then
+    event_log inbox-prompt "$INBOX_ROLE" "handed over $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
+  else
+    inbox_requeue "$INBOX_ROLE" "$notices"
+    event_log inbox-prompt-failed "$INBOX_ROLE" "stdout failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) re-queued" 2>/dev/null || true
+  fi
   return 0
 }
 

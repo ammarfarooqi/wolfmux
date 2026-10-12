@@ -440,6 +440,304 @@ tmx set-option -gu status-left >/dev/null 2>&1
 tmx set-option -t "$SESSION" status-interval 5 >/dev/null 2>&1
 teamctl inbox --all >/dev/null 2>&1
 
+echo "== the eight findings of the v1.15.0 review, each asserted against its own mechanism"
+
+# F2 -- off MEANS off. The matrix above tests inbox_type_allowed directly, and the
+# approval override never passes through it, so the matrix was exhaustive and blind at
+# the same time. This drives notify_lead itself, with a client attached.
+attach_client
+sleep 1
+: >"$WOLFMUX_NOTIFY_TTY"
+teamctl inbox --all >/dev/null 2>&1
+/bin/rm -f "$WOLFMUX_DATA/.stall.lead" "$INBOX/.stall.lead"
+OFF_BEFORE="$(notices lead "Beads update for lead")"
+OFF_FILED="$(inbox_count_new_of lead)"
+(
+  cd "$PROJECT" || exit 1
+  WOLFMUX_NUDGE_TYPE=off WOLFMUX_INBOX_APPROVAL_TYPE=always \
+    teamctl nudge lead --id off-approval >"$WORK/off.log" 2>&1
+)
+sleep 2
+check "F2: nudge-type=off types NOTHING into an attached lead, approval or not" '[ "$(notices lead "Beads update for lead")" = "$OFF_BEFORE" ]'
+check "F2: off still FILES the notice, so being silent loses nothing" '[ "$(inbox_count_new_of lead)" -gt "$OFF_FILED" ]'
+check "F2: and it says so: exit 4, filed, not typed" 'grep -q "filed" "$WORK/off.log"'
+
+# F3 -- the badge counted its own temp files as roles, because every one of them was a
+# non-dot sibling of the record holding a COPY of it. One notice read as 3.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/f3"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  printf '%s\tbeads\tnu\tone real notice\n' "$(now_epoch)" >"$STATE_DIR/inbox/lead"
+  # the temp files as they are written now
+  cp "$STATE_DIR/inbox/lead" "$(inbox_tmp lead taken)"
+  cp "$STATE_DIR/inbox/lead" "$(inbox_tmp lead texts)"
+  # and as they used to be written, to prove the glob filter catches them too
+  cp "$STATE_DIR/inbox/lead" "$STATE_DIR/inbox/lead.taken.4242"
+  reg_list() { printf 'lead\n'; }
+  total=0
+  for r in $(inbox_roles); do total=$((total + $(inbox_count_new "$r"))); done
+  [ "$total" = "1" ] || exit 1
+  inbox_roles | grep -q '\.taken\.' && exit 1
+  exit 0
+) >/dev/null 2>&1
+F3_STATUS=$?
+check "F3: temp files are dotfiles AND non-role names are filtered, so ONE notice counts 1" '[ "$F3_STATUS" -eq 0 ]'
+
+# F1 -- a read-modify-write whose awk cannot write must change nothing. Measured by the
+# reviewer at 40,000 records in and 11,773 out when awk died part-way.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/f1"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  i=1
+  while [ $i -le 200 ]; do
+    printf '%s\tbeads\tnu\tnotice %s\n' "$(now_epoch)" "$i" >>"$STATE_DIR/inbox/lead"
+    i=$((i + 1))
+  done
+  # every temp path now points somewhere unwritable, which is what ENOSPC looks like here
+  inbox_tmp() { printf '%s\n' "$STATE_DIR/inbox/no-such-dir/.tmp.$1.$2.$$"; }
+  out="$(inbox_take_undelivered lead)"
+  [ -z "$out" ] || exit 1                                    # nothing handed over
+  [ "$(wc -l <"$STATE_DIR/inbox/lead" | tr -d ' ')" = "200" ] || exit 1   # record intact
+  [ "$(LC_ALL=C /usr/bin/awk -F'\t' 'substr($3,2,1)=="u"' "$STATE_DIR/inbox/lead" | wc -l | tr -d ' ')" = "200" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+F1_STATUS=$?
+check "F1: an awk that cannot write destroys nothing and hands nothing over" '[ "$F1_STATUS" -eq 0 ]'
+
+# F6 -- the create+update collapse has to survive another notice landing between the two.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/f6"
+  # the suite exports WOLFMUX_NUDGE_DEBOUNCE=0 so that its own nudges are never
+  # collapsed; the dedupe needs a real window to be testable at all
+  WOLFMUX_NUDGE_DEBOUNCE=30
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  inbox_add lead beads "task A assigned"
+  inbox_add lead beads "task B assigned"
+  inbox_add lead beads "task A assigned"     # A-update, no longer adjacent to A-create
+  [ "$(wc -l <"$STATE_DIR/inbox/lead" | tr -d ' ')" = "2" ] || exit 1
+  [ "$(inbox_count_new lead)" = "2" ] || exit 1
+  # and two genuinely different notices are never collapsed into one
+  inbox_add lead approval "Permission request A7"
+  [ "$(wc -l <"$STATE_DIR/inbox/lead" | tr -d ' ')" = "3" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+F6_STATUS=$?
+check "F6: an interleaved create/update pair still files ONE line, two beads read 2" '[ "$F6_STATUS" -eq 0 ]'
+
+# F7 -- the hooks mark delivered BEFORE they answer, which is what makes the no-loop
+# property true. So a failing answer has to put the letters back.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/f7"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  printf '%s\tbeads\tnu\tnotice one\n%s\tbeads\tnu\tnotice two\n' "$(now_epoch)" "$(now_epoch)" >"$STATE_DIR/inbox/lead"
+  INBOX_ROLE=lead INBOX_IDENTITY=lead
+  JQ_BIN="$WORK/jq-that-fails"
+  printf '#!/bin/sh\nexit 1\n' >"$JQ_BIN"
+  chmod +x "$JQ_BIN"
+  _inbox_hook_ready() { return 0; }
+  cmd_inbox_stop </dev/null >/dev/null 2>&1
+  # both lines must be undelivered again, or they are lost for good
+  [ "$(inbox_count_undelivered lead)" = "2" ] || exit 1
+  # and the human's count is untouched by any of it
+  [ "$(inbox_count_new lead)" = "2" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+F7_STATUS=$?
+check "F7: a Stop hook whose answer fails re-queues the notices instead of eating them" '[ "$F7_STATUS" -eq 0 ]'
+
+# F5 -- the grace waiter must watch THIS request. prefix N prints --all and marks every
+# role seen, so asking "has this role a new approval" let a glance at a worker's line
+# cancel an approval the human had never read.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/f5"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  inbox_add lead approval "Permission request A7 from backend"
+  inbox_is_new lead "Permission request A7 from backend" || exit 1
+  inbox_is_new lead "a notice that was never filed" && exit 1
+  # the human reads: this request is no longer new
+  cmd_inbox lead >/dev/null 2>&1
+  ! inbox_is_new lead "Permission request A7 from backend" || exit 1
+  # and the test is on the RECORD, not the role: a SECOND request arriving after that
+  # read is new while the first stays read, which role-level matching cannot express
+  inbox_add lead approval "Permission request B2 from frontend"
+  inbox_is_new lead "Permission request B2 from frontend" || exit 1
+  ! inbox_is_new lead "Permission request A7 from backend" || exit 1
+  exit 0
+) >/dev/null 2>&1
+F5_STATUS=$?
+check "F5: unread-ness is per RECORD, so one request read does not speak for another" '[ "$F5_STATUS" -eq 0 ]'
+
+# F8 -- the stall window is shared by every team on the machine. Per team meant 25 teams
+# could ring 25 times in one window, which is this release's own complaint with a sound.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  # brand.sh too: the banner text carries WOLFMUX_LEAD_MARK, exactly as notify.sh's own
+  # body does, and teamctl loads brand before notify and inbox
+  . "$WOLFMUX_HOME/lib/brand.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  WOLFMUX_DATA="$WORK/f8data"
+  /bin/mkdir -p "$WOLFMUX_DATA"
+  notify_deliver() { printf 'ring\n' >>"$WORK/f8.rings"; }
+  notify_wanted() { return 0; }
+  : >"$WORK/f8.rings"
+  # two DIFFERENT teams, each with its own STATE_DIR, inside one window
+  for t in alpha beta gamma; do
+    STATE_DIR="$WORK/f8-$t"
+    /bin/mkdir -p "$STATE_DIR/inbox"
+    printf '%s\tbeads\tnu\tnotice for %s\n' "$(now_epoch)" "$t" >"$STATE_DIR/inbox/lead"
+    TEAM="$t" inbox_stall_notify lead beads
+  done
+  [ "$(wc -l <"$WORK/f8.rings" | tr -d ' ')" = "1" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+F8_STATUS=$?
+check "F8: three teams inside one window ring ONCE, not once each" '[ "$F8_STATUS" -eq 0 ]'
+
+# F5 / option A -- the grace timer is cancelled by the request no longer being PENDING,
+# not by the human having looked. A glance at the popup unblocks no worker.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/approvals.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/brand.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  . "$WOLFMUX_HOME/lib/agents.sh"
+  STATE_DIR="$WORK/f5a"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  WOLFMUX_INBOX_APPROVAL_GRACE=3
+  # the pane is always "running", and typing is recorded instead of done
+  tm_pane_state() { printf 'running\n'; }
+  _notify_type_or_park() { printf '%s\n' "$3" >>"$WORK/f5a.typed"; }
+
+  : >"$WORK/f5a.typed"
+  # 1. a request that is DECIDED during the grace is never typed, even though the
+  #    notice itself is still unread
+  id1="$(approval_create backend Bash "rm -rf /tmp/x" "$PWD")"
+  inbox_add lead approval "[wolfmux] Permission request $id1 from backend. Run: teamctl approvals"
+  _inbox_approval_grace_wait lead "%9" "[wolfmux] Permission request $id1 from backend. Run: teamctl approvals" 60 "$id1" &
+  waiter=$!
+  sleep 1
+  approval_decide "$id1" approved operator ""
+  wait "$waiter" 2>/dev/null
+  [ ! -s "$WORK/f5a.typed" ] || exit 1
+  inbox_is_new lead "[wolfmux] Permission request $id1 from backend. Run: teamctl approvals" || exit 1
+
+  # 2. a request still PENDING after the grace IS typed, however much has been read
+  : >"$WORK/f5a.typed"
+  id2="$(approval_create backend Bash "curl example.com" "$PWD")"
+  inbox_add lead approval "[wolfmux] Permission request $id2 from backend. Run: teamctl approvals"
+  cmd_inbox --all >/dev/null 2>&1          # the human glances at everything: prefix N
+  _inbox_approval_grace_wait lead "%9" "[wolfmux] Permission request $id2 from backend. Run: teamctl approvals" 60 "$id2"
+  grep -q "$id2" "$WORK/f5a.typed" || exit 1
+
+  # 3. expired counts as settled: nothing is blocked, so nothing is typed
+  : >"$WORK/f5a.typed"
+  id3="$(approval_create backend Bash "git push --force" "$PWD")"
+  approval_decide "$id3" expired "" "no decision within 600s"
+  _inbox_approval_grace_wait lead "%9" "[wolfmux] Permission request $id3 from backend. Run: teamctl approvals" 60 "$id3"
+  [ ! -s "$WORK/f5a.typed" ] || exit 1
+
+  # 4. a store that cannot be read fails TOWARDS typing: a stalled worker is the harm
+  : >"$WORK/f5a.typed"
+  approval_field() { return 1; }
+  _inbox_approval_grace_wait lead "%9" "[wolfmux] Permission request A99 from backend. Run: teamctl approvals" 60 A99
+  [ -s "$WORK/f5a.typed" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+F5A_STATUS=$?
+check "F5: a DECIDED request is never typed; one still pending after the grace is" '[ "$F5A_STATUS" -eq 0 ]'
+
+# F4 -- the numeric knobs are validated like the word above them. The cooldown is the
+# dangerous one: a non-numeric value made the Stop hook return without delivering on
+# every turn, for the life of the team, silently.
+(
+  cd "$PROJECT" || exit 1
+  for bad in off 10s " " -5 1e3; do
+    (
+      # shellcheck disable=SC1090
+      WOLFMUX_INBOX_STOP_COOLDOWN="$bad" WOLFMUX_INBOX_APPROVAL_GRACE="$bad" \
+        WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE="$bad" WOLFMUX_INBOX_MAX="$bad"
+      . "$WOLFMUX_HOME/lib/provider-env.sh"
+      . "$WOLFMUX_HOME/lib/common.sh"
+      . "$WOLFMUX_HOME/lib/registry.sh"
+      . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+      . "$WOLFMUX_HOME/lib/notify.sh"
+      . "$WOLFMUX_HOME/lib/inbox.sh"
+      [ "$WOLFMUX_INBOX_STOP_COOLDOWN" = "10" ] || exit 1
+      [ "$WOLFMUX_INBOX_APPROVAL_GRACE" = "20" ] || exit 1
+      [ "$WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE" = "120" ] || exit 1
+      [ "$WOLFMUX_INBOX_MAX" = "200" ] || exit 1
+    ) || exit 1
+  done
+  # a real number is still honoured
+  (
+    WOLFMUX_INBOX_STOP_COOLDOWN=45
+    . "$WOLFMUX_HOME/lib/provider-env.sh"
+    . "$WOLFMUX_HOME/lib/common.sh"
+    . "$WOLFMUX_HOME/lib/registry.sh"
+    . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+    . "$WOLFMUX_HOME/lib/notify.sh"
+    . "$WOLFMUX_HOME/lib/inbox.sh"
+    [ "$WOLFMUX_INBOX_STOP_COOLDOWN" = "45" ] || exit 1
+  ) || exit 1
+  exit 0
+) >/dev/null 2>&1
+F4_STATUS=$?
+check "F4: a non-numeric knob falls back to its default instead of disabling a hook" '[ "$F4_STATUS" -eq 0 ]'
+
+teamctl inbox --all >/dev/null 2>&1
+
 teamctl destroy --worktrees --yes >/dev/null 2>&1
 
 echo
