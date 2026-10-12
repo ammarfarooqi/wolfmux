@@ -1133,6 +1133,17 @@ Kept as small as possible, since two other branches were in flight on the same f
 - `config/wolfmux/tmux.conf`: `status-right`, `status-right-length` and `bind O`.
   `status-left` and `status-interval` belong to the quiet-nudges branch and are untouched.
 
+This release is the one that puts a SECOND `#()` job on the status line — v1.15.0's `📨`
+inbox badge on `status-left`, this one's overview badge on `status-right` — so the cost is
+worth stating where somebody reading this entry will meet it. The segment was measured at
+82 ms per invocation, of which **64 ms is `teamctl`'s own startup** (sourcing eighteen
+library files) and 18 ms is the segment's own work. At `status-interval 5` that is two
+`teamctl` invocations every 5 s per attached client, about 164 ms per 5 s per client, or
+roughly 3% of one core. Nothing here is optimised for it: the cost is `teamctl`'s startup
+rather than either badge's work, so the lever is a startup path that does not source all
+eighteen libraries to answer a one-line read. Recorded as a limit with a named lever in
+[ROADMAP.md](ROADMAP.md#known-limits-of-v1).
+
 `tests/dashboard.sh`: PENDING_DASH_CHECKS checks, all passing. Suite total
 PENDING_TOTAL_BEFORE → PENDING_TOTAL_CHECKS, of which PENDING_TOTAL_PASS pass and
 PENDING_SMOKE_SKIP skip. Measured at `PENDING_SHA`, base `PENDING_BASE`, clean

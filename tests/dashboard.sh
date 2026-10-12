@@ -39,6 +39,11 @@ teamctl() { "$REPO/bin/teamctl" "$@"; }
 
 passed=0
 failed=0
+skipped=0
+skip() { # <description> <why>
+  skipped=$((skipped + 1))
+  printf '  SKIP  %s\n        (%s)\n' "$1" "$2"
+}
 check() { # <description> <command string>
   if eval "$2" >/dev/null 2>&1; then
     passed=$((passed + 1))
@@ -205,6 +210,39 @@ check "no percent sign is ever printed for an unknown window" \
   'lib_eval "case \"\$(dash_context_label 142000 \"\")\" in *%*) exit 1 ;; esac"'
 check "a team whose agent has an unknown window still renders, with no share" \
   'lib_eval "agent_context() { CTX_TOKENS=142000 CTX_WINDOW=\"\" CTX_FILE=\"\"; return 0; }; team_paths default; dash_team_json \"\" \"\" 1 | \$JQ_BIN -e \".agents[0].context == \\\"142k\\\"\""'
+
+# The six checks above, and the one directly above this comment, all hand an empty window
+# STRAIGHT TO the formatter — the last one by replacing agent_context with a fake that
+# hardcodes it. They prove the formatter copes. They do NOT prove anything ever produces
+# an empty window, so none of them would notice if the real reader stopped producing one.
+#
+# That gap matters more than it looks. Before v1.14.1, agent_context ended with
+#     [ -n "$CTX_WINDOW" ] || CTX_WINDOW="${computed:-200000}"
+# so CTX_WINDOW could NEVER be empty and this whole path was unreachable. v1.14.1 dropped
+# the 200000 and made "" mean unknown. That change arrives here through a CLEAN MERGE —
+# the lines are nowhere near the ones this branch touches, so git produces no conflict
+# marker and nothing prompts a resolver to look. A behaviour change with no marker is
+# exactly the shape that gets merged unexamined, and this function is going to be merged
+# through again.
+#
+# So the two checks below drive the REAL agent_context end to end: a Codex rollout that
+# reports its token count and declares NO model_context_window, for a model whose own key
+# declares no window either (astra). On v1.14.1 and later CTX_WINDOW comes back empty and
+# the cell must show the count with no share. On an older tree an empty CTX_WINDOW cannot
+# be produced at all, so rather than fail for a reason that has nothing to do with this
+# code, they SKIP and print why — the same rule the suite already uses for a signal the
+# launch has made untestable.
+if lib_eval 'model_context_window astra' >/dev/null 2>&1; then
+  skip "the real reader produces an empty CTX_WINDOW for a model with no declared window" \
+    "this tree's model_context_window still declares a window for every model, so an empty CTX_WINDOW cannot be produced here: needs v1.14.1 or later"
+  skip "and the dashboard cell for that agent shows the count with no share" \
+    "same reason"
+else
+  check "the real reader produces an empty CTX_WINDOW for a model with no declared window" \
+    'lib_eval "team_paths default; w=\$(reg_field worker1 workdir); r=\$WOLFMUX_CODEX_SESSIONS/2026/02/02; mkdir -p \"\$r\"; f=\$r/rollout-2026-02-02T00-00-00-nowin.jsonl; printf \"%s\n%s\n\" \"{\\\"type\\\":\\\"session_meta\\\",\\\"payload\\\":{\\\"cwd\\\":\\\"\$w\\\"}}\" \"{\\\"type\\\":\\\"event_msg\\\",\\\"payload\\\":{\\\"type\\\":\\\"token_count\\\",\\\"info\\\":{\\\"last_token_usage\\\":{\\\"total_tokens\\\":142000}}}}\" > \"\$f\"; agent_context \"\$w\" astra codex \"\"; [ -n \"\$CTX_TOKENS\" ] && [ -z \"\$CTX_WINDOW\" ]"'
+  check "and the dashboard cell for that agent shows the count with no share" \
+    'lib_eval "team_paths default; w=\$(reg_field worker1 workdir); r=\$WOLFMUX_CODEX_SESSIONS/2026/02/02; mkdir -p \"\$r\"; f=\$r/rollout-2026-02-02T00-00-00-nowin.jsonl; printf \"%s\n%s\n\" \"{\\\"type\\\":\\\"session_meta\\\",\\\"payload\\\":{\\\"cwd\\\":\\\"\$w\\\"}}\" \"{\\\"type\\\":\\\"event_msg\\\",\\\"payload\\\":{\\\"type\\\":\\\"token_count\\\",\\\"info\\\":{\\\"last_token_usage\\\":{\\\"total_tokens\\\":142000}}}}\" > \"\$f\"; agent_context \"\$w\" astra codex \"\"; out=\$(dash_context_label \"\$CTX_TOKENS\" \"\$CTX_WINDOW\"); [ \"\$out\" = 142k ] && case \"\$out\" in *%*) exit 1 ;; esac"'
+fi
 
 echo "== when the transcript was last written"
 # The honest activity signal: the mtime of the very file the context reader opens. No
@@ -473,5 +511,5 @@ tmux -L "$OTHER_SOCKET2" kill-server 2>/dev/null
 /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$OTHER_SOCKET2"
 
 echo
-echo "result: $passed passed, $failed failed"
+echo "result: $passed passed, $failed failed, $skipped skipped"
 [ "$failed" -eq 0 ]
