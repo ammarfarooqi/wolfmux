@@ -581,6 +581,14 @@ only the keystroke check uses it — a half-typed line or copy mode is busy at a
 `WOLFMUX_INBOX_STALL_NOTIFY=off` drops the desktop notification, and `WOLFMUX_NOTIFY=off`
 already does.
 
+All six of those — `WOLFMUX_NUDGE_TYPE`, `WOLFMUX_NUDGE_LEAD_IDLE`,
+`WOLFMUX_NUDGE_COLLISION_CHECK`, `WOLFMUX_INBOX_APPROVAL_TYPE`,
+`WOLFMUX_INBOX_APPROVAL_GRACE` and `WOLFMUX_INBOX_STALL_NOTIFY` — go in
+`~/.config/wolfmux/config` as `KEY=value` lines, which is where a knob has to live to
+reach an agent's pane: a pane's environment comes from the tmux server, not from the
+shell you typed `teamctl` in. Before v1.16.1 none of them was on that file's allowlist,
+so writing one there was read and dropped, with no error and no effect.
+
 **v1.16.0 and earlier left one case broken, and v1.16.1 is the fix.** A client attached
 and the lead idle meant the notice was filed and nothing else, and a filed notice reaches
 the agent through its **Stop** hook, which only fires when a turn ENDS. An agent that is
