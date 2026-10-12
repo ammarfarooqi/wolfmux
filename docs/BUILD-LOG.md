@@ -836,6 +836,72 @@ gained the same shape rather than a second one: `skipped=0`, `skip() { skipped=$
 `result: $passed passed, $failed failed, $skipped skipped`. `tests/smoke.sh`: 333 → 337
 (the one check became five), 336 pass + 1 skip under `nohup`. v1.14.2.
 
+## 30. `--dangerously-skip-permissions` does not switch off the auto-mode classifier (v1.14.3)
+
+Bypass mode auto-approves ordinary permission checks, but it runs apart from Claude Code's
+auto-mode classifier and overrides only `safetyCheck`-class classifier decisions; a decision
+such as "External System Writes" still denies the call while the permission is still being
+decided as `ask`. This hit the project-management lead's Jira "Complete sprint" click twice;
+a restart of the agent was tried as a workaround and did not fix it, which is itself evidence
+the behavior is not version drift — the relevant code is byte-identical between Claude Code
+2.1.295 and 2.1.296. The classifier never runs once a `permissions.allow` rule resolves the
+call before it is asked.
+
+New team policy key `browser-writes`, `ask` (default) or `allow`, following the exact shape
+of the existing keys (`policy.sh`: `POLICY_KEYS`, `policy_default`, `policy_valid`,
+`policy_choices`, the `teamctl policy` listing). `allow` adds one line to the jq merge
+`write_agent_settings` (`agents.sh`) already builds per agent — `permissions.allow:
+["mcp__claude-in-chrome__*"]` — applied to every agent of the team, lead and workers alike;
+`ask` leaves the settings document byte-identical to before this key existed (a test: no
+`permissions` key at all). Default is `ask`, not `allow` for every skip-mode agent, because
+the rule also removes the External System Writes check for every Chrome write that team's
+agents make from then on — a deliberate, team-scoped trade, not a blanket exemption.
+
+A second team's review of the same function caught a trap before merge: the new arm and the
+existing role-level `PermissionRequest` hook arm (`$mode == "lead"`) have near-identical
+purposes and sit in the same jq chain with different guards — a careless future edit could
+treat them as duplicates and hoist one out of its guard or drop it, and either failure reads
+fine in a diff. Fix: the jq argument is named `$browser_allow` (nothing in the name reads as
+"permission"), with a comment at its arm saying what it is *not*. The test suite was
+widened from 2 checks to the full 4-row cross-product (role × worker-permissions mode ×
+team policy) with an exact array comparison, never `contains` or a regex — row 3 (a
+lead-mode worker in a default-policy team: hook present, no `permissions` key at all) is the
+one a hurried merge breaks and the one nothing in the suite covered before this.
+
+Building that cross-product surfaced two bugs of its own, confirming the review's point that
+four checks catch what two cannot:
+
+- **A no-op wait reads a file before the restart that was supposed to change it finishes
+  writing it.** The settings document is rewritten by the respawned pane's own process,
+  asynchronously from `teamctl restart` returning; the first version of the wait helper
+  polled only "does the file have a `permissions` key", which rows 1 and 2 never change
+  (they toggle `worker-permissions`, which changes the `PermissionRequest` hook, not the
+  permissions key) — so the wait returned immediately, before the restart had actually
+  rewritten the file, and the check could have passed by reading stale content. Fixed by a
+  generic `wait_for <file> <jq-filter>` that polls the exact condition each check needs,
+  never a blanket "settled".
+- **`/bin/bash` 3.2.57 (this machine's shell, which the whole project is written for) mis-parses
+  a comma-bearing jq object-construction shorthand three quoting levels deep inside an
+  `eval`'d check string.** `jq -c "{env, hooks}" "$(bw_settings lead)"`, embedded inside
+  `"$(...)"` inside a single-quoted `check()` argument, silently split into two separate jq
+  invocations despite the quoting — `jq -c env FILE` (which, by accident, calls jq's own
+  builtin `env` filter and prints the whole process environment) and `jq -c ' hooks' FILE`
+  (a compile error, "hooks/0 is not defined", empty output) — never the single `{env,
+  hooks}` filter actually written. A single-key filter with no comma, such as `{allow:
+  [...]}`, is unaffected. This is the second `/bin/bash` 3.2 trap this repo has hit in one
+  day, after issue #17's `trap -p HUP` not reporting a signal that arrived already ignored:
+  the pattern is the same both times — a fact 3.2 cannot give up through its ordinary
+  introspection (`trap -p`) or, here, through ordinary quoting rules once `eval` and nested
+  command substitution are stacked deep enough. Fixed by never writing a comma-bearing
+  `{a, b}` jq filter inline inside an `eval`'d string again: a plain, never-`eval`'d helper
+  function (`env_hooks() { jq -c '{env, hooks}' "$1"; }`) holds the filter instead, and the
+  check calls the function.
+
+`tests/smoke.sh`: 337 → 347 (defaults, the round-trip, the invalid-value refusal, the two
+allow-shape checks, and the 4-row cross-product), 346 pass + 1 skip under `nohup`
+(unrelated, issue #17). `tests/docs.sh`: 36 → 36 (no new command, option or category — one
+new policy key named everywhere the existing ones already are). v1.14.3.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

@@ -148,6 +148,7 @@ teamctl policy                                  # show this project's policy
 teamctl policy worker-spawn on|off              # may workers run `teamctl spawn`?  default off
 teamctl policy worker-permissions skip|lead|ask # default skip
 teamctl policy lead-permissions skip|ask        # default skip
+teamctl policy browser-writes ask|allow         # allow writes a Chrome-write ALLOW rule into every agent's settings  default ask
 teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
 teamctl policy lead-teams on|off                # may the lead found further teams?  default on
 teamctl policy branch-template '<template>'     # how this team names workers' branches (above)
