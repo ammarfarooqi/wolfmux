@@ -465,6 +465,14 @@ one line each — and is read from there by whoever needs it:
 | --- | --- | --- |
 | you, passively | `📨 3` on the left of the status line: notices nobody has expanded yet. `🔔` as well when one of them is a permission request waiting for your decision. Nothing at all at zero | no |
 | you, on demand | `prefix N`, or `teamctl inbox` / `teamctl inbox --all`. Reading them clears the count | no |
+
+The badge and `prefix N` come from `config/wolfmux/tmux.conf`, which a running tmux server has
+already read. To put them on a server that is already up — teams running in it and all —
+`tmux -L wolfmux source-file ~/.config/wolfmux/tmux.conf`. That applies the status line and the
+key bindings at once, needs no server restart and **no team restart**; restarting a team for
+this would regenerate every agent's settings document for nothing. Every setting in that file
+is a `set -g` overwrite, so re-sourcing is safe to repeat, and it re-reads your own
+`~/.tmux.conf` as well.
 | you, when an agent is stuck | one desktop notification, at most one per role every two minutes, carrying the count: "team/lead: 4 notices waiting". A click opens the team | no |
 | the agent | its own session hands them over when its turn ends, or when you next prompt it. In its transcript that is a `[wolfmux] You have team notices:` block | no |
 | the agent, typed | a worker's idle pane is still typed into, as before. Your lead pane is typed into only while **no client is attached** to the team — nobody is looking then, so the line costs nothing and the agent wakes at once | only when nobody is watching |
