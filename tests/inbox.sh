@@ -975,6 +975,87 @@ check "a notice longer than the text cap is still marked delivered when it is ty
 F4_STATUS=$?
 check "F4: a non-numeric knob falls back to its default instead of disabling a hook" '[ "$F4_STATUS" -eq 0 ]'
 
+echo "== v1.14.3's browser-writes arm and this release's inbox hooks, in ONE document"
+# The division of labour, so this does not re-do work that belongs with the other branch:
+# tests/smoke.sh's four browser-writes rows (v1.14.3) pin the TEAM-level permissions arm
+# against the role-level PermissionRequest hook, which is the pair a careless merge of the
+# two branches would flatten. Those four are ASSUMED here and never re-asserted. What that
+# matrix cannot reach is the case this release creates: ONE document carrying both inbox
+# hooks AND that arm at the same time — the product neither branch could test alone,
+# because neither had both halves.
+#
+# $TEAMCTL_SELF is an absolute path that differs per run and per checkout, so it is
+# normalised to a token before any comparison; everything else is compared verbatim, on
+# `jq -S .` so key order can never make a true document look false. There is deliberately
+# no golden fixture FILE: it would go stale on every legitimate change to that jq chain,
+# and a fixture nobody trusts gets deleted rather than read.
+settings_of() { printf '%s\n' "$STATE_DIR/settings/$1.json"; }
+norm_self() { sed "s#$REPO/bin/teamctl#<TEAMCTL>#g"; }
+settings_doc() { jq -S . "$(settings_of "$1")" | norm_self; }
+settings_doc_noperm() { jq -S 'del(.permissions)' "$(settings_of "$1")" | norm_self; }
+settings_keys() { jq -Sc 'keys' "$(settings_of "$1")"; }
+# Every hook command in the document, by event: a quiet change of hook SHAPE fails this
+# even when both documents change together, which is what the delta below cannot see.
+settings_hooks() { jq -Sc '.hooks | with_entries(.value |= [.[].hooks[].command])' "$(settings_of "$1")" | norm_self; }
+# all three at once in one document — env, the hooks (the notification hook KEPT and both
+# inbox hooks present), and permissions.allow as an EXACT array. Never a contains, never a
+# substring, never "the matcher is present": an allow list that grows unnoticed is how a
+# narrow exemption becomes a machine-wide one, so a second matcher must FAIL this.
+allow_doc_ok() { # <role>
+  jq -e '
+    (.env | type) == "object"
+    and ([.hooks.Stop[].hooks[].command] | map(select(test("_notify$"))) | length) == 1
+    and ([.hooks.Stop[].hooks[].command] | map(select(test("_inbox-stop$"))) | length) == 1
+    and (.hooks.UserPromptSubmit[0].hooks[0].command | test("_inbox-prompt$"))
+    and .permissions == {allow: ["mcp__claude-in-chrome__*"]}
+  ' "$(settings_of "$1")" >/dev/null 2>&1
+}
+worker_guard_ok() { # <role> — the worktree guard is still there beside the rest
+  jq -e '([.hooks.PreToolUse[].hooks[].command] | map(select(test("_guard$"))) | length) == 1' \
+    "$(settings_of "$1")" >/dev/null 2>&1
+}
+# The document is rewritten by the respawned pane's own process, asynchronously from
+# `teamctl restart` returning, so poll for the condition that actually changed rather than
+# trusting a fixed sleep: a busy machine must not be able to make this flake.
+settings_wait() { # <role> <jq boolean filter>
+  local f i
+  f="$(settings_of "$1")"
+  for i in 1 2 3 4 5 6 7 8; do
+    jq -e "$2" "$f" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+# The default-policy documents FIRST: this team has never seen the allow policy.
+DEFAULT_LEAD_DOC="$(settings_doc lead)"
+DEFAULT_QA_DOC="$(settings_doc qa)"
+DEFAULT_LEAD_KEYS="$(settings_keys lead)"
+DEFAULT_QA_KEYS="$(settings_keys qa)"
+DEFAULT_LEAD_HOOKS="$(settings_hooks lead)"
+DEFAULT_QA_HOOKS="$(settings_hooks qa)"
+DEFAULT_LEAD_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of lead)" 2>/dev/null)"
+DEFAULT_QA_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of qa)" 2>/dev/null)"
+EXPECT_LEAD_HOOKS='{"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt"]}'
+EXPECT_QA_HOOKS='{"PreToolUse":["\"<TEAMCTL>\" _guard"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt"]}'
+teamctl policy browser-writes allow >/dev/null 2>&1
+teamctl restart lead >/dev/null 2>&1
+teamctl restart qa >/dev/null 2>&1
+settings_wait lead 'has("permissions")'
+LEAD_ALLOW_WAIT=$?
+settings_wait qa 'has("permissions")'
+QA_ALLOW_WAIT=$?
+check "settings at allow: both documents really were rewritten after the policy change (polled, not slept)" '[ "$LEAD_ALLOW_WAIT" -eq 0 ] && [ "$QA_ALLOW_WAIT" -eq 0 ]'
+check "settings at allow (lead): env, the notification hook, BOTH inbox hooks and permissions.allow as an exact array — all in one document" 'allow_doc_ok lead'
+check "settings at allow (worker): the same, with the worktree guard still beside them" 'allow_doc_ok qa && worker_guard_ok qa'
+# The DELTA, from both directions: their arm adds exactly the permissions key and nothing
+# else. A one-directional "has no permissions key" would miss a second thing it also added.
+check "settings delta (lead): at the default there is no permissions key at all, and that document equals the allow document with .permissions deleted" '[ "$DEFAULT_LEAD_PERMKEY" = "false" ] && [ "$DEFAULT_LEAD_DOC" = "$(settings_doc_noperm lead)" ]'
+check "settings delta (worker): the same both ways round" '[ "$DEFAULT_QA_PERMKEY" = "false" ] && [ "$DEFAULT_QA_DOC" = "$(settings_doc_noperm qa)" ]'
+# The DRIFT, which the delta cannot see: if something else in that jq chain quietly changes
+# shape, BOTH documents change together and the delta still passes.
+check "settings drift (lead): the key set is exactly env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook and the inbox UserPromptSubmit hook" '[ "$DEFAULT_LEAD_KEYS" = "[\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
+check "settings drift (worker): exactly env, hooks and teammateMode, and exactly the guard, the notification hook and the two inbox hooks" '[ "$DEFAULT_QA_KEYS" = "[\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
+
 teamctl inbox --all >/dev/null 2>&1
 
 teamctl destroy --worktrees --yes >/dev/null 2>&1
