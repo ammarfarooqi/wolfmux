@@ -359,10 +359,15 @@ Two notices still reach your conversation on purpose:
   reaches that agent at all. A Codex lead is therefore deliberately noisier than a
   Claude lead; `WOLFMUX_NUDGE_TYPE=off` is the way to silence even that.
 
-One case is known and left as it is: a client is attached, you are looking at another
-pane, and the lead is idle. The bead then waits for the badge to be noticed, for the
-desktop notification, or for your next prompt. Nothing is lost either way — the bead is
-in Beads and the notice is in the file.
+That case used to be broken and v1.16.1 fixed it: a client attached and the lead idle
+meant the notice was filed and nothing more, and a filed notice reaches the agent through
+its `Stop` hook, which only fires when a turn ENDS. An idle agent has no turn left to
+end, so the notice waited for the badge to be noticed or for your next prompt — hours, in
+the case that was measured. Now the lead's pane is typed into whenever it is QUIET: no
+keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s), nothing half-typed on the input
+line, not in copy mode. Busy instead, and the notice waits in the marker and goes in by
+itself once the pane is quiet. So an idle lead wakes up on its own, and a lead you are in
+the middle of talking to is still not interrupted.
 
 ## Git
 

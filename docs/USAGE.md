@@ -554,7 +554,7 @@ is a `set -g` overwrite, so re-sourcing is safe to repeat, and it re-reads your 
 `~/.tmux.conf` as well.
 | you, when an agent is stuck | one desktop notification, at most one per role every two minutes, carrying the count: "team/lead: 4 notices waiting". A click opens the team | no |
 | the agent | its own session hands them over when its turn ends, or when you next prompt it. In its transcript that is a `[wolfmux] You have team notices:` block | no |
-| the agent, typed | a worker's idle pane is still typed into, as before. Your lead pane is typed into only while **no client is attached** to the team — nobody is looking then, so the line costs nothing and the agent wakes at once | only when nobody is watching |
+| the agent, typed | a worker's idle pane is still typed into, as before. Your lead pane is typed into only while it is **quiet**: no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE` (5 minutes), nothing half-typed on its input line, not in copy mode. Otherwise the notice waits and goes in by itself once that pane is quiet | never while you are working in it |
 
 Two things are tracked per notice, and they are independent: whether **you** have
 expanded it (that is the count in the status bar) and whether the **agent** has been
@@ -574,14 +574,20 @@ Two cases still put a line in your conversation on purpose:
   hand a notice over with, so typing is the only channel that reaches that agent at all.
 
 The knob for the rest is `WOLFMUX_NUDGE_TYPE`: `off` (never type into anybody),
-`workers`, `detached-lead` (the default — workers, plus the lead while nobody is
-attached) and `all` (the pre-1.15.0 behaviour). `WOLFMUX_INBOX_STALL_NOTIFY=off` drops
-the desktop notification, and `WOLFMUX_NOTIFY=off` already does.
+`workers`, `detached-lead` (the default — workers, plus the lead's pane whenever it is
+quiet) and `all` (the pre-1.15.0 behaviour, which types in whatever you are doing).
+`WOLFMUX_NUDGE_LEAD_IDLE` is how quiet the lead's pane has to be first: 300 seconds, and
+only the keystroke check uses it — a half-typed line or copy mode is busy at any setting.
+`WOLFMUX_INBOX_STALL_NOTIFY=off` drops the desktop notification, and `WOLFMUX_NOTIFY=off`
+already does.
 
-One case is known and left as it is: a client is attached, you are looking at another
-pane, and the lead is idle. Then the bead waits for you to notice the badge, for the
-desktop notification, or for your next prompt to the lead. Nothing is lost — the bead is
-in Beads and the notice is in the file.
+**v1.16.0 and earlier left one case broken, and v1.16.1 is the fix.** A client attached
+and the lead idle meant the notice was filed and nothing else, and a filed notice reaches
+the agent through its **Stop** hook, which only fires when a turn ENDS. An agent that is
+already idle has no turn left to end, so the notice sat there: measured on 2026-10-12, a
+lead idle from 13:58Z never received P1 notices sent at 16:13Z or 16:53Z and was still
+asleep at 17:35Z. Now such a notice is typed in once the pane is quiet, so an idle lead
+wakes up by itself — and a lead you are in the middle of talking to still does not.
 
 ## tmux, in the team session only
 

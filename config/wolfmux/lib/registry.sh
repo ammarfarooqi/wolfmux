@@ -276,6 +276,31 @@ nudge_pending_cap() {
   if [ "$held" -gt 0 ]; then printf '%s\n' "$held"; else printf '%s\n' "$2"; fi
 }
 
+# nudge_pending_put_idle <role> <seconds> — how long the pane must have had no keystroke
+# before this marker's waiter may type into it (tm_pane_human_busy's check (a)). RAISE
+# only, never lower, which is the opposite of the cap and for the same reason: the cap
+# bounds how long a notice is worth waiting for, so the most urgent notice wins, while
+# this bounds how quiet the pane must be, so the most CAUTIOUS notice wins. One marker
+# per role holds notices from several paths; a notice parked for the human's own
+# conversation may not be delivered later under a worker's five-second rule.
+nudge_pending_put_idle() {
+  local marker="$STATE_DIR/nudge/$1.pending" held
+  [ -d "$marker" ] || return 1
+  case "${2:-}" in "" | *[!0-9]*) return 0 ;; esac
+  if [ -f "$marker/idle" ]; then
+    held="$(_nudge_num "$marker/idle")"
+    if [ "$held" -ge "$2" ]; then return 0; fi
+  fi
+  printf '%s\n' "$2" >"$marker/idle"
+}
+
+# nudge_pending_idle <role> <fallback> — the marker's idle window, or the fallback
+nudge_pending_idle() {
+  local held
+  held="$(_nudge_num "$STATE_DIR/nudge/$1.pending/idle")"
+  if [ "$held" -gt 0 ]; then printf '%s\n' "$held"; else printf '%s\n' "$2"; fi
+}
+
 # --- project lock: serializes spawn / stop / restart / destroy ------------------
 # mkdir is atomic on every POSIX filesystem; macOS ships no flock(1).
 LOCK_HELD=""

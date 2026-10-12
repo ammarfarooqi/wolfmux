@@ -1,7 +1,8 @@
 # ADR-0028: A notice is filed, not typed into the human's conversation
 
 **Date**: 2026-10-10
-**Status**: accepted
+**Status**: accepted, amended in part by ADR-0029 (the first Risk below happened in
+production on 2026-10-12; the lead's pane is now typed into while it is quiet)
 **Deciders**: the repository owner (issue #11), the v1.14.0 author as reviewer, the v1.15.0 author
 
 ## Context
@@ -100,6 +101,9 @@ undelivered/delivered for the agent.
 - A client attached, the human looking at another pane, and the lead idle: the bead waits
   for the badge, the notification, or the next prompt. Named in ROADMAP as a known limit;
   `WOLFMUX_NUDGE_TYPE=all` restores the old behaviour for anybody who prefers it.
+  **This happened.** Measured on 2026-10-12: a lead idle from 13:58Z never received P1
+  notices sent at 16:13Z or 16:53Z. ADR-0029 replaces "never typed while watched" with
+  "typed while the pane is quiet", and this risk no longer stands as written.
 - The `Stop` hook answers `block`. Two guards keep that from looping — the lines are
   marked delivered before the answer is printed, and no turn is blocked again inside
   `WOLFMUX_INBOX_STOP_COOLDOWN` (10 s) — and `tests/inbox.sh` checks each separately.

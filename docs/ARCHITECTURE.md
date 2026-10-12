@@ -202,7 +202,7 @@ means busy:
 | Check | How | Needs a client attached? |
 |-------|-----|--------------------------|
 | the pane is in copy mode or scrollback | `#{pane_in_mode}` is 1, so keys would drive the mode, not the prompt | no |
-| somebody is at this pane and pressed a key moments ago | it is the active pane of the active window of an attached session, and that client's `#{client_activity}` is less than `WOLFMUX_NUDGE_HUMAN_IDLE` (5 s) old. tmux moves `client_activity` on real keystrokes only: not on pane output, not on `send-keys` from outside, and a detached session lists no client at all | yes, by construction |
+| somebody is at this pane and pressed a key moments ago | it is the active pane of the active window of an attached session, and that client's `#{client_activity}` is less than the caller's window old — `WOLFMUX_NUDGE_HUMAN_IDLE` (5 s) for a worker, `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) for the lead's own pane, which is the human's conversation. tmux moves `client_activity` on real keystrokes only: not on pane output, not on `send-keys` from outside, and a detached session lists no client at all | yes, by construction |
 | the input line already holds something | the row at `#{cursor_y}`, captured with `-e`, with escape sequences and DIM runs removed, then box glyphs, non-breaking spaces, whitespace and ONE leading prompt marker removed, is not empty | no |
 
 **Only the keystroke check needs a client**, and it needs one by construction: the sole
@@ -261,9 +261,10 @@ kill it. `teamctl nudge` says `deferred: …`, names the check that fired, and e
 `WOLFMUX_NUDGE_COLLISION_CHECK=0` brings the old blind typing back.
 
 One window stays open: `tm_type_line` sends the text, waits 300 ms so a TUI does not read
-the Enter as part of a paste, then sends Enter. A human who had been idle for
-`WOLFMUX_NUDGE_HUMAN_IDLE` seconds can start typing inside those 300 ms and have their
-first keystrokes land after the notice. Closing it needs tmux to report a key arriving
+the Enter as part of a paste, then sends Enter. A human who had been quiet for the pane's
+whole keystroke window — `WOLFMUX_NUDGE_HUMAN_IDLE` for a worker, `WOLFMUX_NUDGE_LEAD_IDLE`
+for the lead's own pane — can start typing inside those 300 ms and have their first
+keystrokes land after the notice. Closing it needs tmux to report a key arriving
 mid-line, and there is no such channel. Measured with a watcher typing from the moment a
 notice appears, re-checking between queued lines cut the glued lines from 5 of 5 to 2 of
 5 and kept the other 3 for later.
@@ -312,13 +313,14 @@ Who is **typed** into, and why each row is what it is:
 | --- | --- | --- |
 | a worker, Claude-family | yes, when idle (unchanged) | nobody is sitting in front of it, and it wakes the agent at once |
 | the lead, Claude-family, **no client attached** | yes | nobody is looking; the line only goes to scrollback, and the agent wakes at once. `#{client_activity}` moves on real keystrokes only, and a detached session lists no client at all, so "is anybody watching" is one cheap tmux read |
-| the lead, Claude-family, **a client attached** | **no** | this is the whole point. The badge carries it, the agent is given it by its hooks |
+| the lead, Claude-family, **a client attached** | only while that pane is **quiet** | this is the whole point, and v1.16.1 is where it stopped being "never" (issue #12). Quiet means all three `tm_pane_human_busy` checks say no, with the keystroke window widened to `WOLFMUX_NUDGE_LEAD_IDLE` (300 s): no keystroke in that pane for five minutes, nothing on the input line, no copy mode. Busy instead, and the notice waits in the per-role marker for the one waiter, exactly as a busy worker pane does. v1.15.0 answered "a client is attached" by filing only, and filing reaches the agent through its **Stop** hook, which fires on a turn boundary — an agent that is already idle has no further boundary, so such a notice was never handed over at all |
 | any pane, **Codex-family** (`astra`, `codex:<id>`) | yes, lead included | Codex has no hooks, so typing is the only channel that reaches that agent at all. A Codex lead is deliberately noisier than a Claude lead; this row is the exception to the one above, not an oversight |
 | the lead, an **approval**, a client attached | after a grace period, if still pending | an approval holds a WORKER until the lead answers; see below |
 
-`WOLFMUX_NUDGE_TYPE` is the single knob: `off` · `workers` · `detached-lead` (default) ·
-`all` (the pre-1.15.0 behaviour). Everything the v1.14.0 fix built is kept and only
-narrowed — the human-busy check, the per-role marker, the one detached waiter, the
+`WOLFMUX_NUDGE_TYPE` decides WHO is typed into: `off` · `workers` · `detached-lead`
+(default) · `all` (the pre-1.15.0 behaviour). For the attached lead under the default,
+`WOLFMUX_NUDGE_LEAD_IDLE` decides WHEN: how long that pane must have had no keystroke
+first. Everything the v1.14.0 fix built is kept and only narrowed — the human-busy check, the per-role marker, the one detached waiter, the
 heartbeat, the stale takeover, the per-marker caps, the reap, and `trap '' HUP INT TERM`
 — because the typed paths above still go through all of it.
 
