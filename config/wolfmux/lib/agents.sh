@@ -748,9 +748,13 @@ write_agent_settings() {
   # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh).
   # Everyone: notifications are teamctl's job inside a team (lib/notify.sh).
   # Lead mode only: permission requests go to the lead.
+  # Everyone, when the team's browser-writes policy says so (lib/policy.sh): an explicit
+  # ALLOW rule for Chrome writes, so the permission check resolves before Claude Code's
+  # auto-mode classifier ever runs on it (bypass mode does not switch that off).
   "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" \
     --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$(($(approval_timeout) + 30))" \
-    --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" '
+    --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" \
+    --arg browser_allow "$(policy_get browser-writes)" '
     (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
     * {env: {ECC_DISABLED_HOOKS: $silence}}
     * (if $notify_command != ""
@@ -760,7 +764,12 @@ write_agent_settings() {
                                    hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
     * (if $kind == "worker" and $mode == "lead"
        then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $permission_command, timeout: $timeout}]}]}}
-       else {} end)' >"$path"
+       else {} end)
+    # $browser_allow is the TEAM-level browser-write grant (policy browser-writes, lib/policy.sh).
+    # It is NOT the role-level PermissionRequest hook above — different gate, different purpose,
+    # kept as its own arm on purpose so a later edit cannot merge or drop one for the other.
+    * (if $browser_allow == "allow"
+       then {permissions: {allow: ["mcp__claude-in-chrome__*"]}} else {} end)' >"$path"
   printf '%s\n' "$path"
 }
 

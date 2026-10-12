@@ -8,6 +8,11 @@
 #   lead-permissions    skip | ask          how the lead's CLI treats permission prompts
 #   worker-permissions  skip | lead | ask   skip = none asked · lead = the lead decides
 #                                           them (teamctl approvals) · ask = in the pane
+#   browser-writes      ask | allow         DEFAULT ask. allow writes an explicit
+#                                           permissions.allow rule for mcp__claude-in-chrome__*
+#                                           into every agent's settings (lead and workers), so
+#                                           a Chrome write resolves before Claude Code's
+#                                           auto-mode classifier ever sees it (lib/agents.sh)
 #   worker-spawn        off | on            may a worker run `teamctl spawn`?
 #   lead-teams          on | off            may this team's lead found further teams (teamctl start
 #                                           <model> --team <new>) and hand work over to them?
@@ -25,12 +30,13 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules branch-template"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules branch-template"
 
 policy_default() {
   case "$1" in
     lead-permissions) printf '%s\n' "${WOLFMUX_LEAD_PERMISSIONS:-skip}" ;;
     worker-permissions) printf '%s\n' "${WOLFMUX_WORKER_PERMISSIONS:-skip}" ;;
+    browser-writes) printf '%s\n' "${WOLFMUX_BROWSER_WRITES:-ask}" ;;
     worker-spawn) printf '%s\n' "${WOLFMUX_WORKER_SPAWN:-off}" ;;
     worker-isolation) printf '%s\n' "${WOLFMUX_WORKER_ISOLATION:-on}" ;;
     lead-teams) printf '%s\n' "${WOLFMUX_LEAD_TEAMS:-on}" ;;
@@ -51,6 +57,7 @@ policy_valid() { # <key> <value>
   case "$1:$2" in
     lead-permissions:skip | lead-permissions:ask) return 0 ;;
     worker-permissions:skip | worker-permissions:lead | worker-permissions:ask) return 0 ;;
+    browser-writes:ask | browser-writes:allow) return 0 ;;
     worker-spawn:on | worker-spawn:off) return 0 ;;
     worker-isolation:on | worker-isolation:off) return 0 ;;
     lead-teams:on | lead-teams:off) return 0 ;;
@@ -73,6 +80,7 @@ policy_choices() {
   case "$1" in
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
+    browser-writes) printf 'ask|allow\n' ;;
     worker-spawn | worker-isolation | lead-teams | link-node-modules) printf 'on|off\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
@@ -267,6 +275,7 @@ cmd_policy() {
     say "policy for $(short_path "$ROOT")"
     say "  lead-permissions    $(policy_get lead-permissions)    (skip|ask)"
     say "  worker-permissions  $(policy_get worker-permissions)    (skip|lead|ask)   lead = you decide them: teamctl approvals"
+    say "  browser-writes      $(policy_get browser-writes)      (ask|allow)       allow writes a Chrome-write ALLOW rule into every agent's settings"
     say "  worker-spawn        $(policy_get worker-spawn)     (on|off)          may workers run 'teamctl spawn'?"
     say "  worker-isolation    $(policy_get worker-isolation)      (on|off)          refuse a worker's tool calls outside its own worktree and branch"
     say "  lead-teams          $(policy_get lead-teams)      (on|off)          may the lead found further teams and hand work over?"

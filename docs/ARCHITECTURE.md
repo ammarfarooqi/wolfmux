@@ -331,6 +331,20 @@ is alive, it returns nothing, which means "show the normal prompt".
 
 ![Sequence: a worker's permission request is filed, the lead approves or denies, the decision returns to the worker's CLI](diagrams/approval-flow.svg)
 
+### Browser writes
+
+`skip` mode's `--dangerously-skip-permissions` auto-approves ordinary permission checks, but
+it does not switch off Claude Code's auto-mode classifier: that runs separately and can still
+deny a call its own way, for example an "External System Writes" decision on a
+`mcp__claude-in-chrome__*` write. The classifier only runs while the permission decision is
+still `ask`; an explicit `permissions.allow` rule for the tool resolves the call before the
+classifier ever sees it. `write_agent_settings` (`lib/agents.sh`) writes that rule into every
+agent's settings — lead and workers alike — when the team's `browser-writes` policy
+(`lib/policy.sh`) is `allow`. Default is `ask` (no rule, byte-identical settings document to
+before this existed): it is a team-wide opt-in, not a blanket exemption for every skip-mode
+agent, because the rule also removes the External System Writes check for every Chrome write
+that team's agents make, which is the trade being made.
+
 ## Teams
 
 A project has one or more teams ([ADR-0018](adr/0018-several-teams-per-project.md)).

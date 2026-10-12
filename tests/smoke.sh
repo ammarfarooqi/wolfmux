@@ -385,6 +385,72 @@ check "policy: defaults are skip / skip / worker spawning off / worker isolation
 check "permissions: lead and workers start in their CLI's bypass mode" 'teamctl capture lead -n 8 | grep -q "flags=--dangerously-bypass-approvals-and-sandbox" && teamctl capture backend -n 8 | grep -q "flags=--dangerously-skip-permissions"'
 check "hierarchy: the CLI's own agent-teams feature is switched off inside workers" 'teamctl capture backend -n 8 | grep -q "settings={\"teams\":\"0\",\"mode\":\"in-process\",\"hook\":false}"'
 check "hierarchy: the lead's own settings are left alone" 'teamctl capture lead -n 8 | grep -q "settings=none"'
+
+echo "== browser-writes policy (teamctl policy browser-writes, write_agent_settings)"
+# A Claude-family lead (fable, not astra) so write_agent_settings runs for the lead role too.
+teamctl start fable --team browserwrites --no-attach $START_FLAGS >/dev/null 2>&1
+teamctl spawn bwworker glm53 --team browserwrites --no-kickoff >/dev/null 2>&1
+sleep 2
+bw_settings() { printf '%s/settings/%s.json\n' "$(ls -d "$WOLFMUX_DATA"/state/*/teams/browserwrites | head -1)" "$1"; }
+# env_hooks <file>: bash 3.2's eval mis-parses a comma-bearing jq object shorthand
+# ({env, hooks}) three quoting levels deep inside a check() string — it gets brace-expanded
+# into two separate jq calls despite the quoting. Route it through a plain function (a normal,
+# never-eval'd single-quoted jq filter) instead of ever writing the comma inline in a check.
+env_hooks() { jq -c '{env, hooks}' "$1"; }
+# wait_for <file> <jq boolean filter>: the settings file is rewritten by the respawned pane's
+# own process, asynchronously from the `teamctl restart` call returning — poll for the exact
+# condition the next assertion needs instead of trusting a fixed sleep, so a busy machine
+# cannot make this flake. (A filter that was already true before the restart is a no-op wait,
+# so callers always name the condition that actually changed, never a blanket "settled".)
+wait_for() {
+  local file="$1" filter="$2" i
+  for i in 1 2 3 4 5 6 7 8; do
+    jq -e "$filter" "$file" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+check "browser-writes: defaults to ask on a fresh team, and teamctl policy shows it" \
+  'teamctl policy --team browserwrites | grep -q "browser-writes      ask"'
+check "browser-writes: at the default (ask) the settings document is unchanged from before this policy existed — no permissions key, for lead or worker" \
+  '! jq -e "has(\"permissions\")" "$(bw_settings lead)" && ! jq -e "has(\"permissions\")" "$(bw_settings bwworker)" && jq -e ".env and .hooks" "$(bw_settings bwworker)"'
+LEAD_ASK_ENV_HOOKS="$(env_hooks "$(bw_settings lead)")"
+WORKER_ASK_ENV_HOOKS="$(env_hooks "$(bw_settings bwworker)")"
+check "browser-writes: set to allow, read back, and back to ask again" \
+  'teamctl policy browser-writes allow --team browserwrites && teamctl policy --team browserwrites | grep -q "browser-writes      allow" && teamctl policy browser-writes ask --team browserwrites && teamctl policy --team browserwrites | grep -q "browser-writes      ask" && teamctl policy browser-writes allow --team browserwrites'
+check "browser-writes: an invalid value is refused (exit 64) and the stored value is unchanged" \
+  '{ teamctl policy browser-writes maybe --team browserwrites; [ $? -eq 64 ]; } && teamctl policy --team browserwrites | grep -q "browser-writes      allow"'
+teamctl restart lead --team browserwrites >/dev/null 2>&1
+teamctl restart bwworker --team browserwrites >/dev/null 2>&1
+sleep 2
+check "browser-writes: allow writes exactly permissions.allow == [\"mcp__claude-in-chrome__*\"] into the lead's settings; env and hooks untouched" \
+  'wait_for "$(bw_settings lead)" "has(\"permissions\")" && jq -e ".permissions == {allow: [\"mcp__claude-in-chrome__*\"]}" "$(bw_settings lead)" && [ "$(env_hooks "$(bw_settings lead)")" = "$LEAD_ASK_ENV_HOOKS" ]'
+check "browser-writes: a worker of that team gets the exact same rule as the lead; env and hooks untouched" \
+  'wait_for "$(bw_settings bwworker)" "has(\"permissions\")" && jq -e ".permissions == {allow: [\"mcp__claude-in-chrome__*\"]}" "$(bw_settings bwworker)" && [ "$(env_hooks "$(bw_settings bwworker)")" = "$WORKER_ASK_ENV_HOOKS" ] && [ "$(jq -c ".permissions" "$(bw_settings lead)")" = "$(jq -c ".permissions" "$(bw_settings bwworker)")" ]'
+# Two near-identically-named jq arms in write_agent_settings, gated on different things
+# ($mode == "lead" for the role-level PermissionRequest hook; $browser_allow == "allow" for
+# the team-level grant): a merge that treats them as duplicates can hoist one out of its guard
+# or drop it and still read fine in a diff. Pin the full 4-row cross-product with an exact
+# array comparison (never contains/regex), so a stray second matcher also fails this.
+echo "-- the 4-row cross-product: role x worker-permissions mode x team browser-writes policy"
+teamctl policy worker-permissions lead --team browserwrites >/dev/null 2>&1
+teamctl restart bwworker --team browserwrites >/dev/null 2>&1
+check "browser-writes row 1: worker, permissions mode lead, team allow -> PermissionRequest hook present AND permissions.allow exact" \
+  'wait_for "$(bw_settings bwworker)" ".hooks.PermissionRequest != null" && jq -e ".permissions == {allow: [\"mcp__claude-in-chrome__*\"]}" "$(bw_settings bwworker)"'
+teamctl policy worker-permissions skip --team browserwrites >/dev/null 2>&1
+teamctl restart bwworker --team browserwrites >/dev/null 2>&1
+check "browser-writes row 2: worker, permissions mode skip, team allow -> permissions.allow exact AND no PermissionRequest hook" \
+  'wait_for "$(bw_settings bwworker)" ".hooks.PermissionRequest == null" && jq -e ".permissions == {allow: [\"mcp__claude-in-chrome__*\"]}" "$(bw_settings bwworker)"'
+teamctl policy worker-permissions lead --team browserwrites >/dev/null 2>&1
+teamctl policy browser-writes ask --team browserwrites >/dev/null 2>&1
+teamctl restart bwworker --team browserwrites >/dev/null 2>&1
+check "browser-writes row 3: worker, permissions mode lead, team default (ask) -> PermissionRequest hook present AND no permissions key at all" \
+  'wait_for "$(bw_settings bwworker)" "has(\"permissions\") | not" && jq -e ".hooks.PermissionRequest != null" "$(bw_settings bwworker)" && ! jq -e "has(\"permissions\")" "$(bw_settings bwworker)"'
+teamctl restart lead --team browserwrites >/dev/null 2>&1
+check "browser-writes row 4: lead, team default (ask) -> neither the hook nor a permissions key" \
+  'wait_for "$(bw_settings lead)" "has(\"permissions\") | not" && jq -e ".hooks.PermissionRequest == null" "$(bw_settings lead)" && ! jq -e "has(\"permissions\")" "$(bw_settings lead)"'
+teamctl destroy --team browserwrites --purge --force --yes >/dev/null 2>&1
+
 check "spawning: refused for a worker while the toggle is off (exit 77)" 'TEAM_ROLE=backend teamctl spawn helper flash; [ $? -eq 77 ] && [ -z "$(git branch --list "ai/helper-*")" ]'
 check "manager only: a worker cannot stop, restart, destroy, approve or change policy" 'for c in "stop qa" "restart qa" "destroy --yes" "policy worker-spawn on" "approve A1" "deny A1 no"; do TEAM_ROLE=backend teamctl $c; [ $? -eq 77 ] || exit 1; done'
 teamctl policy worker-spawn on >/dev/null 2>&1

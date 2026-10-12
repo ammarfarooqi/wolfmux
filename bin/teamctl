@@ -64,7 +64,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
   Policy and permissions
-    teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · worker-spawn ·
+    teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · browser-writes ask|allow
+                                                      (DEFAULT ask; allow writes a Chrome-write ALLOW rule into every agent's
+                                                      settings) · worker-spawn ·
                                                       worker-isolation (the worktree guard) · lead-teams (may the lead found teams) ·
                                                       disk-guard refuse|warn|off · disk-min-gb <number> · link-node-modules on|off
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
