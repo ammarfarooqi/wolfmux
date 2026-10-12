@@ -1155,6 +1155,136 @@ part of the figure.
 Version 1.16.0. The chain is 1.14.1 (the CONTEXT fix) → 1.15.0 (quiet nudges) → 1.16.0,
 and this builds on 1.15.0.
 
+## 34. The quiet lead was quiet about everything (v1.16.1)
+
+Two defects, one evening, both found by measurement rather than by reading.
+
+### The first: a filed notice never reached an idle lead
+
+`communication-management.lead` measured it on 2026-10-12 in the owner's own teams.
+`dashboard-wiring`'s lead sat idle from 13:58Z. P1 notices were sent to it at 16:13Z and
+at 16:53Z. At 17:35Z it was still asleep and had received neither. Comms' own inbox showed
+six notices as "NEW, not yet given to the agent". Nothing was lost — every bead was in
+Beads and every line was in the inbox file — but nothing handed them over either.
+
+The cause is an ORDER, and it is three lines of `_nudge_one`:
+
+```
+inbox_add ...                  the notice is FILED first  <- this is why nothing is lost
+if ! inbox_type_allowed; then
+    event_log inbox-filed
+    return 4                   <- RETURNED HERE for an attached lead
+nudge_begin ...                never reached
+if tm_pane_human_busy; then ... _nudge_defer_start        never reached
+tm_type_line                   never reached
+```
+
+v1.14.0's guarantee was "never glued onto a half-typed line, but **eventually typed**": a
+waiter parked the notice and delivered it when the pane went idle. v1.15.0 put the
+suppression check AHEAD of that waiter, so for an attached lead the guarantee silently
+became "never typed at all". The only channel left was the agent's own `Stop` hook, which
+fires on a TURN BOUNDARY — and an idle agent has no further boundary. `UserPromptSubmit`
+needs a human keystroke. ADR-0028's own Context section had already written down the fact
+that makes this fail ("Neither fires for an agent that is simply sitting idle") and its
+Risks section named the case; the decision went ahead anyway, and the risk then happened.
+
+The fix is the order back, plus one number. `off` and `workers` still stop at the file:
+nothing is ever typed into that pane, because a knob called `off` that still types is
+worse than no knob. The attached lead goes down v1.14.0's path instead, with the keystroke
+window widened from `WOLFMUX_NUDGE_HUMAN_IDLE` (5 s) to `WOLFMUX_NUDGE_LEAD_IDLE` (300 s),
+because that pane is the human's own conversation and five seconds of silence in it is a
+pause for thought rather than an empty chair. Quiet pane: typed at once. Busy pane: parked,
+and the one waiter delivers when it goes quiet. The owner's requirement — "i dont want to
+keep seeing these updates in the mid of my convos these messages should be hidden" — is
+what the 300 s is for, and ROADMAP now carries the other direction of that number as the
+open judgement it is.
+
+Nothing new was built. `tm_pane_human_busy` takes the window as an optional argument;
+`nudge_pending_put_idle` / `nudge_pending_idle` store it in the marker, RAISE-only, so a
+notice parked for the human's own pane is never delivered later under a worker's
+five-second rule (the mirror image of the cap, which lowers only); the debounce, the
+collapse, the reap, the heartbeat, `inbox_mark_typed` and `trap '' HUP INT TERM` are
+untouched. `_notify_type_or_park` — the spawn, policy and approval lines — was deliberately
+NOT changed: it is reached only when typing was already allowed, or through the approval
+grace, so its 5 s window is still right, and widening it would be a separate decision on a
+separate path. ADR-0029.
+
+**Why 933 passing checks did not catch it: no suite had an IDLE agent in it.** Every
+notice test drove a pane that was busy, or a pane with nobody attached. The two suites now
+have both directions, with a real pty client attached and the human's eyes on the lead
+pane: an idle lead pane IS typed into with no human keystroke anywhere, a half-typed line
+in it is NOT and the notice arrives by itself once that line is submitted, and a human AT
+that pane who pressed a key inside the window holds it back. Run against v1.16.0's tree
+first, the new checks fail where they should:
+
+```
+tests/nudge-typing.sh, at f6e3698, 55 passed / 6 failed
+  FAIL  a client attached + an IDLE lead pane + a bead: it IS typed, with no human keystroke
+  FAIL  a client attached + an idle lead pane: the event log says the pane was quiet, not that it was filed
+  FAIL  a client attached + a half-typed line in the lead pane: nothing typed, the notice is parked
+  FAIL  a client attached + the pane then goes quiet: the parked notice arrives by itself
+  FAIL  a client attached + the human AT the lead pane inside WOLFMUX_NUDGE_LEAD_IDLE: nothing is typed
+  FAIL  a client attached + the human at the lead pane: it waits in the marker, which carries the wide window
+
+tests/inbox.sh, at f6e3698, 96 passed / 10 failed
+  (the five "attached + a quiet lead pane" checks, the five "attached + a human in the
+   lead pane" checks, and the type-matrix check that calls the new predicate)
+```
+
+The third episode is measured against the real client's own `#{client_activity}` rather
+than a faked keystroke, because `tmux send-keys` does not move that timestamp and so no
+test can type as the human. That limit is named in `docs/VERIFICATION.md`.
+
+### The second: the knobs could not be set at all
+
+While working around the first defect, comms wrote `WOLFMUX_NUDGE_TYPE=all` into
+`~/.config/wolfmux/config`, watched the next nudge still report `detached-lead`, and
+reverted it. `WOLFMUX_CONFIG_KEYS` in `lib/provider-env.sh` is the allowlist
+`wolfmux_load_config` parses that file against, and it held no `WOLFMUX_NUDGE_*` or
+`WOLFMUX_INBOX_*` key: the line was read and dropped, with no error and no effect. The
+knobs arrived in v1.14.0 and v1.15.0 and nobody added them. That file is the only place a
+knob CAN live and still reach an agent's pane, because a pane's environment comes from the
+tmux server rather than from the shell `teamctl` was typed in.
+
+Six keys added — the ones the user documents already present as knobs somebody may set —
+and the installed template, which had no notice section at all, now has one.
+`git log -S WOLFMUX_CONFIG_KEYS` shows only the list's creation and the rename, so no
+nudge key had been deliberately left off. The timing knobs beside them stay off on
+purpose, with the reason in the comment above the list.
+
+Nothing had ever tested `wolfmux_load_config` — which is exactly why this could sit there
+for two releases. It has seven checks now, three of which fail on v1.16.0:
+
+```
+tests/providers.sh, at f6e3698, 138 passed / 3 failed
+  FAIL  config: an allow-listed key is taken from the file
+  FAIL  config: spaces around the = and the value are stripped
+  FAIL  config: the approval knob is on the list too
+```
+
+### Kept small
+
+- `lib/agents.sh`: the new knob with its numeric floor, `_nudge_one`'s ordering, and the
+  marker's window read in `_nudge_defer_wait`. `_notify_type_or_park` untouched.
+- `lib/inbox.sh`: one new predicate, `inbox_type_when_idle`.
+- `lib/tmuxctl.sh`: one optional argument on `tm_pane_human_busy`, floored like every
+  other numeric knob, so a caller's bad arithmetic cannot turn check (a) off.
+- `lib/registry.sh`: `nudge_pending_put_idle` / `nudge_pending_idle`, mirroring the cap.
+- `lib/provider-env.sh`: six names on the allowlist, and why the rest are not.
+- `lib/common.sh`: line 5 only, `WOLFMUX_VERSION` to 1.16.1.
+
+Two commits, one per defect, so a reviewer can take either without the other.
+
+Gates, all under the heavy lock in ONE acquisition with `HUP` and `INT` reset to their
+defaults by a parent that then `exec`s, at `PENDING_SHA`, base `f6e3698` (v1.16.0):
+`inbox` 107 / 0, `nudge-typing` 61 / 0, `providers` 141 / 0 / 0, `smoke` 348 / 0 / 0,
+`docs` 36 / 0, `disk` 93 / 0, `dashboard` 115 / 0 / 0, `migration` 36 / 0,
+`permissions` 13 / 0 — 950 passing, 0 failing. `bash -n` on every changed file.
+**shellcheck is not installed on this machine, so nothing in this release was linted with
+it**, and no figure here stands in for that.
+
+Version 1.16.1, a patch on 1.16.0.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

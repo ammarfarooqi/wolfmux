@@ -10,9 +10,9 @@ tests/smoke.sh                 # 5 to 7 minutes, 348 checks, isolated from any r
                                # (how many PASS depends on the launch: one skip per signal it
                                #  leaves ignored — see smoke.sh below)
 tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
-tests/nudge-typing.sh          # ~90 seconds, 56 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
-tests/inbox.sh                 # ~4 minutes, 102 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation
-tests/providers.sh             # the provider table, 134 checks
+tests/nudge-typing.sh          # ~2 minutes, 61 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
+tests/inbox.sh                 # ~4 minutes, 107 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while he is working in it
+tests/providers.sh             # the provider table and the config allowlist, 141 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/dashboard.sh             # ~90 seconds, 115 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
@@ -21,23 +21,27 @@ tests/credential-routing.sh    # manual; needs claude logged in; see the header 
 teamctl doctor
 ```
 
-**933 checks across the nine countable suites, smoke counted once in its clean shape, and
-933 passing, 0 failing** (v1.16.0). Every figure measured under the heavy lock with
-`SIGHUP` and `SIGINT` reset to their defaults by a parent that then `exec`s:
-`tests/smoke.sh` 348 at `083fe9f`; the other eight at `17d6829` — `disk` 93,
-`nudge-typing` 56, `inbox` 102, `providers` 134, `docs` 36, `dashboard` 115,
-`migration` 36, `permissions` 13. Of those eight, `docs` 36 and `dashboard` 115 were measured
-at `083fe9f` and re-run at `17d6829`, with the same figures both times.
+**950 checks across the nine countable suites, smoke counted once in its clean shape, and
+950 passing, 0 failing** (v1.16.1). Every figure measured under the heavy lock, in ONE
+acquisition, with `SIGHUP` and `SIGINT` reset to their defaults by a parent that then
+`exec`s, and **all nine at `PENDING_SHA`** — `smoke` 348, `disk` 93, `nudge-typing` 61,
+`inbox` 107, `providers` 141, `docs` 36, `dashboard` 115, `migration` 36,
+`permissions` 13.
 
-Those two commits differ **only** in three Markdown files (`README.md`,
-`docs/BUILD-LOG.md`, this file) and in no shell file, library or test —
-`git diff --name-only 083fe9f 17d6829` is the whole check. `smoke.sh` does read one of those
-three: `README.md`, in two checks that assert a pattern is **absent** from it
-(`tests/smoke.sh:174` and `:177`, the two inbox-command checks). Both were re-run against the
-shipping content and both hold, and `README.md` did not change again after `17d6829`. It reads
-neither this file nor `docs/BUILD-LOG.md` — zero references to either — so the later edits to
-those two cannot reach it. That is why the 348 measured at `083fe9f` is still true of the tree
-being tagged; it is stated as two commits rather than one because it is two.
+v1.16.1 is the first release whose nine figures all come from ONE commit, so the
+two-commit argument v1.16.0 needed here is gone with it: there is no later Markdown edit
+to reason about, because the documents were written first and the suites were run on the
+tree that carries them. `smoke.sh` reads `README.md` in two checks that assert a pattern is
+**absent** from it (`tests/smoke.sh:174` and `:177`, the two inbox-command checks), and
+those ran against the shipping content. It reads neither this file nor
+`docs/BUILD-LOG.md` — zero references to either.
+
+Three suites changed in this release and are the ones to look at first: `inbox` (102 to
+107) and `nudge-typing` (56 to 61) gained the idle-agent checks that v1.16.0 did not have
+in any suite, and `providers` (134 to 141) gained the first checks `wolfmux_load_config`
+has ever had. Each new block was run against v1.16.0's tree before the fix and failed
+there: 6 of the 61, 10 of the 107 and 3 of the 141 — the failure lists are in
+`docs/BUILD-LOG.md`.
 
 The total counts the clean smoke run once: the detached runs are further measurements of the
 same suite, not further suites. `tests/credential-routing.sh` is outside the total — it has
@@ -64,7 +68,7 @@ under, rather than restated here — and nothing is wrong in any of the four.
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 348 checks, 0 failures (v1.16.0) — how many pass depends on the launch (issue #17)
+## smoke.sh: 348 checks, 0 failures (v1.16.1) — how many pass depends on the launch (issue #17)
 
 Measured at `083fe9f`, base `e431740`, launched through a parent that resets both
 `SIGHUP` and `SIGINT` to `DEFAULT` (HUP default, INT default), where all
@@ -100,8 +104,9 @@ shape, not the one-skip shape a plain `nohup` gives.
 | browser-writes (v1.14.3) | defaults to `ask`, `teamctl policy` shows it · at `ask` the settings document is unchanged (no `permissions` key, lead or worker — the default behaves exactly as before this policy existed) · set to `allow`, read back, back to `ask`, read back · an invalid value is refused (exit 64) and the stored value is unchanged · `allow` writes exactly `permissions.allow == ["mcp__claude-in-chrome__*"]` into the lead's settings with `env`/`hooks` untouched · a worker of the same team gets the identical rule, `env`/`hooks` untouched · back to `ask` removes the rule again |
 | approvals | lead mode starts a worker without bypass and with the hook · a request is filed and the lead is told · status shows it pending · a worker cannot approve its own request · approve → the CLI receives `allow` · deny → the CLI receives `deny` with the reason · no answer → no decision, so the normal prompt appears · ask mode has neither flag nor hook |
 | notifications | fixed line typed into the pane · debounced inside the window · hostile bead id (`x;rm -rf ~`) dropped, never typed |
-| nothing is typed into the human's conversation (`tests/inbox.sh`, 102 of 102 pass) | **a client attached + an idle lead + a bead: exit 4, NOTHING typed into the lead pane, no waiter parked, the notice in the file as `new`+`undelivered`, the badge showing `📨 1`** · no client attached: the same bead IS typed, exit 0, naming its bead, and it is in the file too · **the Stop hook blocks ONCE: the reason carries the notices and the agent's own Beads command, the lines are marked delivered BEFORE it answers, a second turn ending at once says nothing (cooldown), and with the cooldown cleared it STILL says nothing because they are delivered — then a NEW notice blocks again, so neither guard starves the other** · UserPromptSubmit prints the notices for the model's context and does not repeat a delivered one · **the two states are independent in BOTH directions: `teamctl inbox` clears new-ness without touching delivered-ness, and the agent's hook clears delivered-ness without clearing the human's badge** · a typed notice is marked delivered, so no hook hands it over twice, while the human's count still stands · three events for ONE bead file one line (the badge reads 1, not 3) and a different bead is never collapsed · **a notice survives a waiter that died: the parked notice is gone from the typed path, the file still has it, and the agent is still given it by its Stop hook** · the badge prints NOTHING and exits 0 for: no notices, no session name, a session that does not exist, a root that is not a directory, an invalid team name, and a damaged inbox file · an approval adds the louder `🔔`, and reading clears both · **the badge END TO END: the shipped `status-left`, a real pty client, `refresh-client` — the segment ran and `📨` and `🔔` are in the DRAWN status line, and the first draw is blank (the documented limit)** · who is typed into, every combination of `off`/`workers`/`detached-lead`/`all` × lead/worker × claude/codex, including the Codex exception · a tmux read that cannot be made sense of counts as attached (fails closed) · the file itself: one line per notice, tabs and newlines stripped, long text cut, capped · `prefix N` bound to a popup, `prefix I` left alone, `prefix T` untouched, `status-interval` 5 · the stall notification: exactly ONE banner carrying the count for eleven notices inside the window, none with `WOLFMUX_NOTIFY=off`, none with `WOLFMUX_INBOX_STALL_NOTIFY=off`, and none for a worker · **the eight findings of the adversarial review, each against its own mechanism**: an awk that cannot write its replacement record destroys nothing and hands nothing over (the lost-notice path, measured by the reviewer at 40,000 records in and 11,773 out) · `WOLFMUX_NUDGE_TYPE=off` types NOTHING into an attached lead, approval or not, and still files it · temp files are dotfiles AND non-role names are filtered, so ONE notice counts 1 even with a stale `lead.taken.4242` sibling present · an interleaved create/update pair still files ONE line and two beads read 2 · a Stop hook whose answer fails re-queues its notices instead of eating them, with the human's count untouched · a DECIDED approval is never typed while one still pending after the grace is, expiry counts as decided, and an unreadable store fails towards typing · three teams inside one stall window ring ONCE, not once each · a non-numeric knob falls back to its default instead of silently disabling a hook · **a teamctl path containing a space still runs the badge** (the program field is quoted; proven with the same pty-client harness, since nothing else proves a `#()` job ran) · one hand-over is capped and the rest stay UNDELIVERED for the next turn, in order, with the body saying how many are still waiting · a notice longer than the text cap is still marked delivered when it is typed · a bead title holding backslash escapes still dedupes, matches and re-queues (awk processes escapes in a `-v` assignment, so the text goes through the environment instead) · **a re-queue that cannot write its replacement record FAILS instead of reporting success** (this was the only read-modify-write here with a test for its success path and none for its failure path: an unreadable want file left `want[]` empty, matched nothing, printed every line unchanged and exited 0, so the chain installed a record in which the notices were still delivered) · the event then says the notices were LOST rather than asserting a re-queue that did not happen · a hand-over that cannot rewrite the record writes an `inbox-take-failed` event instead of being silent (F1's chain already made it fail safe; the silence was the finding) · **the settings document carries v1.14.3's `browser-writes` arm and this release's two inbox hooks AT ONCE** — the product neither branch could test alone: at `allow`, the lead's and a worker's documents each hold `env`, the notification hook, both inbox hooks, the worktree guard where it belongs, and `permissions.allow` compared as an EXACT array so an appended second matcher FAILS rather than passing quietly; the delta both ways round (no `permissions` key at the default, and the default document equals the allow document with `.permissions` deleted, which is what proves that arm adds exactly one key); and the drift the delta cannot see (each role's key set and every hook command asserted exactly, with `$TEAMCTL_SELF` normalised, since a quiet change of shape moves both documents together) |
-| never into a half-typed line (`tests/nudge-typing.sh`, 56 of 56 pass) | **the new rule itself: a client attached + an idle lead + a bead is exit 4 with nothing typed and nothing parked; no client attached and the same bead IS typed** · the queued-notice and mid-delivery blocks still drive a LEAD pane, with the client detached so it is still a typed path — every one of the original 52 checks kept and passing · **a non-empty input row defers whether or not anybody is attached — a half-typed line survives a detach, so it is left alone, the notice waits, and the human's own line later goes off whole** · **a dim placeholder on a pane with nobody attached is the TUI's own furniture, not typing, so the notice is delivered at once and nothing is parked** · copy mode defers attached or not, and leaving it lets the notice through · **a marker whose waiter died is reaped by the next nudge, which is delivered, and its ghost bead is never typed (`nudge-defer-reaped`)** · with a client attached: a busy input line defers (exit 3, and the message names the check that fired), nothing is typed, the half-typed text stays unsubmitted, a marker is parked · three nudges while busy become exactly ONE generic line once the pane is idle, counted against a measured one-notice baseline, and the human's own line was submitted whole · a client that pressed a key seconds ago defers even with an empty input line, and the notice follows once they stop · **queued fixed notices (three policy changes on a busy lead pane): all arrive, in order, each exactly once, nothing glued, marker cleared** · **a human who keeps typing part-way through a five-notice delivery: nothing is delivered twice and nothing is lost** · a pane that never goes idle: the marker is cleaned up at the cap, nothing was typed, `nudge-defer-expired` in `events.jsonl` · `WOLFMUX_NUDGE_COLLISION_CHECK=0` types blind again · `WOLFMUX_NUDGE_RETRY=0` and nonsense are floored, so a waiter can never spin for ever · the input-line check itself, on plain rows and on rows as `capture-pane -e` really hands them over: **three rows copied verbatim from the live socket, a dim `ESC[2m` placeholder and a non-breaking space read CLEAN**, while typed text next to a dim hint reads dirty |
+| the config file's allowlist (`tests/providers.sh`, 141 of 141 pass) | **the first checks `wolfmux_load_config` has ever had, and the reason the second defect of v1.16.1 could sit there for two releases**: an allow-listed key is taken from `~/.config/wolfmux/config` · spaces around the `=` and around the value are stripped · **a key that is NOT on `WOLFMUX_CONFIG_KEYS` is read and DROPPED, with no error and no effect — which is what `WOLFMUX_NUDGE_TYPE=all` did in that file until this release (measured in the owner's own config on 2026-10-12: written, next nudge still reported `detached-lead`, reverted)** · an environment variable that is already set wins over the file · every key on the list is a `WOLFMUX_` name, so nothing else can be exported from that file · no file at all is not an error. Each case runs in its own subshell with its own throwaway `WOLFMUX_HOME`, so none of it reaches the real config file. Three of the seven fail on v1.16.0's tree |
+| nothing is typed into the human's conversation while he is working in it (`tests/inbox.sh`, 107 of 107 pass) | **a client attached + a QUIET lead pane + a bead: it IS typed, exit 0, with no human keystroke anywhere — the v1.16.1 fix, and the check v1.16.0 had in no suite; typing marked it delivered so the Stop hook has nothing to say about it, and the human's badge still shows `📨 1` unread, with no banner because the notice reached the agent** · **a client attached + a human WORKING in the lead pane (a half-typed line): exit 3, NOTHING typed into the lead pane, a waiter parked to deliver once it is quiet, the notice in the file as `new`+`undelivered`, the badge showing `📨 1`, `nudge-deferred` in the event log** · an approval-grace override does not make a BEAD notice borrow the grace: nothing is typed · no client attached: the same bead IS typed, exit 0, naming its bead, and it is in the file too · **the Stop hook blocks ONCE: the reason carries the notices and the agent's own Beads command, the lines are marked delivered BEFORE it answers, a second turn ending at once says nothing (cooldown), and with the cooldown cleared it STILL says nothing because they are delivered — then a NEW notice blocks again, so neither guard starves the other** · UserPromptSubmit prints the notices for the model's context and does not repeat a delivered one · **the two states are independent in BOTH directions: `teamctl inbox` clears new-ness without touching delivered-ness, and the agent's hook clears delivered-ness without clearing the human's badge** · a typed notice is marked delivered, so no hook hands it over twice, while the human's count still stands · three events for ONE bead file one line (the badge reads 1, not 3) and a different bead is never collapsed · **a notice survives a waiter that died: the parked notice is gone from the typed path, the file still has it, and the agent is still given it by its Stop hook** · the badge prints NOTHING and exits 0 for: no notices, no session name, a session that does not exist, a root that is not a directory, an invalid team name, and a damaged inbox file · an approval adds the louder `🔔`, and reading clears both · **the badge END TO END: the shipped `status-left`, a real pty client, `refresh-client` — the segment ran and `📨` and `🔔` are in the DRAWN status line, and the first draw is blank (the documented limit)** · who is typed into, every combination of `off`/`workers`/`detached-lead`/`all` × lead/worker × claude/codex, including the Codex exception · a tmux read that cannot be made sense of counts as attached (fails closed) · the file itself: one line per notice, tabs and newlines stripped, long text cut, capped · `prefix N` bound to a popup, `prefix I` left alone, `prefix T` untouched, `status-interval` 5 · the stall notification: exactly ONE banner carrying the count for eleven notices inside the window, none with `WOLFMUX_NOTIFY=off`, none with `WOLFMUX_INBOX_STALL_NOTIFY=off`, and none for a worker · **the eight findings of the adversarial review, each against its own mechanism**: an awk that cannot write its replacement record destroys nothing and hands nothing over (the lost-notice path, measured by the reviewer at 40,000 records in and 11,773 out) · `WOLFMUX_NUDGE_TYPE=off` types NOTHING into an attached lead, approval or not, and still files it · temp files are dotfiles AND non-role names are filtered, so ONE notice counts 1 even with a stale `lead.taken.4242` sibling present · an interleaved create/update pair still files ONE line and two beads read 2 · a Stop hook whose answer fails re-queues its notices instead of eating them, with the human's count untouched · a DECIDED approval is never typed while one still pending after the grace is, expiry counts as decided, and an unreadable store fails towards typing · three teams inside one stall window ring ONCE, not once each · a non-numeric knob falls back to its default instead of silently disabling a hook · **a teamctl path containing a space still runs the badge** (the program field is quoted; proven with the same pty-client harness, since nothing else proves a `#()` job ran) · one hand-over is capped and the rest stay UNDELIVERED for the next turn, in order, with the body saying how many are still waiting · a notice longer than the text cap is still marked delivered when it is typed · a bead title holding backslash escapes still dedupes, matches and re-queues (awk processes escapes in a `-v` assignment, so the text goes through the environment instead) · **a re-queue that cannot write its replacement record FAILS instead of reporting success** (this was the only read-modify-write here with a test for its success path and none for its failure path: an unreadable want file left `want[]` empty, matched nothing, printed every line unchanged and exited 0, so the chain installed a record in which the notices were still delivered) · the event then says the notices were LOST rather than asserting a re-queue that did not happen · a hand-over that cannot rewrite the record writes an `inbox-take-failed` event instead of being silent (F1's chain already made it fail safe; the silence was the finding) · **the settings document carries v1.14.3's `browser-writes` arm and this release's two inbox hooks AT ONCE** — the product neither branch could test alone: at `allow`, the lead's and a worker's documents each hold `env`, the notification hook, both inbox hooks, the worktree guard where it belongs, and `permissions.allow` compared as an EXACT array so an appended second matcher FAILS rather than passing quietly; the delta both ways round (no `permissions` key at the default, and the default document equals the allow document with `.permissions` deleted, which is what proves that arm adds exactly one key); and the drift the delta cannot see (each role's key set and every hook command asserted exactly, with `$TEAMCTL_SELF` normalised, since a quiet change of shape moves both documents together) |
+| never into a half-typed line (`tests/nudge-typing.sh`, 61 of 61 pass) | **the new rule itself, three episodes, all with a client attached and the human's eyes ON the lead pane: an IDLE lead pane is typed into with no human keystroke (`nudge` event naming the quiet window); a half-typed line in it is NOT, the notice parks, the human's text is untouched, and the notice arrives by itself once that line is submitted; and a human AT that pane who pressed a key inside `WOLFMUX_NUDGE_LEAD_IDLE` holds it back, with the wide window written into the marker** — the third measured against the real pty client's own `#{client_activity}`, because `send-keys` does not move it and so no test can type as the human · no client attached and the same bead IS typed, exactly as before · the queued-notice and mid-delivery blocks still drive a LEAD pane, with the client detached so it is still a typed path — every one of the original 52 checks kept and passing · **a non-empty input row defers whether or not anybody is attached — a half-typed line survives a detach, so it is left alone, the notice waits, and the human's own line later goes off whole** · **a dim placeholder on a pane with nobody attached is the TUI's own furniture, not typing, so the notice is delivered at once and nothing is parked** · copy mode defers attached or not, and leaving it lets the notice through · **a marker whose waiter died is reaped by the next nudge, which is delivered, and its ghost bead is never typed (`nudge-defer-reaped`)** · with a client attached: a busy input line defers (exit 3, and the message names the check that fired), nothing is typed, the half-typed text stays unsubmitted, a marker is parked · three nudges while busy become exactly ONE generic line once the pane is idle, counted against a measured one-notice baseline, and the human's own line was submitted whole · a client that pressed a key seconds ago defers even with an empty input line, and the notice follows once they stop · **queued fixed notices (three policy changes on a busy lead pane): all arrive, in order, each exactly once, nothing glued, marker cleared** · **a human who keeps typing part-way through a five-notice delivery: nothing is delivered twice and nothing is lost** · a pane that never goes idle: the marker is cleaned up at the cap, nothing was typed, `nudge-defer-expired` in `events.jsonl` · `WOLFMUX_NUDGE_COLLISION_CHECK=0` types blind again · `WOLFMUX_NUDGE_RETRY=0` and nonsense are floored, so a waiter can never spin for ever · the input-line check itself, on plain rows and on rows as `capture-pane -e` really hands them over: **three rows copied verbatim from the live socket, a dim `ESC[2m` placeholder and a non-breaking space read CLEAN**, while typed text next to a dim hint reads dirty |
 | Beads | a message to a role notifies its pane · body stored intact (`"quotes"`, `$HOME`, backticks) and never typed into the pane · a worker reads the shared database from its external worktree |
 | git | `diff` commits / stat / patch · uncommitted leftovers visible · main checkout untouched by worker commits · `worktrees` lists everyone |
 | the wolf | the session has the `client-attached` popup hook · the splash draws wolf, wordmark and team line · no colour codes outside a terminal · it works outside any project · only the manager pane has the mark and the amber border · the manager pane opens with the wolf · status line and tab title carry it · `WOLFMUX_SPLASH=off` removes the popup and the default restores it · a Claude lead is named `🐺 team/lead`, workers are not |
@@ -114,7 +119,7 @@ shape, not the one-skip shape a plain `nohup` gives.
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
 
-## disk.sh: 93 of 93 pass (v1.16.0)
+## disk.sh: 93 of 93 pass (v1.16.1)
 
 Its own tmux server (`wolfmux-disk-test-<pid>`), its own state directory, a throwaway
 repository whose path contains a space, stub agents, and build trees of a few megabytes of
@@ -222,7 +227,7 @@ Second install run changed nothing · existing `allow` entries not duplicated an
 `deny` preserved · install then uninstall left `~/.zshrc` byte-identical · exactly
 the added permission rules removed · uninstall refused while a team was running.
 
-## permissions.sh — 13 of 13 pass (v1.16.0)
+## permissions.sh — 13 of 13 pass (v1.16.1)
 
 `install.sh` and `uninstall.sh` against `~/.claude/settings.json` in a throwaway `HOME`
 (no team, no CLI, nothing of yours read). Written first, when it had 9 checks: 4 of the 9
@@ -238,7 +243,7 @@ failed before the change.
 Not covered: a rule of yours that is spelled exactly like a retired one cannot be told apart
 from ours and is taken out as well; the installer names it and the backup holds it.
 
-## migration.sh: 36 of 36 pass (v1.16.0)
+## migration.sh: 36 of 36 pass (v1.16.1)
 
 A throwaway `HOME` gets v1.1 installed from git history, a team started with it (lead +
 one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
@@ -276,7 +281,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
-## docs.sh: 36 of 36 pass (v1.16.0)
+## docs.sh: 36 of 36 pass (v1.16.1)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.
@@ -313,7 +318,7 @@ check itself: its first version matched substrings, never saw `uninstall.sh --pu
 it does not know with exit 64 instead of ignoring it), and took comments in fenced
 examples for headings.
 
-## dashboard.sh: 115 of 115 pass (v1.16.0)
+## dashboard.sh: 115 of 115 pass (v1.16.1)
 
 Measured at `083fe9f`, base `e431740`. This suite starts its own tmux
 server and never uses `nohup`, so it has no signal-skip split and its launch shape does
@@ -456,8 +461,15 @@ way to reproduce them. The total is 348 in every shape — only the pass/skip sp
 | HUP default, INT **ignored** | a bare `… &` from a non-interactive shell | 347 passed, 0 failed, 1 skipped (SIGINT) |
 | HUP ignored, INT ignored | `nohup … &` — **a lane's real launch** | 346 passed, 0 failed, 2 skipped |
 
-Rows 1, 3 and 4 were measured here at `083fe9f`, in one acquisition of the heavy lock; row 2
-is v1.15.0's own measurement at `9d9f84b`. Zero FAIL lines in every run.
+Row 1 was re-measured for v1.16.1 at `PENDING_SHA`, in one acquisition of the heavy lock, and
+is the figure the total at the top of this file uses. Rows 3 and 4 are v1.16.0's measurements
+at `083fe9f` and row 2 is v1.15.0's at `9d9f84b`: **v1.16.1 did not re-measure the three
+detached shapes.** They are carried because this release changes no signal handler and no
+check that sends itself a signal — its diff is `_nudge_one`'s ordering, one tmux helper's
+argument list, two marker accessors, the config allowlist and documents — and because what
+those three rows assert is a RULE, one skip per signal the launch leaves ignored, which row 1
+cannot contradict. A reader who wants them at this release's sha has to run them; nothing
+here claims they were. Zero FAIL lines in every run quoted.
 
 Rows 2 and 3 are the point of the table. They skip the SAME NUMBER of checks for
 DIFFERENT signals, and row 3 is the one that proves the two skip paths are **independent**:
@@ -467,20 +479,23 @@ count is exactly the number of signals the launch left ignored — 0, 1, 1, 2 �
 rule, measured rather than argued. Together the four cover every combination of the two
 dispositions.
 
-Measured in the same acquisition, clean shape, at `083fe9f`: `tests/docs.sh` 36 passed,
-0 failed; `tests/dashboard.sh` 115 passed, 0 failed, 0 skipped.
+Measured in the same acquisition, clean shape, at `PENDING_SHA`: `tests/inbox.sh` 107
+passed, 0 failed; `tests/nudge-typing.sh` 61 passed, 0 failed; `tests/providers.sh` 141
+passed, 0 failed, 0 skipped; `tests/docs.sh` 36 passed, 0 failed; `tests/dashboard.sh` 115
+passed, 0 failed, 0 skipped; `tests/disk.sh` 93 passed, 0 failed; `tests/migration.sh` 36
+passed, 0 failed; `tests/permissions.sh` 13 passed, 0 failed.
 
 **What the suite total at the top of this file is, and is not.** Nothing in the repository
 runs the suites as a set — there is no runner, no build file and no CI (see
-[ROADMAP.md](ROADMAP.md#known-limits-of-v1)). So that 933 is a **hand-assembled sum of two
-measured acquisitions**, each figure carrying the commit and launch shape it was measured in,
-not a figure any tool produces. It is therefore correct for those commits and those launch
-shapes and for nothing else, and **nothing checks it
+[ROADMAP.md](ROADMAP.md#known-limits-of-v1)). So that 950 is a **hand-assembled sum of one
+measured acquisition** (v1.16.0's 933 was a sum of two), each figure carrying the commit and
+launch shape it was measured in, not a figure any tool produces. It is therefore correct for
+that commit and that launch shape and for nothing else, and **nothing checks it
 afterwards**: the moment a suite grows, the sum goes stale silently and looks exactly as
 right as it did before. That is why every count in this document still carries its own suite
 name, sha and shape — those are the facts, and the total is a convenience derived from them.
 
-Read a bare total here as a claim about the two acquisitions those nine figures came from,
+Read a bare total here as a claim about the one acquisition those nine figures came from,
 never as a property of the repository.
 
 ### Not verified in this suite
@@ -505,3 +520,18 @@ never as a property of the repository.
   suggestions). The `-p` runs showed only `glm-5.3`; the alias mapping covers the
   rest by configuration, not by observation.
 - Behaviour with more than about eight concurrent agents.
+- **shellcheck is not installed on this machine**, so no shell file in this release was
+  linted. `bash -n` was run on every file that changed and the suites exercise them, but
+  nothing here stands in for shellcheck and this document does not imply it ran.
+- **A real human's keystrokes against `WOLFMUX_NUDGE_LEAD_IDLE`.** The keystroke check
+  reads an attached client's `#{client_activity}`, which `tmux send-keys` does not move,
+  so no test can type as the human. `tests/nudge-typing.sh` compares the window against
+  the real pty client's own activity timestamp instead — the same comparison the code
+  makes — and the half-typed-line arm of the same rule is driven directly. What is NOT
+  measured is a person at a keyboard: whether 300 s is the right number for how long
+  somebody reads the lead's answer before a notice may go in is a judgement, and
+  `docs/ROADMAP.md` carries it as one.
+- **v1.16.1's fix in the owner's own running teams.** It was measured only in the suites'
+  throwaway tmux servers. The production evidence quoted here (a lead idle from 13:58Z,
+  P1 notices at 16:13Z and 16:53Z never delivered) is evidence of the BUG on the installed
+  v1.16.0, not of the fix: this release is not installed, by instruction.
