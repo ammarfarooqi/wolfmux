@@ -36,8 +36,22 @@ placeholder in this file and in `docs/BUILD-LOG.md`. No shell file, library or t
 differs — `git diff --name-only 19e6d4c HEAD` is the whole check, and it names two
 Markdown files. `smoke.sh` reads `README.md` in two checks that assert a pattern is
 **absent** from it (`tests/smoke.sh:174` and `:177`, the two inbox-command checks);
-`README.md` is not one of those two files and its shipping content is what was measured. No
-suite reads this file or `docs/BUILD-LOG.md` — zero references to either.
+`README.md` is not one of those two files and its shipping content is what was measured.
+
+**Two suites read these two documents without ever naming them, and that is what a carry
+argument here has to answer.** `tests/docs.sh` reads both as text, through the
+`"$REPO"/docs/*.md` globs behind its settings check and its link check, so its figure was
+**re-measured at the head** rather than carried. `tests/smoke.sh` has zero references to
+either filename, but the same two checks named above (`:174` and `:177`) `grep -rn` over
+`$REPO/docs`, and `-r` reaches both files: they assert that a pattern is ABSENT from
+everything under `docs/`, so writing the wrong string into either document FAILS them.
+Both patterns were re-run against the shipping content and neither appears, which is what
+licenses smoke's 348 across the sha commit — the re-run, not the absence of a filename.
+
+The reusable lesson is the glob and the `-r`, not the filename. "Zero references to
+`VERIFICATION.md` in `tests/`" is evidence about filenames only; it is not evidence that no
+suite reads the file, and a later release must not reuse it as though it were. Check what
+the suites read, not what they name.
 
 Three suites changed in this release and are the ones to look at first: `inbox` (102 to
 107) and `nudge-typing` (56 to 61) gained the idle-agent checks that v1.16.0 did not have
