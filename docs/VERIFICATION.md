@@ -53,13 +53,10 @@ different skip count means a different launch rather than a different tree.
 tests/smoke.sh's check "a crash is never silent ... (issue #6)" does not fail under nohup
 since v1.14.2: it SKIPS, with the reason printed ("SIGHUP arrives ignored — launched under
 nohup?"), because nohup leaves SIGHUP set to ignore and an inherited SIG_IGN cannot be
-undone from inside the process. Three launch shapes were measured at `9d9f84b`, and the
-rule held in each: a clean foreground run (HUP default, INT default) is 348 passed, 0
-failed, 0 skipped; a real `nohup` run (HUP ignored, INT default) is 347 passed, 0 failed,
-1 skipped; a `nohup … &` from a non-interactive shell (HUP ignored, INT ignored) is 346
-passed, 0 failed, 2 skipped — the second skip is the SIGINT arm, which v1.14.4 gave a skip
-path of its own. The total is 348 in every shape; only the pass/skip split moves, each skip
-names its own signal, and nothing is wrong in any of the three.
+undone from inside the process. Four launch shapes were measured, and the rule held in each:
+row 2 of the four-shape table at the end of this file was measured at `9d9f84b`, the other
+three at `083fe9f`. The splits are quoted there, each beside the dispositions it was measured
+under, rather than restated here — and nothing is wrong in any of the four.
 
 `smoke.sh` tests the checkout it lives in. It uses its own tmux server
 (`wolfmux-test-<pid>`, `wolfmux-test-old-<pid>`), its own state directory, a throwaway repository whose path
@@ -76,7 +73,7 @@ The shape is quoted with the figure because the split moves with it and the tota
 A check that sends itself a signal and expects to be killed by it cannot hold when the
 launch already set that signal to be ignored, since an inherited `SIG_IGN` cannot be undone
 from inside the process; it skips with its reason printed rather than reporting a bare,
-unexplained FAIL. The three shapes above are measured and named by their **dispositions**,
+unexplained FAIL. The four shapes are measured and named by their **dispositions**,
 which is the cause — a command is only a proxy for it. Worth being exact about one proxy,
 because it is easy to get backwards: a lane's real launch is `nohup … &` from a
 non-interactive shell, which leaves HUP **and** INT ignored and is therefore the two-skip
