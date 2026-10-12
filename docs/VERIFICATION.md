@@ -6,14 +6,14 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 5 to 7 minutes, 348 checks, isolated from any running team
-                               # (348 pass clean; 347 pass and 1 skipped under nohup: see smoke.sh below)
+tests/smoke.sh                 # 5 to 7 minutes, PENDING_SMOKE_CHECKS checks, isolated from any running team
+                               # (PENDING_SMOKE_CLEAN pass clean; PENDING_SMOKE_NOHUP pass and PENDING_SMOKE_SKIP skipped under a detached launch: see smoke.sh below)
 tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~90 seconds, 56 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/inbox.sh                 # ~4 minutes, 102 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
-tests/dashboard.sh             # ~90 seconds, 90 checks, its own tmux server and state: the machine-wide view and the status segment
+tests/dashboard.sh             # ~90 seconds, PENDING_DASH_CHECKS checks, its own tmux server and state: the machine-wide view and the status segment
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
@@ -51,14 +51,17 @@ names its own signal, and nothing is wrong in any of the three.
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 348 checks, 0 failures (v1.15.0) — how many pass depends on the launch (issue #17)
+## smoke.sh: PENDING_SMOKE_CHECKS checks, 0 failures (v1.16.0) — how many pass depends on the launch (issue #17)
 
-Run foreground, all 348 checks hold, including the one below that a
-detached run cannot reach. Run under `nohup` (how a lane actually launches it), SIGHUP
-arrives already set to be ignored and an ignored signal cannot be un-ignored by a trap
-inside the process, so the one check that sends itself SIGHUP and expects to be killed by it
-cannot hold either way: it is skipped, with the reason printed, instead of reporting a bare,
-unexplained FAIL.
+Measured at `PENDING_SHA`, base `PENDING_BASE`. Run through a parent that resets both
+`SIGHUP` and `SIGINT` to `DEFAULT`, all PENDING_SMOKE_CLEAN checks hold, including the ones
+below that a detached run cannot reach. Run under `nohup` or a bare `&` (how a lane actually
+launches it), those signals arrive already set to be ignored, and an ignored signal cannot be
+un-ignored by a trap inside the process, so a check that sends itself one and expects to be
+killed by it cannot hold either way: it is skipped, with the reason printed, instead of
+reporting a bare, unexplained FAIL. The launch shape is therefore part of every figure here —
+see [the skip rule](#the-signal-skip-rule-a-rule-not-a-number) for why the same tree reports a
+different pass/skip split with no check changing.
 
 | Area | Checks |
 |------|--------|
@@ -292,7 +295,11 @@ check itself: its first version matched substrings, never saw `uninstall.sh --pu
 it does not know with exit 64 instead of ignoring it), and took comments in fenced
 examples for headings.
 
-## dashboard.sh: 90 of 90 pass (v1.16.0)
+## dashboard.sh: PENDING_DASH_CHECKS of PENDING_DASH_CHECKS pass (v1.16.0)
+
+Measured at `PENDING_SMOKE_SHA`, base `PENDING_BASE`. This suite starts its own tmux
+server and never uses `nohup`, so it has no signal-skip split and its launch shape does
+not move the figure.
 
 The machine-wide view (`teamctl dashboard`, `prefix O`) and the status-bar segment
 (`teamctl _overview-badge`). Its own tmux server (`wolfmux-dash-test-<pid>`), its own state
@@ -387,24 +394,48 @@ them honest. The order the savings came in: bulk record read 6.17 → 2.54 s; fo
 lookup, team enumeration and orphan test, plus reading per-agent transcripts only for
 RUNNING agents, 2.54 → 1.5 s.
 
-### One pre-existing failure, seen while verifying this
+### The signal-skip rule: a rule, not a number
 
-On 2026-10-10 `tests/smoke.sh` reports **326 of 327**: the check "a crash is never silent …
-(issue #6)" fails. What is established about it:
+An earlier draft of this document described the check "a crash is never silent … (issue
+#6)" as a **failure** of unknown cause, and recorded a pass count that assumed it. That
+description was correct when it was written and is no longer true: the cause was found and
+fixed upstream, so this section now records the rule that replaced it.
 
-- It fails **identically on the pristine base commit** `fc79251`, in a detached worktree with
-  none of this work applied — 326 of 327 there too. **So it is not introduced by this
-  change.**
-- **Its four assertions all pass when run standalone** against either tree: the trap line is
-  present, `kill -PIPE` gives exit 141 with the expected message, `exit 3` and `kill -INT`
-  add nothing, and `kill -HUP` does not say "stopped unexpectedly".
-- That standalone result was obtained **independently** of `nudge-fix.lead`'s, at a different
-  commit. Two independent standalone passes against two in-suite failures narrows it to
-  something inside the suite run rather than the exit handler.
-- **The cause is not yet understood.** `nudge-fix.lead` is investigating, as the owner of
-  that check and that suite. Nothing further is asserted about it here.
+`nohup` leaves `SIGHUP` ignored in the child, and an inherited `SIG_IGN` cannot be undone
+from inside the process. A background job started from a non-interactive shell inherits
+`SIGINT` and `SIGQUIT` as `SIG_IGN` the same way — a bare `&` alone is enough. The check
+cannot test a signal the launch has already made untestable, so rather than fail it now
+**skips, and prints its reason**: v1.14.2 did this for `SIGHUP` and v1.14.4 for `SIGINT`.
 
-The suite total is therefore 781 checks, 780 passing.
+So the skip count is a **rule, not a figure**:
+
+> One skip per signal the launch leaves ignored.
+
+A detached launch can leave `{HUP, INT, QUIT}` ignored and skip up to three. Launched
+through a parent that resets the signals, nothing is skipped. Two consequences worth
+stating, because both have cost this project time:
+
+- **A pass count without its launch shape is not a fact.** The same tree, the same sha and
+  the same checks report a different pass/skip split under a different launch. A figure
+  quoted without its shape becomes false without any count changing — which is how a
+  stale `327 of 327` survived three releases in this file.
+- **Launched wrong, checks skip for reasons that have nothing to do with the code under
+  test.** To reproduce the clean-shape figures above, launch the suite through a parent
+  that resets both signals:
+
+```bash
+perl -e '$SIG{HUP}="DEFAULT"; $SIG{INT}="DEFAULT"; exec @ARGV' bash tests/smoke.sh
+```
+
+Measured on the tree that ships, at `PENDING_SMOKE_SHA`, base `PENDING_BASE`:
+
+| Launch shape | smoke.sh result |
+|---|---|
+| clean — `HUP` and `INT` reset to `DEFAULT` | **PENDING_SMOKE_CLEAN of PENDING_SMOKE_CHECKS pass**, PENDING_SMOKE_SKIP skipped |
+| detached — `nohup`, `SIGHUP` left ignored | PENDING_SMOKE_NOHUP pass, with the skipped check printing its reason |
+
+The suite total is therefore PENDING_TOTAL_CHECKS checks, PENDING_TOTAL_PASS passing under
+the clean launch shape.
 
 ### Not verified in this suite
 

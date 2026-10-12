@@ -1133,7 +1133,11 @@ Kept as small as possible, since two other branches were in flight on the same f
 - `config/wolfmux/tmux.conf`: `status-right`, `status-right-length` and `bind O`.
   `status-left` and `status-interval` belong to the quiet-nudges branch and are untouched.
 
-`tests/dashboard.sh`: 90 checks, all passing. Suite total 691 → 781.
+`tests/dashboard.sh`: PENDING_DASH_CHECKS checks, all passing. Suite total
+PENDING_TOTAL_BEFORE → PENDING_TOTAL_CHECKS, of which PENDING_TOTAL_PASS pass and
+PENDING_SMOKE_SKIP skip. Measured at `PENDING_SMOKE_SHA`, base `PENDING_BASE`, clean
+launch shape (`HUP` and `INT` reset) — see `docs/VERIFICATION.md` for why the shape is
+part of the figure.
 
 Version 1.16.0. The chain is 1.14.1 (the CONTEXT fix) → 1.15.0 (quiet nudges) → 1.16.0,
 and this builds on 1.15.0.
