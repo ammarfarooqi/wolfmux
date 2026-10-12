@@ -7,7 +7,8 @@ their first screen; everything else used stub agents or a localhost mock.
 
 ```bash
 tests/smoke.sh                 # 5 to 7 minutes, 347 checks, isolated from any running team
-                                # (346 + 1 skipped under nohup: see smoke.sh below)
+                                # (how many of those pass depends on how you launch it:
+                                #  see smoke.sh below for the rule)
 tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~90 seconds, 52 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/providers.sh             # the provider table, 134 checks
@@ -23,13 +24,27 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 347 of 347 pass (v1.14.3); 346 pass, 1 skipped under `nohup` (issue #17)
+## smoke.sh: 347 checks, 0 failures — how many pass depends on the launch (issue #17)
 
-Run foreground, all 347 checks hold, including the one below that a detached run cannot
-reach. Run under `nohup` (how a lane actually launches it), SIGHUP arrives already set to
-be ignored and an ignored signal cannot be un-ignored by a trap inside the process, so the
-one check that sends itself SIGHUP and expects to be killed by it cannot hold either way: it
-is skipped, with the reason printed, instead of reporting a bare, unexplained FAIL.
+Two of the 347 checks kill the test's own child with a signal and expect it to die of it:
+one sends SIGINT, one sends SIGHUP. A detached launch can take that ability away before the
+test starts — an ignored signal cannot be un-ignored by a trap inside the process — so each
+of those checks reports a stated skip rather than a bare FAIL when its signal arrives
+already ignored.
+
+**The expectation is a rule, not a count: one skip per signal the launch leaves ignored.**
+The set a launch can take away is {HUP, INT, QUIT}; this suite asserts HUP and INT, `nohup`
+accounts for HUP, and a plain `&` from a non-interactive shell accounts for INT and QUIT.
+A new signal assertion added to that family raises the ceiling by one.
+
+Measured on the v1.14.4 tree (tag `v1.14.4`), one run per shape. Every figure carries its
+launch shape, because the same tree gives a different split in a different shape:
+
+| Launch | Result | Skipped |
+|--------|--------|---------|
+| foreground | 347 passed, 0 failed, 0 skipped | — |
+| `nohup … &` | 345 passed, 0 failed, 2 skipped | SIGINT and SIGHUP both arrive ignored |
+| plain `… &` | 346 passed, 0 failed, 1 skipped | SIGINT arrives ignored; SIGHUP is still default |
 
 | Area | Checks |
 |------|--------|
@@ -46,7 +61,7 @@ is skipped, with the reason printed, instead of reporting a bare, unexplained FA
 | lanes | words are not commands: prose in quotes and heredocs never triggers the guard, a quoted path still does · MCP tools are held to the same lanes · every worker has the guard, the lead does not · a worker may change files in its own worktree (absolute, relative, new) and in temporary directories · not the lead's checkout, a teammate's worktree, `~/.zshrc`, or anything reached with `..` · it may read the lead's checkout, never a teammate's worktree or teamctl's state · ordinary shell work passes (tests, commits, `git checkout -- file`, `git push -u origin HEAD`, copying `.env` from the lead's checkout, `teamctl`, `bd`, rebase) · reaching into another worktree or writing into the lead's checkout is refused, in either spelling of the path · switching, creating or deleting branches, `git worktree`, `tmux`, pushes to main are refused · the lead is not guarded and an agent the guard cannot place is allowed · `worker-isolation off` removes it at the next start |
 | branch names | the built-in template still produces the names it always did, and the record says teamctl created that branch · `--branch` gives exactly that name and the pane opens on it · `--branch` refuses a name git would not take (64) and one that exists (1), leaving no record, worktree or branch · a template with no `{ts}`, an unknown placeholder, an unclosed brace or nothing at all is refused (64) · a template with `{ticket}` and no ticket key is a usage error naming the flag, and creates nothing · an invalid ticket key is refused before anything is created · template plus `--ticket` gives a conforming name with the stamp kept · `teamctl start --ticket` is the team's default and a spawn's own `--ticket` wins · `teamctl policy` shows the template and `default` puts the built-in shape back · only a branch teamctl created is deleted, whatever it is called, a record from before the field keeps the old `ai/` rule, and a branch teamctl did not make is named and left alone · the guard holds a worker to its own branch whatever it is called |
 | a worker in another repository | branch and worktree are created in the sibling repository from a ref of that repository, and the pane opens there · the worktree lives under that repository's own key, and status names it (a `REPO` column only when some teammate has one, `repo` in `--json`) · `--repo` refuses a non-directory, a non-repository and a repository without a commit (64), creating nothing · isolation stays on: the worker's own worktree is writable, the lead's project and the sibling's own checkout are not, and it is told which repository it is in · the teammate still reads the team's own Beads workspace · diff, status and worktrees read that repository · remove without `--force` still refuses and names the commit and the file · `remove --force` takes the worktree and the branch there and leaves every other branch of both repositories · `destroy --purge` does the same |
-| clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error · a worker with thousands of unmerged commits and more changed files than a report shows: the report is cut and says how much it left out, `remove --force` and `destroy --purge --force` finish (never a silent exit 141) · a teamctl ended by a signal names the signal and the command (its own exit handler installed, SIGPIPE gives 141 with that message); a plain failure, Ctrl-C and a closed terminal add nothing — the closed-terminal case is skipped, with a stated reason, when SIGHUP already arrives ignored (issue #17) |
+| clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error · a worker with thousands of unmerged commits and more changed files than a report shows: the report is cut and says how much it left out, `remove --force` and `destroy --purge --force` finish (never a silent exit 141) · a teamctl ended by a signal names the signal and the command (its own exit handler installed, SIGPIPE gives 141 with that message); a plain failure, Ctrl-C and a closed terminal add nothing — the Ctrl-C and closed-terminal cases are each skipped, with a stated reason, when their signal already arrives ignored (SIGINT under any background launch, SIGHUP under `nohup`: issue #17) |
 | one manager | default policy is skip / skip / spawning off / isolation on · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |
 | browser-writes (v1.14.3) | defaults to `ask`, `teamctl policy` shows it · at `ask` the settings document is unchanged (no `permissions` key, lead or worker — the default behaves exactly as before this policy existed) · set to `allow`, read back, back to `ask`, read back · an invalid value is refused (exit 64) and the stored value is unchanged · `allow` writes exactly `permissions.allow == ["mcp__claude-in-chrome__*"]` into the lead's settings with `env`/`hooks` untouched · a worker of the same team gets the identical rule, `env`/`hooks` untouched · back to `ask` removes the rule again |
 | approvals | lead mode starts a worker without bypass and with the hook · a request is filed and the lead is told · status shows it pending · a worker cannot approve its own request · approve → the CLI receives `allow` · deny → the CLI receives `deny` with the reason · no answer → no decision, so the normal prompt appears · ask mode has neither flag nor hook |

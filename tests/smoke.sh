@@ -1110,8 +1110,22 @@ crash_with() { bash -c 'set -euo pipefail; for m in provider-env common registry
 check "a crash is never silent: bin/teamctl installs the exit handler (issue #6)" 'grep -q "^trap .teamctl_on_exit. EXIT" "$REPO/bin/teamctl"'
 check "a crash is never silent: SIGPIPE gives 141 and the message names the signal and the command (issue #6)" 'crash_out="$(crash_with "kill -PIPE \$\$")"; [ $? -eq 141 ] && printf "%s" "$crash_out" | grep -q "stopped unexpectedly (exit 141: signal 13) in: teamctl destroy --team x --purge"'
 check "a crash is never silent: a plain failure is silent and exits 3 (issue #6)" 'plain_out="$(crash_with "exit 3")"; [ $? -eq 3 ] && [ -z "$plain_out" ]'
-check "a crash is never silent: Ctrl-C is silent and exits 130 (issue #6)" 'int_out="$(crash_with "kill -INT \$\$")"; [ $? -eq 130 ] && [ -z "$int_out" ]'
-# An inherited SIG_IGN (what nohup leaves SIGHUP set to before the shell even starts) cannot
+# Same shape as the SIGHUP arm below, for the same reason and one signal over: a background job
+# started from a non-interactive shell inherits SIGINT and SIGQUIT as SIG_IGN — the `&` alone is
+# enough, nohup is not required — so this probe's child cannot be killed by INT in that case
+# either. The set a detached launch can take away is {HUP, INT, QUIT}; only HUP and INT are
+# asserted here, and a new signal assertion added to this family needs its own arm.
+INT_DESC='a crash is never silent: Ctrl-C is silent and exits 130 (issue #6)'
+int_out="$(crash_with "kill -INT \$\$")"; int_rc=$?
+if [ "$int_rc" -eq 130 ] && [ -z "$int_out" ]; then
+  passed=$((passed + 1)); printf '  pass  %s\n' "$INT_DESC"
+elif [ "$int_rc" -eq 0 ] && printf '%s' "$int_out" | grep -q '^finished$'; then
+  skip "$INT_DESC" "SIGINT arrives ignored — launched in the background?"
+else
+  failed=$((failed + 1)); printf '  FAIL  %s\n' "$INT_DESC"
+fi
+# An inherited SIG_IGN (what nohup leaves SIGHUP set to, and what a background launch leaves
+# SIGINT and SIGQUIT set to, before the shell even starts) cannot
 # be undone by a trap inside the process, so this probe's own child cannot be killed by HUP
 # in that case: it survives, prints "finished" and exits 0 instead of 129. `trap -p HUP` was
 # tried as a cheap way to detect this ahead of time, but this macOS /bin/bash (3.2.57) prints

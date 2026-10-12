@@ -902,6 +902,42 @@ allow-shape checks, and the 4-row cross-product), 346 pass + 1 skip under `nohup
 (unrelated, issue #17). `tests/docs.sh`: 36 → 36 (no new command, option or category — one
 new policy key named everywhere the existing ones already are). v1.14.3.
 
+## 31. The sibling check asserted a disposition the launch had already removed (v1.14.4)
+
+v1.14.2 fixed the closed-terminal check and left its Ctrl-C sibling, two lines above it,
+asserting the same kind of fact: that the test's own child can be killed by a signal it
+sends itself. It can't, in the shape the fix was written for. A background job started from
+a non-interactive shell inherits SIGINT and SIGQUIT as `SIG_IGN`, and `nohup` is not
+required for that — a plain `&` is enough — so the Ctrl-C check reports a bare FAIL under
+exactly the launches v1.14.2 taught the SIGHUP check to explain. Measured with
+`signal.getsignal` in each shape rather than inferred: plain foreground HUP default / INT
+handled / QUIT default; `nohup … &` all three ignored; plain `… &` INT and QUIT ignored,
+HUP still default.
+
+The fix is the SIGHUP arm's shape, one signal over: read the probe's own result and branch
+on it — pass on 130 with no output, skip with the reason when the child survived and printed
+`finished` instead, FAIL otherwise. No new detection mechanism was added, because the one
+v1.14.2 had already rejected (`trap -p HUP`) fails here for the same reason: this `/bin/bash`
+(3.2.57) prints nothing for a signal that arrived already ignored.
+
+What generalises past this fix is the expectation, which is now written as a rule in
+`VERIFICATION.md` rather than as a skip count: **one skip per signal the launch leaves
+ignored**, over the set {HUP, INT, QUIT}, with `nohup` accounting for HUP and a bare `&`
+accounting for INT and QUIT. A count would have been falsified by this very commit; the rule
+survives it, and survives the next signal anyone adds to that family (whose arm has to be
+written the same way — the comment at the HUP arm says so). The same reason puts the launch
+shape next to every measured figure in that document: the total check count does not move
+here, but the split between passed and skipped does, so a figure quoted without its shape is
+a figure the reader cannot reproduce.
+
+A check that is reliably wrong is worse than a missing check: it is read as a defect in the
+system under test, and the cost lands on whoever next runs the suite in good faith, not on
+whoever wrote the check. Both arms of this family now report what they observed instead of
+what they assumed.
+
+`tests/smoke.sh`: 347 → 347 (one `check` became one if/elif/else that reports pass, skip or
+FAIL — no assertion gained or lost). v1.14.4.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
