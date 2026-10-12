@@ -353,21 +353,44 @@ inbox_mark_seen() { _inbox_restate "$1" 1 s; }
 # nothing undelivered (reviewer F7). So when the answer itself fails, the letters go
 # back and the next turn hands them over again. Text matching, so a notice that arrived
 # in between keeps its own state.
+#
+# RETURNS 0 only when the replacement record was installed; non-zero otherwise. That is
+# load-bearing, not tidy: this is the recovery path, and it used to return 0 whether it
+# had put the letters back or not, so a caller logged "N notice(s) re-queued" over a
+# requeue that had requeued nothing (reviewer N1). Both hooks branch on it now.
+#
+# The want list reaches awk through the ENVIRONMENT, like every other text comparison in
+# this file, and for one more reason than they have. It used to go through a temp file
+# whose PATH was passed with -v — and -v escape-processes the path as well as the value,
+# so a single backslash in $WOLFMUX_DATA or $HOME made awk open a file with a real tab in
+# its name. Worse, `getline line < wantfile` returning -1 is NOT an awk error: an
+# unreadable want file (that mangled path, a removed file, a truncated write on a full
+# disk) left want[] empty, matched nothing, printed every line unchanged and exited 0, so
+# the && chain completed and installed a record in which the notices were still 'd'. The
+# one path built to stop notices being lost could lose them and record that it saved
+# them. With ENVIRON there is no want file, no -v and no getline to fail silently; the
+# list is bounded by WOLFMUX_INBOX_HANDOVER_MAX × WOLFMUX_INBOX_TEXT_MAX, about 8 KB.
 inbox_requeue() {
-  local role="$1" texts="$2" file
+  local role="$1" texts="$2" file rc=0
   [ -n "$role" ] && [ -n "$texts" ] || return 0
   file="$(inbox_file "$role")"
-  [ -f "$file" ] || return 0
-  inbox_lock "$role" || return 0
-  printf '%s\n' "$texts" >"$(inbox_tmp "$role" want)" 2>/dev/null &&
-    LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v wantfile="$(inbox_tmp "$role" want)" '
-      BEGIN { while ((getline line < wantfile) > 0) want[line] = 1 }
+  [ -f "$file" ] || return 1
+  inbox_lock "$role" || return 1
+  WM_WANT="$texts" LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' '
+      BEGIN {
+        n = split(ENVIRON["WM_WANT"], lines, "\n")
+        for (i = 1; i <= n; i++) if (lines[i] != "") { want[lines[i]] = 1; nwant++ }
+        # An empty want list can only mean the list did not arrive. Stop, so the chain
+        # cannot install a no-op record and call it a requeue. Counted rather than
+        # length(want): length() of an array is not in every awk this ships to.
+        if (nwant == 0) exit 1
+      }
       NF >= 4 && substr($3, 2, 1) == "d" && ($4 in want) { $3 = substr($3, 1, 1) "u" }
       { print }' "$file" >"$(inbox_tmp "$role" requeue)" 2>/dev/null &&
-    /bin/mv -f "$(inbox_tmp "$role" requeue)" "$file" 2>/dev/null
-  /bin/rm -f "$(inbox_tmp "$role" requeue)" "$(inbox_tmp "$role" want)" 2>/dev/null || true
+    /bin/mv -f "$(inbox_tmp "$role" requeue)" "$file" 2>/dev/null || rc=1
+  /bin/rm -f "$(inbox_tmp "$role" requeue)" 2>/dev/null || true
   inbox_unlock "$role"
-  return 0
+  return "$rc"
 }
 
 inbox_mark_typed() {
@@ -406,13 +429,23 @@ inbox_mark_typed() {
 # either, so a successful awk whose move failed cannot hand over notices that are still
 # marked undelivered. _inbox_restate and inbox_mark_typed have always chained this way;
 # this function was the one sibling that did not.
+#
+# The output path reaches awk through the ENVIRONMENT, not -v. -v escape-processes the
+# path as much as a value, so one backslash in $WOLFMUX_DATA or $HOME made awk unable to
+# open `out` (reviewer N2). The chain above contained that completely — no mv, no cat,
+# record intact, every letter still 'u' — so this was never a lost notice. What it was
+# was SILENT: awk's stderr goes to /dev/null, so both hooks stopped delivering for the
+# life of that install while the badge (which passes no paths) kept counting up, and the
+# human watched a rising number whose notices never reached the agent. The path is off -v
+# now, and a failed chain writes an event so it can never be silent again.
 inbox_take_undelivered() {
   local role="$1" file
   file="$(inbox_file "$role")"
   [ -f "$file" ] || return 0
   inbox_lock "$role" || return 0
-  LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' -v out="$(inbox_tmp "$role" taken)" \
+  WM_OUT="$(inbox_tmp "$role" taken)" LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' \
     -v cap="$WOLFMUX_INBOX_HANDOVER_MAX" '
+    BEGIN { out = ENVIRON["WM_OUT"] }
     NF < 4 { print > out; next }
     substr($3, 2, 1) == "u" && taken < cap {
       print $4
@@ -422,7 +455,8 @@ inbox_take_undelivered() {
     { print > out }' "$file" >"$(inbox_tmp "$role" texts)" 2>/dev/null &&
     /bin/mv -f "$(inbox_tmp "$role" taken)" "$file" 2>/dev/null &&
     [ -f "$(inbox_tmp "$role" texts)" ] &&
-    /bin/cat "$(inbox_tmp "$role" texts)" 2>/dev/null
+    /bin/cat "$(inbox_tmp "$role" texts)" 2>/dev/null ||
+    event_log inbox-take-failed "$role" "could not rewrite the record; nothing handed over" 2>/dev/null || true
   /bin/rm -f "$(inbox_tmp "$role" texts)" "$(inbox_tmp "$role" taken)" 2>/dev/null || true
   inbox_unlock "$role"
   return 0
@@ -634,8 +668,13 @@ cmd_inbox_stop() {
     # The one path that reaches the agent failed after the lines were marked delivered.
     # Put them back, or they are lost for good: the next hook would see nothing to hand
     # over. The cooldown stamp stays, so this cannot become a loop either.
-    inbox_requeue "$INBOX_ROLE" "$notices"
-    event_log inbox-stop-failed "$INBOX_ROLE" "jq failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) re-queued" 2>/dev/null || true
+    if inbox_requeue "$INBOX_ROLE" "$notices"; then
+      event_log inbox-stop-failed "$INBOX_ROLE" "jq failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) re-queued" 2>/dev/null || true
+    else
+      # Say what actually happened. Claiming a requeue that did not happen is how these
+      # notices would be lost with a log line asserting they were saved (reviewer N1).
+      event_log inbox-stop-failed "$INBOX_ROLE" "jq failed AND the re-queue failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) LOST" 2>/dev/null || true
+    fi
   fi
   return 0
 }
@@ -654,8 +693,11 @@ cmd_inbox_prompt() {
   if inbox_hook_body "$INBOX_IDENTITY" "$notices" "$(inbox_count_undelivered "$INBOX_ROLE")"; then
     event_log inbox-prompt "$INBOX_ROLE" "handed over $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
   else
-    inbox_requeue "$INBOX_ROLE" "$notices"
-    event_log inbox-prompt-failed "$INBOX_ROLE" "stdout failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) re-queued" 2>/dev/null || true
+    if inbox_requeue "$INBOX_ROLE" "$notices"; then
+      event_log inbox-prompt-failed "$INBOX_ROLE" "stdout failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) re-queued" 2>/dev/null || true
+    else
+      event_log inbox-prompt-failed "$INBOX_ROLE" "stdout failed AND the re-queue failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) LOST" 2>/dev/null || true
+    fi
   fi
   return 0
 }

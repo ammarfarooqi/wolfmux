@@ -800,6 +800,119 @@ check "a bead title holding backslash escapes still dedupes, matches and re-queu
 F11_STATUS=$?
 check "F11: one hand-over is capped, the rest stay undelivered, and the body says so" '[ "$F11_STATUS" -eq 0 ]'
 
+# N1 -- the F7 recovery path used to report success whether it had requeued anything or
+# not. The want list went to awk as a FILE whose path was passed with -v, and a getline
+# that cannot read its file is not an awk error: want[] came out empty, nothing matched,
+# every line was printed unchanged, awk exited 0, the && chain installed a record in which
+# the notices were still 'd', and the caller logged "N notice(s) re-queued". So the one
+# path built to stop notices being lost could lose them and record that it saved them.
+# This is the FAILURE path of a read-modify-write, which is the shape F1 has and this
+# function did not: the same unwritable-temp-path trick, asserting the return value.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/n1"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  i=1
+  while [ $i -le 3 ]; do
+    printf '%s\tbeads\tnd\tnotice %s\n' "$(now_epoch)" "$i" >>"$STATE_DIR/inbox/lead"
+    i=$((i + 1))
+  done
+  want="$(printf 'notice 1\nnotice 2\nnotice 3\n')"
+  # 1. it still requeues, and it says so
+  inbox_requeue lead "$want" || exit 1
+  [ "$(inbox_count_undelivered lead)" = "3" ] || exit 1
+  # 2. the multi-line list arrives VERBATIM: a bead title holding backslash escapes is
+  #    split on real newlines and matched as stored, not as awk would have expanded it
+  : >"$STATE_DIR/inbox/lead"
+  odd1='task C:\new\table'
+  odd2='and a trailing \'
+  printf '%s\tbeads\tnd\t%s\n' "$(now_epoch)" "$odd1" >>"$STATE_DIR/inbox/lead"
+  printf '%s\tbeads\tnd\t%s\n' "$(now_epoch)" "$odd2" >>"$STATE_DIR/inbox/lead"
+  inbox_requeue lead "$(printf '%s\n%s\n' "$odd1" "$odd2")" || exit 1
+  [ "$(inbox_count_undelivered lead)" = "2" ] || exit 1
+  # 3. THE POINT: a requeue that cannot write its replacement record must FAIL, not
+  #    report success. Every temp path now points somewhere unwritable.
+  : >"$STATE_DIR/inbox/lead"
+  i=1
+  while [ $i -le 3 ]; do
+    printf '%s\tbeads\tnd\tnotice %s\n' "$(now_epoch)" "$i" >>"$STATE_DIR/inbox/lead"
+    i=$((i + 1))
+  done
+  inbox_tmp() { printf '%s\n' "$STATE_DIR/inbox/no-such-dir/.tmp.$1.$2.$$"; }
+  inbox_requeue lead "$want" && exit 1                                  # returned non-zero
+  [ "$(inbox_count_undelivered lead)" = "0" ] || exit 1                 # record intact
+  [ "$(wc -l <"$STATE_DIR/inbox/lead" | tr -d ' ')" = "3" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+N1_STATUS=$?
+check "N1: a re-queue that cannot write its record FAILS instead of reporting success" '[ "$N1_STATUS" -eq 0 ]'
+
+# N1, second half -- the caller must not assert a re-queue that did not happen. The Stop
+# hook's jq fails AND the re-queue fails: the event has to say the notices were lost.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/n1log"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  printf '%s\tbeads\tnd\tnotice 1\n' "$(now_epoch)" >"$STATE_DIR/inbox/lead"
+  inbox_tmp() { printf '%s\n' "$STATE_DIR/inbox/no-such-dir/.tmp.$1.$2.$$"; }
+  INBOX_ROLE=lead
+  if inbox_requeue "$INBOX_ROLE" "notice 1"; then
+    event_log inbox-stop-failed "$INBOX_ROLE" "jq failed; 1 notice(s) re-queued" 2>/dev/null || true
+  else
+    event_log inbox-stop-failed "$INBOX_ROLE" "jq failed AND the re-queue failed; 1 notice(s) LOST" 2>/dev/null || true
+  fi
+  grep -q 'LOST' "$STATE_DIR/events.jsonl" || exit 1
+  grep -q 're-queued' "$STATE_DIR/events.jsonl" && exit 1
+  exit 0
+) >/dev/null 2>&1
+N1LOG_STATUS=$?
+check "N1: the event says the notices were LOST, never that a failed re-queue saved them" '[ "$N1LOG_STATUS" -eq 0 ]'
+
+# N2 -- inbox_take_undelivered's output path went through -v as well. F1's chain already
+# contains the damage (nothing moved, nothing printed, every letter still 'u'), so this
+# one fails SAFE. What it did not do was SAY so: awk's stderr is /dev/null, so both hooks
+# could stop delivering for the life of an install while the badge, which passes no paths,
+# kept counting up. The path is off -v now; this asserts the silence is gone.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  STATE_DIR="$WORK/n2"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  printf '%s\tbeads\tnu\tnotice 1\n' "$(now_epoch)" >"$STATE_DIR/inbox/lead"
+  # a working take logs no failure, and the texts still come back
+  [ "$(inbox_take_undelivered lead)" = "notice 1" ] || exit 1
+  [ ! -f "$STATE_DIR/events.jsonl" ] || ! grep -q 'inbox-take-failed' "$STATE_DIR/events.jsonl" || exit 1
+  # now it cannot write: nothing handed over, record intact -- and an event says so
+  printf '%s\tbeads\tnu\tnotice 2\n' "$(now_epoch)" >>"$STATE_DIR/inbox/lead"
+  inbox_tmp() { printf '%s\n' "$STATE_DIR/inbox/no-such-dir/.tmp.$1.$2.$$"; }
+  [ -z "$(inbox_take_undelivered lead)" ] || exit 1
+  [ "$(inbox_count_undelivered lead)" = "1" ] || exit 1
+  grep -q 'inbox-take-failed' "$STATE_DIR/events.jsonl" || exit 1
+  exit 0
+) >/dev/null 2>&1
+N2_STATUS=$?
+check "N2: a hand-over that cannot rewrite the record is recorded, not silent" '[ "$N2_STATUS" -eq 0 ]'
+
 # The reviewer's trap 1: inbox_mark_typed was called with the RAW text while inbox_add
 # stored a normalised one, so the first notice over the length cap would stop being marked
 # delivered and be handed over twice.
