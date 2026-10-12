@@ -6,14 +6,15 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 5 to 7 minutes, PENDING_SMOKE_CHECKS checks, isolated from any running team
-                               # (PENDING_SMOKE_CLEAN pass clean; PENDING_SMOKE_NOHUP pass and PENDING_SMOKE_SKIP skipped under a detached launch: see smoke.sh below)
+tests/smoke.sh                 # 5 to 7 minutes, 348 checks, isolated from any running team
+                               # (how many PASS depends on the launch: one skip per signal it
+                               #  leaves ignored — see smoke.sh below)
 tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~90 seconds, 56 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/inbox.sh                 # ~4 minutes, 102 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
-tests/dashboard.sh             # ~90 seconds, PENDING_DASH_CHECKS checks, its own tmux server and state: the machine-wide view and the status segment
+tests/dashboard.sh             # ~90 seconds, 115 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
@@ -51,11 +52,11 @@ names its own signal, and nothing is wrong in any of the three.
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: PENDING_SMOKE_CHECKS checks, 0 failures (v1.16.0) — how many pass depends on the launch (issue #17)
+## smoke.sh: 348 checks, 0 failures (v1.16.0) — how many pass depends on the launch (issue #17)
 
-Measured at `PENDING_SHA`, base `PENDING_BASE`, launched through a parent that resets both
+Measured at `083fe9f`, base `e431740`, launched through a parent that resets both
 `SIGHUP` and `SIGINT` to `DEFAULT` (HUP default, INT default), where all
-PENDING_SMOKE_CLEAN checks hold — including the ones a detached run cannot reach.
+348 checks hold — including the ones a detached run cannot reach.
 
 The shape is quoted with the figure because the split moves with it and the total does not.
 A check that sends itself a signal and expects to be killed by it cannot hold when the
@@ -299,9 +300,9 @@ check itself: its first version matched substrings, never saw `uninstall.sh --pu
 it does not know with exit 64 instead of ignoring it), and took comments in fenced
 examples for headings.
 
-## dashboard.sh: PENDING_DASH_CHECKS of PENDING_DASH_CHECKS pass (v1.16.0)
+## dashboard.sh: 115 of 115 pass (v1.16.0)
 
-Measured at `PENDING_SHA`, base `PENDING_BASE`. This suite starts its own tmux
+Measured at `083fe9f`, base `e431740`. This suite starts its own tmux
 server and never uses `nohup`, so it has no signal-skip split and its launch shape does
 not move the figure.
 
@@ -431,15 +432,37 @@ stating, because both have cost this project time:
 perl -e '$SIG{HUP}="DEFAULT"; $SIG{INT}="DEFAULT"; exec @ARGV' bash tests/smoke.sh
 ```
 
-Measured on the tree that ships, at `PENDING_SHA`, base `PENDING_BASE`:
+Measured at `083fe9f`, base `e431740` (v1.15.0), in one acquisition of the heavy lock.
+Each shape is named by its **dispositions**, which are the cause; the command is only the
+way to reproduce them. The total is 348 in every shape — only the pass/skip split moves:
 
-| Launch shape | smoke.sh result |
-|---|---|
-| clean — `HUP` and `INT` reset to `DEFAULT` | **PENDING_SMOKE_CLEAN of PENDING_SMOKE_CHECKS pass**, PENDING_SMOKE_SKIP skipped |
-| detached — `nohup`, `SIGHUP` left ignored | PENDING_SMOKE_NOHUP pass, with the skipped check printing its reason |
+| Dispositions | How to reproduce it | smoke.sh |
+|---|---|---|
+| HUP default, INT default | a parent that resets both, then `exec` | **348 passed, 0 failed, 0 skipped** |
+| HUP ignored, INT default | a real `nohup` run | 347 passed, 0 failed, 1 skipped (SIGHUP) |
+| HUP default, INT **ignored** | a bare `… &` from a non-interactive shell | 347 passed, 0 failed, 1 skipped (SIGINT) |
+| HUP ignored, INT ignored | `nohup … &` — **a lane's real launch** | 346 passed, 0 failed, 2 skipped |
 
-The suite total is therefore PENDING_TOTAL_CHECKS checks, PENDING_TOTAL_PASS passing under
-the clean launch shape.
+Row 2 is v1.15.0's own measurement at `9d9f84b`; rows 1, 3 and 4 were measured here at
+`083fe9f`. Zero FAIL lines in every run.
+
+Rows 2 and 3 are the point of the table. They skip the SAME NUMBER of checks for
+DIFFERENT signals, and row 3 is the one that proves the two skip paths are **independent**:
+with HUP left at its default the SIGHUP check PASSES while the SIGINT check skips, so
+v1.14.4's SIGINT arm is not riding on v1.14.2's SIGHUP arm. Across the four shapes the skip
+count is exactly the number of signals the launch left ignored — 0, 1, 1, 2 — which is the
+rule, measured rather than argued. Together the four cover every combination of the two
+dispositions.
+
+Measured in the same acquisition, clean shape, at `083fe9f`: `tests/docs.sh` 36 passed,
+0 failed; `tests/dashboard.sh` 115 passed, 0 failed, 0 skipped.
+
+No suite total is quoted here, deliberately. Nothing in the repository runs the suites as a
+set, so no canonical total exists to check a figure against (see
+[ROADMAP.md](ROADMAP.md#known-limits-of-v1)); six of the nine suites were not run in this
+acquisition, and adding their recorded counts to three measured ones would produce exactly
+the kind of figure this release spent its time removing — one that looks measured and is
+not. The three numbers above are measured; the rest are each stated under their own suite.
 
 ### Not verified in this suite
 

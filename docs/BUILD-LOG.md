@@ -1144,9 +1144,11 @@ rather than either badge's work, so the lever is a startup path that does not so
 nineteen libraries to answer a one-line read. Recorded as a limit with a named lever in
 [ROADMAP.md](ROADMAP.md#known-limits-of-v1).
 
-`tests/dashboard.sh`: PENDING_DASH_CHECKS checks, all passing. Suite total
-PENDING_TOTAL_BEFORE → PENDING_TOTAL_CHECKS, of which PENDING_TOTAL_PASS pass and
-PENDING_SMOKE_SKIP skip. Measured at `PENDING_SHA`, base `PENDING_BASE`, clean
+`tests/dashboard.sh`: 115 checks, all passing. Also in the same acquisition:
+`tests/smoke.sh` 348 passed / 0 failed / 0 skipped and `tests/docs.sh` 36 passed /
+0 failed. No suite total is given: nothing runs the suites as a set, so the six suites
+not run here would have to be added from their own records to produce one. Measured at
+`083fe9f`, base `e431740` (v1.15.0), clean
 launch shape (`HUP` and `INT` reset) — see `docs/VERIFICATION.md` for why the shape is
 part of the figure.
 
