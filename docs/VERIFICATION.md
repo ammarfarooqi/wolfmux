@@ -30,9 +30,13 @@ teamctl doctor
 
 Those two commits differ **only** in three Markdown files (`README.md`,
 `docs/BUILD-LOG.md`, this file) and in no shell file, library or test —
-`git diff --name-only 083fe9f 17d6829` is the whole check — and `smoke.sh` asserts nothing
-about those documents, which is `docs.sh`'s job and was re-run at the later content. So the
-smoke figure carries; it is stated this way rather than as one commit because it is two.
+`git diff --name-only 083fe9f 17d6829` is the whole check. `smoke.sh` does read one of those
+three: `README.md`, in two checks that assert a pattern is **absent** from it
+(`tests/smoke.sh:174` and `:177`, the two inbox-command checks). Both were re-run against the
+shipping content and both hold, and `README.md` did not change again after `17d6829`. It reads
+neither this file nor `docs/BUILD-LOG.md` — zero references to either — so the later edits to
+those two cannot reach it. That is why the 348 measured at `083fe9f` is still true of the tree
+being tagged; it is stated as two commits rather than one because it is two.
 
 The total counts the clean smoke run once: the detached runs are further measurements of the
 same suite, not further suites. `tests/credential-routing.sh` is outside the total — it has
