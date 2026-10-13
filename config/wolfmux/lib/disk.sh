@@ -623,10 +623,12 @@ cmd_heavy() {
     die "the machine's heavy lock could not be taken (lockf exit $rc), so nothing was run and your command never started. The lock file is $(short_path "$WOLFMUX_HEAVY_LOCK")" "$rc"
   fi
   if [ -n "$ran_dir" ]; then /bin/rm -rf "$ran_dir"; fi
-  # No shim (mktemp had nowhere to write): 75 is genuinely ambiguous, and the message says so
-  # rather than picking the reading that flatters the wrapper.
+  # No shim: 75 is genuinely ambiguous here, and the message says so, and names the reason,
+  # rather than picking the reading that flatters the wrapper. A tool that is missing has to
+  # announce itself — a missing tool that silently does nothing is what cost this project a
+  # night (flock, then timeout, neither of which said a word).
   if [ -z "$ran" ] && [ -n "$timeout" ] && [ "$rc" -eq 75 ]; then
-    die "lockf exited 75 after ${timeout}s: either the heavy lock was still held and nothing was run, or your command itself exited 75. Who holds it: ps -o command= | grep lockf" 75
+    die "lockf exited 75 after ${timeout}s and this run cannot tell you which 75 it is: either the heavy lock was still held and nothing was run, or your command itself exited 75. The two are normally told apart by a scratch file, and mktemp could not make one in ${TMPDIR:-/tmp}. Who holds the lock: ps -o command= | grep lockf" 75
   fi
   if [ "$quiet" -eq 0 ] && [ "$waited" -ge 5 ]; then
     info "held the heavy lock after waiting ${waited}s; the command's own exit status was $rc"

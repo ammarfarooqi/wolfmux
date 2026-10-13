@@ -694,6 +694,13 @@ check "a command silenced for lockf still speaks for itself" \
   'out="$(teamctl heavy --timeout 5 /bin/sh -c "echo mine-out; echo mine-err >&2" 2>&1)"; printf "%s" "$out" | grep -q "mine-out" && printf "%s" "$out" | grep -q "mine-err"'
 # 75 means two things, and guessing wrong would report somebody else's exit status as a lock
 # failure. With the lock FREE, a command that exits 75 is the command's 75, not the lock's.
+# The scratch file is what tells the two 75s apart, so a machine where mktemp cannot write
+# loses that. It must SAY so - a capability that disappears in silence is the night this
+# release cost - and the control is the same call with a writable TMPDIR.
+check "with nowhere to write a scratch file it says which 75 it cannot tell apart, and why" \
+  '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(TMPDIR=/nonexistent-for-the-test teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && printf "%s" "$out" | grep -q "cannot tell you which 75" && printf "%s" "$out" | grep -q "mktemp"'
+check "and with a writable one it is not ambiguous at all" \
+  '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "nothing was run" && ! printf "%s" "$out" | grep -q "cannot tell you which 75"'
 check "a command that itself exits 75 is not reported as the lock timing out" \
   'out="$(teamctl heavy --timeout 5 /bin/sh -c "exit 75" 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && ! printf "%s" "$out" | grep -q "nothing was run"'
 check "it says what it waited for, and --quiet does not" \
