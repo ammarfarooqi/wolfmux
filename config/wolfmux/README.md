@@ -489,12 +489,19 @@ learn after it has been built, and a flag given at spawn time cannot be taken ba
 quietly hoard gigabytes. `teamctl remove <role>` is still how a protected lane goes.
 
 Nothing is swept while a **heavy run** holds this machine's heavy lock
-(`lockf ~/.wolfmux/machine-heavy.lock <command>`): a build runs in whatever shell started
+(`lockf -k ~/.wolfmux/machine-heavy.lock <command>`): a build runs in whatever shell started
 it, not in the lane's pane, so `stop` cannot see it, and taking `node_modules` from under a
-build is the one way this could do real damage. The file merely being there is not a lock —
-`lockf` keeps it between runs — so the sweep tries to take the lock for an instant, which is
-the only thing that answers. While it is held, the lane keeps its build output and the
-reason is printed.
+build is the one way this could do real damage. The file merely being there is not a lock, so
+the sweep tries to take the lock for an instant, which is the only thing that answers. While
+it is held, the lane keeps its build output and the reason is printed. The probe is
+read-only (`-k -s -n -t 0`): it neither creates the file nor removes it.
+
+Write every heavy run with **`-k`**. Without it `lockf` deletes the file when its command
+ends, and the lock lives on the inode rather than the path — so one holder that omits `-k`
+unlinks the file on exit, keeps a lock nobody can see, and leaves every later holder and
+probe taking a fresh inode and believing it is alone. Mutual exclusion is then gone for every
+lane at once and nothing says so. Measured here on 2026-10-13: a live holder on inode
+240542083, the path resolving to 240709857, a probe of the path answering "free".
 
 Every sweep is written down, machine-wide, in `~/.wolfmux/state/reclaimed.jsonl`: one JSON
 object per line with the time, the project, the team, the lane, the kilobytes, what took them

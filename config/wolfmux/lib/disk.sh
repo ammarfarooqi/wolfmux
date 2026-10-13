@@ -483,16 +483,33 @@ disk_lane_running() {
 # pane — so the signal has to come from the convention this machine already uses for its
 # heavy runs: `lockf ~/.wolfmux/machine-heavy.lock <command>`.
 #
-# The lock is probed by TRYING to take it for an instant (-t 0, and `true` as the command),
-# which is the only thing that answers the question: the file is kept between runs (-k), so
-# its existence says nothing. -k is passed here too, for the lock ordering the lockf manual
-# asks for: a probe that created and then unlinked the file could make a heavy run that
-# started in between lock an inode nobody else will ever open.
+# The lock is probed by TRYING to take it for an instant (-t 0, with `true` as the command),
+# which is the only thing that answers the question: the file is kept between runs, so its
+# existence says nothing at all.
 #
 #   0 from lockf    we got the lock, so nothing holds it: free
+#   69 EX_UNAVAIL   -n, and the file is not there: no heavy run has ever registered: free
 #   75 EX_TEMPFAIL  somebody else holds it: a heavy run is in progress
 #   anything else   we cannot tell, and not knowing is "busy" — the same rule
 #                   disk_lane_running follows for a lane it cannot place
+#
+# -k keeps the file and -n refuses to create one, which makes this probe READ-ONLY: looking
+# at the lock leaves the lock exactly as it was. Both flags matter, and the second one
+# matters because of what is measured below.
+#
+# **The limit of this guard, measured on this machine on 2026-10-13.** lockf's DEFAULT is to
+# unlink the file when the command ends (only -k keeps it), and BSD locks live on the inode,
+# not on the path. So one holder that omits -k deletes the file on exit, and from then on the
+# path and the locked inode are two different objects: a holder still running sits on the old
+# inode while every later probe and every later holder gets a fresh one and succeeds. Proved
+# here with `lsof`: a live holder had inode 240542083 open while the path resolved to
+# 240709857, and a -t 0 probe of the path returned 0 — "free" — with that holder still
+# running. The hole is in the convention, not in this probe: no single-process probe can
+# recover mutual exclusion once a holder has unlinked the file out from under it. **Every
+# holder on this machine has to pass -k**, which is also what the lockf manual itself
+# recommends for exactly this reason. Until that is true everywhere, this guard can return
+# "free" during a real heavy run, and the honest statement of what it buys is: it stops the
+# sweep whenever the convention is held correctly, and it never stops it wrongly.
 #
 # No lockf on this machine at all, or no directory for the lock to live in, is different
 # from "cannot tell": the signal cannot exist there, so nothing can be holding it. The
@@ -503,9 +520,9 @@ disk_heavy_run_in_progress() {
   DISK_HEAVY_REASON=""
   [ -n "$LOCKF_BIN" ] || return 1
   [ -d "$(dirname "$WOLFMUX_HEAVY_LOCK")" ] || return 1
-  "$LOCKF_BIN" -k -s -t 0 "$WOLFMUX_HEAVY_LOCK" /usr/bin/true >/dev/null 2>&1 || rc=$?
+  "$LOCKF_BIN" -k -s -n -t 0 "$WOLFMUX_HEAVY_LOCK" /usr/bin/true >/dev/null 2>&1 || rc=$?
   case "$rc" in
-    0) return 1 ;;
+    0 | 69) return 1 ;;
     75) DISK_HEAVY_REASON="a heavy run holds $(short_path "$WOLFMUX_HEAVY_LOCK"); it is swept once that ends" ;;
     *) DISK_HEAVY_REASON="$(short_path "$WOLFMUX_HEAVY_LOCK") could not be read (lockf exit $rc), and not knowing counts as busy" ;;
   esac

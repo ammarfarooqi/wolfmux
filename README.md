@@ -123,10 +123,19 @@ it took. It is the answer to "where did that space go", long after the team is g
 
 A lane **mid-build** is never swept. A build runs in whatever shell started it, not in the
 lane's pane, so `stop` cannot see it; the signal is the lock this machine's heavy runs
-already hold, `lockf ~/.wolfmux/machine-heavy.lock <command>`. While it is held, parking a
-lane keeps its build output and says so. The file merely existing is not a lock — `lockf`
-keeps it between runs — so only trying to take it answers the question, which is what the
-sweep does.
+already hold, `lockf -k ~/.wolfmux/machine-heavy.lock <command>`. While it is held, parking a
+lane keeps its build output and says so. The file merely existing is not a lock, so only
+trying to take it answers the question — which the sweep does read-only, with `-k -n`, so
+that looking at the lock leaves the lock exactly as it was.
+
+> **Every holder must pass `-k`.** `lockf`'s default is to DELETE the file when its command
+> ends, and BSD locks live on the inode, not on the path. One holder that omits `-k` unlinks
+> the file on exit, and from then on a holder still running sits on the old inode while every
+> later holder and every probe gets a fresh one and succeeds — mutual exclusion is gone for
+> everybody, silently. Measured here on 2026-10-13: a live holder had inode 240542083 open
+> while the path resolved to 240709857, and a probe of the path answered "free". The hole is
+> in the convention, not in the probe: nothing a single process can do recovers the lock once
+> the file has been unlinked under it. `lockf`'s own manual recommends `-k` for this reason.
 
 Most of a lane is not build output: measured on one machine, of 25 GB across 38 lane
 worktrees only about 4 GB sat in a directory on that list — the rest is the checkout itself,

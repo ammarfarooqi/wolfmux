@@ -611,6 +611,16 @@ mk_build_tree "$BUILDING"
 # otherwise satisfy a bare `! lib_eval "disk_heavy_run_in_progress"` for the wrong reason.
 check "the lock file merely existing is NOT a heavy run, or every sweep would stop for ever" \
   'touch "$WOLFMUX_DATA/machine-heavy.lock" && lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && ! disk_heavy_run_in_progress"'
+# Looking at the lock must leave the lock alone. lockf's default is to CREATE the file it is
+# given and to DELETE it on exit, and both halves are hostile here: a probe that created the
+# file would make itself a participant in the convention it is only reading, and one that
+# deleted it would unlink the file a real holder is locked on — which is how mutual exclusion
+# was measured broken on this machine on 2026-10-13 (lsof: holder on inode 240542083, path
+# resolving to 240709857, probe of the path returning "free"). -k -n is what makes it a read.
+check "the probe is read-only: a missing lock file is free and the probe does not create one" \
+  '/bin/rm -f "$WOLFMUX_DATA/machine-heavy.lock" && lib_eval "! disk_heavy_run_in_progress" && [ ! -e "$WOLFMUX_DATA/machine-heavy.lock" ]'
+check "and probing an existing free lock file leaves it there, neither deleted nor replaced" \
+  'touch "$WOLFMUX_DATA/machine-heavy.lock" && before="$(stat -f %i "$WOLFMUX_DATA/machine-heavy.lock")" && lib_eval "! disk_heavy_run_in_progress" && [ -e "$WOLFMUX_DATA/machine-heavy.lock" ] && [ "$(stat -f %i "$WOLFMUX_DATA/machine-heavy.lock")" = "$before" ]'
 if [ -x /usr/bin/lockf ]; then
   /usr/bin/lockf -k -s "$WOLFMUX_DATA/machine-heavy.lock" /bin/sleep 25 &
   HEAVY_PID=$!

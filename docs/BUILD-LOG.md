@@ -1320,15 +1320,41 @@ and taking `node_modules` from under a running build is the one way this could d
 The signal is the lock this machine's own gates already hold,
 `lockf ~/.wolfmux/machine-heavy.lock <command>`.
 
-**The trap in that lock, and it is a real one.** The file is KEPT between runs (`lockf -k`),
-so its existence proves nothing — `[ -e ]` would have stopped every sweep for ever, and a
-test asserting "the file is there, so it is busy" would have passed. The only thing that
-answers is trying to take the lock for an instant (`lockf -k -s -t 0 … true`): 0 means free,
-75 (`EX_TEMPFAIL`) means held, and anything else means we cannot tell — which counts as
-busy, the same rule `disk_lane_running` already follows for a lane it cannot place. No
-`lockf` on the machine at all is NOT "cannot tell": the convention cannot exist there, so
-nothing can be holding it, and the alternative would be an automatic sweep that silently
-never runs — the exact failure this release exists to end.
+**The trap in that lock, and it is a real one.** The file is KEPT between runs when the
+holder passes `-k`, so its existence proves nothing — `[ -e ]` would have stopped every
+sweep for ever, and a test asserting "the file is there, so it is busy" would have passed.
+The only thing that answers is trying to take the lock for an instant
+(`lockf -k -s -n -t 0 … true`): 0 means free, 69 (`EX_UNAVAILABLE`, with `-n` and no file)
+means nothing has ever registered a heavy run and is also free, 75 (`EX_TEMPFAIL`) means
+held, and anything else means we cannot tell — which counts as busy, the same rule
+`disk_lane_running` already follows for a lane it cannot place. No `lockf` on the machine at
+all is NOT "cannot tell": the convention cannot exist there, so nothing can be holding it,
+and the alternative would be an automatic sweep that silently never runs — the exact failure
+this release exists to end.
+
+**And then the convention itself turned out to be broken, which was found by using it.**
+While this lane's own suites waited their turn on that lock, a `-t 0` probe of the path
+answered *free* with the lane's own holder still running. `lsof` said why: the holder had
+inode **240542083** open while the path resolved to **240709857**. `lockf`'s DEFAULT is to
+delete the file when its command ends — only `-k` keeps it — and BSD locks live on the inode,
+not the path. So one holder on this machine that omitted `-k` unlinked the file on exit, and
+from that moment the path and the locked inode were two different objects: a holder still
+running kept a lock nobody could see, and every later holder and probe took a fresh inode and
+believed it was alone. Mutual exclusion was gone for every lane at once, silently, and the
+only reason it surfaced is that something finally *read* the lock instead of only taking it.
+
+Two consequences, and the honest one is the second:
+
+1. The probe is now `-k -s -n -t 0`, which makes it READ-ONLY: `-n` stops it creating a file
+   when none exists (69 is then "free"), and `-k` stops it deleting one. Looking at the lock
+   leaves the lock exactly as it was, so this guard is not itself a participant in the race.
+   `tests/disk.sh` asserts both halves, inode included.
+2. **That does not fix the hole, and nothing in this repository can.** No single-process
+   probe recovers a lock whose file has been unlinked under it. The fix is that *every*
+   holder on the machine passes `-k`, which is what `lockf`'s own manual recommends and what
+   README.md, docs/USAGE.md and the user manual now say in a box each. Until that is true
+   everywhere, what this guard buys is exact and worth stating plainly: it stops the sweep
+   whenever the convention is held correctly, and it never stops it wrongly.
 
 Every sweep is appended to `~/.wolfmux/state/reclaimed.jsonl` (asked for by name): time,
 project, team, lane, kilobytes, trigger, directory names, who. Machine-wide and not per

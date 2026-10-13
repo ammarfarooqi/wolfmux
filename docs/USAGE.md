@@ -230,10 +230,22 @@ nobody can see cannot quietly hoard. `teamctl remove <role>` is still how a prot
 **A lane mid-build is never swept.** A build runs in whatever shell started it, not in the
 lane's pane, so `stop` cannot see it — and taking `node_modules` from under a running build
 is the one way this could do real damage. The signal is the lock this machine's heavy runs
-already hold: `lockf ~/.wolfmux/machine-heavy.lock <command>`. The file merely existing is
-not a lock (`lockf` keeps it between runs), so the sweep tries to take the lock for an
-instant, which is the only thing that answers; while it is held the lane keeps its build
-output and the reason is printed.
+already hold: `lockf -k ~/.wolfmux/machine-heavy.lock <command>`. The file merely existing is
+not a lock, so the sweep tries to take the lock for an instant, which is the only thing that
+answers; while it is held the lane keeps its build output and the reason is printed. The
+probe is read-only (`lockf -k -s -n -t 0`): it neither creates the file when it is absent nor
+deletes it afterwards, so looking at the lock never changes it.
+
+**And a warning about that lock, which is the convention's and not this tool's.** `lockf`
+DELETES the file when its command ends unless `-k` is given, while the lock itself lives on
+the inode. So a single holder without `-k` unlinks the file on exit and splits the path from
+the locked inode: the holder still running keeps a lock nobody can see, and every later
+holder and probe takes a fresh inode and believes it is alone. Mutual exclusion is gone for
+every lane at once, with nothing printed. Measured on this machine on 2026-10-13 with `lsof`:
+a live holder had inode 240542083 open, the path resolved to 240709857, and a `-t 0` probe of
+the path returned "free". **Write every heavy run as `lockf -k`**; no probe can recover the
+lock once the file has been unlinked under it, and `lockf`'s own manual recommends `-k` for
+exactly this.
 
 **The ledger.** Every sweep is appended to `~/.wolfmux/state/reclaimed.jsonl`, machine-wide:
 one JSON object per line with the time, the project, the team, the lane, the kilobytes, the
