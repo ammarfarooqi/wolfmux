@@ -169,6 +169,25 @@ To try it without install.sh: `source <(teamctl completion zsh)`. In bash:
 `eval "$(teamctl completion bash)"` (bash 3.2 cannot source a process substitution). Tab offers nothing? See
 [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#tab-completion).
 
+### Claude Code slash commands
+
+`./install.sh` puts a Claude Code slash command per `teamctl` command you run by
+hand into `~/.claude/commands/`, so they work in every project, not just this one:
+
+```
+/teamctl <args>         passthrough: runs teamctl $ARGUMENTS and prints the output
+/team-status [--team X] /team-teams  /team-dashboard  /team-inbox  /team-approvals
+/team-nudge <role> [--team X]
+/team-spawn <role> <model> [...]
+/team-prune [--dry-run]           asks before running without --dry-run
+/team-destroy <team>              shows teamctl teams, asks, then runs --purge --yes
+```
+
+Installed by content hash: a file already up to date is left alone, a stale copy of
+wolfmux's own file is updated, and a file under the same name that you wrote yourself
+is never touched — install.sh says so and names the file. Skip the whole step with
+`./install.sh --no-claude-commands`.
+
 ### Branch names and other repositories
 
 A teammate's branch is named by the team's **branch template**. The default reproduces the

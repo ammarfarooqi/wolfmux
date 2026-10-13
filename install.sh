@@ -2,23 +2,31 @@
 # install.sh — put wolfmux in place for the current user. Idempotent and reversible.
 #
 # It copies files, links the launcher names, builds Wolfmux.app (the owner of the team's
-# notifications), writes ~/bin/codex when no codex is installed, and makes three small,
-# backed-up edits:
+# notifications), writes ~/bin/codex when no codex is installed, puts its Claude Code slash
+# commands in ~/.claude/commands/ (by content hash; a file of yours under one of those names
+# is left alone), and makes three small, backed-up edits:
 #   ~/.zshrc                      one marked block that appends ~/bin to PATH
 #   ~/.claude/settings.json       narrow allow/ask permission rules (merged, never replaced)
 #   ~/.codex/rules/wolfmux.rules  a separate rule file (default.rules is not touched)
 # It never reads, writes or asks for a credential. Undo everything with ./uninstall.sh.
 #
-#   ./install.sh [--no-path] [--no-completion] [--no-claude-permissions] [--no-codex-rules] [--no-notifier-app]
+#   ./install.sh [--no-path] [--no-completion] [--no-claude-permissions] [--no-claude-commands]
+#                [--no-codex-rules] [--no-notifier-app]
+#
+# WOLFMUX_INSTALL_HOME overrides $HOME for every path this script writes (defaults to $HOME).
+# It exists so a test can point the real installer at a throwaway directory instead of
+# reassigning $HOME, which is how a stray run once reached a real machine's live install.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd -P)"
 STAMP="$(date +%Y%m%d-%H%M%S)"
+HOME="${WOLFMUX_INSTALL_HOME:-$HOME}"
 BIN_DIR="$HOME/bin"
 CONF_DIR="$HOME/.config/wolfmux"
 DO_PATH=1
 DO_COMPLETION=1
 DO_CLAUDE=1
+DO_CLAUDE_COMMANDS=1
 DO_CODEX=1
 DO_APP=1
 
@@ -27,10 +35,11 @@ for arg in "$@"; do
     --no-path) DO_PATH=0 ;;
     --no-completion) DO_COMPLETION=0 ;;
     --no-claude-permissions) DO_CLAUDE=0 ;;
+    --no-claude-commands) DO_CLAUDE_COMMANDS=0 ;;
     --no-codex-rules) DO_CODEX=0 ;;
     --no-notifier-app) DO_APP=0 ;;
     -h | --help)
-      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -58,9 +67,15 @@ backup() { # <file> — timestamped copy next to the original
 # install_file <src> <dst> <mode> — replace only when the content differs. The
 # previous version of one of OUR files goes to ~/.wolfmux/backups/<stamp>/, never
 # next to the original: an executable copy in ~/bin would sit on your PATH.
+#
+# The mode is enforced even when the content already matches: a file that got its mode
+# clobbered by something outside install.sh (a hand restore from a backup, which this
+# script deliberately keeps at 600) would otherwise carry that wrong mode forever, since
+# content-only idempotence would never touch it again.
 install_file() {
   local src="$1" dst="$2" mode="$3" keep
   if [ -f "$dst" ] && /usr/bin/cmp -s "$src" "$dst"; then
+    /bin/chmod "$mode" "$dst"
     return 0
   fi
   if [ -e "$dst" ]; then
@@ -82,6 +97,46 @@ install_once() {
     /usr/bin/install -m "$3" "$1" "$2"
     note "installed: $2"
   fi
+}
+
+# install_command_file <src> <dst> <manifest> — like install_file, but by content hash,
+# and only ever touches a destination this manifest says WE put there. A file of the same
+# name the user wrote themselves (or kept after deleting it from the manifest) is left alone,
+# with a note saying why; delete it yourself to let wolfmux manage that name again.
+install_command_file() {
+  local src="$1" dst="$2" manifest="$3" name want have recorded tmp keep
+  name="$(basename "$dst")"
+  want="$(shasum -a 256 "$src" | cut -d' ' -f1)"
+  if [ ! -e "$dst" ]; then
+    /usr/bin/install -m 644 "$src" "$dst"
+    note "installed: $dst"
+  else
+    have="$(shasum -a 256 "$dst" | cut -d' ' -f1)"
+    if [ "$have" = "$want" ]; then
+      /bin/chmod 644 "$dst"
+      return 0
+    fi
+    recorded="$([ -f "$manifest" ] && /usr/bin/awk -v n="$name" '$1==n{print $2}' "$manifest" || true)"
+    if [ "$have" != "$recorded" ]; then
+      note "kept your existing: $dst (not a file wolfmux installed — delete it yourself to let wolfmux manage $name)"
+      return 0
+    fi
+    keep="$HOME/.wolfmux/backups/$STAMP/.claude-commands/$name"
+    /bin/mkdir -p "$(dirname "$keep")"
+    /bin/cp -p "$dst" "$keep"
+    /bin/chmod 600 "$keep"
+    note "previous version kept: $keep"
+    /usr/bin/install -m 644 "$src" "$dst"
+    note "updated: $dst"
+  fi
+  tmp="$manifest.tmp.$$"
+  if [ -f "$manifest" ]; then
+    /usr/bin/grep -v "^$name " "$manifest" >"$tmp" 2>/dev/null || true
+  else
+    : >"$tmp"
+  fi
+  printf '%s %s\n' "$name" "$want" >>"$tmp"
+  /bin/mv -f "$tmp" "$manifest"
 }
 
 say "== prerequisites"
@@ -303,6 +358,15 @@ if [ "$DO_CLAUDE" -eq 1 ]; then
       note "merged allow/ask rules (nothing removed)"
     fi
   fi
+fi
+
+if [ "$DO_CLAUDE_COMMANDS" -eq 1 ]; then
+  say "== Claude Code slash commands (~/.claude/commands/)"
+  /bin/mkdir -p "$HOME/.claude/commands"
+  manifest="$CONF_DIR/commands.manifest"
+  for path in "$REPO"/config/wolfmux/commands/*.md; do
+    install_command_file "$path" "$HOME/.claude/commands/$(basename "$path")" "$manifest"
+  done
 fi
 
 if [ "$DO_CODEX" -eq 1 ]; then
