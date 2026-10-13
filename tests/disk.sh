@@ -543,8 +543,10 @@ check "with the policy off, parking takes the caches and keeps node_modules" \
   '[ -d "$K2/node_modules/pkg" ] && [ ! -e "$K2/.next" ] && [ ! -e "$K2/dist" ]'
 check "and the line says nothing about installing again, because nothing was uninstalled" \
   '! teamctl stop keeper2 2>&1 | grep -q "installs again"'
-check "a policy value that is not on|off is refused (exit 64)" \
-  'teamctl policy auto-prune sometimes >/dev/null 2>&1; [ $? -eq 64 ]'
+# Both halves, on purpose: a tree that does not know the key at all refuses EVERY value
+# with 64, so "a wrong value is refused" passes there without proving the key exists.
+check "a policy value that is not on|off is refused (exit 64), and both real values are taken" \
+  'teamctl policy auto-prune sometimes >/dev/null 2>&1; [ $? -eq 64 ] && teamctl policy auto-prune on >/dev/null 2>&1 && teamctl policy auto-prune off >/dev/null 2>&1'
 check "teamctl policy shows the key with its value and its choices" \
   'teamctl policy | grep -Eq "^  auto-prune +(on|off) +\(on\|off\)"'
 # The v1.16.0 lesson: a knob that is not on WOLFMUX_CONFIG_KEYS is read out of the config
@@ -589,10 +591,12 @@ check "a worker cannot set the flag: it is the lead's call (exit 77)" \
   'TEAM_ROLE=costly teamctl keep costly >/dev/null 2>&1; [ $? -eq 77 ]'
 check "but a worker may look, because looking is not changing" \
   'TEAM_ROLE=costly teamctl keep >/dev/null 2>&1'
+# The REASON, not just a non-zero exit: a tree with no `keep` command at all fails every
+# one of these with "unknown command", which would pass an exit-code-only check.
 check "keeping the lead is refused: it works in your own checkout and nothing of its is swept" \
-  'teamctl keep lead >/dev/null 2>&1; [ $? -ne 0 ]'
-check "an unknown value is a usage error, not a silently ignored word" \
-  'teamctl keep costly maybe >/dev/null 2>&1; [ $? -eq 64 ]'
+  'out="$(teamctl keep lead 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "works in your own checkout"'
+check "an unknown value is a usage error naming the real usage, not a silently ignored word" \
+  'out="$(teamctl keep costly maybe 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "no role: what is protected now"'
 
 echo "== a lane mid-build is never swept: the machine's heavy lock"
 # A build runs in whatever shell started it, not in the lane's pane, so `stop` cannot see
@@ -603,8 +607,10 @@ teamctl spawn building glm53 --no-kickoff >/dev/null 2>&1
 sleep 2
 BUILDING="$(teamctl status --json | jq -r '.agents[] | select(.role == "building") | .workdir')"
 mk_build_tree "$BUILDING"
+# The probe has to EXIST and say free: a tree without the function fails `type` and would
+# otherwise satisfy a bare `! lib_eval "disk_heavy_run_in_progress"` for the wrong reason.
 check "the lock file merely existing is NOT a heavy run, or every sweep would stop for ever" \
-  'touch "$WOLFMUX_DATA/machine-heavy.lock" && ! lib_eval "disk_heavy_run_in_progress"'
+  'touch "$WOLFMUX_DATA/machine-heavy.lock" && lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && ! disk_heavy_run_in_progress"'
 if [ -x /usr/bin/lockf ]; then
   /usr/bin/lockf -k -s "$WOLFMUX_DATA/machine-heavy.lock" /bin/sleep 25 &
   HEAVY_PID=$!
@@ -690,8 +696,8 @@ check "and the one-team form still refuses outright instead of skipping, which i
   'teamctl prune --team second >/dev/null 2>&1; [ $? -ne 0 ]'
 check "--all-teams --keep-node-modules takes the caches only, across the machine" \
   'teamctl prune --all-teams --keep-node-modules 2>&1 | grep -q "takes:.*\.next" && ! teamctl prune --all-teams --dry-run --keep-node-modules 2>&1 | grep -q "takes: node_modules"'
-check "an unknown option is still a usage error" \
-  'teamctl prune --all-teams --nonsense >/dev/null 2>&1; [ $? -eq 64 ]'
+check "an unknown option is still a usage error, and the usage line now names --all-teams" \
+  'out="$(teamctl prune --all-teams --nonsense 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "--all-teams"'
 
 echo "== a plain teamctl destroy parks every lane, so it sweeps every lane"
 # The second path that leaves lanes parked, and the one that does it in bulk: destroy
