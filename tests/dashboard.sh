@@ -44,8 +44,14 @@ skip() { # <description> <why>
   skipped=$((skipped + 1))
   printf '  SKIP  %s\n        (%s)\n' "$1" "$2"
 }
+# The body runs in a SUBSHELL, so a check can fail without taking the suite with it. Two
+# ordinary things in a failing check end a bare `eval`: a `exit 1` used inside a loop to
+# fail the check, and reading a variable that was only assigned earlier in the same `&&`
+# chain, which under `set -u` aborts the shell as soon as that chain short-circuits. The
+# second one ended tests/disk.sh silently mid-run on a pristine library, with no summary
+# line, which is indistinguishable from a short clean run.
 check() { # <description> <command string>
-  if eval "$2" >/dev/null 2>&1; then
+  if ( eval "$2" ) >/dev/null 2>&1; then
     passed=$((passed + 1))
     printf '  pass  %s\n' "$1"
   else
@@ -223,8 +229,9 @@ check "an old parked number is still used: a parked lane is one where nothing ru
   'lib_eval "team_paths default; printf \"%s 2097152\n\" \"\$(( \$(now_epoch) - 90000 ))\" > \"\$(disk_parked_cache_file)\""; teamctl _overview-badge | grep -q "held 2.0G"'
 check "a garbled parked file is dropped silently, and a leading zero never reaches the arithmetic" \
   'lib_eval "team_paths default; printf \"08 500\n\" > \"\$(disk_parked_cache_file)\""; out="$(teamctl _overview-badge 2>&1)"; printf "%s" "$out" | grep -q "held -$" && ! printf "%s" "$out" | grep -qi "value too great\|syntax error"'
-# Each loop runs in a SUBSHELL: `eval` in check runs in this shell, so a bare `exit 1` in a
-# check body would end the whole suite at the first failure instead of failing one check.
+# Each loop is ALSO written in a subshell. Since `check` now evaluates every body in one,
+# this is belt and braces rather than the only thing standing between a failing check and
+# the end of the suite — and it still says plainly that `exit 1` here means "fail me".
 check "and so are a short line, an empty file and a negative number" \
   '(for v in "" "123" "-5 -5" "banana soup"; do lib_eval "team_paths default; printf \"%s\n\" \"$v\" > \"\$(disk_parked_cache_file)\""; teamctl _overview-badge | grep -q "held -$" || exit 1; done)'
 # The equivalence rule of this file, applied to the new fast reader: dash_parked_kb reads the

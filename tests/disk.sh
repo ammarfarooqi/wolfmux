@@ -41,8 +41,16 @@ skip() { # <description> <why>
   skipped=$((skipped + 1))
   printf '  SKIP  %s\n        (%s)\n' "$1" "$2"
 }
+# The body runs in a SUBSHELL. `eval` on its own runs in this shell, where two ordinary
+# things in a failing check end the whole suite instead of failing it:
+#   - a bare `exit 1`, used inside a loop to fail the check;
+#   - reading a variable that was only assigned earlier in the same `&&` chain, which under
+#     `set -u` aborts the shell the moment the chain short-circuits.
+# Both were measured here: the second ended this suite silently at check 140 of 175 on a
+# pristine library, with no summary line and nothing on stderr, which looks exactly like a
+# short clean run. A check must be able to fail without taking the suite with it.
 check() { # <description> <command string>
-  if eval "$2" >/dev/null 2>&1; then
+  if ( eval "$2" ) >/dev/null 2>&1; then
     passed=$((passed + 1))
     printf '  pass  %s\n' "$1"
   else
