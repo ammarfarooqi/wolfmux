@@ -249,8 +249,10 @@ check "--explain repeats the house rule: there is no honest idle-or-working sign
   'printf "%s" "$BAR" | grep -q "no honest signal"'
 check "a bare teamctl bar points at the legend rather than printing it" \
   'teamctl bar | grep -q "teamctl bar --explain" && [ "$(teamctl bar | wc -l | tr -d " ")" -lt 5 ]'
-check "an unknown option is a usage error (exit 64), not a wrong line" \
-  'teamctl bar --nonsense >/dev/null 2>&1; [ $? -eq 64 ]'
+# The usage LINE, not just the exit code: a tree with no `bar` command refuses it with 64
+# as an unknown command, which would pass an exit-code-only check for the wrong reason.
+check "an unknown option is a usage error (exit 64) naming the real usage, not a wrong line" \
+  'out="$(teamctl bar --nonsense 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "usage: teamctl bar \[--explain\]"'
 
 echo "== the context column: three cases, never an invented percentage"
 # From v1.14.1 model_context_window may legitimately return nothing, and a percentage of a
