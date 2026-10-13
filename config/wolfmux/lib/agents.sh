@@ -1485,7 +1485,11 @@ _purge_team() {
   /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge"
   # disk-kb is the remembered size of lanes that no longer exist; leaving it behind also
   # left the team's state directory non-empty, so the rmdir of a named team did nothing.
-  /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb"
+  # disk-parked-kb is its v1.17.0 twin and arrived here the same way: it was written by
+  # `teamctl teams`, not named here, and the purge stopped deleting the directory. Every
+  # per-team file the disk module writes belongs on this line — tests/disk.sh checks that.
+  /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb" \
+    "$STATE_DIR/disk-parked-kb"
   /bin/rmdir "$WORKTREES_DIR" 2>/dev/null || true
 }
 

@@ -697,8 +697,12 @@ check "--timeout gives up with exit 75 rather than waiting, and says nothing was
 # alone, which a 2>/dev/null on the whole call would not have.
 check "on the timeout path lockf does not say it too: one line, ours" \
   '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "nothing was run" && ! printf "%s" "$out" | grep -qi "already locked"'
+# These two need the lock FREE, and the checks around them leave a holder sleeping for
+# several seconds on the shared path, so each gets a lock file of its own. A check that
+# depends on another check's timing is not a check: both of these failed in a measured run
+# for exactly that reason while the behaviour they test was correct.
 check "a command silenced for lockf still speaks for itself" \
-  'out="$(teamctl heavy --timeout 5 /bin/sh -c "echo mine-out; echo mine-err >&2" 2>&1)"; printf "%s" "$out" | grep -q "mine-out" && printf "%s" "$out" | grep -q "mine-err"'
+  'out="$(WOLFMUX_HEAVY_LOCK="$WOLFMUX_DATA/heavy-own-a.lock" teamctl heavy --timeout 5 /bin/sh -c "echo mine-out; echo mine-err >&2" 2>&1)"; printf "%s" "$out" | grep -q "mine-out" && printf "%s" "$out" | grep -q "mine-err"'
 # 75 means two things, and guessing wrong would report somebody else's exit status as a lock
 # failure. With the lock FREE, a command that exits 75 is the command's 75, not the lock's.
 # The scratch file is what tells the two 75s apart, so a machine where mktemp cannot write
@@ -709,7 +713,7 @@ check "with nowhere to write a scratch file it says which 75 it cannot tell apar
 check "and with a writable one it is not ambiguous at all" \
   '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "nothing was run" && ! printf "%s" "$out" | grep -q "cannot tell you which 75"'
 check "a command that itself exits 75 is not reported as the lock timing out" \
-  'out="$(teamctl heavy --timeout 5 /bin/sh -c "exit 75" 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && ! printf "%s" "$out" | grep -q "nothing was run"'
+  'out="$(WOLFMUX_HEAVY_LOCK="$WOLFMUX_DATA/heavy-own-b.lock" teamctl heavy --timeout 5 /bin/sh -c "exit 75" 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && ! printf "%s" "$out" | grep -q "nothing was run"'
 check "it says what it waited for, and --quiet does not" \
   '( teamctl heavy /bin/sleep 7 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "waiting for the machine.s heavy lock" && q="$( ( teamctl heavy /bin/sleep 5 >/dev/null 2>&1 & ) ; sleep 1; teamctl heavy --quiet /usr/bin/true 2>&1)"; [ -z "$q" ]'
 # The sweep and the wrapper are two halves of one mechanism: whatever teamctl heavy holds,
@@ -723,6 +727,15 @@ echo "== what the status bar reads: the parked number teamctl teams leaves behin
 # reason rather than for its own.
 check "teamctl teams writes the parked total of this team next to the lane total" \
   'teamctl teams >/dev/null 2>&1; lib_eval "[ -f \"\$(disk_parked_cache_file)\" ] && disk_parked_kb \"\$STATE_DIR\" | grep -Eq \"^[0-9]+$\""'
+# A cache file in a team's state directory keeps that directory non-empty, and the purge
+# deletes the directory only when it is empty - so a file the disk module writes and the
+# purge does not name means `destroy --purge` silently stops removing the team. That is
+# exactly how disk-parked-kb broke smoke.sh's founder check, which this release did not
+# touch. The names are DERIVED from disk.sh rather than listed here, so the next cache file
+# is covered the day it is added; `n -ge 2` is the control, so a derivation that finds
+# nothing fails instead of passing on an empty list.
+check "every per-team cache file the disk module writes is named in the purge" \
+  '(n=0; for f in $(sed -n "s/.*printf .%s\/\([a-z-]*\)\\\\n. \"\$STATE_DIR\".*/\1/p" "$REPO/config/wolfmux/lib/disk.sh"); do n=$((n+1)); grep -q "STATE_DIR/$f" "$REPO/config/wolfmux/lib/agents.sh" || exit 1; done; [ "$n" -ge 2 ])'
 check "the parked total counts the lanes that are NOT running, and never more than the lane total" \
   'lib_eval "p=\$(disk_parked_kb \"\$STATE_DIR\"); t=\$(disk_team_kb_cached); [ -n \"\$p\" ] && [ -n \"\$t\" ] && [ \"\$p\" -le \"\$t\" ]"'
 check "an old parked number is still used, because a parked lane's size does not change by itself" \
