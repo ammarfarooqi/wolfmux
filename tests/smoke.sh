@@ -389,7 +389,7 @@ teamctl restart qa >/dev/null 2>&1
 sleep 2
 
 echo "== one manager, permissions, spawning"
-check "policy: defaults are skip / skip / worker spawning off / worker isolation on / disk guard refuse at 20 GB / no shared node_modules" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", lead_teams: \"on\", disk_guard: \"refuse\", disk_min_gb: 20, link_node_modules: \"off\"}"'
+check "policy: defaults are skip / skip / worker spawning off / worker isolation on / disk guard refuse at 20 GB / no shared node_modules / auto-prune on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", lead_teams: \"on\", disk_guard: \"refuse\", disk_min_gb: 20, link_node_modules: \"off\", auto_prune: \"on\"}"'
 check "permissions: lead and workers start in their CLI's bypass mode" 'teamctl capture lead -n 8 | grep -q "flags=--dangerously-bypass-approvals-and-sandbox" && teamctl capture backend -n 8 | grep -q "flags=--dangerously-skip-permissions"'
 check "hierarchy: the CLI's own agent-teams feature is switched off inside workers" 'teamctl capture backend -n 8 | grep -q "settings={\"teams\":\"0\",\"mode\":\"in-process\",\"hook\":false}"'
 check "hierarchy: the lead's own settings are left alone" 'teamctl capture lead -n 8 | grep -q "settings=none"'
@@ -624,7 +624,16 @@ BUILDER_DIR="$(teamctl status --json | jq -r '.agents[] | select(.role == "build
 (cd "$BUILDER_DIR" && echo "node_modules/" >.gitignore && git add .gitignore && git -c user.name=builder -c user.email=b@example.invalid commit -qm "chore: ignore node_modules" && mkdir -p node_modules && echo x >node_modules/x)
 check "spawn: --from-worktree refuses a running worker, and creates nothing" 'teamctl spawn x1 glm53 --from-worktree builder; [ $? -eq 1 ] && [ -z "$(git branch --list "ai/x1-*")" ]'
 check "spawn: --from-worktree refuses the lead (it has no worktree to hand over)" 'teamctl spawn x2 glm53 --from-worktree lead; [ $? -eq 1 ]'
-teamctl stop builder >/dev/null 2>&1
+# From v1.17.0, parking a lane sweeps its build output, and --from-worktree needs the lane
+# PARKED first — so the whole point of the handover (the install is not repeated) now depends
+# on the lane being protected before it is stopped. These two checks assert that composition
+# in both directions: protected, the install survives the stop and the handover; unprotected,
+# it does not, and teamctl says which it was. `teamctl keep` is what a lead runs for a lane it
+# intends to hand over.
+check "spawn + auto-prune: an UNPROTECTED lane loses its node_modules when it is parked, and stop says so" \
+  'out="$(teamctl stop builder 2>&1)"; printf "%s" "$out" | grep -q "freed:.*node_modules" && [ ! -e "$BUILDER_DIR/node_modules" ] && printf "%s" "$out" | grep -q "teamctl keep builder"'
+check "spawn + auto-prune: teamctl keep makes the handover cheap again — the install survives the park" \
+  'mkdir -p "$BUILDER_DIR/node_modules" && echo x >"$BUILDER_DIR/node_modules/x" && teamctl restart builder >/dev/null 2>&1 && sleep 2 && teamctl keep builder >/dev/null 2>&1 && teamctl stop builder 2>&1 | grep -q "kept:    its build output (teamctl keep protects this lane)" && [ -f "$BUILDER_DIR/node_modules/x" ]'
 echo "half done" >"$BUILDER_DIR/wip.txt"
 check "spawn: --from-worktree refuses a worktree with uncommitted changes, and lists them" 'out="$(teamctl spawn builder2 flash --from-worktree builder 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q "wip.txt" && ! teamctl status --json | jq -e ".agents[] | select(.role == \"builder2\")" && [ -z "$(git branch --list "ai/builder2-*")" ]'
 /bin/rm "$BUILDER_DIR/wip.txt"
@@ -636,6 +645,10 @@ check "spawn: --from-worktree starts a fresh worker in the same worktree, on a n
 check "spawn: --from-worktree bases the new branch on the project's current HEAD" 'teamctl diff builder2 | grep -q "base:    main @ $(git rev-parse --short=12 HEAD)"'
 check "spawn: the old branch and its commits stay" '[ "$(git show "$BUILDER_OLD_BRANCH:.gitignore" 2>/dev/null)" = "node_modules/" ] && [ "$(git -C "$BUILDER_DIR" branch --show-current)" != "$BUILDER_OLD_BRANCH" ]'
 check "spawn: what git ignores (node_modules) is still there, so no install is repeated, and the fresh pane runs" '[ -f "$BUILDER_DIR/node_modules/x" ] && teamctl capture builder2 -n 8 | grep -q "STUB role=builder2" && teamctl capture builder2 -n 8 | grep -q "STUB kickoff_in_progress=yes"'
+# The keep flag protects the WORKTREE, so it has to survive the role change with it: without
+# this, the first `teamctl stop builder2` would sweep the install the handover just preserved.
+check "spawn: --from-worktree carries the keep flag over with the worktree, and says so" \
+  '[ "$(teamctl status --json | jq -r ".agents[] | select(.role == \"builder2\") | .keep_build")" = "on" ]'
 check "spawn: the event log says the worktree changed hands" 'grep -q "\"type\":\"from-worktree\"" "$(ls -d "$WOLFMUX_DATA"/state/*/events.jsonl | head -1)"'
 teamctl stop builder2 >/dev/null 2>&1
 teamctl remove builder2 --yes >/dev/null 2>&1

@@ -36,10 +36,14 @@ WOLFMUX_GLM_GUARD_TOKEN="wolfmux-glm-worker-no-anthropic-credential"
 # _STALL_NOTIFY_DEBOUNCE) stay OFF the list on purpose: they are documented as mechanism,
 # not preference, each one is already settable per invocation for a measurement, and a
 # wrong persistent value would weaken a guard for every team on the machine at once.
+# v1.17.0 adds WOLFMUX_AUTO_PRUNE, the default of the auto-prune policy: a preference about
+# this machine's disk, which is exactly what this file is for. It was put here in the same
+# commit as the knob, because the v1.16.0 lesson is that a knob and its allowlist entry have
+# to arrive together or the knob silently does nothing (tests/disk.sh round-trips it).
 WOLFMUX_CONFIG_KEYS="WOLFMUX_GLM_AUTH_MODE WOLFMUX_GLM_CONTEXT WOLFMUX_FABLE_MODEL WOLFMUX_ASTRA_MODEL
 WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL
 WOLFMUX_LEAD_PERMISSIONS WOLFMUX_WORKER_PERMISSIONS WOLFMUX_WORKER_SPAWN WOLFMUX_WORKER_ISOLATION WOLFMUX_LEAD_TEAMS WOLFMUX_APPROVAL_TIMEOUT WOLFMUX_BRANCH_TEMPLATE
-WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES
+WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES WOLFMUX_AUTO_PRUNE
 WOLFMUX_SPLASH WOLFMUX_NOTIFY WOLFMUX_LAYOUT WOLFMUX_TERMINAL
 WOLFMUX_NUDGE_TYPE WOLFMUX_NUDGE_LEAD_IDLE WOLFMUX_NUDGE_COLLISION_CHECK
 WOLFMUX_INBOX_APPROVAL_TYPE WOLFMUX_INBOX_APPROVAL_GRACE WOLFMUX_INBOX_STALL_NOTIFY"

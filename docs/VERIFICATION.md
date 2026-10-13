@@ -3,23 +3,75 @@
 No model call was made to test this system. Real CLIs were only started as far as
 their first screen; everything else used stub agents or a localhost mock.
 
+## Reviewing a branch: set WOLFMUX_HOME first, and prove it switched
+
+**`bin/teamctl` is a dispatcher, not the program.** It sources every library from
+`$WOLFMUX_HOME/lib/`, which defaults to `~/.config/wolfmux` — the **installed** tree. So
+running a branch's `bin/teamctl` with `WOLFMUX_HOME` unset runs that branch's dispatcher
+against the *installed* libraries, and a reviewer sees the old behaviour and a
+`cmd_<new thing>: command not found` for anything the branch added. It looks exactly like
+two defects in the branch. It is not: nothing of the branch was loaded.
+
+```bash
+cd <the worktree>
+export WOLFMUX_HOME="$PWD/config/wolfmux"
+teamctl version          # the CONTROL: it must print the branch's version, not the installed one
+```
+
+The version line is the control, and it is worth printing before trusting any other result:
+`WOLFMUX_VERSION` lives in `lib/common.sh`, so it changes only when the libraries really
+switched.
+
+**Every suite points at the branch; none of them relies on you to.** That is why a suite can
+pass on a branch whose behaviour a hand-run command appears to deny — and it is worth knowing
+that they do it in four different ways, because "they all export `WOLFMUX_HOME`" is not true
+and a reviewer who assumes it will mis-read the three that do not:
+
+| Mechanism | Suites |
+|-----------|--------|
+| `export WOLFMUX_HOME="$REPO/config/wolfmux"` at the top | `smoke` `disk` `dashboard` `inbox` `nudge-typing` `providers` |
+| sets it per command, on the one call that needs the dispatcher (`teamctl _complete`); everything else is read straight out of `$REPO` | `docs` |
+| sources the library itself: `. "$REPO/config/wolfmux/lib/provider-env.sh"` — no dispatcher involved, so nothing to point | `credential-routing` |
+| `export HOME="$WORK/home"`, run the repo's own `install.sh` into it, then drive `$HOME/bin/teamctl` — the branch is tested through its installer | `migration` `permissions` |
+
+The last row is the one to remember for another reason: **`install.sh` can be tested without
+touching your real `HOME`**, and those two suites have been doing it for releases. Nothing
+has to be installed against the live machine to find out what the installer does.
+
+The thing a reviewer must not do is run a hand command with `WOLFMUX_HOME` unset and read the
+result as the branch's.
+
+(Found the hard way during the v1.17.0 review: two blockers were nearly filed against a
+branch that was correct, and what caught it was `teamctl version` printing the installed
+number.)
+
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 5 to 7 minutes, 348 checks, isolated from any running team
+tests/smoke.sh                 # 5 to 7 minutes, 351 checks, isolated from any running team
                                # (how many PASS depends on the launch: one skip per signal it
                                #  leaves ignored — see smoke.sh below)
-tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
+tests/disk.sh                  # ~3 minutes, 175 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~2 minutes, 61 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/inbox.sh                 # ~4 minutes, 107 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while he is working in it
 tests/providers.sh             # the provider table and the config allowlist, 141 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
-tests/dashboard.sh             # ~90 seconds, 115 checks, its own tmux server and state: the machine-wide view and the status segment
+tests/dashboard.sh             # ~2 minutes, 135 checks, its own tmux server and state: the machine-wide view and the status segment
+tests/commands.sh              # ~20 seconds, 16 checks, in a throwaway WOLFMUX_INSTALL_HOME: the Claude Code slash commands install.sh writes
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```
+
+For **v1.17.0** the figures live in [BUILD-LOG.md](BUILD-LOG.md#every-suite-at-the-shipped-head):
+1069 passing, 2 failing, 0 skipped across the ten countable suites at one sha. The two
+failures are non-hermetic checks that read the live shared Beads database, so their result
+depends on its contents at the time; they are not this branch's, and the control is a
+pristine `adbc2db` failing the same two by name. The mechanism is a hypothesis with its
+evidence in the build log, and a task of its own — not a finding, and not this release's. The
+paragraph below is the v1.16.1 record and is kept as that release's measurement, not as a
+description of the suites today — their check counts have grown, as the list above shows.
 
 **950 checks across the nine countable suites, smoke counted once in its clean shape, and
 950 passing, 0 failing** (v1.16.1). Every figure measured under the heavy lock, in ONE

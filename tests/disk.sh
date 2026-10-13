@@ -28,13 +28,29 @@ export WOLFMUX_CLAUDE_PROJECTS="$WORK/claude-projects"
 # it is dropped, or every command here would act as that agent.
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
-unset WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES
+unset WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES WOLFMUX_AUTO_PRUNE WOLFMUX_HEAVY_LOCK
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 
 passed=0
 failed=0
+skipped=0
+# One skip per thing this machine cannot answer: the heavy-lock checks need lockf(1), which
+# macOS ships and some Linuxes do not. A skip is printed with its reason and counted, the way
+# tests/dashboard.sh and tests/smoke.sh already do it — never silently passed.
+skip() { # <description> <why>
+  skipped=$((skipped + 1))
+  printf '  SKIP  %s\n        (%s)\n' "$1" "$2"
+}
+# The body runs in a SUBSHELL. `eval` on its own runs in this shell, where two ordinary
+# things in a failing check end the whole suite instead of failing it:
+#   - a bare `exit 1`, used inside a loop to fail the check;
+#   - reading a variable that was only assigned earlier in the same `&&` chain, which under
+#     `set -u` aborts the shell the moment the chain short-circuits.
+# Both were measured here: the second ended this suite silently at check 140 of 175 on a
+# pristine library, with no summary line and nothing on stderr, which looks exactly like a
+# short clean run. A check must be able to fail without taking the suite with it.
 check() { # <description> <command string>
-  if eval "$2" >/dev/null 2>&1; then
+  if ( eval "$2" ) >/dev/null 2>&1; then
     passed=$((passed + 1))
     printf '  pass  %s\n' "$1"
   else
@@ -203,7 +219,7 @@ echo "== what counts as a person's work, for the question teamctl remove asks"
 # likelier than build output nobody will miss. remove has to ask about those.
 WL="$(new_lane unit-work)"
 check "an untracked dist, build or target that git neither tracks nor ignores counts as work" \
-  'for d in dist build target; do /bin/mkdir -p "$WL/$d"; printf "#!/bin/sh\n" >"$WL/$d/deploy.sh"; [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "1" ] || exit 1; lib_eval "disk_work_dirty_list \"$WL\"" | grep -q "?? $d/" || exit 1; /bin/rm -rf "$WL/$d"; done'
+  '(for d in dist build target; do /bin/mkdir -p "$WL/$d"; printf "#!/bin/sh\n" >"$WL/$d/deploy.sh"; [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "1" ] || exit 1; lib_eval "disk_work_dirty_list \"$WL\"" | grep -q "?? $d/" || exit 1; /bin/rm -rf "$WL/$d"; done)'
 check "node_modules, the build caches and our own trash never count as work" \
   '/bin/mkdir -p "$WL/node_modules/pkg" "$WL/.next" "$WL/.turbo" "$WL/.wolfmux-removing-node_modules.1" && [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "0" ]'
 check "a node_modules SYMLINK does not count either, which is the case the ignore line misses" \
@@ -215,7 +231,7 @@ git -C "$PROJECT" branch -D ai/unit-work >/dev/null 2>&1
 
 echo "== a number that is not base ten"
 check "policy refuses a leading zero: 08 would abort shell arithmetic, 010 would quietly mean 8" \
-  'for v in 08 010 09 twenty -5 1e3 10001; do teamctl policy disk-min-gb "$v" >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done'
+  '(for v in 08 010 09 twenty -5 1e3 10001; do teamctl policy disk-min-gb "$v" >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done)'
 check "a leading zero in the environment falls back to the default, it never reaches the arithmetic" \
   '[ "$(WOLFMUX_DISK_MIN_GB=08 lib_eval "policy_get disk-min-gb")" = "20" ] && [ "$(WOLFMUX_DISK_MIN_GB=010 lib_eval "policy_get disk-min-gb")" = "20" ]'
 # A stored value cannot come through teamctl policy any more, but meta.json is a file
@@ -231,6 +247,12 @@ done
 
 echo "== the commands, in a throwaway team"
 teamctl start fable --no-attach --skip-beads >/dev/null 2>&1
+# This whole block runs with auto-prune OFF, and every check in it is about what that path
+# does: `teamctl prune` itself, and the stop that takes the build caches and keeps
+# node_modules, which is what stop did up to v1.16.1 and what the policy brings back. The
+# DEFAULT (auto-prune on, where parking a lane sweeps the lot) is the block at the end of
+# this file. Both paths ship, so both are tested, and neither is tested through the other.
+teamctl policy auto-prune off >/dev/null 2>&1
 teamctl spawn parked glm53 --no-kickoff >/dev/null 2>&1
 teamctl spawn busy glm53 --no-kickoff >/dev/null 2>&1
 teamctl spawn messy glm53 --no-kickoff >/dev/null 2>&1
@@ -472,6 +494,329 @@ check "prune cleans a lane whose record still says running when there is no sess
   'out="$(teamctl prune 2>&1)"; [ $? -eq 0 ] && ! printf "%s" "$out" | grep -q "cannot tell whether" && [ ! -e "$REBOOTED/node_modules" ] && [ ! -e "$REBOOTED/.next" ] && [ -f "$REBOOTED/README.md" ]'
 /bin/rm -f "$RECORDS/rebooted.json"
 
+# ======================================================================================
+# v1.17.0: the sweep happens when the lane is PARKED, without anybody remembering to ask.
+#
+# Why this block exists at all. v1.16.1 had `teamctl prune`, it worked, and 90.3 GB sat
+# under ~/.wolfmux/worktrees anyway, 50.9 GB of it build output (measured 2026-10-13): a
+# command nobody runs reclaims nothing. So parking a lane now sweeps it, and these checks
+# assert the sweep on a REAL parked lane's directory — the lane teamctl made, the record
+# teamctl wrote — never a mocked path, because a mocked path would have passed in v1.16.1
+# too and proved nothing about the default.
+# ======================================================================================
+echo "== auto-prune: parking a lane sweeps it (the default)"
+LEDGER="$WOLFMUX_DATA/state/reclaimed.jsonl"
+/bin/rm -f "$LEDGER"
+# A fresh team: `destroy --worktrees` above ended the session, and the lane that still holds
+# work is taken off the books so that it cannot colour the totals below.
+teamctl remove messy --force --yes >/dev/null 2>&1
+teamctl start fable --no-attach --skip-beads >/dev/null 2>&1
+teamctl policy auto-prune on >/dev/null 2>&1
+teamctl spawn sweeper glm53 --no-kickoff >/dev/null 2>&1
+sleep 2
+SWEEP="$(teamctl status --json | jq -r '.agents[] | select(.role == "sweeper") | .workdir')"
+check "the lane is a real worktree teamctl made, with a real record" \
+  '[ -n "$SWEEP" ] && [ -d "$SWEEP" ] && [ -f "$SWEEP/README.md" ] && git -C "$SWEEP" rev-parse --verify -q HEAD >/dev/null'
+mk_build_tree "$SWEEP"
+SWEEP_KB="$(kb_of "$SWEEP/node_modules" "$SWEEP/.next" "$SWEEP/dist")"
+STOP3="$(teamctl stop sweeper 2>&1)"
+check "parking the lane takes node_modules as well, not only the build caches" \
+  '[ ! -e "$SWEEP/node_modules" ] && [ ! -e "$SWEEP/.next" ] && [ ! -e "$SWEEP/dist" ]'
+check "it says how much it took, and that the lane installs again before its tools run" \
+  'printf "%s" "$STOP3" | grep -qE "^freed: +[0-9.]+ (KB|MB|GB) of build output \(node_modules" && printf "%s" "$STOP3" | grep -q "installs again"'
+check "it names both ways out: the one lane, and the team" \
+  'printf "%s" "$STOP3" | grep -q "teamctl keep sweeper" && printf "%s" "$STOP3" | grep -q "teamctl policy auto-prune off"'
+check "the sources, the commits and the git state of the parked lane are untouched" \
+  '[ -f "$SWEEP/README.md" ] && [ -z "$(git -C "$SWEEP" status --porcelain)" ] && git -C "$SWEEP" rev-parse --verify -q HEAD >/dev/null'
+check "nothing is left half-deleted: no trash directory stays behind" \
+  '[ -z "$(/bin/ls -A "$SWEEP" | grep wolfmux-removing)" ]'
+# Ammar asked for this by name: a log, under ~/.wolfmux/state, of what was taken.
+check "the sweep is written down in ~/.wolfmux/state/reclaimed.jsonl: team, role, bytes and a timestamp" \
+  '[ -f "$LEDGER" ] && jq -se "[.[] | select(.role == \"sweeper\" and .team == \"default\" and .trigger == \"stop\" and .freed_kb > 0 and (.ts | test(\"^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T\")))] | length == 1" "$LEDGER" >/dev/null'
+check "the bytes in the ledger are the bytes that were really there, not a rounded label" \
+  '[ "$(jq -r "select(.role == \"sweeper\") | .freed_kb" "$LEDGER" | head -1)" = "$SWEEP_KB" ]'
+check "the ledger names the project and who did it, so a line is readable long after the team is gone" \
+  'jq -e "select(.role == \"sweeper\") | (.project | length > 0) and (.by | length > 0) and (.took | test(\"node_modules\"))" "$LEDGER" >/dev/null'
+check "every line of the ledger is one JSON object, appended: it is machine-readable, not prose" \
+  '[ "$(wc -l <"$LEDGER" | tr -d " ")" -ge 1 ] && jq -e . "$LEDGER" >/dev/null'
+
+echo "== auto-prune off is v1.16.1's stop, exactly"
+teamctl policy auto-prune off >/dev/null 2>&1
+teamctl spawn keeper2 glm53 --no-kickoff >/dev/null 2>&1
+sleep 2
+K2="$(teamctl status --json | jq -r '.agents[] | select(.role == "keeper2") | .workdir')"
+mk_build_tree "$K2"
+teamctl stop keeper2 >/dev/null 2>&1
+check "with the policy off, parking takes the caches and keeps node_modules" \
+  '[ -d "$K2/node_modules/pkg" ] && [ ! -e "$K2/.next" ] && [ ! -e "$K2/dist" ]'
+check "and the line says nothing about installing again, because nothing was uninstalled" \
+  '! teamctl stop keeper2 2>&1 | grep -q "installs again"'
+# Both halves, on purpose: a tree that does not know the key at all refuses EVERY value
+# with 64, so "a wrong value is refused" passes there without proving the key exists.
+check "a policy value that is not on|off is refused (exit 64), and both real values are taken" \
+  'teamctl policy auto-prune sometimes >/dev/null 2>&1; [ $? -eq 64 ] && teamctl policy auto-prune on >/dev/null 2>&1 && teamctl policy auto-prune off >/dev/null 2>&1'
+check "teamctl policy shows the key with its value and its choices" \
+  'teamctl policy | grep -Eq "^  auto-prune +(on|off) +\(on\|off\)"'
+# The v1.16.0 lesson: a knob that is not on WOLFMUX_CONFIG_KEYS is read out of the config
+# file and dropped, with no error and no effect. So the round trip is asserted, not assumed.
+/bin/mkdir -p "$WORK/cfg"
+printf 'WOLFMUX_AUTO_PRUNE=off\n' >"$WORK/cfg/config"
+# WOLFMUX_HOME is moved INSIDE the eval, after the libraries have been sourced: lib_eval
+# loads them from $WOLFMUX_HOME/lib, so pointing that at the throwaway config directory from
+# the outside would leave it with nothing to source and the check would fail for that reason
+# instead of for its own.
+check "WOLFMUX_AUTO_PRUNE really survives a round trip through ~/.config/wolfmux/config" \
+  '[ "$(lib_eval "WOLFMUX_HOME=$WORK/cfg; wolfmux_load_config; printf %s \"\$WOLFMUX_AUTO_PRUNE\"")" = "off" ]'
+check "and the policy default is what that file says, with no stored value in the way" \
+  'META="$(lib_eval "printf %s \"\$STATE_DIR/meta.json\"")" && jq "del(.policy_auto_prune)" "$META" >"$META.t" && /bin/mv "$META.t" "$META" && [ "$(lib_eval "WOLFMUX_HOME=$WORK/cfg; wolfmux_load_config; policy_get auto-prune")" = "off" ]'
+check "the default with no file and nothing set is on" \
+  '[ "$(lib_eval "policy_get auto-prune")" = "on" ] && [ "$(WOLFMUX_AUTO_PRUNE=on lib_eval "policy_get auto-prune")" = "on" ]'
+check "a value nobody can read falls back to off: an unreadable setting is not permission to delete" \
+  '[ "$(WOLFMUX_AUTO_PRUNE=banana lib_eval "policy_get auto-prune")" = "off" ] && [ "$(WOLFMUX_AUTO_PRUNE=08 lib_eval "policy_get auto-prune")" = "off" ]'
+teamctl policy auto-prune on >/dev/null 2>&1
+
+echo "== teamctl keep: one lane the sweep leaves alone"
+teamctl spawn costly glm53 --no-kickoff >/dev/null 2>&1
+sleep 2
+COSTLY="$(teamctl status --json | jq -r '.agents[] | select(.role == "costly") | .workdir')"
+mk_build_tree "$COSTLY"
+check "teamctl keep protects a lane and says what it means" \
+  'teamctl keep costly 2>&1 | grep -q "never swept automatically"'
+check "the flag lives in the lane's own record, which is where the sweep reads it" \
+  '[ "$(teamctl status --json | jq -r ".agents[] | select(.role == \"costly\") | .keep_build")" = "on" ]'
+KEPT="$(teamctl stop costly 2>&1)"
+check "parking a protected lane keeps every byte of its build output, and says why" \
+  '[ -d "$COSTLY/node_modules/pkg" ] && [ -d "$COSTLY/.next" ] && printf "%s" "$KEPT" | grep -q "kept:    its build output (teamctl keep protects this lane)"'
+check "teamctl prune honours it too: the sweep asked for by hand is still the automatic sweep" \
+  'teamctl prune 2>&1 | grep -qE "^  costly +[0-9.]+ (KB|MB|GB) +kept: teamctl keep protects this lane" && [ -d "$COSTLY/node_modules/pkg" ]'
+check "teamctl keep with no role lists what is protected, so a flag nobody can see cannot hoard" \
+  'teamctl keep 2>&1 | grep -q "^  costly " && teamctl keep 2>&1 | grep -q "teamctl keep <role> off"'
+check "nothing in the ledger claims a protected lane was swept" \
+  '! jq -e "select(.role == \"costly\")" "$LEDGER" >/dev/null 2>&1'
+check "teamctl keep <role> off lets it be swept again, and prune then takes it" \
+  'teamctl keep costly off 2>&1 | grep -q "swept again" && teamctl prune >/dev/null 2>&1 && [ ! -e "$COSTLY/node_modules" ] && [ -f "$COSTLY/README.md" ]'
+check "a worker cannot set the flag: it is the lead's call (exit 77)" \
+  'TEAM_ROLE=costly teamctl keep costly >/dev/null 2>&1; [ $? -eq 77 ]'
+check "but a worker may look, because looking is not changing" \
+  'TEAM_ROLE=costly teamctl keep >/dev/null 2>&1'
+# The REASON, not just a non-zero exit: a tree with no `keep` command at all fails every
+# one of these with "unknown command", which would pass an exit-code-only check.
+check "keeping the lead is refused: it works in your own checkout and nothing of its is swept" \
+  'out="$(teamctl keep lead 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "works in your own checkout"'
+check "an unknown value is a usage error naming the real usage, not a silently ignored word" \
+  'out="$(teamctl keep costly maybe 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "no role: what is protected now"'
+
+echo "== a lane mid-build is never swept: the machine's heavy lock"
+# A build runs in whatever shell started it, not in the lane's pane, so `stop` cannot see
+# it. The signal is the lock this machine already uses for its heavy runs:
+# `lockf ~/.wolfmux/machine-heavy.lock <command>`. It is a LOCK and not a file that exists:
+# the file is kept between runs, so only trying to take it answers the question.
+teamctl spawn building glm53 --no-kickoff >/dev/null 2>&1
+sleep 2
+BUILDING="$(teamctl status --json | jq -r '.agents[] | select(.role == "building") | .workdir')"
+mk_build_tree "$BUILDING"
+# The probe has to EXIST and say free: a tree without the function fails `type` and would
+# otherwise satisfy a bare `! lib_eval "disk_heavy_run_in_progress"` for the wrong reason.
+check "the lock file merely existing is NOT a heavy run, or every sweep would stop for ever" \
+  'touch "$WOLFMUX_DATA/machine-heavy.lock" && lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && ! disk_heavy_run_in_progress"'
+# Looking at the lock must leave the lock alone. lockf's default is to CREATE the file it is
+# given and to DELETE it on exit, and both halves are hostile here: a probe that created the
+# file would make itself a participant in the convention it is only reading, and one that
+# deleted it would unlink the file a real holder is locked on — which is how mutual exclusion
+# was measured broken on this machine on 2026-10-13 (lsof: holder on inode 240542083, path
+# resolving to 240709857, probe of the path returning "free"). -k -n is what makes it a read.
+# `type` first in both, for the reason this suite keeps relearning: a tree where the function
+# does not exist fails lib_eval, which '!' then reads as "the probe said free", and the check
+# would pass on v1.16.1 without the probe existing at all.
+check "the probe is read-only: a missing lock file is free and the probe does not create one" \
+  '/bin/rm -f "$WOLFMUX_DATA/machine-heavy.lock" && lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && ! disk_heavy_run_in_progress" && [ ! -e "$WOLFMUX_DATA/machine-heavy.lock" ]'
+check "and probing an existing free lock file leaves it there, neither deleted nor replaced" \
+  'touch "$WOLFMUX_DATA/machine-heavy.lock" && before="$(stat -f %i "$WOLFMUX_DATA/machine-heavy.lock")" && lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && ! disk_heavy_run_in_progress" && [ -e "$WOLFMUX_DATA/machine-heavy.lock" ] && [ "$(stat -f %i "$WOLFMUX_DATA/machine-heavy.lock")" = "$before" ]'
+if [ -x /usr/bin/lockf ]; then
+  /usr/bin/lockf -k -s "$WOLFMUX_DATA/machine-heavy.lock" /bin/sleep 25 &
+  HEAVY_PID=$!
+  sleep 1
+  check "while a heavy run holds the lock, the sweep reports it is held and takes nothing" \
+    'lib_eval "disk_heavy_run_in_progress"'
+  HELD_OUT="$(teamctl stop building 2>&1)"
+  check "parking a lane during a heavy run keeps its build output and names the lock" \
+    '[ -d "$BUILDING/node_modules/pkg" ] && printf "%s" "$HELD_OUT" | grep -q "a heavy run holds" && printf "%s" "$HELD_OUT" | grep -q "machine-heavy.lock"'
+  check "the lane is not written into the ledger, because nothing was taken from it" \
+    '! jq -e "select(.role == \"building\")" "$LEDGER" >/dev/null 2>&1'
+  kill "$HEAVY_PID" 2>/dev/null
+  wait "$HEAVY_PID" 2>/dev/null
+  sleep 1
+  check "once the heavy run ends, the same lane is swept by the next prune" \
+    '! lib_eval "disk_heavy_run_in_progress" && teamctl prune >/dev/null 2>&1 && [ ! -e "$BUILDING/node_modules" ]'
+else
+  skip "a heavy run on the machine stops the sweep, and the lane is swept once it ends" \
+    "no /usr/bin/lockf here: the heavy-lock convention cannot exist on this machine"
+fi
+check "a running lane is never swept, whatever the policy says" \
+  'teamctl spawn alive glm53 --no-kickoff >/dev/null 2>&1; sleep 2; A="$(teamctl status --json | jq -r ".agents[] | select(.role == \"alive\") | .workdir")" && mk_build_tree "$A" && ! lib_eval "SESSION=\$(session_name_for_project); disk_park_sweep alive" && [ -d "$A/node_modules/pkg" ] && lib_eval "SESSION=\$(session_name_for_project); disk_park_sweep alive || printf %s \"\$PARK_SWEEP_WHY\"" | grep -q "still running"'
+check "a parked lane holding work a person wrote is never swept, and the reason is said" \
+  'teamctl spawn written glm53 --no-kickoff >/dev/null 2>&1; sleep 2; W="$(teamctl status --json | jq -r ".agents[] | select(.role == \"written\") | .workdir")" && mk_build_tree "$W" && printf "notes\n" >"$W/NOTES.md" && teamctl stop written 2>&1 | grep -q "kept:    its build output (it has untracked files that are not build output (NOTES.md))" && [ -d "$W/node_modules/pkg" ]'
+
+echo "== teamctl heavy: taking the lock correctly, because remembering a flag did not work"
+# The wrapper exists because the convention could not be kept by documentation. On the night
+# this was written the brief said lockf, a machine-wide warning said lockf, and two lanes
+# still ran it without -k within the hour - which silently disabled the lock for every team
+# (the inode measurement is in the comment above disk_heavy_run_in_progress). So the first
+# check is the one that matters: the file survives, which is what -k buys and what a bare
+# lockf destroys.
+HEAVY_LOCK="$WOLFMUX_DATA/machine-heavy.lock"
+/bin/rm -f "$HEAVY_LOCK"
+check "teamctl heavy runs the command, and the lock file SURVIVES: that is what a bare lockf destroys" \
+  'teamctl heavy /usr/bin/true && [ -f "$HEAVY_LOCK" ]'
+check "a bare lockf is the counter-example, measured here rather than asserted: it deletes the file" \
+  '/usr/bin/lockf "$HEAVY_LOCK" /usr/bin/true; [ ! -e "$HEAVY_LOCK" ]'
+check "and so the inode is a NEW one next time, which is how exclusion was lost machine-wide" \
+  'teamctl heavy /usr/bin/true && a="$(stat -f %i "$HEAVY_LOCK")" && /usr/bin/lockf "$HEAVY_LOCK" /usr/bin/true && teamctl heavy /usr/bin/true && b="$(stat -f %i "$HEAVY_LOCK")" && [ "$a" != "$b" ]'
+# The exit status is the command's own. A wrapper that returned its own status, or a
+# pipeline's, is how a failing gate gets reported as green - which has happened twice here.
+check "the COMMAND's exit status comes back, for a passing and for a failing command" \
+  'teamctl heavy /usr/bin/true; [ $? -eq 0 ] && { teamctl heavy sh -c "exit 7"; [ $? -eq 7 ]; } && { teamctl heavy sh -c "exit 1"; [ $? -eq 1 ]; }'
+check "a command that does not exist is the command's failure (127), not a usage error of ours" \
+  'teamctl heavy /nonexistent/command >/dev/null 2>&1; [ $? -ne 64 ]'
+check "no command at all IS a usage error (64), and it names the lock it would have held" \
+  'out="$(teamctl heavy 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "machine-heavy.lock"'
+check "an unknown option is a usage error naming the real usage" \
+  'out="$(teamctl heavy --nonsense true 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "teamctl heavy \[--timeout <seconds>\]"'
+check "-- ends the options, so a command of its own named --quiet still runs" \
+  'teamctl heavy -- /usr/bin/true; [ $? -eq 0 ]'
+check "--timeout wants a whole number of seconds, with no leading zero" \
+  '(for v in "" banana -5 08; do teamctl heavy --timeout "$v" /usr/bin/true >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done)'
+# An EMPTY value is the one that used to get through: the guard asked whether the value was
+# non-empty rather than whether the flag was given, so `--timeout ""` skipped the check that
+# already rejected "" and ran the command with no timeout at all. The assertion is on the
+# MESSAGE, not just on 64, because an unknown command exits 64 as well - which is how the
+# loop above passed on v1.16.1 while the real behaviour was wrong here.
+check "an empty --timeout is a usage error about numbers, not a silent run with no timeout" \
+  'out="$(teamctl heavy --timeout "" /usr/bin/true 2>&1)"; rc=$?; [ "$rc" -eq 64 ] && printf "%s" "$out" | grep -q "whole number of seconds" && out2="$(teamctl heavy --timeout= /usr/bin/true 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out2" | grep -q "whole number of seconds"'
+# A second caller WAITS. This is the whole purpose, and it is asserted on a real second
+# process rather than on the lock's state: the background holder sleeps, and the foreground
+# call must not come back before it has let go.
+check "a second caller waits for the first instead of running beside it" \
+  '( teamctl heavy /bin/sleep 6 >/dev/null 2>&1 & ) ; sleep 1; start="$(date +%s)"; teamctl heavy --quiet /usr/bin/true; waited=$(( $(date +%s) - start )); [ "$waited" -ge 3 ]'
+check "--timeout gives up with exit 75 rather than waiting, and says nothing was run" \
+  '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && printf "%s" "$out" | grep -q "nothing was run"'
+# lockf has its own "already locked" line, and on the timeout path teamctl says the same
+# thing better. One voice, not two: -s silences lockf and leaves the command's own output
+# alone, which a 2>/dev/null on the whole call would not have.
+check "on the timeout path lockf does not say it too: one line, ours" \
+  '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "nothing was run" && ! printf "%s" "$out" | grep -qi "already locked"'
+# These two need the lock FREE, and the checks around them leave a holder sleeping for
+# several seconds on the shared path, so each gets a lock file of its own. A check that
+# depends on another check's timing is not a check: both of these failed in a measured run
+# for exactly that reason while the behaviour they test was correct.
+check "a command silenced for lockf still speaks for itself" \
+  'out="$(WOLFMUX_HEAVY_LOCK="$WOLFMUX_DATA/heavy-own-a.lock" teamctl heavy --timeout 5 /bin/sh -c "echo mine-out; echo mine-err >&2" 2>&1)"; printf "%s" "$out" | grep -q "mine-out" && printf "%s" "$out" | grep -q "mine-err"'
+# 75 means two things, and guessing wrong would report somebody else's exit status as a lock
+# failure. With the lock FREE, a command that exits 75 is the command's 75, not the lock's.
+# The scratch file is what tells the two 75s apart, so a machine where mktemp cannot write
+# loses that. It must SAY so - a capability that disappears in silence is the night this
+# release cost - and the control is the same call with a writable TMPDIR.
+check "with nowhere to write a scratch file it says which 75 it cannot tell apart, and why" \
+  '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(TMPDIR=/nonexistent-for-the-test teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && printf "%s" "$out" | grep -q "cannot tell you which 75" && printf "%s" "$out" | grep -q "mktemp"'
+check "and with a writable one it is not ambiguous at all" \
+  '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "nothing was run" && ! printf "%s" "$out" | grep -q "cannot tell you which 75"'
+check "a command that itself exits 75 is not reported as the lock timing out" \
+  'out="$(WOLFMUX_HEAVY_LOCK="$WOLFMUX_DATA/heavy-own-b.lock" teamctl heavy --timeout 5 /bin/sh -c "exit 75" 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && ! printf "%s" "$out" | grep -q "nothing was run"'
+check "it says what it waited for, and --quiet does not" \
+  '( teamctl heavy /bin/sleep 7 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "waiting for the machine.s heavy lock" && q="$( ( teamctl heavy /bin/sleep 5 >/dev/null 2>&1 & ) ; sleep 1; teamctl heavy --quiet /usr/bin/true 2>&1)"; [ -z "$q" ]'
+# The sweep and the wrapper are two halves of one mechanism: whatever teamctl heavy holds,
+# the park sweep must see as busy.
+check "while teamctl heavy holds the lock, the park sweep sees a heavy run and keeps its hands off" \
+  '( teamctl heavy /bin/sleep 6 >/dev/null 2>&1 & ) ; sleep 1; lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && disk_heavy_run_in_progress" && lib_eval "disk_heavy_run_in_progress && printf %s \"\$DISK_HEAVY_REASON\"" | grep -q "a heavy run holds"'
+
+echo "== what the status bar reads: the parked number teamctl teams leaves behind"
+# Before the second team is created: lib_eval calls load_project, which refuses to guess
+# with several teams and no --team, so every lib_eval below this point would die for that
+# reason rather than for its own.
+check "teamctl teams writes the parked total of this team next to the lane total" \
+  'teamctl teams >/dev/null 2>&1; lib_eval "[ -f \"\$(disk_parked_cache_file)\" ] && disk_parked_kb \"\$STATE_DIR\" | grep -Eq \"^[0-9]+$\""'
+# A cache file in a team's state directory keeps that directory non-empty, and the purge
+# deletes the directory only when it is empty - so a file the disk module writes and the
+# purge does not name means `destroy --purge` silently stops removing the team. That is
+# exactly how disk-parked-kb broke smoke.sh's founder check, which this release did not
+# touch. The names are DERIVED from disk.sh rather than listed here, so the next cache file
+# is covered the day it is added; `n -ge 2` is the control, so a derivation that finds
+# nothing fails instead of passing on an empty list.
+check "every per-team cache file the disk module writes is named in the purge" \
+  '(n=0; for f in $(sed -n "s/.*printf .%s\/\([a-z-]*\)\\\\n. \"\$STATE_DIR\".*/\1/p" "$REPO/config/wolfmux/lib/disk.sh"); do n=$((n+1)); grep -q "STATE_DIR/$f" "$REPO/config/wolfmux/lib/agents.sh" || exit 1; done; [ "$n" -ge 2 ])'
+check "the parked total counts the lanes that are NOT running, and never more than the lane total" \
+  'lib_eval "p=\$(disk_parked_kb \"\$STATE_DIR\"); t=\$(disk_team_kb_cached); [ -n \"\$p\" ] && [ -n \"\$t\" ] && [ \"\$p\" -le \"\$t\" ]"'
+check "an old parked number is still used, because a parked lane's size does not change by itself" \
+  'lib_eval "printf \"%s 4096\n\" \"\$(( \$(now_epoch) - 90000 ))\" > \"\$(disk_parked_cache_file)\"; [ \"\$(disk_parked_kb \"\$STATE_DIR\")\" = 4096 ]"'
+check "a garbled, short, empty or leading-zero parked file is dropped silently" \
+  '(for v in "garbage" "123" "" "08 500" "-5 -5"; do lib_eval "printf \"%s\n\" \"$v\" > \"\$(disk_parked_cache_file)\"; [ -z \"\$(disk_parked_kb \"\$STATE_DIR\")\" ]" || exit 1; done)'
+check "a prune corrects it by exactly what it took out of parked lanes" \
+  'lib_eval "printf \"%s 8192\n\" \"\$(now_epoch)\" > \"\$(disk_parked_cache_file)\"; disk_parked_adjust 2048; [ \"\$(disk_parked_kb \"\$STATE_DIR\")\" = 6144 ]" && lib_eval "disk_parked_adjust 999999; [ \"\$(disk_parked_kb \"\$STATE_DIR\")\" = 0 ]"'
+
+echo "== teamctl prune --all-teams: the whole machine, and yours alone to run"
+# A lead cannot prune another team (exit 77, rule 4 of lib/disk.sh), which is right and
+# stays. But from a plain terminal there was no way to see what the whole machine held:
+# prune --dry-run answers for one team, teamctl teams for one project, and 21 teams is 21
+# commands and no total.
+teamctl start fable --team second --no-attach --skip-beads >/dev/null 2>&1
+teamctl spawn far-away glm53 --team second --no-kickoff >/dev/null 2>&1
+sleep 2
+SECOND="$(teamctl --team second status --json | jq -r '.agents[] | select(.role == "far-away") | .workdir')"
+mk_build_tree "$SECOND"
+teamctl stop far-away --team second >/dev/null 2>&1
+teamctl policy auto-prune off --team second >/dev/null 2>&1
+mk_build_tree "$SECOND"
+ALL="$(teamctl prune --all-teams --dry-run 2>&1)"
+check "the dry run reports every team of the machine under its project, and deletes nothing" \
+  'printf "%s" "$ALL" | grep -q "^PROJECT " && printf "%s" "$ALL" | grep -q "^  TEAM default" && printf "%s" "$ALL" | grep -q "^  TEAM second" && [ -d "$SECOND/node_modules/pkg" ]'
+check "it gives a total per team and one for the machine" \
+  'printf "%s" "$ALL" | grep -qE "^    team total +[0-9.]+ (KB|MB|GB) +would be freed in this team" && printf "%s" "$ALL" | grep -qE "^  machine total +[0-9.]+ (KB|MB|GB) +is what this would free in [0-9]+ parked lanes? across [0-9]+ teams in [0-9]+ projects?"'
+check "it says plainly that nothing is deleted" \
+  'printf "%s" "$ALL" | grep -q "DRY RUN: nothing is deleted"'
+check "a lead is refused with 77, told why, and told what it may run instead" \
+  'out="$(TEAM_ROLE=lead teamctl prune --all-teams --dry-run 2>&1)"; rc=$?; [ "$rc" -eq 77 ] && printf "%s" "$out" | grep -q "machine owner.s alone to run" && printf "%s" "$out" | grep -q "no standing outside its own team" && printf "%s" "$out" | grep -q "no --all-teams"'
+check "the refusal sends nobody to a lead who could not grant it anyway" \
+  'out="$(TEAM_ROLE=lead teamctl prune --all-teams 2>&1)"; printf "%s" "$out" | grep -q "nobody to ask" && ! printf "%s" "$out" | grep -q "bd create"'
+check "the refusal holds for the destructive form as well, and nothing is touched by it" \
+  'out="$(TEAM_ROLE=lead teamctl prune --all-teams 2>&1)"; rc=$?; [ "$rc" -eq 77 ] && [ -d "$SECOND/node_modules/pkg" ]'
+check "a worker is refused too" \
+  'TEAM_ROLE=far-away teamctl prune --all-teams --dry-run >/dev/null 2>&1; [ $? -eq 77 ]'
+check "the empty-role rule is the whole rule: a lead of the OTHER team is refused as well" \
+  'WOLFMUX_TEAM=second TEAM_ROLE=lead teamctl prune --all-teams --dry-run >/dev/null 2>&1; [ $? -eq 77 ]'
+check "one team's --dry-run is still open to anyone, because looking is not changing" \
+  'TEAM_ROLE=far-away teamctl prune --dry-run --team second >/dev/null 2>&1'
+ALLRUN="$(teamctl prune --all-teams 2>&1)"
+check "run for real it sweeps the lanes of every team, this project's and the second team's" \
+  '[ ! -e "$SECOND/node_modules" ] && [ -f "$SECOND/README.md" ]'
+check "and reports what it freed per team and for the machine" \
+  'printf "%s" "$ALLRUN" | grep -qE "^    team total +[0-9.]+ (KB|MB|GB) +freed in this team" && printf "%s" "$ALLRUN" | grep -qE "^  machine total +[0-9.]+ (KB|MB|GB) +freed from [0-9]+ parked lanes? across"'
+check "every lane it emptied is in the ledger, with prune as the trigger" \
+  'jq -se "[.[] | select(.trigger == \"prune\")] | length >= 1" "$LEDGER" >/dev/null'
+check "a team whose lane cannot be placed is skipped WHOLE and named, and the rest still runs" \
+  'R="$(/bin/ls -d "$WOLFMUX_DATA"/state/*/teams/second/agents | head -1)" && jq ".state = \"running\" | .pane_id = \"%998\"" "$R/far-away.json" >"$R/far-away.json.t" && /bin/mv "$R/far-away.json.t" "$R/far-away.json" && out="$(teamctl prune --all-teams 2>&1)"; rc=$?; [ "$rc" -eq 0 ] && printf "%s" "$out" | grep -q "cannot tell whether .far-away. is running" && printf "%s" "$out" | grep -q "skipped whole and nothing of it was touched" && printf "%s" "$out" | grep -q "Teams skipped whole"'
+check "and the one-team form still refuses outright instead of skipping, which is its own rule" \
+  'teamctl prune --team second >/dev/null 2>&1; [ $? -ne 0 ]'
+check "--all-teams --keep-node-modules takes the caches only, across the machine" \
+  'teamctl prune --all-teams --keep-node-modules 2>&1 | grep -q "takes:.*\.next" && ! teamctl prune --all-teams --dry-run --keep-node-modules 2>&1 | grep -q "takes: node_modules"'
+check "an unknown option is still a usage error, and the usage line now names --all-teams" \
+  'out="$(teamctl prune --all-teams --nonsense 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "--all-teams"'
+
+echo "== a plain teamctl destroy parks every lane, so it sweeps every lane"
+# The second path that leaves lanes parked, and the one that does it in bulk: destroy
+# without --worktrees ends the session and keeps every worktree. Before v1.17.0 each of
+# those lanes kept its whole node_modules until somebody ran prune.
+teamctl policy auto-prune on --team second >/dev/null 2>&1
+teamctl restart far-away --team second >/dev/null 2>&1
+sleep 2
+mk_build_tree "$SECOND"
+DESTROY2="$(teamctl destroy --team second --yes 2>&1)"
+check "destroy without --worktrees sweeps the build output of every lane it parks" \
+  '[ ! -e "$SECOND/node_modules" ] && [ ! -e "$SECOND/.next" ] && printf "%s" "$DESTROY2" | grep -qE "^  far-away: freed [0-9.]+ (KB|MB|GB) of build output"'
+check "it still keeps the worktree, the sources and the branch, as it always did" \
+  '[ -d "$SECOND" ] && [ -f "$SECOND/README.md" ] && printf "%s" "$DESTROY2" | grep -q "worktrees kept"'
+check "and that sweep is in the ledger too, with destroy as the trigger" \
+  'jq -se "[.[] | select(.trigger == \"destroy\" and .role == \"far-away\")] | length >= 1" "$LEDGER" >/dev/null'
+
 echo
-echo "result: $passed passed, $failed failed"
+echo "result: $passed passed, $failed failed, $skipped skipped"
 [ "$failed" -eq 0 ]

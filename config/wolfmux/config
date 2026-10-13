@@ -100,6 +100,14 @@
 # Off by default: it is ONE directory for every lane and for your own checkout, so an
 # `npm install` in any lane changes the dependencies of all of them.
 #WOLFMUX_LINK_NODE_MODULES=off
+# Sweep a lane's build output (node_modules, .next, dist, .turbo, build, coverage and the
+# cache directories) the moment the lane is parked, instead of waiting for someone to
+# remember `teamctl prune`. On by default: a parked lane holds 2-3 GB for days, and 50.9 GB
+# of the 90.3 GB under ~/.wolfmux/worktrees on this machine was build output (measured
+# 2026-10-13). Nothing a person wrote is ever taken, a running lane is never swept, and one
+# expensive checkout is protected with `teamctl keep <role>`. Every sweep is logged in
+# ~/.wolfmux/state/reclaimed.jsonl.
+#WOLFMUX_AUTO_PRUNE=off
 
 # How the panes are arranged (per team: `teamctl layout <name>`).
 #   lead-left (default)  the lead large on the left, workers stacked on the right

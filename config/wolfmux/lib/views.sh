@@ -48,8 +48,9 @@ _status_rows() { # emits one JSON object per agent
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
       --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
-      --arg session_id "$session_id" \
+      --arg session_id "$session_id" --arg keep "$(reg_field "$role" keep_build)" \
       '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
+        keep_build: (if $keep == "on" then "on" else "off" end),
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
         session_id: $session_id,
@@ -95,13 +96,15 @@ _status_team_json() {
     --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
     --arg dg "$(policy_get disk-guard)" --arg dmin "$(policy_get disk-min-gb)" --arg lnm "$(policy_get link-node-modules)" \
-    --arg free "$(disk_free_kb)" --arg trees "$(disk_team_kb_cached)" \
+    --arg ap "$(policy_get auto-prune)" \
+    --arg free "$(disk_free_kb)" --arg trees "$(disk_team_kb_cached)" --arg parked "$(disk_parked_kb "$STATE_DIR")" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
       founder: $founder, orphaned: ($orphaned == "1"),
       policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt,
-               disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm},
+               disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm, auto_prune: $ap},
       disk: {free_kb: (if $free == "" then null else ($free | tonumber) end),
-             worktrees_kb: (if $trees == "" then null else ($trees | tonumber) end)},
+             worktrees_kb: (if $trees == "" then null else ($trees | tonumber) end),
+             parked_kb: (if $parked == "" then null else ($parked | tonumber) end)},
       approvals_pending: ($pending | tonumber), agents: .}'
 }
 
@@ -126,7 +129,7 @@ _status_team_text() {
   say "  policy  $(policy_summary) · approvals pending: $(approvals_pending_count)"
   # Free disk is a df call; the lane total is whatever the last command that changed the
   # lanes left behind, because measuring it here is a du over every worktree (lib/disk.sh).
-  say "  disk    $(disk_free_label) free · this team's lanes: $(disk_team_label) · spawn guard: $(policy_get disk-guard) under $(policy_get disk-min-gb) GB"
+  say "  disk    $(disk_free_label) free · this team's lanes: $(disk_team_label) · spawn guard: $(policy_get disk-guard) under $(policy_get disk-min-gb) GB · auto-prune on park: $(policy_get auto-prune)"
   rows="$(_status_rows)"
   if [ -z "$rows" ]; then
     say "  no agents on record. Start it: teamctl start <fable|astra>$hint"

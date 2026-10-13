@@ -165,14 +165,21 @@ teamctl teams                        # measures it, team by team (a du per lane)
 teamctl prune --dry-run              # what the parked lanes hold, deleting nothing
 teamctl prune                        # take it
 teamctl prune --keep-node-modules    # build caches only, so a restart stays cheap
+teamctl prune --all-teams --dry-run  # the whole machine: every team of every project
+teamctl keep <role>                  # never sweep that lane automatically
+teamctl keep                         # which lanes are protected right now
+teamctl bar --explain                # every field of the status bar, "held" included
 ```
 
 Who takes what:
 
 | Command | Takes |
 |---------|-------|
-| `teamctl stop <role>` | `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`. **Not** `node_modules`: `teamctl restart` has to stay the cheap thing it looks like |
+| `teamctl stop <role>` | the whole list, `node_modules` included: parking a lane sweeps it (policy `auto-prune`, on by default). With `teamctl policy auto-prune off` it takes `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target` and keeps `node_modules`, which is what it did up to v1.16.1 |
 | `teamctl prune` | the same list **and** `node_modules`, for every parked lane. A parked lane is what hoards |
+| `teamctl prune --all-teams` | every team of every project on this machine, a total per team and one for the machine. **Yours alone to run**, from a terminal with no `TEAM_ROLE`: a lead has no standing outside its own team and is refused with exit 77 |
+| `teamctl keep <role>` | nothing — that is the point. The lane is never swept automatically, and `prune` honours it too |
+| `teamctl destroy` (no `--worktrees`) | the build output of every lane, because ending the session parks all of them |
 | `teamctl remove <role>`, `teamctl destroy --worktrees` | all of it; the worktree is going away anyway. A `remove` that **refuses** — because the lane holds commits or files a person wrote — changes nothing at all: "nothing was removed" means the build output is still there too |
 
 Five rules hold for every one of those deletions, and they are in one place
@@ -203,8 +210,60 @@ copies 530 MB of `public/`, about 0.65 GB per lane before anything is installed)
 "still held" line is that floor plus the whole of every lane it skipped or left running —
 those are the expensive ones, because they keep their `node_modules` too. What git tracks
 comes back only with `teamctl remove <role>`; a lane left running is swept by the next prune
-once it is parked. And note that `stop` deliberately leaves `node_modules`, so a lane parked
-for a week keeps it for the week unless somebody prunes ([a known gap](ROADMAP.md)).
+once it is parked.
+
+**Parking a lane sweeps it (v1.17.0).** Up to v1.16.1 `stop` kept `node_modules` so that
+`restart` would be cheap, and `prune` was there for the rest — and nobody ran `prune`:
+90.3 GB sat under `~/.wolfmux/worktrees` on this machine, 50.9 GB of it build output
+(measured 2026-10-13). So the sweep now happens when the lane is parked, by `teamctl stop`
+and by a plain `teamctl destroy`. Three ways to keep a lane's build output anyway:
+`teamctl keep <role>` for one lane for good, `teamctl policy auto-prune off` for the team
+(exactly v1.16.1's behaviour), or `WOLFMUX_AUTO_PRUNE=off` in `~/.config/wolfmux/config` as
+the machine's default.
+
+`teamctl keep` is a verb rather than a flag on `spawn` because you learn that a checkout is
+expensive — a 40-minute install, a downloaded model, a seeded database — only after it has
+been built, and a spawn flag cannot be taken back. `teamctl status --json` reports
+`keep_build` per agent, and `teamctl keep` with no role lists what is protected, so a flag
+nobody can see cannot quietly hoard. `teamctl remove <role>` is still how a protected lane goes.
+
+**A lane mid-build is never swept.** A build runs in whatever shell started it, not in the
+lane's pane, so `stop` cannot see it — and taking `node_modules` from under a running build
+is the one way this could do real damage. The signal is the lock this machine's heavy runs
+already hold: `lockf -k ~/.wolfmux/machine-heavy.lock <command>`. The file merely existing is
+not a lock, so the sweep tries to take the lock for an instant, which is the only thing that
+answers; while it is held the lane keeps its build output and the reason is printed. The
+probe is read-only (`lockf -k -s -n -t 0`): it neither creates the file when it is absent nor
+deletes it afterwards, so looking at the lock never changes it.
+
+**Take that lock with `teamctl heavy`, not with `lockf` by hand.**
+
+```bash
+teamctl heavy tests/smoke.sh                 # holds the lock, says what it waited for
+teamctl heavy --timeout 600 npm test         # or give up after ten minutes (exit 75)
+```
+
+It returns the command's own exit status, so it drops into a gate script where the bare
+command stood. The reason it exists rather than a documented flag is the next paragraph.
+
+**The warning about that lock, which is the convention's and not this tool's.** `lockf`
+DELETES the file when its command ends unless `-k` is given, while the lock itself lives on
+the inode. So a single holder without `-k` unlinks the file on exit and splits the path from
+the locked inode: the holder still running keeps a lock nobody can see, and every later
+holder and probe takes a fresh inode and believes it is alone. Mutual exclusion is gone for
+every lane at once, with nothing printed. Measured on this machine on 2026-10-13 with `lsof`:
+a live holder had inode 240542083 open, the path resolved to 240709857, and a `-t 0` probe of
+the path returned "free". **Write every heavy run as `lockf -k`**; no probe can recover the
+lock once the file has been unlinked under it, and `lockf`'s own manual recommends `-k` for
+exactly this.
+
+**The ledger.** Every sweep is appended to `~/.wolfmux/state/reclaimed.jsonl`, machine-wide:
+one JSON object per line with the time, the project, the team, the lane, the kilobytes, the
+trigger (`stop`, `destroy`, `prune`) and the directory names it took.
+
+```bash
+jq -r '"\(.ts) \(.team)/\(.role) \(.freed_kb) KB \(.trigger)"' ~/.wolfmux/state/reclaimed.jsonl | tail
+```
 
 **What `remove` asks about.** It refuses a lane that holds commits your branch does not have
 or files somebody wrote, and lists them. Build output is not "files somebody wrote": a
@@ -328,14 +387,40 @@ view down.
 `status-right` carries the same picture in one line, driven by `teamctl _overview-badge`:
 
 ```
-20t 12run 63stop ld2.92 mem8G dsk109G
+teams 20 run 12 idle 63 load 2.92 mem 8G disk 109G held 9.2G
 ```
 
-Teams, agents running, agents stopped (and `Nexit` when any pane has exited), then the
-machine's load, free memory and free disk. It redraws every few seconds for every attached
-client, so it opens no transcript, runs no `ps` and runs no `du`; it costs about 18 ms of
-work. If anything at all goes wrong it prints nothing: a status bar keeps whatever it is
-given until the server restarts, so a broken badge would be worse than no badge.
+Every field carries its name in front of its number, and `teamctl bar --explain` is the
+legend — a terminal has no hover, so the legend is a command:
+
+| Field | Means |
+|-------|-------|
+| `teams` | teams on this machine, across every project |
+| `run` | agent panes alive right now |
+| `idle` | agents on record with no pane: parked, and restartable |
+| `exit` | panes whose agent exited. Only there when there are any |
+| `load` | the machine's one-minute load average |
+| `mem` | memory a process could still get (free plus inactive) |
+| `disk` | free space on the disk that holds `~/.wolfmux` |
+| `held` | what the **parked** lanes of every team hold: the space `prune` and `remove` give back. `-` when no team has been measured yet |
+
+`held` is read from what `teamctl teams` last measured and is never measured here — a `du`
+over this machine's lanes is about twelve seconds. An old number is used on purpose, and
+that is the difference from the free-disk and memory fields beside it: a parked lane is one
+in which nothing is running, so its size does not change by itself. What it cannot know is a
+lane parked or removed since; `teamctl teams` makes it current and
+`teamctl prune --all-teams --dry-run` says where the space is.
+
+Before v1.17.0 the line read `20t 12run 63stop ld2.92 mem8G dsk109G`, which nobody could
+read at a glance, and it had no `held` field at all. The budget is 72 characters and the
+alphabet is `A-Za-z0-9`, space and `. : / + -`: `cmd_overview_badge` strips everything else
+**silently**, so a middle dot or a pipe between the fields would vanish without a trace. The
+labels do the separating instead, and the line above is 60 characters.
+
+It redraws every few seconds for every attached client, so it opens no transcript, runs no
+`ps` and runs no `du`; it costs about 18 ms of work. If anything at all goes wrong it prints
+nothing: a status bar keeps whatever it is given until the server restarts, so a broken badge
+would be worse than no badge.
 
 **It does not appear immediately, and that is normal.** tmux draws the status line *before*
 it has run the `#()` command, and fills the result in on a later refresh. So right after you
@@ -389,12 +474,15 @@ creation time in the lead's record, so the founder keeps its authority after one
 |---------|------|
 | `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. `--ticket` sets the team's default ticket key ([branch names](#branch-names-that-fit-your-repository)). Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's own conversation (the id stored with it), `--resume` reopens the one you name ([which conversation comes back](#finding-the-manager-and-being-told-when-someone-finishes)). With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
-| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `browser-writes` (ask\|allow, DEFAULT ask: allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings — lead and workers alike — so a Chrome write resolves before Claude Code's auto-mode classifier runs on it), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off) |
+| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `browser-writes` (ask\|allow, DEFAULT ask: allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings — lead and workers alike — so a Chrome write resolves before Claude Code's auto-mode classifier runs on it), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off), `auto-prune` (on\|off, DEFAULT on: sweep a lane's build output as soon as the lane is parked — `teamctl keep <role>` protects one lane) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
-| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). Refused when free disk is under `disk-min-gb`. `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated. Refuses a running worker, and a worktree with uncommitted changes (lists them) (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one (and sends no kickoff). `--link-node-modules`: a brand-new lane shares its repository's `node_modules` instead of installing its own ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
-| `teamctl stop <role>` | close a pane; worktree, branch and commits stay. Its build caches go, `node_modules` stays |
+| `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). Refused when free disk is under `disk-min-gb`. `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated — **if that lane was protected before it was parked**, because from v1.17.0 `teamctl stop` sweeps a lane's build output. `teamctl keep <role>` before stopping it, and the flag travels with the worktree. Refuses a running worker, and a worktree with uncommitted changes (lists them) (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one (and sends no kickoff). `--link-node-modules`: a brand-new lane shares its repository's `node_modules` instead of installing its own ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
+| `teamctl stop <role>` | close a pane; worktree, branch and commits stay. Its build output goes, `node_modules` included (policy `auto-prune`, on by default; `off` keeps `node_modules` as before v1.17.0) |
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch, record and the gigabytes they held. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
-| `teamctl prune [--team <name>] [--dry-run] [--keep-node-modules]` | the build output of every parked lane of the team, with a total in GB. Running lanes untouched; `--dry-run` deletes nothing; `--keep-node-modules` takes the build caches only ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
+| `teamctl prune [--team <name>] [--all-teams] [--dry-run] [--keep-node-modules]` | the build output of every parked lane of the team, with a total in GB. Running lanes untouched; `--dry-run` deletes nothing; `--keep-node-modules` takes the build caches only; `--all-teams` does every team of every project on this machine and is yours alone to run — a lead is refused with exit 77 ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
+| `teamctl keep [<role> [on\|off]]` | never sweep that lane's build output automatically — for a checkout that is expensive to rebuild. `prune` honours it too; with no role it lists what is protected ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
+| `teamctl bar [--explain]` | the one line tmux shows in `status-right`; `--explain` is the legend naming every field of it ([the segment in the status bar](#the-segment-in-the-status-bar)) |
+| `teamctl heavy [--timeout <seconds>] [--quiet] <command>...` | run a heavy thing — a test gate, a measurement, a long build — holding the machine's heavy lock, so nothing else heavy runs beside it and no lane is swept while it does. Returns the **command's** exit status, not the wrapper's, and says what it waited for. `--timeout`: give up after that many seconds (exit 75) rather than wait; `--quiet`: say nothing about waiting. One voice about the lock: `lockf`'s own "already locked" line is silenced, the command's own output is not. An exit 75 that is the command's own is reported as the command's, not as the lock timing out. Prefer it to `lockf` by hand ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | the pane notices filed for a role, oldest first. Default: the lead of this team. Reading them clears the `📨` count in the status bar; it does not change whether the agent has had them, and the agent having had them does not clear your count. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new. `prefix N` opens the same thing in a popup ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |

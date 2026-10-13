@@ -49,6 +49,18 @@ WOLFMUX_WORK_LIKE_DIRS="build dist target"
 # trips while there is still time to run `teamctl prune`.
 WOLFMUX_DISK_MIN_GB_DEFAULT=20
 
+# The machine's "something heavy is running" flag, held with lockf(1) by whoever is doing the
+# heavy thing — a test gate, a measurement run, a build. It is a LOCK, not a file that exists:
+# lockf keeps the file afterwards (-k), so the file being there says nothing at all. Only an
+# attempt to take the lock answers, and that is what disk_heavy_run_in_progress does.
+WOLFMUX_HEAVY_LOCK="${WOLFMUX_HEAVY_LOCK:-$WOLFMUX_DATA/machine-heavy.lock}"
+LOCKF_BIN="$(find_tool lockf /usr/bin/lockf || true)"
+
+# Where every sweep is written down, for the whole machine and not per team: the question
+# "what did this thing delete, and when" is asked across teams and long after the team that
+# held the lane is gone. One JSON object per line, appended, like a team's events.jsonl.
+disk_reclaim_log_file() { printf '%s/state/reclaimed.jsonl\n' "$WOLFMUX_DATA"; }
+
 # disk_names <all|caches> — the directory names a cleanup of that kind may delete
 disk_names() {
   local name keep=""
@@ -275,13 +287,77 @@ WOLFMUX_DISK_CACHE_SECONDS=900
 
 disk_cache_file() { printf '%s/disk-kb\n' "$STATE_DIR"; }
 
-# disk_team_kb_measure — du over this team's lane worktrees; remembers the number
+# The same number for the lanes that are PARKED, in a file of its own. It answers a different
+# question from the total — "how much of this is sitting there doing nothing", which is the
+# one the status bar's `held` field shows — and it is a second file rather than a second
+# column so that a file written by an older version still parses, and an older version still
+# parses a file written by this one.
+#
+# Written by disk_team_kb_measure (that is: by `teamctl teams`, the one command that measures)
+# and corrected by `teamctl prune`, which knows exactly how much it took out of PARKED lanes
+# because parked lanes are the only ones it sweeps. The sweep on park does NOT correct it:
+# the lane it just swept was running when the number was measured, so it was not in it, and
+# subtracting from a total that never contained it would make the number smaller than the
+# truth. It waits for the next measurement instead, and `teamctl bar --explain` says so.
+disk_parked_cache_file() { printf '%s/disk-parked-kb\n' "$STATE_DIR"; }
+
+# disk_parked_put <kilobytes> — remember it, stamped now
+disk_parked_put() {
+  [ -d "$STATE_DIR" ] || return 0
+  printf '%s %s\n' "$(now_epoch)" "${1:-0}" >"$(disk_parked_cache_file)" 2>/dev/null || true
+}
+
+# disk_parked_kb <state-dir> — the remembered parked total of ONE team, empty when there is
+# no readable number. Deliberately WITHOUT the freshness rule disk_team_kb_cached applies:
+# a parked lane is a lane in which nothing is running, so its size does not change by itself,
+# and an hour-old measurement of it is still the measurement. Every field is checked the same
+# way (no leading zero: shell arithmetic would read 08 as octal and abort).
+disk_parked_kb() {
+  local line stamp kb
+  line="$(/bin/cat "$1/disk-parked-kb" 2>/dev/null || true)"
+  [ -n "$line" ] || return 0
+  stamp="${line%% *}"
+  kb="${line##* }"
+  [ "$stamp" != "$line" ] || return 0
+  case "${stamp:-x}" in "" | *[!0-9]* | 0?*) return 0 ;; esac
+  case "${kb:-x}" in "" | *[!0-9]* | 0?*) return 0 ;; esac
+  printf '%s\n' "$kb"
+}
+
+# disk_parked_adjust <kilobytes freed> — a prune that just emptied parked lanes corrects it
+disk_parked_adjust() {
+  local kb stamp line
+  [ "${1:-0}" -gt 0 ] || return 0
+  kb="$(disk_parked_kb "$STATE_DIR")"
+  [ -n "$kb" ] || return 0
+  line="$(/bin/cat "$(disk_parked_cache_file)" 2>/dev/null || true)"
+  stamp="${line%% *}"
+  kb=$((kb - $1))
+  [ "$kb" -ge 0 ] || kb=0
+  printf '%s %s\n' "$stamp" "$kb" >"$(disk_parked_cache_file)" 2>/dev/null || true
+}
+
+# disk_team_kb_measure — du over this team's lane worktrees; remembers the number, and the
+# parked part of it. One du per lane either way: the running test is tmux and the registry,
+# which this walk is already holding.
 disk_team_kb_measure() {
-  local role kb=0
+  local role kb=0 parked=0 one
+  # disk_lane_running asks tmux about $SESSION. Every caller so far sets it first; resolving
+  # it here when it is empty means a future one that forgets cannot abort the command under
+  # `set -u`, and the value is the one session_name_for_project would have given anyway.
+  [ -n "${SESSION:-}" ] || SESSION="$(session_name_for_project)"
   for role in $(reg_list); do
-    if [ "$(reg_field "$role" kind)" = "worker" ]; then kb=$((kb + $(disk_kb "$(reg_field "$role" workdir)"))); fi
+    [ "$(reg_field "$role" kind)" = "worker" ] || continue
+    one="$(disk_kb "$(reg_field "$role" workdir)")"
+    kb=$((kb + one))
+    # Not running, by disk_lane_running's own rule, where not knowing counts as running: an
+    # uncertain lane is never advertised as space that is sitting idle.
+    if ! disk_lane_running "$role"; then parked=$((parked + one)); fi
   done
-  if [ -d "$STATE_DIR" ]; then printf '%s %s\n' "$(now_epoch)" "$kb" >"$(disk_cache_file)" 2>/dev/null || true; fi
+  if [ -d "$STATE_DIR" ]; then
+    printf '%s %s\n' "$(now_epoch)" "$kb" >"$(disk_cache_file)" 2>/dev/null || true
+    disk_parked_put "$parked"
+  fi
   printf '%s\n' "$kb"
 }
 
@@ -396,23 +472,442 @@ disk_lane_running() {
   return 0
 }
 
+# --- is the machine busy with something heavy right now? -----------------------------
+# disk_heavy_run_in_progress — 0 when a heavy run holds the machine's heavy lock, and the
+# automatic sweep must therefore keep its hands off; 1 when it is free. Sets
+# DISK_HEAVY_REASON for the line the command prints.
+#
+# A lane that is MID-BUILD is the one case where taking node_modules does real damage: the
+# build fails halfway through with an error nobody can place. `teamctl stop` cannot see that
+# build — it runs in whatever shell the person or the gate started it in, not in the lane's
+# pane — so the signal has to come from the convention this machine already uses for its
+# heavy runs: `lockf ~/.wolfmux/machine-heavy.lock <command>`.
+#
+# The lock is probed by TRYING to take it for an instant (-t 0, with `true` as the command),
+# which is the only thing that answers the question: the file is kept between runs, so its
+# existence says nothing at all.
+#
+#   0 from lockf    we got the lock, so nothing holds it: free
+#   69 EX_UNAVAIL   -n, and the file is not there: no heavy run has ever registered: free
+#   75 EX_TEMPFAIL  somebody else holds it: a heavy run is in progress
+#   anything else   we cannot tell, and not knowing is "busy" — the same rule
+#                   disk_lane_running follows for a lane it cannot place
+#
+# -k keeps the file and -n refuses to create one, which makes this probe READ-ONLY: looking
+# at the lock leaves the lock exactly as it was. Both flags matter, and the second one
+# matters because of what is measured below.
+#
+# **The limit of this guard, measured on this machine on 2026-10-13.** lockf's DEFAULT is to
+# unlink the file when the command ends (only -k keeps it), and BSD locks live on the inode,
+# not on the path. So one holder that omits -k deletes the file on exit, and from then on the
+# path and the locked inode are two different objects: a holder still running sits on the old
+# inode while every later probe and every later holder gets a fresh one and succeeds. Proved
+# here with `lsof`: a live holder had inode 240542083 open while the path resolved to
+# 240709857, and a -t 0 probe of the path returned 0 — "free" — with that holder still
+# running. The hole is in the convention, not in this probe: no single-process probe can
+# recover mutual exclusion once a holder has unlinked the file out from under it. **Every
+# holder on this machine has to pass -k**, which is also what the lockf manual itself
+# recommends for exactly this reason. Until that is true everywhere, this guard can return
+# "free" during a real heavy run, and the honest statement of what it buys is: it stops the
+# sweep whenever the convention is held correctly, and it never stops it wrongly.
+#
+# No lockf on this machine at all, or no directory for the lock to live in, is different
+# from "cannot tell": the signal cannot exist there, so nothing can be holding it. The
+# alternative would be an automatic sweep that silently never runs on such a machine, which
+# is the failure this whole release exists to stop.
+disk_heavy_run_in_progress() {
+  local rc=0
+  DISK_HEAVY_REASON=""
+  [ -n "$LOCKF_BIN" ] || return 1
+  [ -d "$(dirname "$WOLFMUX_HEAVY_LOCK")" ] || return 1
+  "$LOCKF_BIN" -k -s -n -t 0 "$WOLFMUX_HEAVY_LOCK" /usr/bin/true >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0 | 69) return 1 ;;
+    75) DISK_HEAVY_REASON="a heavy run holds $(short_path "$WOLFMUX_HEAVY_LOCK"); it is swept once that ends" ;;
+    *) DISK_HEAVY_REASON="$(short_path "$WOLFMUX_HEAVY_LOCK") could not be read (lockf exit $rc), and not knowing counts as busy" ;;
+  esac
+  return 0
+}
+
+# --- teamctl heavy <command...> ------------------------------------------------------
+# Run something heavy while holding the machine's heavy lock, so that nothing else heavy runs
+# beside it — a test gate, a measurement, a long build — and so that the sweep on park keeps
+# its hands off every lane while it runs.
+#
+# This exists because the convention could not be kept by asking people to remember a flag.
+# `lockf` DELETES its lock file on exit unless `-k` is given, and the lock lives on the inode,
+# so ONE holder without `-k` unlinks the file and every later holder gets a fresh inode and
+# believes it is alone: mutual exclusion gone, machine-wide, silently. Measured here on
+# 2026-10-13 with lsof — a live holder on inode 240542083 while the path resolved to
+# 240709857, and a probe of the path answering "free". The brief said `lockf`, a machine-wide
+# warning that evening said `lockf`, and two lanes still ran it without `-k` within the hour.
+# A convention that lives in every team's shell history cannot be fixed by documentation; it
+# needs one command that is correct by construction. This is that command.
+#
+# What it guarantees:
+#   -k always             the lock file is never unlinked, so the lock keeps meaning something
+#   the COMMAND's status  comes back as teamctl's own exit status, not the wrapper's and not a
+#                         pipeline's. `teamctl heavy sh -c 'a | b'` still reports what the
+#                         shell reports; what this promises is that teamctl adds nothing of
+#                         its own on top of it
+#   it says what it waited for, on stderr, so a run that sat in a queue for twenty minutes
+#   says so instead of looking slow
+#
+# Exit statuses of its own: 64 for a usage error, 69 when lockf is not on this machine, 75
+# when --timeout expired without the lock. None of the three can be confused with a command's
+# own status of the same number: 64 and 69 are raised before anything runs, and a --timeout
+# run marks a file once the lock is held, so a 75 with the mark present is the command's and a
+# 75 without it is the lock's. Each is still accompanied by a line on stderr naming the lock.
+cmd_heavy() {
+  local timeout="" timeout_given=0 waited_from waited quiet=0 rc=0 silent="" ran_dir="" ran=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --timeout)
+        [ "$#" -ge 2 ] || die_usage "--timeout needs a number of seconds"
+        timeout="$2"
+        timeout_given=1
+        shift
+        ;;
+      --timeout=*) timeout="${1#--timeout=}"; timeout_given=1 ;;
+      --quiet) quiet=1 ;;
+      --) shift; break ;;
+      -*) die_usage "unknown option for heavy: $1   (usage: teamctl heavy [--timeout <seconds>] [--quiet] <command>...)" ;;
+      *) break ;;
+    esac
+    shift
+  done
+  [ "$#" -gt 0 ] || die_usage "usage: teamctl heavy [--timeout <seconds>] [--quiet] <command>...   (holds $(short_path "$WOLFMUX_HEAVY_LOCK") while it runs)"
+  # The test is whether the flag was GIVEN, not whether its value is non-empty: guarding on
+  # the value meant `--timeout ""` skipped the check below - which already rejects "" - and
+  # ran the command with no timeout at all, silently, which is the opposite of what asking
+  # for a timeout means.
+  if [ "$timeout_given" -eq 1 ]; then
+    case "$timeout" in "" | *[!${_WM_DIGITS}]* | 0?*) die_usage "--timeout expects a whole number of seconds" ;; esac
+  fi
+  [ -n "$LOCKF_BIN" ] || die "lockf is not on this machine, so the heavy lock cannot be held. Run the command yourself, knowing that nothing is excluding anything: $*" 69
+  /bin/mkdir -p "$(dirname "$WOLFMUX_HEAVY_LOCK")" 2>/dev/null || true
+  # lockf has a voice of its own ("already locked") and on the paths where we say the same
+  # thing better it should not speak twice. -s silences lockf ALONE: the command's own stdout
+  # and stderr still come through, which a blunt 2>/dev/null on the whole call would have eaten.
+  if [ "$quiet" -eq 1 ] || [ -n "$timeout" ]; then silent="-s"; fi
+  # A --timeout run needs to know whether the command ever started, because 75 is both "the
+  # lock never came free" and "the command exited 75". A shim marks a file once the lock is
+  # held, so the two are told apart instead of guessed at. The plain path needs no shim:
+  # without -t, lockf waits, so a 75 there can only be the command's own.
+  if [ -n "$timeout" ]; then
+    ran_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/wolfmux-heavy.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$ran_dir" ]; then ran="$ran_dir/held"; fi
+  fi
+  # Whether we had to wait is worth saying, and it is only knowable BEFORE the blocking call:
+  # a -t 0 probe first, then the real acquisition. The probe is read-only (-n, no file is
+  # created), so a machine where nothing has ever registered a heavy run is not changed by
+  # being asked.
+  waited_from="$(now_epoch)"
+  if disk_heavy_run_in_progress && [ "$quiet" -eq 0 ]; then
+    info "waiting for the machine's heavy lock: $DISK_HEAVY_REASON"
+  fi
+  set +e
+  if [ -n "$ran" ]; then
+    "$LOCKF_BIN" -k $silent -t "$timeout" "$WOLFMUX_HEAVY_LOCK" \
+      /bin/sh -c ': >"$1" 2>/dev/null; shift; exec "$@"' sh "$ran" "$@"
+  elif [ -n "$timeout" ]; then
+    "$LOCKF_BIN" -k $silent -t "$timeout" "$WOLFMUX_HEAVY_LOCK" "$@"
+  else
+    "$LOCKF_BIN" -k $silent "$WOLFMUX_HEAVY_LOCK" "$@"
+  fi
+  rc=$?
+  set -e
+  waited=$(($(now_epoch) - waited_from))
+  # The shim's mark is the only honest way to tell "the lock never came free" from "your
+  # command exited 75". Absent mark plus a non-zero status means the command never started.
+  if [ -n "$ran" ] && [ ! -e "$ran" ] && [ "$rc" -ne 0 ]; then
+    if [ -n "$ran_dir" ]; then /bin/rm -rf "$ran_dir"; fi
+    if [ "$rc" -eq 75 ]; then
+      die "the machine's heavy lock was still held after ${timeout}s, so nothing was run and your command never started. Look at who has it: teamctl heavy --quiet true (it waits), or ps -o command= | grep lockf" 75
+    fi
+    die "the machine's heavy lock could not be taken (lockf exit $rc), so nothing was run and your command never started. The lock file is $(short_path "$WOLFMUX_HEAVY_LOCK")" "$rc"
+  fi
+  if [ -n "$ran_dir" ]; then /bin/rm -rf "$ran_dir"; fi
+  # No shim: 75 is genuinely ambiguous here, and the message says so, and names the reason,
+  # rather than picking the reading that flatters the wrapper. A tool that is missing has to
+  # announce itself — a missing tool that silently does nothing is what cost this project a
+  # night (flock, then timeout, neither of which said a word).
+  if [ -z "$ran" ] && [ -n "$timeout" ] && [ "$rc" -eq 75 ]; then
+    die "lockf exited 75 after ${timeout}s and this run cannot tell you which 75 it is: either the heavy lock was still held and nothing was run, or your command itself exited 75. The two are normally told apart by a scratch file, and mktemp could not make one in ${TMPDIR:-/tmp}. Who holds the lock: ps -o command= | grep lockf" 75
+  fi
+  if [ "$quiet" -eq 0 ] && [ "$waited" -ge 5 ]; then
+    info "held the heavy lock after waiting ${waited}s; the command's own exit status was $rc"
+  fi
+  return "$rc"
+}
+
+# --- one lane the lead wants left alone ----------------------------------------------
+# disk_keep_build <role> — is this lane protected from the automatic sweep? The flag lives
+# in the lane's own record (keep_build), and `teamctl keep <role>` is the one way to set it.
+disk_keep_build() { [ "$(reg_field "$1" keep_build 2>/dev/null || true)" = "on" ]; }
+
+# disk_reclaim_log <role> <kilobytes> <trigger> <names> — one line in the machine-wide
+# ledger: when, which team of which project, which lane, how much, what took it and what it
+# took. Never fatal: a ledger that cannot be written must not stop a cleanup.
+disk_reclaim_log() {
+  local file
+  file="$(disk_reclaim_log_file)"
+  [ -d "$(dirname "$file")" ] || return 0
+  [ -n "$JQ_BIN" ] || return 0
+  "$JQ_BIN" -cn --arg ts "$(now_iso)" --arg project "${PROJECT_KEY:-}" --arg team "${TEAM:-}" \
+    --arg role "$1" --arg kb "${2:-0}" --arg trigger "${3:-}" --arg took "${4:-}" \
+    --arg by "${EVENT_BY:-${TEAM_ROLE:-operator}}" \
+    '{ts: $ts, project: $project, team: $team, role: $role, freed_kb: ($kb | tonumber? // 0),
+      trigger: $trigger, took: $took, by: $by}' \
+    >>"$file" 2>/dev/null || true
+}
+
+# --- the sweep a lane gets when it is parked ------------------------------------------
+# disk_park_sweep <role> <trigger> — everything that has to hold before a parked lane's
+# build output goes, and then the deletion. This is what makes the reclaim automatic: the
+# space came back only when somebody remembered `teamctl prune`, and nobody did (90.3 GB
+# under ~/.wolfmux/worktrees here, 50.9 GB of it build output, measured 2026-10-13).
+#
+#   0  something was taken: DISK_FREED_KB and DISK_CLEANED say how much and what
+#   1  nothing was taken: PARK_SWEEP_WHY says why, in words a command can print
+#
+# How much it takes depends on the policy, and the OFF case is today's behaviour exactly:
+#   auto-prune on (default)  the whole allowlist, node_modules included. A parked lane is
+#                            parked for days and node_modules is most of its weight.
+#   auto-prune off           the build caches only — what `teamctl stop` has always taken,
+#                            so switching the policy off restores v1.16.1's stop precisely.
+#
+# Four refusals come before the deletion, and each one is a lane left whole: the policy, the
+# lane's own keep flag, a lane that is still running, and a heavy run on the machine. The
+# rules in the header of this file (nothing git tracks, nothing a person wrote, nothing
+# outside a lane of this team) are checked after that, by disk_clean_role, as for every
+# other cleanup here.
+disk_park_sweep() {
+  local role="$1" trigger="${2:-park}" kind="all"
+  DISK_FREED_KB=0
+  DISK_CLEANED=""
+  PARK_SWEEP_WHY=""
+  # As in disk_team_kb_measure: disk_lane_running asks tmux about $SESSION, and a caller that
+  # has not set it must not abort the command under `set -u`.
+  [ -n "${SESSION:-}" ] || SESSION="$(session_name_for_project)"
+  if [ "$(policy_get auto-prune)" != "on" ]; then kind="caches"; fi
+  if disk_keep_build "$role"; then
+    PARK_SWEEP_WHY="teamctl keep protects this lane"
+    return 1
+  fi
+  if disk_lane_running "$role"; then
+    PARK_SWEEP_WHY="it is still running${DISK_LANE_DOUBT:+: $DISK_LANE_DOUBT}"
+    return 1
+  fi
+  if disk_heavy_run_in_progress; then
+    PARK_SWEEP_WHY="$DISK_HEAVY_REASON"
+    return 1
+  fi
+  if ! disk_clean_role "$role" "$kind" 1; then
+    PARK_SWEEP_WHY="$DISK_SKIP_REASON"
+    return 1
+  fi
+  if [ -z "$DISK_CLEANED" ]; then
+    PARK_SWEEP_WHY="it had no build output left to take"
+    return 1
+  fi
+  disk_cache_adjust "$DISK_FREED_KB"
+  disk_reclaim_log "$role" "$DISK_FREED_KB" "$trigger" "$DISK_CLEANED"
+  return 0
+}
+
+# disk_park_sweep_say <role> <trigger> — the sweep plus the one line a command prints about
+# it, so `stop` and `destroy` cannot word the same event two ways. Returns what the sweep did.
+disk_park_sweep_say() {
+  local role="$1"
+  if disk_park_sweep "$role" "${2:-park}"; then
+    say "freed:   $(human_size "$DISK_FREED_KB") of build output ($DISK_CLEANED)"
+    if [ "$(policy_get auto-prune)" = "on" ]; then
+      say "         it installs again before its tools run (keep it next time: teamctl keep $role · for the team: teamctl policy auto-prune off)"
+    fi
+    return 0
+  fi
+  say "kept:    its build output ($PARK_SWEEP_WHY)"
+  return 1
+}
+
+# --- teamctl keep <role> [on|off] ----------------------------------------------------
+# One lane the automatic sweep leaves alone. The surface is a verb and not a spawn flag on
+# purpose: whether a checkout is expensive enough to protect is learnt AFTER it has been
+# built — a 40-minute install, a downloaded model, a seeded database — and a flag given at
+# spawn time can never be taken back. With no role it lists what is protected, so a flag
+# nobody can see cannot quietly keep gigabytes.
+cmd_keep() {
+  local role="${1:-}" value="${2:-on}" found=0
+  require_tools
+  load_project
+  if [ -z "$role" ]; then
+    say "lanes the automatic sweep leaves alone, in team '$TEAM' of $(short_path "$ROOT")"
+    for role in $(reg_list); do
+      [ "$(reg_field "$role" kind)" = "worker" ] || continue
+      disk_keep_build "$role" || continue
+      printf '  %-18s %9s   kept: build output is never swept automatically\n' \
+        "$role" "$(human_size "$(disk_kb "$(reg_field "$role" workdir)")")"
+      found=1
+    done
+    [ "$found" -eq 1 ] || say "  none: every parked lane of this team is swept (teamctl policy auto-prune = $(policy_get auto-prune))"
+    say ""
+    say "protect one: teamctl keep <role>   ·   let it be swept again: teamctl keep <role> off"
+    return 0
+  fi
+  require_role_arg "$role"
+  case "$value" in on | off) ;; *) die_usage "usage: teamctl keep [<role> [on|off]]   (no role: what is protected now)" ;; esac
+  reg_exists "$role" || die "no such agent: $role  (see: teamctl status)"
+  [ "$(reg_field "$role" kind)" = "worker" ] || die "'$role' is the lead; it works in your own checkout and nothing of its is ever swept"
+  require_manager keep
+  ensure_state_dirs
+  lock_acquire
+  reg_set "$role" keep_build "$value"
+  event_log keep "$role" "keep_build=$value"
+  lock_release
+  if [ "$value" = "on" ]; then
+    say "keeping: $role — its build output is never swept automatically (teamctl prune still takes it when you ask)"
+  else
+    say "released: $role — its build output is swept again when the lane is parked"
+  fi
+}
+
 # --- teamctl prune [--dry-run] [--keep-node-modules] ---------------------------------
 # Every PARKED lane of this team. A parked lane is what actually hoards: it keeps its
 # whole node_modules and .next for as long as nobody removes the role, and a lane is
 # parked for days. A running lane is never touched. --dry-run reports and deletes
 # nothing, and needs no manager: looking is not changing.
+#
+# prune_team_doubt — the first lane of the loaded team whose running state cannot be told,
+# as a sentence; nothing when every lane can be placed. One wrong "parked" costs a running
+# build its dependencies, and prune is the command nobody is watching, so a team with a
+# doubtful lane is not swept at all.
+prune_team_doubt() {
+  local role
+  for role in $(reg_list); do
+    [ "$(reg_field "$role" kind)" = "worker" ] || continue
+    if disk_lane_running "$role" && [ -n "$DISK_LANE_DOUBT" ]; then
+      printf "cannot tell whether '%s' is running: %s" "$role" "$DISK_LANE_DOUBT"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# prune_team <kind> <apply 0|1> <indent> — the per-lane lines of the LOADED team, and what
+# they add up to: PRUNE_TOTAL (freed, or would be), PRUNE_FLOOR (still held), PRUNE_CLEANED,
+# PRUNE_SKIPPED, PRUNE_RUNNING. The caller has loaded the team, set SESSION, taken the lock
+# when applying, and checked prune_team_doubt. Split out of cmd_prune so that one team and
+# every team on the machine run the same sweep rather than two that can drift.
+prune_team() {
+  local kind="$1" apply="$2" indent="${3:-  }" role path rest rnote
+  PRUNE_TOTAL=0 PRUNE_FLOOR=0 PRUNE_CLEANED=0 PRUNE_SKIPPED=0 PRUNE_RUNNING=0
+  for role in $(reg_list); do
+    [ "$(reg_field "$role" kind)" = "worker" ] || continue
+    path="$(reg_field "$role" workdir)"
+    # A teammate spawned with --repo works in another repository, and its lane lives under
+    # that repository's worktree directory. The line says so, because "which node_modules
+    # was that" is the first question a mixed sweep raises.
+    rnote="$(reg_field "$role" repo 2>/dev/null || true)"
+    [ -z "$rnote" ] || rnote=" (in $(short_path "$rnote"))"
+    # Every lane prune does not empty adds its whole remaining size to the floor below —
+    # a running or skipped lane most of all, because it still holds its node_modules too.
+    if disk_lane_running "$role"; then
+      rest="$(disk_kb "$path")"
+      PRUNE_FLOOR=$((PRUNE_FLOOR + rest))
+      printf '%s%-18s %9s   running, left alone%s\n' "$indent" "$role" "$(human_size "$rest")" "$rnote"
+      PRUNE_RUNNING=$((PRUNE_RUNNING + 1))
+      continue
+    fi
+    # The lead's keep flag holds here too: `teamctl prune` is the automatic sweep asked for
+    # by hand, and a lane worth protecting from one is worth protecting from the other.
+    # `teamctl remove <role>` is still how a protected lane goes, as it always was.
+    if disk_keep_build "$role"; then
+      rest="$(disk_kb "$path")"
+      PRUNE_FLOOR=$((PRUNE_FLOOR + rest))
+      printf '%s%-18s %9s   kept: teamctl keep protects this lane%s\n' "$indent" "$role" "$(human_size "$rest")" "$rnote"
+      PRUNE_SKIPPED=$((PRUNE_SKIPPED + 1))
+      continue
+    fi
+    if ! disk_clean_role "$role" "$kind" "$apply"; then
+      # The size is printed here too, because this is what one stray file is pinning.
+      rest="$(disk_kb "$path")"
+      PRUNE_FLOOR=$((PRUNE_FLOOR + rest))
+      printf '%s%-18s %9s   skipped: %s%s\n' "$indent" "$role" "$(human_size "$rest")" "$DISK_SKIP_REASON" "$rnote"
+      PRUNE_SKIPPED=$((PRUNE_SKIPPED + 1))
+      continue
+    fi
+    PRUNE_TOTAL=$((PRUNE_TOTAL + DISK_FREED_KB))
+    # What is left of a lane prune did sweep is tracked files, mostly: rule 2 means prune
+    # can never take those, so it says how much there is instead of looking finished.
+    rest="$(disk_kb "$path")"
+    if [ "$apply" -eq 0 ]; then rest=$((rest - DISK_FREED_KB)); fi
+    [ "$rest" -ge 0 ] || rest=0
+    PRUNE_FLOOR=$((PRUNE_FLOOR + rest))
+    if [ -z "$DISK_CLEANED" ]; then
+      printf '%s%-18s %9s   nothing to take%s\n' "$indent" "$role" "0 KB" "$rnote"
+    else
+      PRUNE_CLEANED=$((PRUNE_CLEANED + 1))
+      printf '%s%-18s %9s   %s%s\n' "$indent" "$role" "$(human_size "$DISK_FREED_KB")" "$DISK_CLEANED" "$rnote"
+      [ "$apply" -eq 0 ] || disk_reclaim_log "$role" "$DISK_FREED_KB" prune "$DISK_CLEANED"
+    fi
+  done
+  # The lanes this emptied were parked, which is the one thing prune sweeps, so the parked
+  # number the status bar shows can be corrected exactly instead of measured again.
+  if [ "$apply" -eq 1 ]; then
+    event_log prune "" "kind=$kind freed_kb=$PRUNE_TOTAL lanes=$PRUNE_CLEANED"
+    disk_cache_adjust "$PRUNE_TOTAL"
+    disk_parked_adjust "$PRUNE_TOTAL"
+  fi
+}
+
+# prune_footer <dry> <hint> <label> <scope> <total> <floor> <cleaned> <running> <skipped> —
+# the lines under one team's lanes, and under the machine's when every team was swept. The
+# label and the scope are the only difference between the two ("total … in 3 parked lanes"
+# against "machine total … in 41 parked lanes across 21 teams in 7 projects"), so the
+# numbers underneath cannot be worded two ways.
+prune_footer() {
+  local dry="$1" hint="$2" label="$3" scope="$4" total="$5" floor="$6" cleaned="$7" running="$8" skipped="$9"
+  say ""
+  if [ "$dry" -eq 1 ]; then
+    printf '  %-18s %9s   is what this would free in %s parked lane%s%s (%s running, %s skipped)\n' \
+      "$label" "$(human_size "$total")" "$cleaned" "$([ "$cleaned" = "1" ] || printf s)" "$scope" "$running" "$skipped"
+    say "  take it: teamctl prune$hint"
+  else
+    printf '  %-18s %9s   freed from %s parked lane%s%s (%s running, %s skipped)\n' \
+      "$label" "$(human_size "$total")" "$cleaned" "$([ "$cleaned" = "1" ] || printf s)" "$scope" "$running" "$skipped"
+    say "  $(disk_free_label) free on this disk now."
+  fi
+  # Measured on this machine: of 25 GB in 38 lane worktrees only about 4 GB was on the
+  # allowlist. The rest is the checkout itself (one project copies 530 MB of public/ into
+  # every lane), and only taking the lane off the books gives that back.
+  if [ "$floor" -gt 0 ]; then
+    printf '  %-18s %9s   is still in these lanes: files git tracks, plus every lane above that was skipped or left running.\n' \
+      "still held" "$(human_size "$floor")"
+    say "  What git tracks comes back only with teamctl remove <role>$hint. A skipped lane keeps its node_modules as well; a running one is swept once it is parked."
+  fi
+  if [ "$skipped" -gt 0 ]; then
+    say "  A skipped lane holds something that is not build output. Look: teamctl diff <role> --working · let it go: teamctl remove <role>"
+  fi
+}
+
 cmd_prune() {
-  local dry=0 kind="all" apply=1 role path rest rnote total=0 floor=0 cleaned=0 skipped=0 running=0 hint=""
+  local dry=0 kind="all" apply=1 all_teams=0 hint="" doubt=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --dry-run) dry=1 ;;
       --keep-node-modules) kind="caches" ;;
-      *) die_usage "usage: teamctl prune [--team <name>] [--dry-run] [--keep-node-modules]" ;;
+      --all-teams) all_teams=1 ;;
+      *) die_usage "usage: teamctl prune [--team <name>] [--all-teams] [--dry-run] [--keep-node-modules]" ;;
     esac
     shift
   done
   if [ "$dry" -eq 1 ]; then apply=0; fi
   require_tools
+  if [ "$all_teams" -eq 1 ]; then
+    prune_all_teams "$kind" "$apply" "$dry"
+    return 0
+  fi
   load_project
   [ "$dry" -eq 1 ] || require_manager prune
   SESSION="$(session_name_for_project)"
@@ -428,76 +923,91 @@ cmd_prune() {
   fi
   say "  takes: $(disk_names "$kind" | tr '\n' ' ') ·  keeps: every source file, every commit, git state"
   say ""
-  # A doubtful lane stops the whole sweep before anything is deleted: one wrong "parked"
-  # costs a running build its dependencies, and prune is the command nobody is watching.
-  for role in $(reg_list); do
-    [ "$(reg_field "$role" kind)" = "worker" ] || continue
-    if disk_lane_running "$role" && [ -n "$DISK_LANE_DOUBT" ]; then
-      [ "$apply" -eq 0 ] || lock_release
-      die "cannot tell whether '$role' is running: $DISK_LANE_DOUBT. Nothing was touched. Look: teamctl status · teamctl panes. Then park it for real (teamctl stop $role$hint) or bring it back (teamctl restart $role$hint) and run prune again."
-    fi
-  done
-  for role in $(reg_list); do
-    [ "$(reg_field "$role" kind)" = "worker" ] || continue
-    path="$(reg_field "$role" workdir)"
-    # A teammate spawned with --repo works in another repository, and its lane lives under
-    # that repository's worktree directory. The line says so, because "which node_modules
-    # was that" is the first question a mixed sweep raises.
-    rnote="$(reg_field "$role" repo 2>/dev/null || true)"
-    [ -z "$rnote" ] || rnote=" (in $(short_path "$rnote"))"
-    # Every lane prune does not empty adds its whole remaining size to the floor below —
-    # a running or skipped lane most of all, because it still holds its node_modules too.
-    if disk_lane_running "$role"; then
-      rest="$(disk_kb "$path")"
-      floor=$((floor + rest))
-      printf '  %-18s %9s   running, left alone%s\n' "$role" "$(human_size "$rest")" "$rnote"
-      running=$((running + 1))
-      continue
-    fi
-    if ! disk_clean_role "$role" "$kind" "$apply"; then
-      # The size is printed here too, because this is what one stray file is pinning.
-      rest="$(disk_kb "$path")"
-      floor=$((floor + rest))
-      printf '  %-18s %9s   skipped: %s%s\n' "$role" "$(human_size "$rest")" "$DISK_SKIP_REASON" "$rnote"
-      skipped=$((skipped + 1))
-      continue
-    fi
-    total=$((total + DISK_FREED_KB))
-    # What is left of a lane prune did sweep is tracked files, mostly: rule 2 means prune
-    # can never take those, so it says how much there is instead of looking finished.
-    rest="$(disk_kb "$path")"
-    if [ "$apply" -eq 0 ]; then rest=$((rest - DISK_FREED_KB)); fi
-    [ "$rest" -ge 0 ] || rest=0
-    floor=$((floor + rest))
-    if [ -z "$DISK_CLEANED" ]; then
-      printf '  %-18s %9s   nothing to take%s\n' "$role" "0 KB" "$rnote"
-    else
-      cleaned=$((cleaned + 1))
-      printf '  %-18s %9s   %s%s\n' "$role" "$(human_size "$DISK_FREED_KB")" "$DISK_CLEANED" "$rnote"
-    fi
-  done
-  say ""
+  doubt="$(prune_team_doubt)"
+  if [ -n "$doubt" ]; then
+    [ "$apply" -eq 0 ] || lock_release
+    die "$doubt. Nothing was touched. Look: teamctl status · teamctl panes. Then park it for real (teamctl stop <role>$hint) or bring it back (teamctl restart <role>$hint) and run prune again."
+  fi
+  prune_team "$kind" "$apply"
+  prune_footer "$dry" "$hint" total "" "$PRUNE_TOTAL" "$PRUNE_FLOOR" "$PRUNE_CLEANED" "$PRUNE_RUNNING" "$PRUNE_SKIPPED"
+  [ "$apply" -eq 0 ] || lock_release
+}
+
+# --- teamctl prune --all-teams [--dry-run] [--keep-node-modules] ---------------------
+# Every team of every project on this machine, in one command, and YOURS alone to run.
+#
+# A lead may not: exit 77. That is not a courtesy — `teamctl prune` is refused across team
+# boundaries by rule 4 of this file (a lane of another team is that team's to clean), and a
+# lead that could sweep the machine would be managing teams nobody made it manager of.
+# is_manager cannot express this, because it says 0 for the lead of the team it is standing
+# in as well as for you; require_operator (lib/policy.sh) asks the one question that can.
+#
+# Why it exists: you work from a plain terminal with no TEAM_ROLE, and until now there was
+# no way to see what the whole machine was hoarding — `teamctl prune --dry-run` answers for
+# one team and `teamctl teams` for one project. 21 teams across several projects is 21
+# commands and no total.
+#
+# A team whose lanes cannot all be placed is reported and skipped WHOLE, and the run goes on.
+# The one-team form still dies instead, and that difference is deliberate: there, the doubt
+# is about the lanes you asked about, and stopping is the answer; here, one unplaceable team
+# must not leave the other twenty unswept, and skipping it touches nothing of it.
+prune_all_teams() {
+  local kind="$1" apply="$2" dry="$3" key team rc doubt
+  local total=0 floor=0 cleaned=0 running=0 skipped=0 teams=0 projects=0 held=""
+  require_operator "prune --all-teams" "every team of every project on this machine" \
+    "teamctl prune for your own team (no --all-teams), and teamctl prune --dry-run for a look at it"
   if [ "$dry" -eq 1 ]; then
-    printf '  %-18s %9s   is what this would free in %s parked lane%s (%s running, %s skipped)\n' \
-      "total" "$(human_size "$total")" "$cleaned" "$([ "$cleaned" = "1" ] || printf s)" "$running" "$skipped"
-    say "  take it: teamctl prune$hint"
+    say "prune EVERY team on this machine   ·   DRY RUN: nothing is deleted"
   else
-    printf '  %-18s %9s   freed from %s parked lane%s (%s running, %s skipped)\n' \
-      "total" "$(human_size "$total")" "$cleaned" "$([ "$cleaned" = "1" ] || printf s)" "$running" "$skipped"
-    say "  $(disk_free_label) free on this disk now."
-    event_log prune "" "kind=$kind freed_kb=$total lanes=$cleaned"
-    disk_cache_adjust "$total"
-    lock_release
+    say "prune EVERY team on this machine"
   fi
-  # Measured on this machine: of 25 GB in 38 lane worktrees only about 4 GB was on the
-  # allowlist. The rest is the checkout itself (one project copies 530 MB of public/ into
-  # every lane), and only taking the lane off the books gives that back.
-  if [ "$floor" -gt 0 ]; then
-    printf '  %-18s %9s   is still in these lanes: files git tracks, plus every lane above that was skipped or left running.\n' \
-      "still held" "$(human_size "$floor")"
-    say "  What git tracks comes back only with teamctl remove <role>$hint. A skipped lane keeps its node_modules as well; a running one is swept once it is parked."
-  fi
-  if [ "$skipped" -gt 0 ]; then
-    say "  A skipped lane holds something that is not build output. Look: teamctl diff <role> --working · let it go: teamctl remove <role>"
+  say "  takes: $(disk_names "$kind" | tr '\n' ' ') ·  keeps: every source file, every commit, git state"
+  for key in $(dash_projects); do
+    rc=0
+    # dash_project_load is the dashboard's loader, and loading is all it does: it points
+    # ROOT / PROJECT_STATE / PROJECT_TREES at a project read out of its meta.json. Reused
+    # rather than written again here, so there is one reader of that file and not two.
+    dash_project_load "$key" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      say ""
+      say "PROJECT $key   skipped: its state could not be read"
+      continue
+    fi
+    projects=$((projects + 1))
+    say ""
+    say "PROJECT $key   $(short_path "$ROOT")"
+    for team in $(team_list); do
+      team_paths "$team"
+      SESSION="$(session_name_for_project)"
+      teams=$((teams + 1))
+      say "  TEAM $team"
+      doubt="$(prune_team_doubt)"
+      if [ -n "$doubt" ]; then
+        held="$held $key/$team"
+        printf '    %s\n' "$doubt — this team was skipped whole and nothing of it was touched"
+        continue
+      fi
+      if [ "$apply" -eq 1 ]; then
+        ensure_state_dirs
+        lock_acquire
+      fi
+      prune_team "$kind" "$apply" "    "
+      [ "$apply" -eq 0 ] || lock_release
+      printf '    %-16s %9s   %s in this team (%s parked lane%s swept, %s running, %s skipped)\n' \
+        "team total" "$(human_size "$PRUNE_TOTAL")" \
+        "$([ "$dry" -eq 1 ] && printf 'would be freed' || printf freed)" \
+        "$PRUNE_CLEANED" "$([ "$PRUNE_CLEANED" = "1" ] || printf s)" "$PRUNE_RUNNING" "$PRUNE_SKIPPED"
+      total=$((total + PRUNE_TOTAL))
+      floor=$((floor + PRUNE_FLOOR))
+      cleaned=$((cleaned + PRUNE_CLEANED))
+      running=$((running + PRUNE_RUNNING))
+      skipped=$((skipped + PRUNE_SKIPPED))
+    done
+  done
+  prune_footer "$dry" " --all-teams" "machine total" \
+    " across $teams team$([ "$teams" = "1" ] || printf s) in $projects project$([ "$projects" = "1" ] || printf s)" \
+    "$total" "$floor" "$cleaned" "$running" "$skipped"
+  if [ -n "$held" ]; then
+    say "  Teams skipped whole, because a lane of theirs could not be placed:$held"
   fi
 }

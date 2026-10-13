@@ -456,7 +456,7 @@ cmd_start() {
 # a branch, a record or a pane exists, so a spawn that is turned down leaves nothing behind.
 cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
-  local from_tree="" old_record="" old_branch="" old_pane dirty
+  local from_tree="" old_record="" old_branch="" old_keep="" old_pane dirty
   local want_branch="" ticket="" repo_arg="" repo="" spawn_repo trees repo_note=""
   local pin="" link=0 linked=0
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
@@ -593,6 +593,10 @@ cmd_spawn() {
     # new role. If the pane cannot be made, the old worker is put back exactly as it was.
     old_record="$(reg_get "$from_tree")"
     old_branch="$(reg_field "$from_tree" branch)"
+    # The keep flag belongs to the WORKTREE, not to the role name: a handover reuses the
+    # same expensive checkout, so a lane that was worth protecting from the automatic sweep
+    # is still worth protecting under its new role. Read before the old record is deleted.
+    old_keep="$(reg_field "$from_tree" keep_build 2>/dev/null || true)"
     if ! "$GIT_BIN" -C "$path" switch -q -c "$branch" "$base_commit" >/dev/null 2>&1; then
       die "could not create branch $branch in $(short_path "$path") (is that directory still a git worktree of $(short_path "$spawn_repo")?)"
     fi
@@ -605,6 +609,7 @@ cmd_spawn() {
   fi
   new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}" "$repo" 1
   if [ -n "$pin" ]; then reg_set "$role" session_id "$pin"; fi
+  if [ "$old_keep" = "on" ]; then reg_set "$role" keep_build on; fi
 
   target="$(tm_split_target "$SESSION")" || target=""
   pane=""
@@ -648,6 +653,14 @@ cmd_spawn() {
   say "worktree:  $(short_path "$path")"
   if [ -n "$from_tree" ]; then
     say "handed over: the worktree of $from_tree (its branch $old_branch and its commits are kept)"
+    # The point of a handover is that the install is not repeated, and from v1.17.0 parking
+    # the old lane sweeps its build output — so say which of the two happened here instead of
+    # leaving the new agent to discover it when a build fails.
+    if [ "$old_keep" = "on" ]; then
+      say "kept:      teamctl keep came with the worktree, so its build output is still protected from the automatic sweep"
+    elif [ ! -e "$path/node_modules" ]; then
+      say "note:      this worktree has no node_modules: it was swept when $from_tree was parked. To carry an install through a handover, run teamctl keep <role> BEFORE stopping that lane (or teamctl policy auto-prune off for the team)"
+    fi
   fi
   if [ "$linked" -eq 1 ]; then
     say "deps:      node_modules linked to $(short_path "$spawn_repo")/node_modules — ONE directory for every lane, so an install in any lane changes them all"
@@ -962,16 +975,14 @@ cmd_stop() {
     layout_apply
   fi
   reg_set "$role" pane_id "" state stopped
-  # A stopped lane keeps its worktree for as long as the role is on the books, which is
-  # where the disk went (issue #11). Its build caches are regenerable, so they go now;
-  # node_modules stays, because `teamctl restart` has to be the cheap thing it looks like.
-  if disk_clean_role "$role" caches 1 && [ -n "$DISK_CLEANED" ]; then
-    freed="$(human_size "$DISK_FREED_KB")"
-    say "freed:   $freed of build output ($DISK_CLEANED)"
-  elif [ -n "$DISK_SKIP_REASON" ]; then
-    say "kept:    its build output ($DISK_SKIP_REASON)"
-  fi
-  disk_cache_adjust "$DISK_FREED_KB"
+  # A stopped lane keeps its worktree for as long as the role is on the books, which is where
+  # the disk went (issue #11). Until v1.17.0 only the build CACHES went here and node_modules
+  # stayed, so that `teamctl restart` would be the cheap thing it looks like — and the result
+  # was 50.9 GB of node_modules in parked lanes nobody restarted (measured 2026-10-13). So the
+  # whole allowlist goes now, and the trade is stated in the line the sweep prints: a restarted
+  # lane installs again. `teamctl policy auto-prune off` brings the old behaviour back exactly,
+  # and `teamctl keep <role>` protects one expensive checkout (lib/disk.sh).
+  if disk_park_sweep_say "$role" stop; then freed="$(human_size "$DISK_FREED_KB")"; fi
   event_log stop "$role" "${freed:+freed=$freed}"
   lock_release
   say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
@@ -1474,7 +1485,11 @@ _purge_team() {
   /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge"
   # disk-kb is the remembered size of lanes that no longer exist; leaving it behind also
   # left the team's state directory non-empty, so the rmdir of a named team did nothing.
-  /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb"
+  # disk-parked-kb is its v1.17.0 twin and arrived here the same way: it was written by
+  # `teamctl teams`, not named here, and the purge stopped deleting the directory. Every
+  # per-team file the disk module writes belongs on this line — tests/disk.sh checks that.
+  /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb" \
+    "$STATE_DIR/disk-parked-kb"
   /bin/rmdir "$WORKTREES_DIR" 2>/dev/null || true
 }
 
@@ -1545,6 +1560,18 @@ cmd_destroy() {
     done
     gitr worktree prune
   else
+    # The second path that parks lanes, and the one that parks them in bulk: this form ends
+    # the session and keeps every worktree, so without the sweep each lane sat on its whole
+    # node_modules until somebody ran prune. (--worktrees above sweeps in
+    # _destroy_worker_artifacts, before it decides what to remove.)
+    for role in $(reg_list); do
+      [ "$(reg_field "$role" kind)" = "worker" ] || continue
+      if disk_park_sweep "$role" destroy; then
+        say "  $role: freed $(human_size "$DISK_FREED_KB") of build output ($DISK_CLEANED)"
+      else
+        say "  $role: kept its build output ($PARK_SWEEP_WHY)"
+      fi
+    done
     say "worktrees kept. Clean ones go with: teamctl destroy --worktrees · one that still holds work: teamctl remove <role> --force"
   fi
   reg_delete "$WOLFMUX_LEAD_ROLE"

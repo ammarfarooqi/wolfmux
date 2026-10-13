@@ -1285,6 +1285,307 @@ it**, and no figure here stands in for that.
 
 Version 1.16.1, a patch on 1.16.0.
 
+## 35. "Why is the space hoarding not built in?" (v1.17.0, stage 1)
+
+Ammar, 2026-10-13 03:3xZ: *"why this is not an inbuilt thing that once the work is complete
+the team has to destroy the worktree to reclaim space why the space hoarding"*.
+
+The honest answer is that v1.16.1 had the cleanup and not the reclaiming. `teamctl prune`
+worked, every rule in `lib/disk.sh` held, 93 checks covered it — and the machine filled up
+anyway, because `prune` had to be *asked*. Measured at 03:12Z: **90.3 GB** under
+`~/.wolfmux/worktrees`, **50.9 GB** of it build output. A command nobody runs reclaims
+nothing. `docs/ROADMAP.md` had carried this as a known gap since v1.11 and described the
+fix as "draining by age"; the fix is simpler than that — do it when the lane is parked,
+because that is the moment the build output stops being useful.
+
+Stage 1 is the three parts that cannot lose work. Removing a lane's tracked files can, so
+it is stage 2 and it has its own gates.
+
+### 1. Parking a lane sweeps it
+
+`teamctl stop` took the build caches and kept `node_modules`, deliberately, so that
+`teamctl restart` would be cheap. That trade was wrong at this scale: restart is rare,
+parking is not, and 50.9 GB was the price. Now `disk_park_sweep` takes the whole allowlist
+at the moment a lane is parked, by the two paths that park one:
+
+- `cmd_stop` — one lane;
+- `cmd_destroy` **without** `--worktrees` — every lane, in bulk, which is the path that
+  parked 11 orphaned teams' worth of lanes on this machine. `--worktrees` already swept.
+
+Four refusals come before the deletion, each leaving the lane whole: the `auto-prune`
+policy (`off` restores v1.16.1's stop exactly), the lane's own `keep_build` flag, a lane
+still running, and a **heavy run on the machine**. The last one is the only new mechanism:
+a build runs in whatever shell started it, not in the lane's pane, so `stop` cannot see it,
+and taking `node_modules` from under a running build is the one way this could do damage.
+The signal is the lock this machine's own gates already hold,
+`lockf ~/.wolfmux/machine-heavy.lock <command>`.
+
+**The trap in that lock, and it is a real one.** The file is KEPT between runs when the
+holder passes `-k`, so its existence proves nothing — `[ -e ]` would have stopped every
+sweep for ever, and a test asserting "the file is there, so it is busy" would have passed.
+The only thing that answers is trying to take the lock for an instant
+(`lockf -k -s -n -t 0 … true`): 0 means free, 69 (`EX_UNAVAILABLE`, with `-n` and no file)
+means nothing has ever registered a heavy run and is also free, 75 (`EX_TEMPFAIL`) means
+held, and anything else means we cannot tell — which counts as busy, the same rule
+`disk_lane_running` already follows for a lane it cannot place. No `lockf` on the machine at
+all is NOT "cannot tell": the convention cannot exist there, so nothing can be holding it,
+and the alternative would be an automatic sweep that silently never runs — the exact failure
+this release exists to end.
+
+**And then the convention itself turned out to be broken, which was found by using it.**
+While this lane's own suites waited their turn on that lock, a `-t 0` probe of the path
+answered *free* with the lane's own holder still running. `lsof` said why: the holder had
+inode **240542083** open while the path resolved to **240709857**. `lockf`'s DEFAULT is to
+delete the file when its command ends — only `-k` keeps it — and BSD locks live on the inode,
+not the path. So one holder on this machine that omitted `-k` unlinked the file on exit, and
+from that moment the path and the locked inode were two different objects: a holder still
+running kept a lock nobody could see, and every later holder and probe took a fresh inode and
+believed it was alone. Mutual exclusion was gone for every lane at once, silently, and the
+only reason it surfaced is that something finally *read* the lock instead of only taking it.
+
+Two consequences, and the honest one is the second:
+
+1. The probe is now `-k -s -n -t 0`, which makes it READ-ONLY: `-n` stops it creating a file
+   when none exists (69 is then "free"), and `-k` stops it deleting one. Looking at the lock
+   leaves the lock exactly as it was, so this guard is not itself a participant in the race.
+   `tests/disk.sh` asserts both halves, inode included.
+2. **That does not fix the hole, and nothing in this repository can.** No single-process
+   probe recovers a lock whose file has been unlinked under it. The fix is that *every*
+   holder on the machine passes `-k`, which is what `lockf`'s own manual recommends and what
+   README.md, docs/USAGE.md and the user manual now say in a box each. Until that is true
+   everywhere, what this guard buys is exact and worth stating plainly: it stops the sweep
+   whenever the convention is held correctly, and it never stops it wrongly.
+
+Every sweep is appended to `~/.wolfmux/state/reclaimed.jsonl` (asked for by name): time,
+project, team, lane, kilobytes, trigger, directory names, who. Machine-wide and not per
+team, because "where did that space go" is asked long after the team is gone.
+
+`teamctl keep <role>` protects one expensive checkout. A verb, not a flag on `spawn`, and
+that was a choice: whether a checkout is worth protecting — a 40-minute install, a
+downloaded model, a seeded database — is learnt AFTER it is built, and a spawn flag cannot
+be taken back. `teamctl keep` with no role lists what is protected, and
+`teamctl status --json` carries `keep_build`, so a flag nobody can see cannot hoard
+quietly.
+
+### 2. `teamctl prune --all-teams`, for the operator only
+
+A lead cannot prune another team (exit 77; rule 4 of `lib/disk.sh` refuses the paths
+anyway), which is right and stays. From a plain terminal there was no way to see the whole
+machine: `prune --dry-run` answers for one team, `teamctl teams` for one project, and 21
+teams is 21 commands and no total.
+
+**Where the task description and the code had to differ, and why.** The task said to lean on
+`is_manager`, "which already returns 0 for an empty caller role". It does — and it also
+returns 0 for the lead of the team it is standing in, which is exactly the caller this
+option has to refuse. So `is_operator` / `require_operator` were added beside it (one line
+and a `die`, the same cooperative `caller_role` check, no new concept). The refusal names no
+lead to appeal to, unlike `require_manager`: a command that reaches every team is not
+something any lead can grant, so sending a refused agent to its lead would send it to the
+one person who cannot say yes.
+
+One more difference from the one-team form, deliberate: a team whose lanes cannot all be
+placed is reported and skipped **whole**, and the run continues. The one-team form still
+dies. There, the doubt is about the lanes you asked about and stopping is the answer; here,
+one unplaceable team must not leave the other twenty unswept, and skipping it touches
+nothing of it.
+
+### 3. A status bar a person can read
+
+Ammar's words: the line is unreadable. It was
+`21t 18run 92stop ld3.56 mem7G dsk66G` — four units as suffixes, two abbreviated labels,
+and `92stop` reading as one token. Now:
+
+```
+teams 20 run 12 idle 63 load 2.92 mem 8G disk 109G held 9.2G
+```
+
+60 characters, 67 with `exit N` in it, against a 72-character cut. **Every character is
+inside `cmd_overview_badge`'s own alphabet (`A-Za-z0-9`, space, `. : / + -`) and no
+separator was added at all** — the labels separate. That filter strips anything else
+SILENTLY, so a middle dot or a pipe between fields would have vanished without a trace and
+the line would have reached tmux with its numbers run together. `tests/dashboard.sh` asserts
+it on the real line now: the badge is re-filtered and must come back unchanged.
+
+`held` is the new field and the one the old line could not say: what the PARKED lanes of
+every team hold. It is read from what `teamctl teams` left behind, never measured —
+rule 2 of `lib/dashboard.sh`, a `du` over this machine's lanes is about twelve seconds and
+this redraws every few seconds. `disk_team_kb_measure` now writes a second file,
+`disk-parked-kb`, beside `disk-kb` (a second FILE, not a second column, so an old version
+still parses a new file and a new version an old one), and `teamctl prune` corrects it by
+what it took — correct by construction, because parked lanes are the only ones prune
+sweeps. The park sweep does NOT correct it: the lane it swept was running when the number
+was measured, so it was never in it, and subtracting would make the number smaller than the
+truth. It waits for the next measurement.
+
+A stale `held` is used on purpose, which is the one place this departs from the
+file's own "never show an old number as current" rule, and the reason is in the thing being
+measured: a parked lane is a lane in which nothing is running, so its size does not change
+by itself. `teamctl bar --explain` says exactly that, and says what the number cannot know
+(a lane parked or removed since). `dash_parked_kb` reads the file with the shell's own
+`read` and SETS a variable rather than printing one, so the sweep over 25 teams costs no
+process at all; `tests/dashboard.sh` asserts it agrees with `disk_parked_kb` on a good file
+and on every malformed one, which is this module's standing rule for a fast path.
+
+`teamctl bar --explain` is the legend. The ask was "a legend or a hover"; a terminal has no
+hover, and seven numbers in seventy-two characters have room for their labels and nothing
+else.
+
+### Failing first, measured both ways
+
+Every figure below was taken on this machine on 2026-10-13, with the new suites run against
+a **pristine `adbc2db`** (`git archive`, the merge base this branch was rebased onto — still
+`teamctl 1.16.1`, confirmed by its own version line) and then against this one. The baseline
+was re-measured rather than carried, and the lock was taken for every run.
+
+| Run | `dashboard` | `disk` |
+|-----|-------------|--------|
+| A — `adbc2db` code, `adbc2db` tests (baseline, re-measured) | 115 / 0 / 0 | 93 / 0 |
+| B — `adbc2db` code, **the shipped tests** | 108 / **27** / 0 | 107 / **68** / 0 |
+| C — this tree, the shipped tests | 135 / 0 / 0 | 175 / 0 / 0 |
+
+B is the evidence, and it was re-measured at the final sha every time the file it describes
+changed — four times in all, because three defects were found after the first pass and each
+fix changed a suite. Only the last set is above. The superseded ones (`disk` 110/42, then
+107/48, then a truncated 104/44) are recorded here as retracted rather than deleted.
+
+Counted per check rather than by the total, which is the only way to tell evidence from
+noise:
+
+| | new checks | fail on `adbc2db` | also pass there | EXISTING checks failing in B |
+|-|-----------|-------------------|-----------------|------------------------------|
+| `dashboard` | 20 | **17** | 3 | 10 |
+| `disk` | 82 | **68** | 14 | 0 |
+
+Both rows close arithmetically against A and C, which is the point of counting them this
+way: `disk` 93 + 82 = 175 and every one of B's 68 failures is a new check; `dashboard`
+115 + 20 = 135 and B's 27 = 17 new + the 10 existing badge-format checks rewritten because
+the format changed deliberately. A row that did not close would mean a check had been
+silently lost.
+
+The 17 that also pass on v1.16.1 are reported rather than counted as proof, because a check
+that passes on the old tree proves nothing about this one. They divide into two honest kinds:
+invariants that hold either way (the lane is a real worktree; its sources, commits and git
+state are untouched; nothing is left half-deleted; one team's `--dry-run` is open to anyone;
+`auto-prune off` IS v1.16.1's behaviour, which is the point of that path), and negative
+assertions that sit beside a discriminating positive one (nothing in the ledger claims a
+protected lane was swept).
+
+**Six checks were moved out of that second group during the work, and that is the part worth
+keeping.** They had passed on v1.16.1 because the command or the function *does not exist*
+there — `teamctl keep lead`, `teamctl bar --nonsense` and `teamctl policy auto-prune
+sometimes` all exit non-zero or 64 on a tree that has never heard of them. An exit code alone
+cannot tell "the feature refused this correctly" from "there is no feature". Each now asserts
+the reason or the usage line, or asserts that the valid values are ACCEPTED as well as that
+an invalid one is refused, and all six fail on v1.16.1 afterwards. The same trap caught two
+of the heavy-lock probe's own checks, where `! lib_eval "disk_heavy_run_in_progress"` was
+satisfied by the function being absent; they ask `type` first now.
+
+### What the measurement pass found, which reading the diff did not
+
+Four defects were found by running the suites rather than by review, and three of them share
+one shape: **the operation reported success for something it had not done.** That is the
+same shape as the `-k`-less lock that excluded nothing, and as `flock` and `timeout`, which
+are not installed on this machine and say so by doing nothing.
+
+| | what it did | how it was found |
+|-|-------------|------------------|
+| `heavy --timeout ""` | ran the command with **no timeout at all**, silently: the guard asked whether the value was non-empty rather than whether the flag was given, so an empty value skipped the case that already rejected `""` | its own check could not see it — the check asserted only exit 64, and on the old tree an unknown command `heavy` also exits 64 |
+| `tests/disk.sh` | **ended at check 140 of 175** with no summary line, twice, from two different causes: a bare `exit 1` in a check body, then a variable read after a short-circuited `&&` chain, which under `set -u` aborts the shell | the missing `result:` line, not a red check — a truncated run is indistinguishable from a short clean one |
+| `destroy --purge` | printed "team 'child' is gone" and **left the team's records on disk**: the purge deletes per-team state files by name so the final `rmdir` can empty the directory, and `disk-parked-kb` was never added to that line | `tests/smoke.sh`, a suite this release does not touch, with pristine `adbc2db` as the control |
+| `docs/SETUP.md` | did not name `install.sh`'s `--no-claude-commands` | `tests/docs.sh` — and pristine `adbc2db` fails the same check, so this one is not ours |
+
+Three fixes are structural rather than careful, because being careful is what failed:
+
+- `check` now evaluates every body in a **subshell**, so a failing check cannot end its
+  suite — covering both causes, and every check nobody has written yet.
+- The purge's file list is **derived** from `lib/disk.sh` (every `printf '%s/<name>'
+  "$STATE_DIR"`) and each name must appear in `lib/agents.sh`'s purge line, so the next
+  cache file is covered the day it is added. The check asserts the derivation found at least
+  two names, so a derived list that matches nothing fails instead of passing trivially.
+- The measurement harness reports a suite with **no summary line as TRUNCATED**, with the
+  last check it printed, rather than its pass count. Without that, the second truncation
+  would have shipped as a clean run.
+
+A comment immediately above the purge line already described this exact failure happening
+once, with `disk-kb`. It was read, used as the model for the new cache file's format, and not
+followed to its conclusion. A comment saying "this went wrong once" is a warning about a
+**class**, and the only safe way to read one is to ask what else is now in that class.
+
+### Changed
+
+- `lib/disk.sh`: the heavy-lock probe, the keep flag, the ledger, `disk_park_sweep`,
+  `cmd_keep`, the parked cache, and `cmd_prune` split into `prune_team` / `prune_footer` /
+  `prune_all_teams` so that one team and the whole machine run the same sweep.
+- `lib/policy.sh`: the `auto-prune` key, and `is_operator` / `require_operator`.
+- `lib/agents.sh`: `cmd_stop`'s sweep, the new loop in `cmd_destroy`, and `disk-parked-kb`
+  added to the purge's by-name file list — without it, `destroy --purge` stopped emptying
+  the team's state directory and so stopped deleting it.
+- `tests/disk.sh`, `tests/dashboard.sh`: `check` evaluates its body in a subshell.
+- `lib/dashboard.sh`: the badge line, `dash_parked_kb`, `dash_badge_held_kb`,
+  `dash_tenth_gb`, `cmd_bar`.
+- `lib/views.sh`: `keep_build` per agent, `auto_prune` and `disk.parked_kb` in
+  `status --json`, auto-prune in the `status` disk line.
+- `lib/completion.sh`, `bin/teamctl`: the two new commands and the two new options.
+- `lib/provider-env.sh`: `WOLFMUX_AUTO_PRUNE` on the allowlist, in the same commit as the
+  knob — the v1.16.0 lesson, and `tests/disk.sh` round-trips it through a real config file.
+- `lib/common.sh`: line 5 only, `WOLFMUX_VERSION` to 1.17.0.
+
+### Every suite at the shipped head
+
+One pass, one sha, **`982d76b`**, rebased onto `adbc2db`. The lock was taken for the whole
+pass, in one acquisition, by a plain `lockf -k -s` and deliberately **not** by this release's
+own `teamctl heavy`: gating the measurement of a change with the code being changed makes
+the instrument depend on the thing under test, and nothing in the pass could then tell you.
+
+| suite | at `982d76b` | | suite | at `982d76b` |
+|-------|--------------|-|-------|--------------|
+| `smoke` | 349 / **2** / 0 | | `migration` | 36 / 0 |
+| `disk` | 175 / 0 / 0 | | `permissions` | 13 / 0 |
+| `dashboard` | 135 / 0 / 0 | | `commands` | 16 / 0 |
+| `docs` | 36 / 0 | | `providers` | 141 / 0 / 0 |
+| `inbox` | 107 / 0 | | `nudge-typing` | 61 / 0 |
+
+**1069 passing, 2 failing, 0 skipped across the ten countable suites.** Every figure comes
+from the suite's own summary line; a suite that printed none would be reported as TRUNCATED
+and none was.
+
+`smoke`'s two failures are **not this branch's**, and the control is the same suite on a
+pristine `adbc2db`, which fails the same two by name — `beads: a worker reaches the shared
+database from its worktree` and `rename: a Beads hook written under the old name is
+replaced`. Pristine is 346 / 2, this tree is 349 / 2: three checks added, no new failure.
+Both are **non-hermetic checks**: they read the LIVE shared Beads database rather than a
+throwaway one, so their result depends on what is in it at the time. They failed in three
+runs here and passed in two of the lead's, and the branch is identical across all five.
+
+**The mechanism is not established.** The leading hypothesis, with the three facts behind it
+and nothing more: the check immediately before the failing one passes, running the same
+`bd list --assignee backend` query from the project root and finding the bead the suite just
+created; the failing check runs that same query after `cd` into the worker's worktree and
+asserts `length == 1`; and in the live database that a worktree path resolves to there were
+**0** open beads assigned to the role name `backend` when measured. That fits `bd` resolving
+to the live database rather than the suite's own from inside a worktree — which would make
+the check assert the number of open beads belonging to an unrelated role, and pass only when
+that number happens to be 1. Three facts are not a proof, and this is filed as its own task
+rather than fixed here.
+
+What is NOT the explanation, so nobody reaches for either again: not this machine's Beads
+install (the install is the same in runs that pass and runs that fail), and not concurrent
+Beads writes by the agent running the suite (a run with no `bd` activity of its own at all
+failed identically).
+
+`tests/credential-routing.sh` has **no counted checks by design** — it prints four sections
+for a person to compare against its own `expected` block, so it has no summary line and no
+pass count exists to quote. All four matched when read.
+
+Two documents were edited after that pass, which two suites read without naming them:
+`tests/docs.sh` reads everything under `docs/` through its globs, and `tests/smoke.sh:174`
+and `:177` `grep -rn` over `$REPO/docs` to assert two patterns are ABSENT from it. So `docs`
+was **re-run at the final sha**, and both of smoke's patterns were re-checked against the
+shipping content; neither appears. The glob and the `-r` are the lesson, not the filename.
+
+**shellcheck is still not installed on this machine, so nothing here was linted with it**;
+`bash -n` was run on every changed file and no figure above stands in for a lint.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

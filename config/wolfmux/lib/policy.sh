@@ -23,6 +23,10 @@
 #   disk-min-gb         <whole number>      the free space a spawn asks for, in GB (0 = no limit)
 #   link-node-modules   off | on            link a new lane's node_modules to the project root's
 #                                           copy instead of letting it install its own
+#   auto-prune          on | off            DEFAULT on. Sweep a lane's build output the moment the
+#                                           lane is parked, instead of waiting for someone to
+#                                           remember `teamctl prune` (lib/disk.sh). A single lane is
+#                                           protected with `teamctl keep <role>`
 #   branch-template     <template>          how this team names its workers' branches, with the
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
@@ -30,7 +34,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules branch-template"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune branch-template"
 
 policy_default() {
   case "$1" in
@@ -43,6 +47,7 @@ policy_default() {
     disk-guard) printf '%s\n' "${WOLFMUX_DISK_GUARD:-refuse}" ;;
     disk-min-gb) printf '%s\n' "${WOLFMUX_DISK_MIN_GB:-$WOLFMUX_DISK_MIN_GB_DEFAULT}" ;;
     link-node-modules) printf '%s\n' "${WOLFMUX_LINK_NODE_MODULES:-off}" ;;
+    auto-prune) printf '%s\n' "${WOLFMUX_AUTO_PRUNE:-on}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     *) return 1 ;;
   esac
@@ -63,6 +68,7 @@ policy_valid() { # <key> <value>
     lead-teams:on | lead-teams:off) return 0 ;;
     disk-guard:refuse | disk-guard:warn | disk-guard:off) return 0 ;;
     link-node-modules:on | link-node-modules:off) return 0 ;;
+    auto-prune:on | auto-prune:off) return 0 ;;
     # A number, not a word: whole gigabytes, 0 switches the limit off, and the ceiling is
     # only there so that a slip of the hand cannot refuse every spawn for ever.
     # A leading zero is refused on purpose. `test -le` reads base ten but shell arithmetic
@@ -81,7 +87,7 @@ policy_choices() {
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
     browser-writes) printf 'ask|allow\n' ;;
-    worker-spawn | worker-isolation | lead-teams | link-node-modules) printf 'on|off\n' ;;
+    worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune) printf 'on|off\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
@@ -113,6 +119,10 @@ policy_get() {
   elif [ "$key" = "disk-min-gb" ]; then
     printf '%s\n' "$WOLFMUX_DISK_MIN_GB_DEFAULT"
   elif [ "$key" = "link-node-modules" ]; then
+    printf 'off\n'
+  elif [ "$key" = "auto-prune" ]; then
+    # The default is on, but a value nobody can read is not permission to delete: the
+    # cautious answer for a cleanup is "do not", exactly as it is "ask" for a permission.
     printf 'off\n'
   else
     printf 'ask\n'
@@ -159,6 +169,27 @@ caller_role() {
   fi
   [ -n "$role" ] || role="${TEAM_ROLE:-}"
   printf '%s\n' "$role"
+}
+
+# is_operator — you, at your own terminal, and nobody else: caller_role is empty.
+#
+# is_manager below says 0 for an empty caller role AND for the lead of the loaded team, which
+# is what "may manage this team" means and is right for every command that has one. It cannot
+# express "every team on this machine at once", because a lead has no standing outside its own
+# team: `teamctl prune --all-teams` would sweep lanes of teams that lead does not manage, and
+# is_manager says 0 to it for the team it happens to be standing in. So the operator-only
+# commands ask this instead. Same cooperative check as caller_role, not a security boundary.
+is_operator() { [ -z "$(caller_role)" ]; }
+
+# require_operator <what was typed> <what it would reach> <what to run instead> — the same
+# shape of refusal as require_manager, exit 77, naming the command that IS the caller's.
+#
+# No Beads suggestion here, unlike require_manager: a command that reaches every team is not
+# something any lead can grant, so pointing a refused agent at its lead would send it to ask
+# the one person who cannot say yes. The owner runs it, from a terminal of their own.
+require_operator() {
+  is_operator && return 0
+  die "'teamctl $1' reaches $2, so it is the machine owner's alone to run, from their own terminal. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")', and a lead has no standing outside its own team — no lead can grant this one, so there is nobody to ask for it. What is yours: $3" 77
 }
 
 # You manage every team. A lead manages its own team and no other.
@@ -282,6 +313,7 @@ cmd_policy() {
     say "  disk-guard          $(policy_get disk-guard)  (refuse|warn|off) what 'teamctl spawn' does under disk-min-gb free disk"
     say "  disk-min-gb         $(policy_get disk-min-gb)       (number, GB)      free space a spawn asks for; 0 = no limit"
     say "  link-node-modules   $(policy_get link-node-modules)     (on|off)          link a new lane's node_modules to its repository's copy"
+    say "  auto-prune          $(policy_get auto-prune)      (on|off)          sweep a lane's build output as soon as it is parked (protect one: teamctl keep <role>)"
     template="$(policy_get branch-template)"
     if [ -n "$template" ]; then
       say "  branch-template     $template     how this team names its workers' branches"
