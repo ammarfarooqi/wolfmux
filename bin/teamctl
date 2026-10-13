@@ -121,6 +121,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       source <(teamctl completion zsh) works, and in bash
                                                       eval "$(teamctl completion bash)"; install.sh
                                                       wires it into ~/.zshrc (then: teamctl <Tab>)
+  Claude Code
+    /teamctl, /team-status, /team-prune, /team-destroy, ...   slash commands for the
+                                                      commands above, installed by install.sh into
+                                                      ~/.claude/commands/ (README: Claude Code slash commands)
   Housekeeping
     teamctl doctor [--probe]                          provider / billing isolation report; --probe also asks each provider whose
                                                       key is set up if its endpoint accepts it (one incomplete request each,
