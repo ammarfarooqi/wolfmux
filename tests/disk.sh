@@ -211,7 +211,7 @@ echo "== what counts as a person's work, for the question teamctl remove asks"
 # likelier than build output nobody will miss. remove has to ask about those.
 WL="$(new_lane unit-work)"
 check "an untracked dist, build or target that git neither tracks nor ignores counts as work" \
-  'for d in dist build target; do /bin/mkdir -p "$WL/$d"; printf "#!/bin/sh\n" >"$WL/$d/deploy.sh"; [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "1" ] || exit 1; lib_eval "disk_work_dirty_list \"$WL\"" | grep -q "?? $d/" || exit 1; /bin/rm -rf "$WL/$d"; done'
+  '(for d in dist build target; do /bin/mkdir -p "$WL/$d"; printf "#!/bin/sh\n" >"$WL/$d/deploy.sh"; [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "1" ] || exit 1; lib_eval "disk_work_dirty_list \"$WL\"" | grep -q "?? $d/" || exit 1; /bin/rm -rf "$WL/$d"; done)'
 check "node_modules, the build caches and our own trash never count as work" \
   '/bin/mkdir -p "$WL/node_modules/pkg" "$WL/.next" "$WL/.turbo" "$WL/.wolfmux-removing-node_modules.1" && [ "$(lib_eval "disk_work_dirty_count \"$WL\"")" = "0" ]'
 check "a node_modules SYMLINK does not count either, which is the case the ignore line misses" \
@@ -223,7 +223,7 @@ git -C "$PROJECT" branch -D ai/unit-work >/dev/null 2>&1
 
 echo "== a number that is not base ten"
 check "policy refuses a leading zero: 08 would abort shell arithmetic, 010 would quietly mean 8" \
-  'for v in 08 010 09 twenty -5 1e3 10001; do teamctl policy disk-min-gb "$v" >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done'
+  '(for v in 08 010 09 twenty -5 1e3 10001; do teamctl policy disk-min-gb "$v" >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done)'
 check "a leading zero in the environment falls back to the default, it never reaches the arithmetic" \
   '[ "$(WOLFMUX_DISK_MIN_GB=08 lib_eval "policy_get disk-min-gb")" = "20" ] && [ "$(WOLFMUX_DISK_MIN_GB=010 lib_eval "policy_get disk-min-gb")" = "20" ]'
 # A stored value cannot come through teamctl policy any more, but meta.json is a file
@@ -677,7 +677,14 @@ check "an unknown option is a usage error naming the real usage" \
 check "-- ends the options, so a command of its own named --quiet still runs" \
   'teamctl heavy -- /usr/bin/true; [ $? -eq 0 ]'
 check "--timeout wants a whole number of seconds, with no leading zero" \
-  'for v in "" banana -5 08; do teamctl heavy --timeout "$v" true >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done'
+  '(for v in "" banana -5 08; do teamctl heavy --timeout "$v" /usr/bin/true >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done)'
+# An EMPTY value is the one that used to get through: the guard asked whether the value was
+# non-empty rather than whether the flag was given, so `--timeout ""` skipped the check that
+# already rejected "" and ran the command with no timeout at all. The assertion is on the
+# MESSAGE, not just on 64, because an unknown command exits 64 as well - which is how the
+# loop above passed on v1.16.1 while the real behaviour was wrong here.
+check "an empty --timeout is a usage error about numbers, not a silent run with no timeout" \
+  'out="$(teamctl heavy --timeout "" /usr/bin/true 2>&1)"; rc=$?; [ "$rc" -eq 64 ] && printf "%s" "$out" | grep -q "whole number of seconds" && out2="$(teamctl heavy --timeout= /usr/bin/true 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out2" | grep -q "whole number of seconds"'
 # A second caller WAITS. This is the whole purpose, and it is asserted on a real second
 # process rather than on the lock's state: the background holder sleeps, and the foreground
 # call must not come back before it has let go.

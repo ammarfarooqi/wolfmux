@@ -467,7 +467,7 @@ check "an unknown option is a usage error naming the command" \
 check "dashboard is offered by tab completion" \
   'teamctl _complete -- "" | grep -q "^dashboard"'
 check "tab completion offers every option the parser accepts" \
-  'for o in --json --once --interval --full; do teamctl _complete -- dashboard -- | grep -q -- "^$o" || exit 1; done'
+  '(for o in --json --once --interval --full; do teamctl _complete -- dashboard -- | grep -q -- "^$o" || exit 1; done)'
 check "the view changes nothing: no team is stopped, started or removed by it" \
   'before=$(teamctl dashboard --json --once | jq -S ".projects"); teamctl dashboard --once >/dev/null; teamctl _overview-badge >/dev/null; after=$(teamctl dashboard --json --once | jq -S ".projects"); test "$before" = "$after"'
 

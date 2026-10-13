@@ -559,15 +559,16 @@ disk_heavy_run_in_progress() {
 # run marks a file once the lock is held, so a 75 with the mark present is the command's and a
 # 75 without it is the lock's. Each is still accompanied by a line on stderr naming the lock.
 cmd_heavy() {
-  local timeout="" waited_from waited quiet=0 rc=0 silent="" ran_dir="" ran=""
+  local timeout="" timeout_given=0 waited_from waited quiet=0 rc=0 silent="" ran_dir="" ran=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --timeout)
         [ "$#" -ge 2 ] || die_usage "--timeout needs a number of seconds"
         timeout="$2"
+        timeout_given=1
         shift
         ;;
-      --timeout=*) timeout="${1#--timeout=}" ;;
+      --timeout=*) timeout="${1#--timeout=}"; timeout_given=1 ;;
       --quiet) quiet=1 ;;
       --) shift; break ;;
       -*) die_usage "unknown option for heavy: $1   (usage: teamctl heavy [--timeout <seconds>] [--quiet] <command>...)" ;;
@@ -576,7 +577,11 @@ cmd_heavy() {
     shift
   done
   [ "$#" -gt 0 ] || die_usage "usage: teamctl heavy [--timeout <seconds>] [--quiet] <command>...   (holds $(short_path "$WOLFMUX_HEAVY_LOCK") while it runs)"
-  if [ -n "$timeout" ]; then
+  # The test is whether the flag was GIVEN, not whether its value is non-empty: guarding on
+  # the value meant `--timeout ""` skipped the check below - which already rejects "" - and
+  # ran the command with no timeout at all, silently, which is the opposite of what asking
+  # for a timeout means.
+  if [ "$timeout_given" -eq 1 ]; then
     case "$timeout" in "" | *[!${_WM_DIGITS}]* | 0?*) die_usage "--timeout expects a whole number of seconds" ;; esac
   fi
   [ -n "$LOCKF_BIN" ] || die "lockf is not on this machine, so the heavy lock cannot be held. Run the command yourself, knowing that nothing is excluding anything: $*" 69
