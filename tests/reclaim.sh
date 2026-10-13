@@ -559,9 +559,10 @@ task autolock closed
 pg merge -q --no-ff -m "merge autolock" "$(br_of autolock)" >/dev/null 2>&1
 AUTOLOCK_TIP="$(tip_of autolock)"
 git -C "$PROJECT" worktree lock "$(dir_of autolock)" >/dev/null 2>&1
+STOP6="$(teamctl stop autolock 2>&1)"
+# Asked once the lane is parked: a running lane is kept by gate 1 and would say nothing here.
 check "the eight gates have nothing against a locked worktree: git alone knows it will refuse" \
   'case "$(verdict autolock)" in "yes: content in "*"(merged, at "*) true ;; *) false ;; esac'
-STOP6="$(teamctl stop autolock 2>&1)"
 # The "was at" line is the control: without it this passes on a tree that never tries.
 check "a lane git refuses to remove stays whole: worktree, branch and record" \
   'printf "%s" "$STOP6" | grep -q "autolock: branch $(br_of autolock) was at $AUTOLOCK_TIP" && [ -f "$(dir_of autolock)/autolock.txt" ] && [ "$(tip_of autolock)" = "$AUTOLOCK_TIP" ] && [ -n "$(teamctl status --json | jq -r ".agents[] | select(.role == \"autolock\") | .role")" ]'
