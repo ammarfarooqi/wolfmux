@@ -42,8 +42,13 @@ NAMES="$( (cd "$SRC" 2>/dev/null && /bin/ls) | /usr/bin/sed 's/\.md$//')"
 N="$(printf '%s\n' "$NAMES" | /usr/bin/grep -c .)"
 
 echo "== a fresh install"
+# N itself must be at least 1 before any "every file matches" check means anything —
+# "every one of zero files agrees" is true by vacuous logic, not by anything install.sh
+# did. This guard is what ea6509f's empty config/wolfmux/commands/ exposed: every
+# per-file check below passed there for having nothing to disagree about.
+check "config/wolfmux/commands/ actually has command files to install (N >= 1)" "[ \"$N\" -ge 1 ]"
 run_install >"$WORK/install-1.log" 2>&1
-check "every command file in config/wolfmux/commands/ lands in ~/.claude/commands/" "[ \"\$(count "$COMMANDS_DIR")\" = \"$N\" ]"
+check "every command file in config/wolfmux/commands/ lands in ~/.claude/commands/" "[ \"$N\" -ge 1 ] && [ \"\$(count "$COMMANDS_DIR")\" = \"$N\" ]"
 check "the manifest records one hash per installed file" "[ \"\$(/usr/bin/wc -l <"$MANIFEST" | /usr/bin/tr -d ' ')\" = \"$N\" ]"
 out=""
 while IFS= read -r name; do
@@ -52,7 +57,7 @@ while IFS= read -r name; do
 done <<EOF
 $NAMES
 EOF
-check "every installed file matches its source byte for byte" "[ -z \"$out\" ]"
+check "every installed file matches its source byte for byte" "[ \"$N\" -ge 1 ] && [ -z \"$out\" ]"
 check "the generic /teamctl command passes its arguments straight through" "/usr/bin/grep -q 'teamctl \$ARGUMENTS' '$COMMANDS_DIR/teamctl.md'"
 check "/team-destroy shows the teams first and asks before the real command" "/usr/bin/grep -qi 'ask the user' '$COMMANDS_DIR/team-destroy.md' && /usr/bin/grep -q 'teamctl teams' '$COMMANDS_DIR/team-destroy.md'"
 check "/team-prune asks before anything but --dry-run" "/usr/bin/grep -qi 'ask the user' '$COMMANDS_DIR/team-prune.md' && /usr/bin/grep -q -- '--dry-run' '$COMMANDS_DIR/team-prune.md'"
@@ -71,7 +76,7 @@ while IFS= read -r name; do
 done <<EOF
 $NAMES
 EOF
-check "every command file exists before the second run (so the next check cannot pass vacuously)" "[ \"\$(/usr/bin/wc -l <\"$snapshot\" | /usr/bin/tr -d ' ')\" = \"$N\" ]"
+check "every command file exists before the second run (so the next check cannot pass vacuously)" "[ \"$N\" -ge 1 ] && [ \"\$(/usr/bin/wc -l <\"$snapshot\" | /usr/bin/tr -d ' ')\" = \"$N\" ]"
 run_install >"$WORK/install-2.log" 2>&1
 unchanged=1
 while IFS=' ' read -r name mtime hash; do
@@ -88,7 +93,7 @@ while IFS=' ' read -r name mtime hash; do
     break
   fi
 done <"$snapshot"
-check "a second run leaves every installed file's mtime and hash exactly as the first run left it" "[ $unchanged -eq 1 ]"
+check "a second run leaves every installed file's mtime and hash exactly as the first run left it" "[ \"$N\" -ge 1 ] && [ $unchanged -eq 1 ]"
 
 echo "== a file you wrote yourself, under the same name, is never ours to overwrite"
 printf 'my own command, not wolfmuxs own\n' >"$COMMANDS_DIR/team-approvals.md"
