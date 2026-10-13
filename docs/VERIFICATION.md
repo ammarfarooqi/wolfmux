@@ -48,7 +48,7 @@ number.)
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 5 to 7 minutes, 351 checks, isolated from any running team
+tests/smoke.sh                 # 5 to 7 minutes, 352 checks, isolated from any running team
                                # (how many PASS depends on the launch: one skip per signal it
                                #  leaves ignored — see smoke.sh below)
 tests/disk.sh                  # ~3 minutes, 175 checks, its own tmux server and state
@@ -60,7 +60,7 @@ tests/dashboard.sh             # ~2 minutes, 135 checks, its own tmux server and
 tests/commands.sh              # ~20 seconds, 16 checks, in a throwaway WOLFMUX_INSTALL_HOME: the Claude Code slash commands install.sh writes
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
-tests/models.sh                # ~40 seconds, 21 checks, its own tmux server, HOME and state: WOLFMUX_MODEL_POLICY and the drift check
+tests/models.sh                # ~40 seconds, 22 checks, its own tmux server, HOME and state: WOLFMUX_MODEL_POLICY and the drift check
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```
