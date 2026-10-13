@@ -157,9 +157,22 @@
 # reach its agent. off leaves it to the 📨 count (WOLFMUX_NOTIFY=off also covers it).
 #WOLFMUX_INBOX_STALL_NOTIFY=off
 
-# Model pins (what the keys fable, opus, sonnet, haiku and astra mean).
-#WOLFMUX_FABLE_MODEL=claude-fable-5-1[1m]
-#WOLFMUX_OPUS_MODEL=claude-opus-5
-#WOLFMUX_SONNET_MODEL=claude-sonnet-5
-#WOLFMUX_HAIKU_MODEL=claude-haiku-4-5-20251001
+# What the keys fable, opus, sonnet and haiku mean.
+#   latest (default)  the newest model of that family Claude Code serves your account. teamctl
+#                     asks Claude Code itself (one tiny call with --model <key>, which Claude Code
+#                     documents as "an alias for the latest model"), at most once a day per key and
+#                     only when an agent starts on it; the answer is cached in ~/.wolfmux/models/.
+#                     If that call fails, the built-in id is used and every spawn warns.
+#   pinned            the built-in ids of this release (teamctl models shows them); nothing is asked.
+# A new model (Opus 5.5 after Opus 5) then reaches NEW agents by itself; running agents keep the
+# model they started on until you restart them (teamctl doctor and the status bar say who, and
+# the command). teamctl models shows what each key means today and where that came from.
+#WOLFMUX_MODEL_POLICY=latest
+
+# Model pins. A pin wins under either policy, and is never probed: the key means exactly that
+# id until you delete the line. Leave them commented out to always get the newest model.
+#WOLFMUX_FABLE_MODEL=claude-fable-5-1
+#WOLFMUX_OPUS_MODEL=claude-opus-5-5
+#WOLFMUX_SONNET_MODEL=claude-sonnet-5-5
+#WOLFMUX_HAIKU_MODEL=claude-haiku-5-5
 #WOLFMUX_ASTRA_MODEL=gpt-6-astra

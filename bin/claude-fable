@@ -8,9 +8,12 @@
 # `claude` binary, so the only credential left is the subscription login.
 # Your shell environment is not modified.
 #
-#   WOLFMUX_FABLE_MODEL   model to pin (default: claude-fable-5-1[1m]); likewise
-#   WOLFMUX_OPUS_MODEL (claude-opus-5), WOLFMUX_SONNET_MODEL (claude-sonnet-5),
-#   WOLFMUX_HAIKU_MODEL (claude-haiku-4-5-20251001)
+#   WOLFMUX_FABLE_MODEL   a pin: always this model id; likewise WOLFMUX_OPUS_MODEL,
+#                         WOLFMUX_SONNET_MODEL, WOLFMUX_HAIKU_MODEL
+#   WOLFMUX_MODEL_POLICY  latest (default): with no pin, Claude Code's own alias (fable,
+#                         opus, sonnet, haiku), which means its newest model of that family;
+#                         pinned: the built-in id of lib/models.sh. teamctl passes the id it
+#                         resolved and recorded with --model, which outranks both.
 #   WOLFMUX_CLAUDE_BIN    explicit path to the claude binary
 #   WOLFMUX_DRY_RUN=1     print what would run (no secrets) and exit
 #   WOLFMUX_EXTRA_SETTINGS per-agent Claude Code settings file, set by teamctl
@@ -33,13 +36,35 @@ CLAUDE_BIN="$(wolfmux_resolve_claude)" || {
   exit 127
 }
 
+MODELS_LIB="${WOLFMUX_HOME:-$HOME/.config/wolfmux}/lib/models.sh"
+if [ ! -r "$MODELS_LIB" ]; then
+  echo "claude-fable: missing $MODELS_LIB — run ./install.sh again" >&2
+  exit 78
+fi
+# shellcheck source=/dev/null
+. "$MODELS_LIB"
+
 SELF="$(basename "$0")"
 case "$SELF" in
-  claude-opus) MODEL="${WOLFMUX_OPUS_MODEL:-claude-opus-5}" ;;
-  claude-sonnet) MODEL="${WOLFMUX_SONNET_MODEL:-claude-sonnet-5}" ;;
-  claude-haiku) MODEL="${WOLFMUX_HAIKU_MODEL:-claude-haiku-4-5-20251001}" ;;
-  *) MODEL="${WOLFMUX_FABLE_MODEL:-claude-fable-5-1[1m]}" ;;
+  claude-opus) ALIAS="opus" ;;
+  claude-sonnet) ALIAS="sonnet" ;;
+  claude-haiku) ALIAS="haiku" ;;
+  *) ALIAS="fable" ;;
 esac
+# A pin wins; policy pinned means the built-in id; otherwise Claude Code's own alias, which
+# Claude Code documents as its newest model of that family.
+models_pin_var "$ALIAS"
+if [ -n "$MODELS_PIN" ]; then
+  MODEL="$MODELS_PIN"
+elif [ "$(models_policy)" = "pinned" ] && models_builtin "$ALIAS"; then
+  MODEL="$MB_ID"
+else
+  MODEL="$ALIAS"
+fi
+# The agent's own shell does not inherit them: a teamctl it runs then reads the config file as
+# it is now, not a value frozen into the tmux server's environment when the team started (a pin
+# deleted from the config would otherwise still pin every spawn that agent makes).
+unset WOLFMUX_FABLE_MODEL WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL WOLFMUX_MODEL_POLICY
 
 if wolfmux_is_claude_subcommand "${1:-}"; then
   exec "$CLAUDE_BIN" "$@"

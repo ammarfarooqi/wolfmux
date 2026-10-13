@@ -89,9 +89,25 @@ new branch (its branch and commits stay; node_modules and build output survive, 
 lane was protected with `teamctl keep <role>` before it was parked — parking sweeps build
 output since v1.17.0, and the flag travels with the worktree). The lead
 reads each agent's CONTEXT in `teamctl status` (tokens, and the share of a known
-window — Fable 5.1, Opus 5 and Sonnet 5 are 1,000,000 tokens, Haiku 4.5 is 200,000;
-anything else shows tokens alone) to choose
+window — the window Claude Code declared for the model, 1,000,000 tokens for Fable 5.1,
+Opus 5.5, Sonnet 5.5 and Haiku 5.5; anything else shows tokens alone) to choose
 between `restart` (keep the conversation) and a fresh worker.
+
+**Always the newest model.** `fable`, `opus`, `sonnet` and `haiku` mean the newest model of
+that family Claude Code serves your account (`WOLFMUX_MODEL_POLICY=latest`, the default).
+teamctl asks Claude Code once a day per alias, when an agent first starts on it (one tiny
+print-mode call, cached in `~/.wolfmux/models/`), and writes the id the agent starts on into
+its record. Labels come from that id ("Opus 5.5"). When a newer model appears, new agents get
+it and running ones keep theirs: `teamctl doctor` and the status bar name them, and
+`teamctl restart <role> --continue` moves one. A pin (`WOLFMUX_OPUS_MODEL=<id>`) always wins;
+`WOLFMUX_MODEL_POLICY=pinned` keeps the built-in ids. A failed call falls back to the built-in
+id and every spawn warns.
+
+```bash
+teamctl models                 # alias -> id -> label -> where it came from; agents and newer models
+teamctl models --refresh       # ask Claude Code again now (one tiny call per alias)
+teamctl models --json
+```
 
 **Branch names.** That shape is a template, and a team can set its own when the repository
 enforces one (a ticket key, a prefix), so no teammate ever has to commit past a hook:
@@ -551,6 +567,7 @@ root's copy instead of installing 2+ GB again — one directory for every lane, 
 ```bash
 teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins
 teamctl doctor --probe                          # the same, plus one incomplete request per stored provider key: is it accepted?
+teamctl models                                  # what fable/opus/sonnet/haiku mean today, and who runs an older model
 WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
 WOLFMUX_DRY_RUN=1 claude-kimi                   # any provider name works; shows billing and the metered gate too
 ```
@@ -601,7 +618,8 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_KIMI_AUTH_MODE` · `WOLFMUX_MOONSHOT_AUTH_MODE` · `WOLFMUX_DEEPSEEK_AUTH_MODE` · `WOLFMUX_MINIMAX_AUTH_MODE` · `WOLFMUX_QWEN_AUTH_MODE` | `helper` | per provider, the same two modes as `WOLFMUX_GLM_AUTH_MODE`; `env` exports the vendor's documented variable (`ANTHROPIC_API_KEY` for Kimi, `ANTHROPIC_AUTH_TOKEN` for the others); a last resort, and Kimi's makes Claude Code ask "use this API key?" in the pane ([Auth modes](#auth-modes-and-the-key-probe)) |
 | `WOLFMUX_KIMI_CONTEXT` · `WOLFMUX_MOONSHOT_CONTEXT` · `WOLFMUX_DEEPSEEK_CONTEXT` · `WOLFMUX_MINIMAX_CONTEXT` · `WOLFMUX_QWEN_CONTEXT` | the table value | a number: the context window that provider's workers declare to Claude Code |
 | `WOLFMUX_KIMI_MODEL` · `WOLFMUX_MOONSHOT_MODEL` · `WOLFMUX_DEEPSEEK_MODEL` · `WOLFMUX_MINIMAX_MODEL` · `WOLFMUX_QWEN_MODEL` · `WOLFMUX_KIMI_FAST_MODEL` · `WOLFMUX_MOONSHOT_FAST_MODEL` · `WOLFMUX_DEEPSEEK_FAST_MODEL` · `WOLFMUX_MINIMAX_FAST_MODEL` · `WOLFMUX_QWEN_FAST_MODEL` | the ids in `lib/providers.sh` | model pins per provider, for when a vendor changes its ids. GLM is not pinnable |
-| `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | the current ids | which model id each key means |
+| `WOLFMUX_MODEL_POLICY` | `latest` | what `fable`, `opus`, `sonnet` and `haiku` mean: `latest` asks Claude Code (once a day per alias, when an agent starts) for the newest model of that family; `pinned` keeps the built-in ids. `teamctl models` shows both and where each id came from |
+| `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | unset (the newest model; astra: `gpt-6-astra`) | a pin: that key always means this model id, under either policy, and is never probed |
 
 ## How subscription separation works
 

@@ -37,20 +37,24 @@ _status_rows() { # emits one JSON object per agent
     dirty="$(wt_dirty_count "$workdir")"
     model="$(reg_field "$role" model)"
     session_id="$(reg_field "$role" session_id)" # its own conversation: what --continue reopens, and what CONTEXT reads
-    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id"
+    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)"
     if [ -n "$CTX_TOKENS" ]; then
       cctx="$(ctx_display "$CTX_TOKENS" "$CTX_WINDOW")"
     else
       cctx="-"
     fi
+    # model_id: the id the agent started with (empty: a record from before ids were recorded,
+    # whose label then says "Opus ?" rather than repeat the old table: teamctl models).
     "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$model" \
-      --arg label "$(reg_field "$role" label)" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
+      --arg label "$(agent_label "$role")" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
       --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
       --arg session_id "$session_id" --arg keep "$(reg_field "$role" keep_build)" \
+      --arg model_id "$(reg_field "$role" model_id)" --arg model_source "$(reg_field "$role" model_source)" \
       '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
         keep_build: (if $keep == "on" then "on" else "off" end),
+        model_id: (if $model_id == "" then null else $model_id end), model_source: (if $model_source == "" then null else $model_source end),
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
         session_id: $session_id,
@@ -213,7 +217,8 @@ _teams_facts() {
   TEAMS_STATE="running"
   if team_orphaned; then TEAMS_STATE="orphaned"; fi
   TEAMS_FOUNDER="$(team_founder)"
-  TEAMS_LEAD="$(reg_field "$WOLFMUX_LEAD_ROLE" label 2>/dev/null || true)"
+  TEAMS_LEAD=""
+  if reg_exists "$WOLFMUX_LEAD_ROLE" 2>/dev/null; then TEAMS_LEAD="$(agent_label "$WOLFMUX_LEAD_ROLE")"; fi
   TEAMS_COUNT="$(reg_list | wc -l | tr -d ' ')"
   # Worktrees of this team's workers (the lead works in your own checkout and adds nothing).
   # This is the command that MEASURES: a du over every lane, seconds on a busy machine, and

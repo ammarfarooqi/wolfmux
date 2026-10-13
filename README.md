@@ -171,7 +171,23 @@ run clears, never a half-deleted `node_modules` that looks installed.
 | `teamctl destroy [--worktrees] [--yes]` | end the team. Every worktree is kept; `--worktrees` also removes teammates that hold nothing, and takes the build output of all of them first |
 | `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and give its disk space back: shows sizes and any uncommitted or unmerged work, asks, then removes the session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts. `--force` deletes that work too. Never touched: your checkout, other branches, Beads, other teams, the lead's own conversations |
 | `teamctl doctor [--probe]` | billing and credential isolation report: launchers, inherited keys, settings overrides, Keychain, logins. `--probe` also asks each provider whose key is set up whether its endpoint accepts it: one incomplete request each, nothing billed, only the HTTP status shown |
+| `teamctl models [--json] [--refresh]` | what `fable`, `opus`, `sonnet` and `haiku` mean today: alias, model id, label ("Opus 5.5") and where the id came from (a config pin, today's probe, the built-in id), then the model each running agent started on and the restart that moves it to a newer one. `--refresh` asks Claude Code again now. See [Always the newest model](#always-the-newest-model) |
 | `teamctl version` · `teamctl help` | |
+
+### Always the newest model
+
+`fable`, `opus`, `sonnet` and `haiku` follow Claude Code's own aliases, which Claude Code
+documents as "an alias for the latest model". With `WOLFMUX_MODEL_POLICY=latest` (the
+default) teamctl asks Claude Code what an alias means for your account the first time an
+agent starts on it each day: one tiny print-mode call, cached in `~/.wolfmux/models/`, never
+made by `status`, the status bar or `doctor`. A new release (Opus 5.5 after Opus 5) reaches
+new agents by itself. The id an agent starts on is written to its record, so its label is
+right ("Opus 5.5"), and `teamctl doctor` and the status bar say when a running agent is on
+an older model, with the `teamctl restart <role> --continue` that moves it. Nothing restarts
+by itself. If the call fails, the built-in id is used and every spawn warns.
+
+A pin wins: `WOLFMUX_OPUS_MODEL=<id>` in `~/.config/wolfmux/config` means that id until you
+delete the line. `WOLFMUX_MODEL_POLICY=pinned` keeps the built-in ids of this release.
 
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
 are for you and for the team's lead; a teammate that tries them is refused (exit 77).
@@ -207,6 +223,7 @@ hand into `~/.claude/commands/`, so they work in every project, not just this on
 ```
 /teamctl <args>         passthrough: runs teamctl $ARGUMENTS and prints the output
 /team-status [--team X] /team-teams  /team-dashboard  /team-inbox  /team-approvals
+/team-models [--refresh]          what fable/opus/sonnet/haiku mean today, and who runs an older model
 /team-nudge <role> [--team X]
 /team-spawn <role> <model> [...]
 /team-prune [--dry-run]           asks before running without --dry-run
@@ -328,7 +345,7 @@ nothing global points anywhere.
 | `codex/wolfmux.rules.template` | Codex execpolicy rules so an Astra lead can run `teamctl` and `bd` |
 | `install.sh`, `uninstall.sh` | reversible installation |
 | `migrate-from-ai-team.sh` | one-time move from v1.1 and earlier, when this was called "ai-team" ([why](docs/adr/0014-rename-to-wolfmux.md)) |
-| `tests/` | `smoke.sh` (348 isolated lifecycle checks, no model calls), `disk.sh` (93 checks: the worktree cleanup, the spawn guard and every safety rule that keeps them off your work), `nudge-typing.sh` (61 checks: a notice never lands in a half-typed line), `inbox.sh` (107 checks: nothing is typed into the human's conversation while he is working in it, and the agent still learns about the bead even when it is idle), `dashboard.sh` (115 checks: the read-only view of every team on the machine, and the status-bar segment), `providers.sh` (141 checks: the provider table — every provider's facts, keys and settings — and the config file's allowlist), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design). All nine measured at one commit on v1.16.1; `smoke.sh`'s figure is its clean shape (`HUP` and `INT` at their defaults — a detached launch skips one check per signal it leaves ignored), and `docs.sh` guards none of these numbers (see `docs/ROADMAP.md`) |
+| `tests/` | `smoke.sh` (352 isolated lifecycle checks, no model calls), `disk.sh` (93 checks: the worktree cleanup, the spawn guard and every safety rule that keeps them off your work), `nudge-typing.sh` (61 checks: a notice never lands in a half-typed line), `inbox.sh` (107 checks: nothing is typed into the human's conversation while he is working in it, and the agent still learns about the bead even when it is idle), `dashboard.sh` (115 checks: the read-only view of every team on the machine, and the status-bar segment), `providers.sh` (141 checks: the provider table — every provider's facts, keys and settings — and the config file's allowlist), `docs.sh` (does the documentation name every command, option, policy key, model and setting the code has), `permissions.sh` (what the installer does to `~/.claude/settings.json`, in a throwaway `HOME`), `models.sh` (22 checks: the newest model resolved at spawn, a pin that wins, one probe a day, the fallback warning, labels from the id, the drift check; a stand-in answers for Claude Code), `migration.sh` (the move from v1.1, same), `credential-routing.sh` (evidence for the billing/credential design). All nine measured at one commit on v1.16.1; `smoke.sh`'s figure is its clean shape (`HUP` and `INT` at their defaults — a detached launch skips one check per signal it leaves ignored), and `docs.sh` guards none of these numbers (see `docs/ROADMAP.md`) |
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 

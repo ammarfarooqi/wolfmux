@@ -47,7 +47,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
         --link-node-modules: a brand-new lane shares its repository's node_modules instead of installing 2+ GB
         of its own. One directory for every lane: an install in any lane changes them all.
         A spawn is refused under disk-min-gb free disk (policy disk-guard)
-        models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude) · astra (ChatGPT)
+        models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude: always the newest of that family, teamctl models) · astra (ChatGPT)
                 kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
                 minimax:<model-id> · qwen:<model-id>      any model in any team, whoever leads
@@ -157,7 +157,14 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Housekeeping
     teamctl doctor [--probe]                          provider / billing isolation report; --probe also asks each provider whose
                                                       key is set up if its endpoint accepts it (one incomplete request each,
-                                                      nothing billed, only the HTTP status is shown)
+                                                      nothing billed, only the HTTP status is shown). Also: which model each
+                                                      running agent started on, and the restart that moves it to a newer one
+    teamctl models [--json] [--refresh]               what fable, opus, sonnet and haiku mean today: alias, model id, label and
+                                                      where the id came from (config pin, today's probe, built-in id), then
+                                                      the model each running agent started on and whether a newer one exists.
+                                                      WOLFMUX_MODEL_POLICY=latest (default) asks Claude Code at most once a day
+                                                      per alias, when an agent starts; pinned keeps the built-in ids.
+                                                      --refresh asks again now (one tiny call per alias, on your subscription)
     teamctl destroy [--worktrees] [--yes]             end the team; --worktrees also removes workers that hold nothing
     teamctl destroy --purge [--force] [--keep-transcripts] [--yes]
                                                       DELETE the team: session, every worktree, the branches teamctl
@@ -251,6 +258,8 @@ main() {
     worktrees) cmd_worktrees "$@" ;;
     diff) cmd_diff "$@" ;;
     doctor) cmd_doctor "$@" ;;
+    models) cmd_models "$@" ;;
+    _model-badge) cmd_model_badge "$@" ;;
     completion) cmd_completion "$@" ;;
     _complete) cmd_complete "$@" ;;
     _run-agent) cmd_run_agent "$@" ;;

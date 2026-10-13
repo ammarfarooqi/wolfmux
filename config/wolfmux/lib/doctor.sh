@@ -93,7 +93,8 @@ _doc_tools() {
 
 _doc_fable() {
   local bin inherited auth_json auth_method other
-  _head "Lead option 1 — Claude Code + Fable 5.1   (expected billing: Claude subscription)"
+  model_info fable
+  _head "Lead option 1 — Claude Code + $MODEL_LABEL   (expected billing: Claude subscription)"
   _doc_launcher claude-fable
   for other in claude-opus claude-sonnet claude-haiku; do
     if [ -x "$WOLFMUX_BIN_DIR/$other" ]; then _ok "launcher  $other (same login, another model: teamctl spawn <role> ${other#claude-})"; else _note "launcher $other is missing; ./install.sh links it"; fi
@@ -432,6 +433,61 @@ _doc_policy() {
   fi
 }
 
+# _doc_models — what fable, opus, sonnet and haiku mean (lib/models.sh), and every running agent
+# of this project that started on an older member of its family than the newest one known. Reads
+# the cache and the agents' transcripts; it never probes (teamctl models --refresh does). Nothing
+# is restarted: each agent behind gets the command that moves it.
+_doc_models() {
+  local alias state_dir team role model recorded state session workdir source behind=0
+  _head "Models — what fable, opus, sonnet and haiku mean (policy: $(models_policy))"
+  case "${WOLFMUX_MODEL_POLICY:-latest}" in
+    latest | pinned) ;;
+    *) _warn "WOLFMUX_MODEL_POLICY='$WOLFMUX_MODEL_POLICY' is neither latest nor pinned; treated as latest" ;;
+  esac
+  for alias in $WOLFMUX_MODEL_ALIASES; do
+    models_alias_id "$alias" || continue
+    models_label_of "$MA_ID"
+    case "$MA_STATE" in
+      fallback) _warn "$alias -> $MA_ID ($MODELS_LABEL), $MA_SOURCE. Ask again: teamctl models --refresh" ;;
+      pin)
+        models_newest_known "$alias"
+        if [ "${MA_SOURCE#environment pin}" != "$MA_SOURCE" ]; then
+          _warn "$alias -> $MA_ID ($MODELS_LABEL), $MA_SOURCE: a shell exported it, or this pane belongs to an agent started before the config changed (restart it). Every spawn made from here uses it"
+        elif models_newer "$MN_ID" "$MA_ID"; then
+          _warn "$alias -> $MA_ID ($MODELS_LABEL), $MA_SOURCE; $MN_ID is newer. A pin is a pin: delete that line from $(short_path "$WOLFMUX_HOME/config") to follow the newest"
+        else
+          _note "$alias -> $MA_ID ($MODELS_LABEL), $MA_SOURCE: policy latest does not move it"
+        fi
+        ;;
+      *) _ok "$alias -> $MA_ID ($MODELS_LABEL), $MA_SOURCE" ;;
+    esac
+  done
+  [ -n "${ROOT:-}" ] || return 0
+  while IFS= read -r state_dir; do
+    [ -n "$state_dir" ] || continue
+    while IFS="$_MODELS_SEP" read -r team role model recorded state session workdir source; do
+      [ -n "$role" ] && [ "$state" = "running" ] || continue
+      models_drift "$team" "$role" "$model" "$recorded" "$session" "$workdir"
+      case "$MD_VERDICT" in
+        behind)
+          behind=$((behind + 1))
+          _warn "$(team_identity "$team" "$role") runs $MD_RUNNING (from its $MD_HOW); $MD_NEWEST is newer. Nothing restarts by itself: $MD_RESTART"
+          ;;
+        unknown)
+          behind=$((behind + 1))
+          _warn "$(team_identity "$team" "$role") ($model): which model it runs is unknown (started before this release, nothing in its transcript yet). $MD_RESTART records it"
+          ;;
+        *) _ok "$(team_identity "$team" "$role") runs $MD_RUNNING (from its $MD_HOW), the newest $model known" ;;
+      esac
+    done <<EOF
+$(models_agent_rows "$state_dir")
+EOF
+  done <<EOF
+$(models_project_state_dirs "$WOLFMUX_DATA/state/$(project_key "$ROOT")")
+EOF
+  return 0
+}
+
 cmd_doctor() {
   local p metered
   DOC_PROBE=0
@@ -456,6 +512,7 @@ cmd_doctor() {
   _doc_beads
   _doc_team
   _doc_policy
+  _doc_models
   _head "Account-side settings no local tool can see — check them once"
   _note "claude.ai  > Settings > Usage: keep 'extra usage' OFF, or overage beyond the plan is metered."
   _note "chatgpt.com > Settings > Codex usage: do not buy or auto-refill credits if you want plan-only usage."

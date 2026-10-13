@@ -31,6 +31,7 @@ export ECC_DISABLED_HOOKS="post:example" # a hook the user already disables; tea
 # team, worktree and session: all of it is dropped, or every command would act as that agent.
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH WOLFMUX_METERED TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL WOLFMUX_EXTRA_SETTINGS
+unset WOLFMUX_FABLE_MODEL WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL WOLFMUX_MODEL_POLICY # an agent's pins
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 # transcripts_of <dir> — where the CLIs put the transcripts of an agent that ran there
 transcripts_of() { printf '%s/%s\n' "$WOLFMUX_CLAUDE_PROJECTS" "$(cd "$1" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"; }
@@ -109,7 +110,9 @@ printf '#!/bin/bash\nexit 0\n' >"$WORK/app/Resources/codex"
 REAL_CODEX="$(cd "$WORK/app/Resources" && pwd -P)/codex"
 check "codex-astra: starts Codex by its real path, never through a symlink" 'WOLFMUX_DRY_RUN=1 WOLFMUX_CODEX_BIN="$WORK/linkbin/codex" "$REPO/bin/codex-astra" | grep -qF "would exec:      $REAL_CODEX "'
 for name in opus sonnet haiku; do /bin/ln -s "$REPO/bin/claude-fable" "$WORK/linkbin/claude-$name"; done
-check "claude-opus / -sonnet / -haiku: the same subscription launcher, each pinned to its model" 'WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-5" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-opus" | grep -q -- "--model claude-opus-5" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-haiku" | grep -q -- "--model claude-haiku-4-5" && WOLFMUX_DRY_RUN=1 WOLFMUX_SONNET_MODEL=claude-sonnet-9 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-9" && WOLFMUX_DRY_RUN=1 "$REPO/bin/claude-fable" | grep -q -- "--model claude-fable-5-1"'
+# Run by hand with no pin, each one passes Claude Code's own alias, which Claude Code resolves to
+# its newest model of that family (WOLFMUX_MODEL_POLICY=latest; tests/models.sh covers the rest).
+check "claude-opus / -sonnet / -haiku: the same subscription launcher, each on its own family, each pin configurable" 'WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model sonnet$" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-opus" | grep -q -- "--model opus$" && WOLFMUX_DRY_RUN=1 "$WORK/linkbin/claude-haiku" | grep -q -- "--model haiku$" && WOLFMUX_DRY_RUN=1 WOLFMUX_SONNET_MODEL=claude-sonnet-9 "$WORK/linkbin/claude-sonnet" | grep -q -- "--model claude-sonnet-9" && WOLFMUX_DRY_RUN=1 "$REPO/bin/claude-fable" | grep -q -- "--model fable$"'
 
 echo "== doctor and the inbox command (nothing is started)"
 # bash 3.2 under a UTF-8 locale reads the first byte of a dash as part of a variable name: a
@@ -237,7 +240,7 @@ teamctl spawn second codex:gpt-6-astra-mini --no-kickoff >/dev/null 2>&1
 sleep 2
 agent() { teamctl status --json | jq -c --arg role "$1" '.agents[] | select(.role == $role) | {label, family, state}'; }
 check "models: a Codex teammate in a team that is led by another model" '[ "$(agent fe-review)" = "{\"label\":\"GPT-6 Astra\",\"family\":\"codex\",\"state\":\"running\"}" ] && teamctl capture fe-review --all | grep -q "STUB role=fe-review"'
-check "models: a Claude-subscription teammate (sonnet) beside GLM workers" '[ "$(agent summary)" = "{\"label\":\"Sonnet 5\",\"family\":\"claude\",\"state\":\"running\"}" ] && teamctl capture summary --all | grep -q "STUB guard=true"'
+check "models: a Claude-subscription teammate (sonnet) beside GLM workers, labelled from the id it started on" '[ "$(agent summary)" = "{\"label\":\"Sonnet 5.5\",\"family\":\"claude\",\"state\":\"running\"}" ] && teamctl capture summary --all | grep -q "STUB guard=true"'
 check "models: any model id of a family — claude:<id> and codex:<id> reach the CLI" 'teamctl capture triage --all | grep -q "STUB modelarg=claude-haiku-4-5-20251001" && teamctl capture second --all | grep -q "STUB astra_model=gpt-6-astra-mini"'
 check "models: a Codex teammate reports finished turns too (notify program set)" 'teamctl capture fe-review --all | grep -q "STUB codexnotify=true"'
 check "models: nonsense is refused before anything is created (exit 64)" 'for m in gpt claude: "claude:bad;id" "glm:glm-9" "codex:a b" glm kimi: "kimi:bad;id" "qwen:a b" "deepseek:a:b" "kimi:x/y"; do teamctl spawn bogus "$m"; [ $? -eq 64 ] || exit 1; done; [ -z "$(git branch --list "ai/bogus-*")" ]'
@@ -583,7 +586,9 @@ plant_ctx ctx-opus opus claude "/nonexistent/ctx"
 plant_ctx ctx-sonnet sonnet claude "/nonexistent/ctx"
 plant_ctx ctx-fable fable claude "/nonexistent/ctx"
 plant_ctx ctx-haiku haiku claude "/nonexistent/ctx"
-check "status: the model table declares its own window - fable, opus and sonnet are 1M, haiku stays 200k (v1.14.1)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-opus\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-sonnet\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-fable\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-haiku\")][0].context_window == 200000)"'
+# Haiku 5.5 declares 1M as well (the probe's answer on 2026-10-13; Haiku 4.5 was 200k). The window
+# of an older id is the one recorded with it, or unknown: tests/models.sh.
+check "status: the model table declares its own window - fable, opus, sonnet and haiku 5.5 are 1M (v1.14.1, haiku since v1.18)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-opus\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-sonnet\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-fable\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-haiku\")][0].context_window == 1000000)"'
 plant_ctx ctx-unknown-pin "claude:claude-sonnet-9" claude "$BACKEND_DIR"
 plant_ctx ctx-astra-unknown astra claude "/nonexistent/ctx"
 check "status: a pinned id with no [1m] suffix and astra have no declared window - 0, not a guessed 200k (v1.14.1)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-unknown-pin\")][0].context_window == 0) and ([.agents[] | select(.role == \"ctx-astra-unknown\")][0].context_window == 0)"'
@@ -604,18 +609,22 @@ OPUS_REAL_DIR="$WORK/ctx-opus-real-tree"
 echo '{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_read_input_tokens":231411,"cache_creation_input_tokens":597}}}' >"$(transcripts_of "$OPUS_REAL_DIR")/opus-real.jsonl"
 plant_ctx ctx-opus-real opus claude "$OPUS_REAL_DIR"
 check "status: 232,010 tokens on opus's real 1M window renders 232k 23%, not the old fallback's 116% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-opus-real\")][0] | .context_tokens == 232010 and .context_window == 1000000 and .context == \"232k 23%\"" && teamctl status | grep -E "ctx-opus-real .*232k +23%"'
-# Haiku is the one model whose window did NOT change: pin it by a rendered percentage too, not
-# only by the JSON field.
+# haiku now means Haiku 5.5 (1M), but an agent still on Haiku 4.5 (200k) must keep its own window:
+# the one recorded with its id at spawn. One known only from its transcript, as an id no answer of
+# Claude Code ever named, has no known window: tokens alone, never a share of Haiku 5.5's 1M.
 HAIKU_REAL_DIR="$WORK/ctx-haiku-real-tree"
 /bin/mkdir -p "$HAIKU_REAL_DIR"
 /bin/mkdir -p "$(transcripts_of "$HAIKU_REAL_DIR")"
-echo '{"type":"assistant","message":{"usage":{"input_tokens":50000,"cache_read_input_tokens":80000,"cache_creation_input_tokens":20000}}}' >"$(transcripts_of "$HAIKU_REAL_DIR")/haiku-real.jsonl"
+echo '{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":50000,"cache_read_input_tokens":80000,"cache_creation_input_tokens":20000}}}' >"$(transcripts_of "$HAIKU_REAL_DIR")/haiku-real.jsonl"
 plant_ctx ctx-haiku-real haiku claude "$HAIKU_REAL_DIR"
-check "status: haiku's window is unchanged - a real 150k/200k conversation still renders 150k 75% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-haiku-real\")][0] | .context_tokens == 150000 and .context_window == 200000 and .context == \"150k 75%\"" && teamctl status | grep -E "ctx-haiku-real .*150k +75%"'
+jq '.model_id = "claude-haiku-4-5-20251001" | .model_context = "200000"' "$CTX_AGENTS/ctx-haiku-real.json" >"$CTX_AGENTS/ctx-haiku-rec.json.new" &&
+  jq '.role = "ctx-haiku-rec"' "$CTX_AGENTS/ctx-haiku-rec.json.new" >"$CTX_AGENTS/ctx-haiku-rec.json" && /bin/rm -f "$CTX_AGENTS/ctx-haiku-rec.json.new"
+check "status: a Haiku 4.5 agent keeps the window recorded with its id - a real 150k/200k conversation still renders 150k 75% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-haiku-rec\")][0] | .context_tokens == 150000 and .context_window == 200000 and .context == \"150k 75%\"" && teamctl status | grep -E "ctx-haiku-rec .*150k +75%"'
+check "status: a haiku agent known only from its transcript to run Haiku 4.5 shows 150k and no share of Haiku 5.5's 1M" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-haiku-real\")][0] | .context_tokens == 150000 and .context_window == 0 and (.context | test(\"%\") | not)"'
 /bin/rm -f "$CTX_AGENTS/ctx-old.json" "$CTX_AGENTS/ctx-codex.json" "$CTX_AGENTS/ctx-1m.json" "$CTX_AGENTS/ctx-kimi.json" "$CTX_AGENTS/ctx-ds.json" \
   "$CTX_AGENTS/ctx-opus.json" "$CTX_AGENTS/ctx-sonnet.json" "$CTX_AGENTS/ctx-fable.json" "$CTX_AGENTS/ctx-haiku.json" \
   "$CTX_AGENTS/ctx-unknown-pin.json" "$CTX_AGENTS/ctx-astra-unknown.json" "$CTX_AGENTS/ctx-glm53.json" "$CTX_AGENTS/ctx-flash-ctx.json" \
-  "$CTX_AGENTS/ctx-opus-real.json" "$CTX_AGENTS/ctx-haiku-real.json"
+  "$CTX_AGENTS/ctx-opus-real.json" "$CTX_AGENTS/ctx-haiku-real.json" "$CTX_AGENTS/ctx-haiku-rec.json"
 
 echo "== a fresh conversation in an existing built worktree (spawn --from-worktree, issue #5)"
 teamctl spawn builder glm53 --no-kickoff >/dev/null 2>&1
