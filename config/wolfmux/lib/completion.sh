@@ -149,6 +149,8 @@ complete_first_word() {
   complete_emit "$prefix" restart "<role>: run an agent again, fresh or with --continue"
   complete_emit "$prefix" destroy "end the team; --purge deletes it from disk"
   complete_emit "$prefix" prune "take the build output of every parked lane of the team"
+  complete_emit "$prefix" keep "<role>: never sweep that lane's build output automatically"
+  complete_emit "$prefix" bar "the status-bar line, and --explain names every field of it"
   complete_emit "$prefix" nudge "<role>: one fixed notification line in a pane"
   complete_emit "$prefix" inbox "<role>: the pane notices filed for an agent (alias: notices)"
   complete_emit "$prefix" notices "alias of inbox"
@@ -188,7 +190,8 @@ complete_options() {
     restart) options="--continue --resume" ;;
     remove) options="--force --yes" ;;
     destroy) options="--worktrees --purge --force --keep-transcripts --yes" ;;
-    prune) options="--dry-run --keep-node-modules" ;;
+    prune) options="--dry-run --keep-node-modules --all-teams" ;;
+    bar) options="--explain" ;;
     nudge) options="--quiet --all --id" ;;
     inbox | notices) options="--all --json --keep" ;;
     capture) options="--lines --all" ;;
@@ -215,6 +218,8 @@ complete_options() {
       --link-node-modules) complete_emit "$prefix" "$option" "share the repository's node_modules instead of installing one" ;;
       --dry-run) complete_emit "$prefix" "$option" "report what it would free, delete nothing" ;;
       --keep-node-modules) complete_emit "$prefix" "$option" "take the build caches only" ;;
+      --all-teams) complete_emit "$prefix" "$option" "every team of every project on this machine (yours alone to run)" ;;
+      --explain) complete_emit "$prefix" "$option" "a legend naming every field of the status bar" ;;
       *) complete_emit "$prefix" "$option" ;;
     esac
   done
@@ -369,6 +374,12 @@ cmd_complete() {
           ;;
         remove)
           complete_roles "$cur" workers-only
+          ;;
+        keep)
+          case "$position" in
+            0) complete_roles "$cur" workers-only ;;
+            1) complete_policy_choices "$cur" on off ;;
+          esac
           ;;
         approve)
           complete_approvals "$cur"

@@ -77,6 +77,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       settings) · worker-spawn ·
                                                       worker-isolation (the worktree guard) · lead-teams (may the lead found teams) ·
                                                       disk-guard refuse|warn|off · disk-min-gb <number> · link-node-modules on|off
+                                                      auto-prune on|off (sweep a lane's build output as soon as it is parked)
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
@@ -104,18 +105,32 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Git
     teamctl worktrees
     teamctl diff <role> [--stat|--names|--commits|--working]
-  Disk  (a lane worktree carries 2-3 GB of node_modules and build output; nothing used to remove it)
-    teamctl prune [--dry-run] [--keep-node-modules]   take the build output of every PARKED lane of
+  Disk  (a lane worktree carries 2-3 GB of node_modules and build output; parking one used to keep all of it)
+    teamctl prune [--all-teams] [--dry-run] [--keep-node-modules]
+                                                      take the build output of every PARKED lane of
                                                       the team: node_modules, .next, dist, .turbo, build,
                                                       coverage and the cache directories. Running lanes and
                                                       anything git tracks are never touched; a lane that holds
                                                       other uncommitted files is skipped and named.
                                                       --dry-run reports and deletes nothing (anyone may run it)
                                                       --keep-node-modules takes the build caches only
-    teamctl stop <role>                               takes the build caches, keeps node_modules
+                                                      --all-teams every team of every project on this machine,
+                                                      with a total per team and one for the machine. Yours alone
+                                                      to run, from your own terminal: a lead gets exit 77
+    teamctl stop <role>                               parks the lane AND sweeps its build output (policy auto-prune,
+                                                      on by default). auto-prune off: the build caches only,
+                                                      node_modules kept, which is what stop did before v1.17.0
+    teamctl keep [<role> [on|off]]                    never sweep that lane automatically (an expensive checkout:
+                                                      a long install, a seeded database). With no role: what is
+                                                      protected now. teamctl prune honours it too
     teamctl remove <role> · destroy --worktrees       take all of it, the worktree goes anyway
     teamctl status                                    free disk, and what this team's lanes take
-    teamctl teams                                     measures the lanes (a du per lane; status reads the number)
+    teamctl teams                                     measures the lanes (a du per lane; status and the bar read the number)
+    Every sweep is written down in ~/.wolfmux/state/reclaimed.jsonl: when, which team, which lane, how much.
+  Status bar
+    teamctl bar [--explain]                           the one line tmux shows in status-right, and with --explain
+                                                      a legend naming every field of it (teams run idle load mem
+                                                      disk held). A terminal has no hover, so this is the legend
   Tab completion
     teamctl completion <zsh|bash>                     print the tab-completion script of that shell, so
                                                       source <(teamctl completion zsh) works, and in bash
@@ -198,6 +213,8 @@ main() {
     restart) cmd_restart "$@" ;;
     destroy) cmd_destroy "$@" ;;
     prune) cmd_prune "$@" ;;
+    keep) cmd_keep "$@" ;;
+    bar) cmd_bar "$@" ;;
     nudge) cmd_nudge "$@" ;;
     inbox | notices) cmd_inbox "$@" ;;
     policy) cmd_policy "$@" ;;

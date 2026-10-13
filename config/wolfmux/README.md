@@ -156,6 +156,7 @@ teamctl policy branch-template default          # …back to ai/{role}-{ts} · a
 teamctl policy disk-guard refuse|warn|off       # what a spawn does on a full disk    default refuse
 teamctl policy disk-min-gb 20                   # free space a spawn asks for (1 GB = 1024 MB)  default 20
 teamctl policy link-node-modules on|off         # share the repository's node_modules default off
+teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -237,7 +238,24 @@ teamctl dashboard --interval 15   # redraw less often
 
 Per agent: state, the CPU and memory of its whole process tree, context use, when its
 transcript was last written, branch. Per team: totals, state, lead, cached lane disk. At the
-foot: load, free memory, free disk. `status-right` carries the short version of it.
+foot: load, free memory, free disk.
+
+`status-right` carries the short version of it, one labelled field per number:
+
+```
+teams 20 run 12 idle 63 load 2.92 mem 8G disk 109G held 9.2G
+```
+
+```bash
+teamctl bar               # that line, on demand, when the bar is off screen
+teamctl bar --explain     # the legend: what every field of it means
+```
+
+`held` is what the **parked** lanes of every team hold — the space `teamctl prune` and
+`teamctl remove` give back. Like the lane totals it is read from what `teamctl teams` last
+measured and never measured here, and an old number is used on purpose: a parked lane is one
+in which nothing runs, so its size does not change by itself. `teamctl teams` makes it
+current. A terminal has no hover, so `teamctl bar --explain` is the legend.
 
 It is read-only, and it never measures disk: lane totals are the number `teams` left
 behind, shown as `STALE` with their age when they are old. Two columns are measurements
@@ -437,11 +455,55 @@ teamctl prune --dry-run            # what every PARKED lane holds; deletes nothi
 teamctl prune                      # take it: node_modules and all build output
 teamctl prune --keep-node-modules  # build caches only, so a restart stays cheap
 teamctl prune --team review        # one named team
+teamctl prune --all-teams --dry-run  # the WHOLE machine: every team of every project
+teamctl keep <role>                # never sweep that lane automatically
+teamctl keep                       # which lanes are protected right now
+teamctl bar --explain              # what each field of the status bar means, held included
 ```
 
-`teamctl stop` takes a lane's build caches (`.next`, `dist`, `.turbo`, `build`, `coverage`,
-`.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`) and keeps
-`node_modules`, so `teamctl restart` stays cheap. `teamctl remove` and
+### Parking a lane sweeps it (v1.17.0)
+
+`teamctl stop` parks the lane and takes its build output: the whole list above,
+`node_modules` included. The lane keeps every source file, every commit and all its git
+state, and it installs again before its tools run.
+
+This changed in v1.17.0, and the reason is a measurement. Up to v1.16.1 `stop` took the
+build caches only and kept `node_modules` so that `teamctl restart` would be cheap — and
+`teamctl prune` was there for the rest, and nobody ran it. 90.3 GB sat under
+`~/.wolfmux/worktrees` on this machine, 50.9 GB of it build output (2026-10-13). A command
+nobody runs reclaims nothing.
+
+Three ways to keep a lane's build output anyway:
+
+```bash
+teamctl keep <role>                  # this lane, for good: an expensive checkout
+teamctl policy auto-prune off        # this team: back to v1.16.1's stop, exactly
+teamctl stop <role>                  # …and with the policy off, node_modules stays
+```
+
+`teamctl keep` is a verb and not a flag on `spawn` on purpose: whether a checkout is worth
+protecting — a 40-minute install, a downloaded model, a seeded database — is something you
+learn after it has been built, and a flag given at spawn time cannot be taken back.
+`teamctl prune` honours the flag too, `teamctl status --json` reports it per agent, and
+`teamctl keep` with no role lists what is protected, so a flag nobody can see cannot
+quietly hoard gigabytes. `teamctl remove <role>` is still how a protected lane goes.
+
+Nothing is swept while a **heavy run** holds this machine's heavy lock
+(`lockf ~/.wolfmux/machine-heavy.lock <command>`): a build runs in whatever shell started
+it, not in the lane's pane, so `stop` cannot see it, and taking `node_modules` from under a
+build is the one way this could do real damage. The file merely being there is not a lock —
+`lockf` keeps it between runs — so the sweep tries to take the lock for an instant, which is
+the only thing that answers. While it is held, the lane keeps its build output and the
+reason is printed.
+
+Every sweep is written down, machine-wide, in `~/.wolfmux/state/reclaimed.jsonl`: one JSON
+object per line with the time, the project, the team, the lane, the kilobytes, what took them
+and what it took. `teamctl prune --all-teams` is the operator's view of the same thing before
+the fact — every team of every project, a total per team and one for the machine. It is
+yours alone to run, from your own terminal: a lead has no standing outside its own team and
+is refused with exit 77 (which is also why one team's `prune` cannot reach another's lanes).
+
+`teamctl remove` and
 `teamctl destroy --worktrees` take all of it; the worktree is going away anyway. A `remove`
 that refuses, because the lane holds commits or files somebody wrote, changes nothing:
 "nothing was removed" means the build output is still there too. Build output is not
@@ -507,6 +569,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_DISK_GUARD` | `refuse` | what `teamctl spawn` does when free disk is under the limit below: `refuse`, `warn`, `off` |
 | `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes, where 1 GB is 1024 MB (a gibibyte — the unit teamctl prints sizes in). A lane costs about 3 GB once it has installed and built; `0` switches the check off; no leading zero (write `8`, not `08`) |
 | `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the copy in the repository that lane belongs to (`teamctl spawn --repo` can make that another one). One directory for all of them: an install in any lane changes them all |
+| `WOLFMUX_AUTO_PRUNE` | `on` | the default of the `auto-prune` policy: sweep a lane's build output as soon as the lane is parked. `off` is v1.16.1's behaviour (the build caches only, `node_modules` kept). A value that is neither word is read as `off`: an unreadable setting is not permission to delete. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |
 | `WOLFMUX_NOTIFY` | `all` | whose finished turns notify you: `all`, `lead`, `off`. A team founded by a lead is announced in every case |

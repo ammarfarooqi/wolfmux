@@ -962,16 +962,14 @@ cmd_stop() {
     layout_apply
   fi
   reg_set "$role" pane_id "" state stopped
-  # A stopped lane keeps its worktree for as long as the role is on the books, which is
-  # where the disk went (issue #11). Its build caches are regenerable, so they go now;
-  # node_modules stays, because `teamctl restart` has to be the cheap thing it looks like.
-  if disk_clean_role "$role" caches 1 && [ -n "$DISK_CLEANED" ]; then
-    freed="$(human_size "$DISK_FREED_KB")"
-    say "freed:   $freed of build output ($DISK_CLEANED)"
-  elif [ -n "$DISK_SKIP_REASON" ]; then
-    say "kept:    its build output ($DISK_SKIP_REASON)"
-  fi
-  disk_cache_adjust "$DISK_FREED_KB"
+  # A stopped lane keeps its worktree for as long as the role is on the books, which is where
+  # the disk went (issue #11). Until v1.17.0 only the build CACHES went here and node_modules
+  # stayed, so that `teamctl restart` would be the cheap thing it looks like — and the result
+  # was 50.9 GB of node_modules in parked lanes nobody restarted (measured 2026-10-13). So the
+  # whole allowlist goes now, and the trade is stated in the line the sweep prints: a restarted
+  # lane installs again. `teamctl policy auto-prune off` brings the old behaviour back exactly,
+  # and `teamctl keep <role>` protects one expensive checkout (lib/disk.sh).
+  if disk_park_sweep_say "$role" stop; then freed="$(human_size "$DISK_FREED_KB")"; fi
   event_log stop "$role" "${freed:+freed=$freed}"
   lock_release
   say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
@@ -1545,6 +1543,18 @@ cmd_destroy() {
     done
     gitr worktree prune
   else
+    # The second path that parks lanes, and the one that parks them in bulk: this form ends
+    # the session and keeps every worktree, so without the sweep each lane sat on its whole
+    # node_modules until somebody ran prune. (--worktrees above sweeps in
+    # _destroy_worker_artifacts, before it decides what to remove.)
+    for role in $(reg_list); do
+      [ "$(reg_field "$role" kind)" = "worker" ] || continue
+      if disk_park_sweep "$role" destroy; then
+        say "  $role: freed $(human_size "$DISK_FREED_KB") of build output ($DISK_CLEANED)"
+      else
+        say "  $role: kept its build output ($PARK_SWEEP_WHY)"
+      fi
+    done
     say "worktrees kept. Clean ones go with: teamctl destroy --worktrees · one that still holds work: teamctl remove <role> --force"
   fi
   reg_delete "$WOLFMUX_LEAD_ROLE"

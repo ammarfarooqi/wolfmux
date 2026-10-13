@@ -185,6 +185,15 @@ dash_short_gb() {
   awk -v kb="$1" 'BEGIN { if (kb >= 1048576) printf "%dG\n", kb / 1048576 + 0.5; else printf "%dM\n", kb / 1024 + 0.5 }'
 }
 
+# dash_tenth_gb <kilobytes> — "9.2G", "900M", "-": the popup's own GB formatting (one tenth
+# of a gigabyte), for the one status-bar field where a tenth decides something. `held 9G` and
+# `held 9.2G` read the same at a glance; `held 900M` and `held 9.2G` do not, and whether to
+# run prune is the decision this field exists for.
+dash_tenth_gb() {
+  case "${1:-x}" in "" | *[!0-9]*) printf -- '-\n'; return 0 ;; esac
+  awk -v kb="$1" 'BEGIN { if (kb >= 1048576) printf "%.1fG\n", kb / 1048576; else printf "%dM\n", kb / 1024 + 0.5 }'
+}
+
 # dash_age_span <seconds> — "41s", "12m", "3h", "4d": an age in one word
 dash_age_span() {
   case "${1:-x}" in "" | *[!0-9]*) printf -- '-\n'; return 0 ;; esac
@@ -650,10 +659,71 @@ EOF
   have="$(dash_badge_record_count)"
   stopped=$((have - run - exited))
   [ "$stopped" -ge 0 ] || stopped=0
-  line="${teams}t ${run}run ${stopped}stop"
-  [ "$exited" -eq 0 ] || line="$line ${exited}exit"
-  printf '%s ld%s mem%s dsk%s\n' "$line" "$(dash_load)" \
-    "$(dash_short_gb "$(dash_mem_free_kb)")" "$(dash_short_gb "$(disk_free_kb)")"
+  # Labelled fields, and the label in front of the number. v1.16.1 printed
+  # "21t 18run 92stop ld3.56 mem7G dsk66G", which is unreadable: four of the seven numbers
+  # carry their unit as a suffix nobody can parse at a glance, two of the labels are
+  # abbreviations, and "92stop" reads as one token. The names are spelled out instead, with
+  # `held` added — the gigabytes sitting in parked lanes, which is the number that tells you
+  # there is something to reclaim, and the one thing the old line could not say at all.
+  #
+  # The budget is 72 characters (cmd_overview_badge cuts there) and the alphabet is
+  # A-Za-z0-9, space, and . : / + - (it strips everything else, SILENTLY, so a middle dot or
+  # a pipe between fields would vanish without a trace). Every character below is inside
+  # that set deliberately: no separator was added, because the labels already separate.
+  # Measured on this machine: "teams 21 run 13 idle 93 load 3.56 mem 8G disk 76G held 9.2G"
+  # is 60 characters, and with "exit 2" in it 67.
+  line="teams $teams run $run idle $stopped"
+  [ "$exited" -eq 0 ] || line="$line exit $exited"
+  printf '%s load %s mem %s disk %s held %s\n' "$line" "$(dash_load)" \
+    "$(dash_short_gb "$(dash_mem_free_kb)")" "$(dash_short_gb "$(disk_free_kb)")" \
+    "$(dash_tenth_gb "$(dash_badge_held_kb)")"
+}
+
+# dash_parked_kb <state-dir> — sets DASH_PARKED_KB to that team's remembered PARKED lane
+# total, or to "" when there is no readable number. It SETS a variable instead of printing
+# one, because `$(...)` would be a subshell per team on the one path in this file that
+# redraws every few seconds; this way the whole sweep over 25 teams costs no process at all.
+#
+# disk_parked_kb (lib/disk.sh) is the general reader and every other caller uses it; it
+# spawns /bin/cat. Same rule as dash_meta_session above: a fallback for a hot path, not a
+# second opinion — tests/dashboard.sh asserts that this agrees with disk_parked_kb, and if
+# the two ever diverge the suite fails.
+dash_parked_kb() {
+  local file="$1/disk-parked-kb" stamp="" kb=""
+  DASH_PARKED_KB=""
+  [ -f "$file" ] && [ -r "$file" ] || return 0
+  read -r stamp kb <"$file" 2>/dev/null || true
+  # Both fields, each on its own, no leading zero: "08" would be read as octal by the
+  # arithmetic below and abort the badge, which must never print a broken line.
+  case "${stamp:-x}" in "" | *[!0-9]* | 0?*) return 0 ;; esac
+  case "${kb:-x}" in "" | *[!0-9]* | 0?*) return 0 ;; esac
+  DASH_PARKED_KB="$kb"
+}
+
+# dash_badge_held_kb — what the parked lanes of every team on this machine hold, in
+# kilobytes; empty when no team has ever been measured, so the field shows "-" rather than a
+# zero that would read as "nothing to reclaim".
+#
+# Read from the numbers `teamctl teams` left behind, never measured: rule 2 at the top of this
+# file. A stale one is used on purpose, and that is the difference from the free-disk and
+# memory fields beside it — a PARKED lane is a lane in which nothing is running, so its size
+# does not change by itself, and yesterday's measurement of it is still the measurement.
+# What it cannot know is a lane parked since (too low) or a lane removed since (too high);
+# `teamctl bar --explain` says exactly that, and `teamctl teams` makes it current.
+dash_badge_held_kb() {
+  local key dir total=0 found=0
+  for key in "$WOLFMUX_DATA"/state/*/; do
+    [ -d "$key" ] && [ -r "$key" ] || continue
+    for dir in "$key" "$key"teams/*/; do
+      [ -d "$dir" ] || continue
+      dash_parked_kb "${dir%/}"
+      [ -n "$DASH_PARKED_KB" ] || continue
+      total=$((total + DASH_PARKED_KB))
+      found=1
+    done
+  done
+  [ "$found" -eq 1 ] || return 0
+  printf '%s\n' "$total"
 }
 
 # dash_badge_record_count — how many agents are on record anywhere on this machine. A file
@@ -687,4 +757,60 @@ cmd_overview_badge() {
   out="$( (dash_badge_line) 2>/dev/null | head -n 1 | LC_ALL=C tr -dc 'A-Za-z0-9 .:/+-' | cut -c1-72)" || return 0
   [ -n "$out" ] || return 0
   printf '%s\n' "$out"
+}
+
+# teamctl bar [--explain] — the status-bar line on demand, and what each field of it means.
+#
+# A legend is what a status bar needs and the one thing it cannot carry: seven numbers in
+# seventy-two characters have room for their labels and nothing else. The ask was "a legend
+# or a hover"; a terminal has no hover, so it is a command. `--explain` is the whole point
+# of it — a bare `teamctl bar` is the line itself, useful when the bar is off screen.
+#
+# It prints the line through the badge's own filter, not dash_badge_line raw, so what you
+# read here is character for character what tmux is being given.
+cmd_bar() {
+  local explain=0 line
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --explain) explain=1 ;;
+      *) die_usage "usage: teamctl bar [--explain]" ;;
+    esac
+    shift
+  done
+  require_tools
+  line="$(cmd_overview_badge)"
+  if [ -n "$line" ]; then
+    say "$line"
+  else
+    say "(the status bar is empty: there is no tmux server to ask, so nothing about what is running could be true)"
+  fi
+  [ "$explain" -eq 1 ] || {
+    say ""
+    say "what each field means: teamctl bar --explain"
+    return 0
+  }
+  say ""
+  say "$WOLFMUX_LEAD_MARK the status bar, field by field   (tmux draws it in status-right, every few seconds)"
+  say ""
+  say "  teams N   teams on this machine, across every project: on record, or with a window still open"
+  say "  run   N   agent panes alive right now"
+  say "  idle  N   agents on record with no pane: parked, and restartable (teamctl restart <role>)"
+  say "  exit  N   panes whose agent exited. Only there when there are any, so no number is good news"
+  say "  load  N   the one-minute load average of the machine"
+  say "  mem   N   memory a process could still get (free plus inactive; the kernel hands inactive back)"
+  say "  disk  N   free space on the disk that holds ~/.wolfmux"
+  say "  held  N   what the PARKED lanes of every team hold: the space teamctl prune and teamctl remove"
+  say "            give back. A dash means no team has been measured yet."
+  say ""
+  say "  run, idle and exit come from tmux, which is the only thing that knows. There is no"
+  say "  'working' or 'waiting' field because no honest signal for one exists: an agent waiting"
+  say "  for you and an agent thinking both run node, and tmux cannot tell them apart."
+  say ""
+  say "  held is read from what 'teamctl teams' last measured, and NEVER measured here: a du over"
+  say "  this machine's lanes is about twelve seconds and this line redraws every few seconds. A"
+  say "  parked lane is one in which nothing runs, so its size does not change and an old"
+  say "  measurement of it is still true; what it cannot know is a lane parked or removed since."
+  say "  Make it current: teamctl teams   ·   see where it is: teamctl prune --all-teams --dry-run"
+  say ""
+  say "  take the space: teamctl prune [--all-teams] [--dry-run]  ·  the whole picture: teamctl dashboard (prefix O)"
 }

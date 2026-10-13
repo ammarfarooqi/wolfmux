@@ -93,7 +93,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 
 | Command | Does |
 |---------|------|
-| `teamctl policy [<key> <value>]` | show or set, per team: `lead-permissions` skip\|ask · `worker-permissions` skip\|lead\|ask · `browser-writes` ask\|allow (DEFAULT ask; allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings, lead and workers alike) · `worker-spawn` on\|off · `worker-isolation` on\|off (the worktree guard) · `lead-teams` on\|off (may the lead found teams) · `branch-template` (how this team names its workers' branches) · `disk-guard` refuse\|warn\|off · `disk-min-gb` a whole number of GB (0 = no limit) · `link-node-modules` on\|off |
+| `teamctl policy [<key> <value>]` | show or set, per team: `lead-permissions` skip\|ask · `worker-permissions` skip\|lead\|ask · `browser-writes` ask\|allow (DEFAULT ask; allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings, lead and workers alike) · `worker-spawn` on\|off · `worker-isolation` on\|off (the worktree guard) · `lead-teams` on\|off (may the lead found teams) · `branch-template` (how this team names its workers' branches) · `disk-guard` refuse\|warn\|off · `disk-min-gb` a whole number of GB (0 = no limit) · `link-node-modules` on\|off · `auto-prune` on\|off (DEFAULT on: sweep a lane's build output as soon as the lane is parked; `teamctl keep <role>` protects one lane) |
 | `teamctl approvals [--all]` | teammates' permission requests waiting for the lead (`worker-permissions lead`) |
 | `teamctl approve <id>…\|--all` | allow them |
 | `teamctl deny <id> "<reason>"` | refuse one, with the reason the teammate is shown |
@@ -108,18 +108,36 @@ worktrees.
 
 | Command | Does |
 |---------|------|
-| `teamctl prune [--team <name>] [--dry-run] [--keep-node-modules]` | take the build output of every **parked** lane of the team: `node_modules`, `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`. One line per lane and a total in GB. A **running** lane is never touched, nor is anything git tracks, nor a lane that holds other uncommitted or untracked files — that one is skipped and named. `--dry-run` reports and deletes nothing (anyone may run it; the real thing is the lead's). `--keep-node-modules` takes the build caches only |
-| `teamctl stop <role>` | the build caches of that lane; `node_modules` stays |
+| `teamctl prune [--team <name>] [--all-teams] [--dry-run] [--keep-node-modules]` | take the build output of every **parked** lane of the team: `node_modules`, `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target`. One line per lane and a total in GB. A **running** lane is never touched, nor is anything git tracks, nor a lane that holds other uncommitted or untracked files — that one is skipped and named. `--dry-run` reports and deletes nothing (anyone may run it; the real thing is the lead's). `--keep-node-modules` takes the build caches only. `--all-teams` does every team of every project on this machine, with a total per team and one for the machine — **yours alone to run**, from your own terminal: a lead has no standing outside its own team and is refused with exit 77 |
+| `teamctl stop <role>` | parks the lane **and sweeps its build output**, the whole list above (policy `auto-prune`, on by default). The lane installs again before its tools run; `teamctl policy auto-prune off` keeps `node_modules` instead, which is what `stop` did up to v1.16.1 |
+| `teamctl keep [<role> [on\|off]]` | never sweep that lane automatically — for a checkout that is expensive to rebuild (a long install, a downloaded model, a seeded database). `teamctl prune` honours it too; `teamctl remove <role>` is still how the lane goes. With no role: what is protected right now |
 | `teamctl remove <role>` · `teamctl destroy --worktrees` | all of it: the worktree is going away anyway |
-| `teamctl status` | free disk, what this team's lanes take, and the spawn guard |
-| `teamctl teams` | **measures** the lanes (a `du` per lane, seconds on a busy machine). `teamctl status` reads the number this leaves behind and never measures, so it stays instant |
+| `teamctl destroy` (without `--worktrees`) | ends the session and keeps the worktrees, so it parks every lane — and therefore sweeps every lane, one line each |
+| `teamctl status` | free disk, what this team's lanes take, the spawn guard, and whether auto-prune is on |
+| `teamctl teams` | **measures** the lanes (a `du` per lane, seconds on a busy machine), the parked ones among them. `teamctl status` and the status bar's `held` field read the numbers this leaves behind and never measure, so both stay instant |
+| `teamctl bar [--explain]` | the one line tmux shows in `status-right`, and with `--explain` a legend naming every field of it |
+
+Every sweep is written down in `~/.wolfmux/state/reclaimed.jsonl`, one JSON object per line:
+when, which team of which project, which lane, how many kilobytes, what took them and what
+it took. It is the answer to "where did that space go", long after the team is gone.
+
+A lane **mid-build** is never swept. A build runs in whatever shell started it, not in the
+lane's pane, so `stop` cannot see it; the signal is the lock this machine's heavy runs
+already hold, `lockf ~/.wolfmux/machine-heavy.lock <command>`. While it is held, parking a
+lane keeps its build output and says so. The file merely existing is not a lock — `lockf`
+keeps it between runs — so only trying to take it answers the question, which is what the
+sweep does.
 
 Most of a lane is not build output: measured on one machine, of 25 GB across 38 lane
 worktrees only about 4 GB sat in a directory on that list — the rest is the checkout itself,
 copied into every lane. `prune`'s "still held" line is that floor plus the whole of every
 lane it skipped or left running, and says that `teamctl remove <role>` is what gives back
-the part git tracks. `stop` deliberately keeps `node_modules`, so a lane parked for a week
-keeps it for the week unless somebody prunes ([a known gap](docs/ROADMAP.md)).
+the part git tracks.
+
+Up to v1.16.1 `stop` deliberately kept `node_modules`, so a lane parked for a week kept it
+for the week unless somebody ran `prune` — and nobody did: 90.3 GB sat under
+`~/.wolfmux/worktrees` on this machine, 50.9 GB of it build output (measured 2026-10-13).
+A command nobody runs reclaims nothing, so from v1.17.0 **parking a lane sweeps it**.
 
 `teamctl remove` refuses a lane that holds commits or files somebody wrote, and build output
 is not that: a `node_modules` (the `--link-node-modules` symlink included), the build caches

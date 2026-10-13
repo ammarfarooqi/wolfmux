@@ -34,7 +34,7 @@ export WOLFMUX_CODEX_SESSIONS="$WORK/codex-sessions"
 # it is dropped, or every command here would act as that agent.
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
-unset WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES
+unset WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES WOLFMUX_AUTO_PRUNE WOLFMUX_HEAVY_LOCK
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 
 passed=0
@@ -103,7 +103,7 @@ check "dashboard --once prints the header and does not fail" \
 check "dashboard --once says 0 teams" \
   'teamctl dashboard --once | grep -q "0 teams"'
 check "the segment prints a line on an empty machine" \
-  'teamctl _overview-badge | grep -Eq "^0t 0run 0stop "'
+  'teamctl _overview-badge | grep -Eq "^teams 0 run 0 idle 0 "'
 
 echo "== a running team, across the whole machine"
 teamctl start fable --no-attach --skip-beads >/dev/null 2>&1
@@ -133,7 +133,7 @@ check "the text view says the reading is a process reading, not a claim about th
 check "the text view names teamctl teams as what refreshes the lane total" \
   'teamctl dashboard --once | grep -q "teamctl teams"'
 check "the segment now counts one team and three running agents" \
-  'teamctl _overview-badge | grep -Eq "^1t 3run 0stop "'
+  'teamctl _overview-badge | grep -Eq "^teams 1 run 3 idle 0 "'
 check "the segment stays one short line" \
   'test "$(teamctl _overview-badge | wc -l | tr -d " ")" = 1 && test "$(teamctl _overview-badge | wc -c | tr -d " ")" -lt 73'
 
@@ -149,7 +149,7 @@ check "both projects appear, from either project's directory" \
 check "the same two projects appear when run from the other one" \
   '(cd "$OTHER" && teamctl dashboard --json --once | jq -e ".projects | length == 2")'
 check "the segment counts the teams of both projects" \
-  'teamctl _overview-badge | grep -Eq "^2t 4run 0stop "'
+  'teamctl _overview-badge | grep -Eq "^teams 2 run 4 idle 0 "'
 check "a team of the other project is drawn under its own project" \
   'teamctl dashboard --once | grep -q "other repo"'
 
@@ -191,6 +191,66 @@ check "a garbled cache file falls back to not-measured instead of failing" \
   'lib_eval "team_paths default; printf \"08 banana\n\" > \"\$(disk_cache_file)\""; teamctl dashboard --once | grep -q "not measured"'
 check "a missing cache file is the normal case and is not an error" \
   'lib_eval "team_paths default; rm -f \"\$(disk_cache_file)\""; teamctl dashboard --json --once | jq -e ".projects[0].teams[0].lanes_disk | test(\"not measured\")"'
+
+echo "== the status bar: labelled fields, and held (v1.17.0)"
+# v1.16.1 printed "21t 18run 92stop ld3.56 mem7G dsk66G", which is what Ammar called
+# unreadable: four units as suffixes, two abbreviated labels, "92stop" as one token. It also
+# could not say the one number that tells you there is something to reclaim. These checks are
+# about the LINE, so they assert the label of every field and the alphabet it has to live in.
+check "every field carries its name in front of its number, in the order teams run idle load mem disk held" \
+  'teamctl _overview-badge | grep -Eq "^teams [0-9]+ run [0-9]+ idle [0-9]+ (exit [0-9]+ )?load [0-9.]+ mem [0-9]+[MG] disk [0-9]+[MG] held ([0-9.]+[MG]|-)$"'
+check "none of the old suffix fields is left anywhere on the line" \
+  '! teamctl _overview-badge | grep -Eq "[0-9]t |[0-9]run|[0-9]stop|ld[0-9]|mem[0-9]|dsk[0-9]"'
+# The trap in cmd_overview_badge: it filters the line through tr -dc 'A-Za-z0-9 .:/+-' and
+# then cuts it at 72. A separator outside that set is stripped SILENTLY, so a line built with
+# a middle dot or a pipe would reach tmux with its fields run together and nothing to show
+# why. Asserted on the real line: what the filter would remove, and the length.
+check "the line survives its own filter unchanged: every character of it is in the badge alphabet" \
+  'raw="$(teamctl _overview-badge)"; filtered="$(printf "%s" "$raw" | LC_ALL=C tr -dc "A-Za-z0-9 .:/+-")"; [ -n "$raw" ] && [ "$raw" = "$filtered" ]'
+check "and it is one line well inside the 72 characters the badge is cut at" \
+  'test "$(teamctl _overview-badge | wc -l | tr -d " ")" = 1 && test "$(teamctl _overview-badge | wc -c | tr -d " ")" -lt 73'
+check "held is a dash while no team has been measured, never a zero that would read as nothing to reclaim" \
+  'lib_eval "team_paths default; rm -f \"\$(disk_parked_cache_file)\""; teamctl _overview-badge | grep -q "held -$"'
+check "held is what the parked lanes of every team hold, added up from what teamctl teams measured" \
+  'lib_eval "team_paths default; printf \"%s 3145728\n\" \"\$(now_epoch)\" > \"\$(disk_parked_cache_file)\""; teamctl _overview-badge | grep -q "held 3.0G"'
+check "a second team's parked lanes are added to it, so the number is the machine's and not one team's" \
+  'lib_eval "team_paths default; printf \"%s 3145728\n\" \"\$(now_epoch)\" > \"\$(disk_parked_cache_file)\"; PROJECT_STATE=\"\$WOLFMUX_DATA/state/other-team-probe\"; mkdir -p \"\$PROJECT_STATE/teams/second\"; team_paths second; printf \"%s 1048576\n\" \"\$(now_epoch)\" > \"\$(disk_parked_cache_file)\""; teamctl _overview-badge | grep -q "held 4.0G"'
+# The probe team goes before the checks below: with its number still on file, `held` could
+# never be a dash and the three checks that assert one would have passed for a second team's
+# reason instead of their own.
+/bin/rm -rf "$WOLFMUX_DATA/state/other-team-probe"
+check "an old parked number is still used: a parked lane is one where nothing runs, so its size does not change" \
+  'lib_eval "team_paths default; printf \"%s 2097152\n\" \"\$(( \$(now_epoch) - 90000 ))\" > \"\$(disk_parked_cache_file)\""; teamctl _overview-badge | grep -q "held 2.0G"'
+check "a garbled parked file is dropped silently, and a leading zero never reaches the arithmetic" \
+  'lib_eval "team_paths default; printf \"08 500\n\" > \"\$(disk_parked_cache_file)\""; out="$(teamctl _overview-badge 2>&1)"; printf "%s" "$out" | grep -q "held -$" && ! printf "%s" "$out" | grep -qi "value too great\|syntax error"'
+# Each loop runs in a SUBSHELL: `eval` in check runs in this shell, so a bare `exit 1` in a
+# check body would end the whole suite at the first failure instead of failing one check.
+check "and so are a short line, an empty file and a negative number" \
+  '(for v in "" "123" "-5 -5" "banana soup"; do lib_eval "team_paths default; printf \"%s\n\" \"$v\" > \"\$(disk_parked_cache_file)\""; teamctl _overview-badge | grep -q "held -$" || exit 1; done)'
+# The equivalence rule of this file, applied to the new fast reader: dash_parked_kb reads the
+# file with the shell's own `read` so that the badge costs no process per team, and it must
+# answer exactly what disk_parked_kb answers.
+check "dash_parked_kb agrees with disk_parked_kb, on a good file and on every bad one" \
+  'lib_eval "team_paths default; for v in \"\$(now_epoch) 4096\" \"08 500\" \"123\" \"\" \"-5 -5\"; do printf \"%s\n\" \"\$v\" > \"\$(disk_parked_cache_file)\"; dash_parked_kb \"\$STATE_DIR\"; [ \"\$DASH_PARKED_KB\" = \"\$(disk_parked_kb \"\$STATE_DIR\")\" ] || exit 1; done"'
+check "teamctl teams leaves a parked number behind, and the bar then shows it" \
+  'teamctl teams >/dev/null 2>&1; lib_eval "team_paths default; [ -f \"\$(disk_parked_cache_file)\" ]" && teamctl bar | grep -Eq "held ([0-9.]+[MG]|-)"'
+
+echo "== teamctl bar --explain: the legend a status bar cannot carry"
+BAR="$(teamctl bar --explain 2>&1)"
+check "teamctl bar prints the line the status bar is given, character for character" \
+  '[ "$(teamctl bar | head -n 1)" = "$(teamctl _overview-badge)" ]'
+check "--explain names every field of the line" \
+  '(for f in teams run idle exit load mem disk held; do printf "%s" "$BAR" | grep -Eq "^  $f +N " || exit 1; done)'
+check "--explain says held is read and never measured, and names what makes it current" \
+  'printf "%s" "$BAR" | grep -q "NEVER measured here" && printf "%s" "$BAR" | grep -q "teamctl teams"'
+check "--explain says what held cannot know, instead of presenting it as current" \
+  'printf "%s" "$BAR" | grep -q "a lane parked or removed since"'
+check "--explain repeats the house rule: there is no honest idle-or-working signal" \
+  'printf "%s" "$BAR" | grep -q "no honest signal"'
+check "a bare teamctl bar points at the legend rather than printing it" \
+  'teamctl bar | grep -q "teamctl bar --explain" && [ "$(teamctl bar | wc -l | tr -d " ")" -lt 5 ]'
+check "an unknown option is a usage error (exit 64), not a wrong line" \
+  'teamctl bar --nonsense >/dev/null 2>&1; [ $? -eq 64 ]'
 
 echo "== the context column: three cases, never an invented percentage"
 # From v1.14.1 model_context_window may legitimately return nothing, and a percentage of a
@@ -289,6 +349,14 @@ check "the segment never runs ps" 'test ! -e "$WORK/ps-was-called"'
 /bin/rm -f "$WORK/du-was-called"
 PATH="$SPY:$PATH" teamctl dashboard --once >/dev/null 2>&1
 check "the popup never runs du either" 'test ! -e "$WORK/du-was-called"'
+# The `held` field is the first number on this line that comes from a du — somebody else's,
+# taken by teamctl teams and left in a file. It must stay somebody else's: a badge that
+# measured the parked lanes itself would spend twelve seconds every few seconds.
+/bin/rm -f "$WORK/du-was-called"
+PATH="$SPY:$PATH" teamctl _overview-badge >/dev/null 2>&1
+PATH="$SPY:$PATH" teamctl bar --explain >/dev/null 2>&1
+check "neither the badge's held field nor the legend runs du: both read what teamctl teams left" \
+  'test ! -e "$WORK/du-was-called"'
 check "the popup takes ONE ps for the whole view, not one per agent" \
   'lib_eval "[ \"\$(dash_ps_snapshot | wc -l | tr -d \" \")\" -gt 10 ]"'
 check "the process tree, not the pane's own process, is what is measured" \
@@ -326,9 +394,9 @@ check "without tmux the segment says nothing rather than reporting 0 running" \
 # so the agent counts stay truthful rather than dropping to zero. What is asserted is that
 # the line is still well formed and still one line.
 check "a state directory that is not there is not an error for the segment" \
-  'WOLFMUX_DATA="$WORK/nowhere" teamctl _overview-badge | grep -Eq "^0t [0-9]+run [0-9]+stop .*dsk"'
+  'WOLFMUX_DATA="$WORK/nowhere" teamctl _overview-badge | grep -Eq "^teams 0 run [0-9]+ idle [0-9]+ .* disk "'
 check "the stopped count is never negative when records and panes disagree" \
-  'WOLFMUX_DATA="$WORK/nowhere" teamctl _overview-badge | grep -vq -- "-[0-9]*stop"'
+  'WOLFMUX_DATA="$WORK/nowhere" teamctl _overview-badge | grep -vq -- "idle -"'
 
 echo "== a stopped agent, and an orphaned team"
 teamctl stop worker2 >/dev/null 2>&1
@@ -344,7 +412,7 @@ check "--full reads every agent and drops that note" \
 check "--full is recorded in the JSON" \
   'teamctl dashboard --json --once --full | jq -e ".full == true"'
 check "the segment counts it as stopped, not as running" \
-  'teamctl _overview-badge | grep -Eq "^2t 3run 1stop "'
+  'teamctl _overview-badge | grep -Eq "^teams 2 run 3 idle 1 "'
 # A team whose lead is not running is orphaned: nobody manages it. teamctl teams already
 # decides this, and the dashboard must agree with it.
 teamctl stop lead >/dev/null 2>&1
@@ -368,7 +436,7 @@ check "an unreadable project is named, not silently dropped" \
 check "the text view says the state could not be read" \
   'teamctl dashboard --once | grep -q "state could not be read"'
 check "the segment survives an unreadable project too" \
-  'teamctl _overview-badge | grep -Eq "^[0-9]+t "'
+  'teamctl _overview-badge | grep -Eq "^teams [0-9]+ "'
 /bin/chmod 700 "$BAD"
 /bin/rm -rf "$BAD"
 # A `teamctl start` that never finished leaves a state directory with no meta.json and no
@@ -476,15 +544,15 @@ BADGE_DEFAULT="$(teamctl _overview-badge 2>/dev/null)"
 tmux -L "$OTHER_SOCKET" kill-server 2>/dev/null
 /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$OTHER_SOCKET"
 check "the handed-in socket really is the one asked" \
-  'test -S "$OTHER_SOCKET_PATH" -o -n "$OTHER_SOCKET_PATH"; printf "%s" "$BADGE_OTHER" | grep -Eq "^[0-9]+t 0run "'
+  'test -S "$OTHER_SOCKET_PATH" -o -n "$OTHER_SOCKET_PATH"; printf "%s" "$BADGE_OTHER" | grep -Eq "^teams [0-9]+ run 0 "'
 check "and it is not simply reporting the default: the two answers differ" \
   'test "$BADGE_OTHER" != "$BADGE_DEFAULT"'
 check "the default socket still reports this suite's own running agents" \
-  'teamctl _overview-badge | grep -Eq "^[0-9]+t [1-9][0-9]*run "'
+  'teamctl _overview-badge | grep -Eq "^teams [0-9]+ run [1-9][0-9]* "'
 check "a socket path that is not a socket is ignored, and the fallback stands" \
-  'teamctl _overview-badge "$WORK/not-a-socket" | grep -Eq "^[0-9]+t [1-9][0-9]*run "'
+  'teamctl _overview-badge "$WORK/not-a-socket" | grep -Eq "^teams [0-9]+ run [1-9][0-9]* "'
 check "a socket argument can never make the segment fail or speak" \
-  'out="$(teamctl _overview-badge "/nowhere/at/all" 2>&1)"; test "$?" = 0 && printf "%s" "$out" | grep -Eq "^[0-9]+t "'
+  'out="$(teamctl _overview-badge "/nowhere/at/all" 2>&1)"; test "$?" = 0 && printf "%s" "$out" | grep -Eq "^teams [0-9]+ "'
 check "dash_socket_set refuses anything that is not a socket" \
   'lib_eval "DASH_SOCKET=\"\"; dash_socket_set /etc/hosts; dash_socket_set \"\"; dash_socket_set /nowhere; [ -z \"\$DASH_SOCKET\" ]"'
 # A second server that stays up for the rest of this group: a REAL socket with none of this

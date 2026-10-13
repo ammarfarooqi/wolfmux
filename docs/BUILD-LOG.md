@@ -1285,6 +1285,162 @@ it**, and no figure here stands in for that.
 
 Version 1.16.1, a patch on 1.16.0.
 
+## 35. "Why is the space hoarding not built in?" (v1.17.0, stage 1)
+
+Ammar, 2026-10-13 03:3xZ: *"why this is not an inbuilt thing that once the work is complete
+the team has to destroy the worktree to reclaim space why the space hoarding"*.
+
+The honest answer is that v1.16.1 had the cleanup and not the reclaiming. `teamctl prune`
+worked, every rule in `lib/disk.sh` held, 93 checks covered it — and the machine filled up
+anyway, because `prune` had to be *asked*. Measured at 03:12Z: **90.3 GB** under
+`~/.wolfmux/worktrees`, **50.9 GB** of it build output. A command nobody runs reclaims
+nothing. `docs/ROADMAP.md` had carried this as a known gap since v1.11 and described the
+fix as "draining by age"; the fix is simpler than that — do it when the lane is parked,
+because that is the moment the build output stops being useful.
+
+Stage 1 is the three parts that cannot lose work. Removing a lane's tracked files can, so
+it is stage 2 and it has its own gates.
+
+### 1. Parking a lane sweeps it
+
+`teamctl stop` took the build caches and kept `node_modules`, deliberately, so that
+`teamctl restart` would be cheap. That trade was wrong at this scale: restart is rare,
+parking is not, and 50.9 GB was the price. Now `disk_park_sweep` takes the whole allowlist
+at the moment a lane is parked, by the two paths that park one:
+
+- `cmd_stop` — one lane;
+- `cmd_destroy` **without** `--worktrees` — every lane, in bulk, which is the path that
+  parked 11 orphaned teams' worth of lanes on this machine. `--worktrees` already swept.
+
+Four refusals come before the deletion, each leaving the lane whole: the `auto-prune`
+policy (`off` restores v1.16.1's stop exactly), the lane's own `keep_build` flag, a lane
+still running, and a **heavy run on the machine**. The last one is the only new mechanism:
+a build runs in whatever shell started it, not in the lane's pane, so `stop` cannot see it,
+and taking `node_modules` from under a running build is the one way this could do damage.
+The signal is the lock this machine's own gates already hold,
+`lockf ~/.wolfmux/machine-heavy.lock <command>`.
+
+**The trap in that lock, and it is a real one.** The file is KEPT between runs (`lockf -k`),
+so its existence proves nothing — `[ -e ]` would have stopped every sweep for ever, and a
+test asserting "the file is there, so it is busy" would have passed. The only thing that
+answers is trying to take the lock for an instant (`lockf -k -s -t 0 … true`): 0 means free,
+75 (`EX_TEMPFAIL`) means held, and anything else means we cannot tell — which counts as
+busy, the same rule `disk_lane_running` already follows for a lane it cannot place. No
+`lockf` on the machine at all is NOT "cannot tell": the convention cannot exist there, so
+nothing can be holding it, and the alternative would be an automatic sweep that silently
+never runs — the exact failure this release exists to end.
+
+Every sweep is appended to `~/.wolfmux/state/reclaimed.jsonl` (asked for by name): time,
+project, team, lane, kilobytes, trigger, directory names, who. Machine-wide and not per
+team, because "where did that space go" is asked long after the team is gone.
+
+`teamctl keep <role>` protects one expensive checkout. A verb, not a flag on `spawn`, and
+that was a choice: whether a checkout is worth protecting — a 40-minute install, a
+downloaded model, a seeded database — is learnt AFTER it is built, and a spawn flag cannot
+be taken back. `teamctl keep` with no role lists what is protected, and
+`teamctl status --json` carries `keep_build`, so a flag nobody can see cannot hoard
+quietly.
+
+### 2. `teamctl prune --all-teams`, for the operator only
+
+A lead cannot prune another team (exit 77; rule 4 of `lib/disk.sh` refuses the paths
+anyway), which is right and stays. From a plain terminal there was no way to see the whole
+machine: `prune --dry-run` answers for one team, `teamctl teams` for one project, and 21
+teams is 21 commands and no total.
+
+**Where the task description and the code had to differ, and why.** The task said to lean on
+`is_manager`, "which already returns 0 for an empty caller role". It does — and it also
+returns 0 for the lead of the team it is standing in, which is exactly the caller this
+option has to refuse. So `is_operator` / `require_operator` were added beside it (one line
+and a `die`, the same cooperative `caller_role` check, no new concept). The refusal names no
+lead to appeal to, unlike `require_manager`: a command that reaches every team is not
+something any lead can grant, so sending a refused agent to its lead would send it to the
+one person who cannot say yes.
+
+One more difference from the one-team form, deliberate: a team whose lanes cannot all be
+placed is reported and skipped **whole**, and the run continues. The one-team form still
+dies. There, the doubt is about the lanes you asked about and stopping is the answer; here,
+one unplaceable team must not leave the other twenty unswept, and skipping it touches
+nothing of it.
+
+### 3. A status bar a person can read
+
+Ammar's words: the line is unreadable. It was
+`21t 18run 92stop ld3.56 mem7G dsk66G` — four units as suffixes, two abbreviated labels,
+and `92stop` reading as one token. Now:
+
+```
+teams 20 run 12 idle 63 load 2.92 mem 8G disk 109G held 9.2G
+```
+
+60 characters, 67 with `exit N` in it, against a 72-character cut. **Every character is
+inside `cmd_overview_badge`'s own alphabet (`A-Za-z0-9`, space, `. : / + -`) and no
+separator was added at all** — the labels separate. That filter strips anything else
+SILENTLY, so a middle dot or a pipe between fields would have vanished without a trace and
+the line would have reached tmux with its numbers run together. `tests/dashboard.sh` asserts
+it on the real line now: the badge is re-filtered and must come back unchanged.
+
+`held` is the new field and the one the old line could not say: what the PARKED lanes of
+every team hold. It is read from what `teamctl teams` left behind, never measured —
+rule 2 of `lib/dashboard.sh`, a `du` over this machine's lanes is about twelve seconds and
+this redraws every few seconds. `disk_team_kb_measure` now writes a second file,
+`disk-parked-kb`, beside `disk-kb` (a second FILE, not a second column, so an old version
+still parses a new file and a new version an old one), and `teamctl prune` corrects it by
+what it took — correct by construction, because parked lanes are the only ones prune
+sweeps. The park sweep does NOT correct it: the lane it swept was running when the number
+was measured, so it was never in it, and subtracting would make the number smaller than the
+truth. It waits for the next measurement.
+
+A stale `held` is used on purpose, which is the one place this departs from the
+file's own "never show an old number as current" rule, and the reason is in the thing being
+measured: a parked lane is a lane in which nothing is running, so its size does not change
+by itself. `teamctl bar --explain` says exactly that, and says what the number cannot know
+(a lane parked or removed since). `dash_parked_kb` reads the file with the shell's own
+`read` and SETS a variable rather than printing one, so the sweep over 25 teams costs no
+process at all; `tests/dashboard.sh` asserts it agrees with `disk_parked_kb` on a good file
+and on every malformed one, which is this module's standing rule for a fast path.
+
+`teamctl bar --explain` is the legend. The ask was "a legend or a hover"; a terminal has no
+hover, and seven numbers in seventy-two characters have room for their labels and nothing
+else.
+
+### Failing first, measured both ways
+
+Every figure below was taken on this machine on 2026-10-13, with the new suites run against
+a **pristine v1.16.1 tree** (`git archive ea6509f`) and then against this one. The baseline
+was re-measured rather than carried.
+
+| Run | `dashboard` | `disk` |
+|-----|-------------|--------|
+| A — v1.16.1 code, v1.16.1 tests (baseline) | 115 / 0 / 0 | 93 / 0 |
+| B — v1.16.1 code, **new** tests | 108 / **27** / 0 | 110 / **42** / 0 |
+| C — new code, new tests | see below | see below |
+
+B is the evidence. Of the 20 new `dashboard` checks, **16 fail on v1.16.1**; the other four
+are invariants that hold for either line (it is one line, it is within 72 characters, it
+survives its own filter, it runs no `du`) and are reported as non-discriminating rather than
+counted as proof. Eleven of B's 27 failures are existing badge-format checks, rewritten
+because the format changed deliberately. On `disk`, 42 new checks fail on v1.16.1.
+
+### Changed
+
+- `lib/disk.sh`: the heavy-lock probe, the keep flag, the ledger, `disk_park_sweep`,
+  `cmd_keep`, the parked cache, and `cmd_prune` split into `prune_team` / `prune_footer` /
+  `prune_all_teams` so that one team and the whole machine run the same sweep.
+- `lib/policy.sh`: the `auto-prune` key, and `is_operator` / `require_operator`.
+- `lib/agents.sh`: `cmd_stop`'s sweep, and the new loop in `cmd_destroy`.
+- `lib/dashboard.sh`: the badge line, `dash_parked_kb`, `dash_badge_held_kb`,
+  `dash_tenth_gb`, `cmd_bar`.
+- `lib/views.sh`: `keep_build` per agent, `auto_prune` and `disk.parked_kb` in
+  `status --json`, auto-prune in the `status` disk line.
+- `lib/completion.sh`, `bin/teamctl`: the two new commands and the two new options.
+- `lib/provider-env.sh`: `WOLFMUX_AUTO_PRUNE` on the allowlist, in the same commit as the
+  knob — the v1.16.0 lesson, and `tests/disk.sh` round-trips it through a real config file.
+- `lib/common.sh`: line 5 only, `WOLFMUX_VERSION` to 1.17.0.
+
+**shellcheck is still not installed on this machine, so nothing here was linted with it**;
+`bash -n` was run on every changed file and no figure above stands in for a lint.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
