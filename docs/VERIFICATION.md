@@ -61,6 +61,7 @@ tests/commands.sh              # ~20 seconds, 16 checks, in a throwaway WOLFMUX_
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/models.sh                # ~40 seconds, 22 checks, its own tmux server, HOME and state: WOLFMUX_MODEL_POLICY and the drift check
+tests/reclaim.sh               # ~13 minutes, 122 checks, its own tmux server and state, stand-ins for bd and gh: a finished lane goes and every lane with something to lose stays
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```
@@ -73,6 +74,14 @@ pristine `adbc2db` failing the same two by name. The mechanism is a hypothesis w
 evidence in the build log, and a task of its own — not a finding, and not this release's. The
 paragraph below is the v1.16.1 record and is kept as that release's measurement, not as a
 description of the suites today — their check counts have grown, as the list above shows.
+
+For the **reclaim work (stage 2)** the figures live in
+[BUILD-LOG.md](BUILD-LOG.md#every-suite-at-the-stage-2-head): 1214 passing, 2 failing,
+0 skipped across the twelve countable suites at `9243243`, each launched in the clean shape
+and all under one acquisition of the team's own lock. The two failures are the same two
+non-hermetic checks, and the control is a pristine `9be145b` failing the same two by name in
+the same pass. `tests/reclaim.sh` took 758 seconds there, at a load average of 9 to 13; on
+`9be145b`, where it fails 118 of its 122 checks, 181 seconds.
 
 **950 checks across the nine countable suites, smoke counted once in its clean shape, and
 950 passing, 0 failing** (v1.16.1). Every figure measured under the heavy lock, in ONE

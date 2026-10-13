@@ -1675,6 +1675,15 @@ the machine-wide ledger is the only record that outlives a purge. The reclaim it
 the ledger line first and keeps the lane when it cannot: a removal nobody can look up is
 not made. It never passes `--force` to git and never falls back to `rm -rf`.
 
+Writing the line first has one cost, found by reading the code again and not by a test. Git
+can still refuse the worktree afterwards (a locked worktree, a populated submodule), and
+`git worktree remove` has no dry run, so that refusal cannot be asked for in advance. The
+ledger then said `lane-removed` for a lane that was still there. Now the lane stays whole —
+worktree, branch and record — the reason is git's own first line (`holding <size>: git
+refused to remove its worktree: cannot remove a locked working tree`), and a second ledger
+line, `"event": "lane-kept"` with the same `branch` and `tip`, takes the first one back.
+Whoever reads the ledger for a tip reads the LAST line about it.
+
 ### Three decisions that are easy to undo and were made on purpose
 
 - **The squash question leaves nothing in your repository.** `git commit-tree` writes an
@@ -1704,6 +1713,118 @@ One correction to how the knob was described while it was being designed: `auto-
 **not** fall back to its default on a value nobody can read. Both knobs fall back to `off`,
 and have since stage 1 (`policy_get`). For `auto-reclaim` the comment next to the code says
 why that direction is not a matter of taste.
+
+### Failing first: the new suite against the base
+
+`tests/reclaim.sh` is a new suite, so there is no older count to compare with. The same
+file (`cmp` says identical) was run against a pristine `9be145b` — a `git archive` of the
+base, which has no `lib/reclaim.sh` — and against this tree, in one pass.
+
+| Run | `reclaim` |
+|-----|-----------|
+| `9be145b` code, **the shipped suite** | 4 / **118** / 0 |
+| this tree at `9243243`, the shipped suite | 122 / 0 / 0 |
+
+The cases the brief named, each by the check that carries it. Every one FAILS on `9be145b`
+and passes here:
+
+| The brief's case | The check, by name |
+|------------------|--------------------|
+| merged and clean: removed | `a lane whose task is closed, whose content is merged, with nothing uncommitted and no PR, passes` and `every lane that passed is gone: its worktree, its branch and its record` |
+| an unpushed commit: kept, and status says why with the sha | `a lane with an unpushed, unmerged commit is KEPT, and the reason names the tip` and `status shows a kept lane as holding <size>: <reason>, with the sha for an unpushed one` |
+| squash-merged: removed | `a lane whose three commits were SQUASHED into one passes, which plain git cherry cannot see` |
+| an open PR: kept | `a lane with an open PR is kept, and the reason names the PR` |
+| `gh` cannot answer: kept | `when gh fails, the lane is kept: deleting a worktree under a reviewer has been paid for once` |
+| the task bead still open: kept | `a lane whose task is still open is kept, and the reason names the bead` |
+
+The suite has 19 sections. Every one has a failing check on `9be145b`, and 17 of the 19 have
+no passing check there at all.
+
+The 4 that pass on `9be145b` are reported and not counted as proof, because a check that
+passes on the old tree says nothing about this one. One is an invariant (`every lane is a
+real worktree teamctl made, with a real record`). The other three are named `CONTROL:` and
+ask git itself, not teamctl: plain `git cherry` reports a squashed lane as missing, a
+containment test agrees with it, and a lane's stash is visible from the main checkout. They
+are there so that the checks beside them cannot pass for the wrong reason.
+
+### What the measurement passes found
+
+Two passes were needed, and the first one is recorded here as superseded, not deleted.
+
+**Pass 1, at `fc57e8f`: `reclaim` 121 / 1 / 0.** The one failure was in a check written the
+same day, for the locked worktree. It asked the gates about the lane while the lane was
+still running, and gate 1 keeps a running lane, so the answer was "running" and not the
+"yes" the check wanted. The check was wrong and the code was right. It now asks after
+`teamctl stop`. That is `9243243`, which changes `tests/reclaim.sh` and one number in
+`README.md` and no library.
+
+**Pass 1 also had `dashboard` 134 / 1 / 0 and a TRUNCATED `nudge-typing`.** Neither came
+back. In pass 2 both are clean on this tree (135 / 0 / 0 and 61 / 0) and clean on `9be145b`
+in the same pass (135 / 0 / 0 and 61 / 0). What that does and does not show:
+
+- This branch changes neither suite, and none of `lib/dashboard.sh`, `lib/notify.sh`,
+  `lib/inbox.sh`, `lib/disk.sh`, `lib/common.sh` or the hooks. `git diff --stat 9be145b
+  9243243` over those paths prints nothing, every path exists, and the same command over
+  `lib/views.sh` prints a line — so the empty answer is not a pattern that matches nothing.
+- **The failures were not reproduced on `9be145b`.** "Load, not this branch" rests on that
+  diff and on the clean re-run of both trees, not on a failing control. It is a hypothesis.
+- Both checks compare two readings taken at two moments. `teamctl bar prints the line the
+  status bar is given, character for character` runs `teamctl bar` and `teamctl
+  _overview-badge` as two processes, and each reads the machine's load to two decimals and
+  counts every team's agents. `mid-delivery: all five are queued, nothing typed yet` asks
+  that five notices are all still waiting after five `teamctl policy` calls. Pass 1 started
+  at a load average of 21.75. Pass 2 ran at 7 to 13.
+- `nudge-typing` printed no summary line in pass 1 because a second check failed after the
+  first: `mid-delivery: every queued notice still arrived, none was lost on the way`
+  (`tests/nudge-typing.sh:313`) ends its loop with a bare `exit 1`, and that suite's `check`
+  evaluates the body in the suite's own shell. So the failing check ended the suite instead
+  of printing FAIL. It is one of the bare-`exit` sites already filed, and it is why a run
+  with no summary line is reported as TRUNCATED and never by its pass count.
+
+**Pass 1 held the machine-wide lock, and should not have.** It ran under `teamctl heavy`
+(`~/.wolfmux/machine-heavy.lock`): 22 minutes waiting for it, then 39 minutes 32 seconds
+holding it, for twelve suites that are shell, `bd`, `git` and file work. Another team's
+release gates waited behind them. Pass 2 took the team's own lock instead (`lockf -k
+~/.wolfmux/wolfmux-ux-heavy.lock`), which nobody outside this team waits for.
+
+### Every suite at the stage 2 head
+
+One pass, one sha, **`9243243`**, twelve suites one after the other under one acquisition of
+the team's lock, 22:29:35Z to 23:12:17Z on 2026-10-13. Each suite was launched as
+`perl -e '$SIG{HUP}="DEFAULT"; $SIG{INT}="DEFAULT"; exec @ARGV' bash tests/<suite>.sh`, so
+that no signal is inherited as ignored.
+
+| suite | at `9243243` | | suite | at `9243243` |
+|-------|--------------|-|-------|--------------|
+| `reclaim` | 122 / 0 / 0 | | `migration` | 36 / 0 |
+| `disk` | 175 / 0 / 0 | | `permissions` | 13 / 0 |
+| `dashboard` | 135 / 0 / 0 | | `models` | 22 / 0 |
+| `docs` | 36 / 0 | | `commands` | 16 / 0 |
+| `providers` | 141 / 0 / 0 | | `nudge-typing` | 61 / 0 |
+| `inbox` | 107 / 0 | | `smoke` | 350 / **2** / 0 |
+
+**1214 passing, 2 failing, 0 skipped across the twelve countable suites.** Every figure
+comes from the suite's own summary line. A suite that printed none would be reported as
+TRUNCATED, and none was in this pass.
+
+`smoke`'s two failures are the two that section 35 describes, by name: `beads: a worker
+reaches the shared database from its worktree` and `rename: a Beads hook written under the
+old name is replaced`. The control is the same suite on a pristine `9be145b` in the same
+pass: 350 / 2 / 0, the same two names. They read the live shared Beads database, and the
+mechanism is still the hypothesis written down there. This branch changes one line of
+`tests/smoke.sh` and adds no check to it: 352 checks on both trees.
+
+`tests/credential-routing.sh` was **not run**. It is manual, has no check count, and needs a
+logged-in `claude`.
+
+Documents were edited after that pass: this section and `docs/VERIFICATION.md`. Two suites
+read the documents without naming them, so `tests/docs.sh` was **re-run at the final sha**
+(36 / 0), and the two patterns that `tests/smoke.sh:177` and `:180` assert are ABSENT under
+`docs/` were searched for by hand in the shipping content. Neither appears, and each pattern
+was first shown to match a line that does contain it.
+
+**shellcheck is not installed on this machine, so nothing here was linted with it.**
+`bash -n` was run on every changed shell file, and no figure above stands in for a lint.
 
 ## Footprint on the machine
 
