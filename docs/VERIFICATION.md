@@ -3,6 +3,31 @@
 No model call was made to test this system. Real CLIs were only started as far as
 their first screen; everything else used stub agents or a localhost mock.
 
+## Reviewing a branch: set WOLFMUX_HOME first, and prove it switched
+
+**`bin/teamctl` is a dispatcher, not the program.** It sources every library from
+`$WOLFMUX_HOME/lib/`, which defaults to `~/.config/wolfmux` — the **installed** tree. So
+running a branch's `bin/teamctl` with `WOLFMUX_HOME` unset runs that branch's dispatcher
+against the *installed* libraries, and a reviewer sees the old behaviour and a
+`cmd_<new thing>: command not found` for anything the branch added. It looks exactly like
+two defects in the branch. It is not: nothing of the branch was loaded.
+
+```bash
+cd <the worktree>
+export WOLFMUX_HOME="$PWD/config/wolfmux"
+teamctl version          # the CONTROL: it must print the branch's version, not the installed one
+```
+
+The version line is the control, and it is worth printing before trusting any other result:
+`WOLFMUX_VERSION` lives in `lib/common.sh`, so it changes only when the libraries really
+switched. The test suites do this for you — every one of them exports
+`WOLFMUX_HOME="$REPO/config/wolfmux"` at the top — which is why a suite can pass on a branch
+whose behaviour a hand-run command appears to deny.
+
+(Found the hard way during the v1.17.0 review: two blockers were nearly filed against a
+branch that was correct, and what caught it was `teamctl version` printing the installed
+number.)
+
 ## Re-run it
 
 ```bash
