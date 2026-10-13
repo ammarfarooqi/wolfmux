@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk reclaim beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -59,7 +59,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                 worker sweeps its build output first (policy auto-prune), so run
                 teamctl keep <role> BEFORE stopping the lane you mean to hand over; the flag
                 comes across with the worktree
-    teamctl stop <role>                               close the pane; worktree, branch and record stay
+    teamctl stop <role>                               close the pane; worktree, branch and record stay — unless the
+                                                      lane's work is all in main, then it is reclaimed (see Disk)
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else
     teamctl restart <role> [--continue] [--resume <session-id>]    its own conversation, or the one you name
@@ -81,6 +82,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       worker-isolation (the worktree guard) · lead-teams (may the lead found teams) ·
                                                       disk-guard refuse|warn|off · disk-min-gb <number> · link-node-modules on|off
                                                       auto-prune on|off (sweep a lane's build output as soon as it is parked)
+                                                      auto-reclaim on|off (take a parked lane off the books once its work is all in main)
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
@@ -123,13 +125,29 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl stop <role>                               parks the lane AND sweeps its build output (policy auto-prune,
                                                       on by default). auto-prune off: the build caches only,
                                                       node_modules kept, which is what stop did before v1.17.0
-    teamctl keep [<role> [on|off]]                    never sweep that lane automatically (an expensive checkout:
-                                                      a long install, a seeded database). With no role: what is
-                                                      protected now. teamctl prune honours it too
+    teamctl reclaim [--all-teams] [--dry-run]         take every FINISHED parked lane of the team off the books:
+                                                      worktree, branch and record. A lane goes only when its task
+                                                      is closed in Beads, its branch's content is in main or the
+                                                      integration branch (merged, cherry-picked or squashed),
+                                                      nothing is uncommitted or stashed, and gh shows no open PR.
+                                                      A check that cannot be answered keeps the lane. Parking a
+                                                      lane (stop, destroy) does this by itself (policy
+                                                      auto-reclaim, on by default), for every parked lane.
+                                                      --dry-run says what would go and what holds the rest
+                                                      (anyone may run it)
+                                                      --all-teams every team of every project on this machine.
+                                                      Yours alone to run: a lead gets exit 77
+    teamctl keep [<role> [on|off]]                    never sweep or reclaim that lane automatically (an expensive
+                                                      checkout: a long install, a seeded database; a worker you
+                                                      mean to restart). With no role: what is protected now.
+                                                      teamctl prune and teamctl reclaim honour it too
     teamctl remove <role> · destroy --worktrees       take all of it, the worktree goes anyway
-    teamctl status                                    free disk, and what this team's lanes take
+    teamctl status                                    free disk, what this team's lanes take, and for every parked
+                                                      lane that cannot go: holding <size>: <reason>
     teamctl teams                                     measures the lanes (a du per lane; status and the bar read the number)
-    Every sweep is written down in ~/.wolfmux/state/reclaimed.jsonl: when, which team, which lane, how much.
+    Every sweep and every removed lane is written down in ~/.wolfmux/state/reclaimed.jsonl: when, which team,
+    which lane, how much, and for a removed lane the branch and the full sha it was at. Before teamctl deletes
+    a branch, by any command, it prints "<role>: branch <name> was at <sha>".
   Heavy runs  (one machine, several teams: a test gate, a measurement, a long build)
     teamctl heavy [--timeout <seconds>] [--quiet] <command>...
                                                       run it holding the machine's heavy lock, so nothing else
@@ -165,7 +183,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       WOLFMUX_MODEL_POLICY=latest (default) asks Claude Code at most once a day
                                                       per alias, when an agent starts; pinned keeps the built-in ids.
                                                       --refresh asks again now (one tiny call per alias, on your subscription)
-    teamctl destroy [--worktrees] [--yes]             end the team; --worktrees also removes workers that hold nothing
+    teamctl destroy [--worktrees] [--yes]             end the team. A worker whose work is all in main goes with it
+                                                      (policy auto-reclaim), every other worktree and branch stays;
+                                                      --worktrees also removes workers that hold nothing
     teamctl destroy --purge [--force] [--keep-transcripts] [--yes]
                                                       DELETE the team: session, every worktree, the branches teamctl
                                                       created, records, transcripts. Lists uncommitted and unmerged work and asks first;
@@ -234,6 +254,7 @@ main() {
     restart) cmd_restart "$@" ;;
     destroy) cmd_destroy "$@" ;;
     prune) cmd_prune "$@" ;;
+    reclaim) cmd_reclaim "$@" ;;
     keep) cmd_keep "$@" ;;
     bar) cmd_bar "$@" ;;
     heavy) cmd_heavy "$@" ;;

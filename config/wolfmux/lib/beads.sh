@@ -1,10 +1,13 @@
 #!/bin/bash
 # beads.sh — the thin seam between teamctl and Beads (bd).
 #
-# Beads owns tasks and messages. teamctl never reads or writes a bead. The only
-# glue is (1) making sure a Beads workspace exists before a team starts and
-# (2) two tiny event hooks that turn "a bead needs <role>" into a tmux pane
-# notification through `teamctl nudge`.
+# Beads owns tasks and messages. teamctl never writes a bead. The glue here is (1) making
+# sure a Beads workspace exists before a team starts and (2) two tiny event hooks that turn
+# "a bead needs <role>" into a tmux pane notification through `teamctl nudge`.
+#
+# One place READS Beads, and it is not this file: lib/reclaim.sh asks which tasks are closed
+# (`bd list`, once per run) before it takes a finished lane off the books. Before v1.17.0
+# nothing in teamctl read a bead at all.
 
 WOLFMUX_HOOK_MARKER="wolfmux-hook v1"
 WOLFMUX_LEGACY_HOOK_MARKER="ai-team-hook" # written before the rename; safe to replace

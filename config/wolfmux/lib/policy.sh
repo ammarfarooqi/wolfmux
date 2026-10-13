@@ -27,6 +27,12 @@
 #                                           lane is parked, instead of waiting for someone to
 #                                           remember `teamctl prune` (lib/disk.sh). A single lane is
 #                                           protected with `teamctl keep <role>`
+#   auto-reclaim        on | off            DEFAULT on. Take a parked lane off the books by itself
+#                                           (worktree, branch, record) once its task is closed, its
+#                                           content is in main, nothing is uncommitted and no PR is
+#                                           open (lib/reclaim.sh). Off: nothing is removed unless
+#                                           somebody runs `teamctl reclaim`. `teamctl keep <role>`
+#                                           protects a single lane from this too
 #   branch-template     <template>          how this team names its workers' branches, with the
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
@@ -34,7 +40,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune branch-template"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template"
 
 policy_default() {
   case "$1" in
@@ -48,6 +54,7 @@ policy_default() {
     disk-min-gb) printf '%s\n' "${WOLFMUX_DISK_MIN_GB:-$WOLFMUX_DISK_MIN_GB_DEFAULT}" ;;
     link-node-modules) printf '%s\n' "${WOLFMUX_LINK_NODE_MODULES:-off}" ;;
     auto-prune) printf '%s\n' "${WOLFMUX_AUTO_PRUNE:-on}" ;;
+    auto-reclaim) printf '%s\n' "${WOLFMUX_AUTO_RECLAIM:-on}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     *) return 1 ;;
   esac
@@ -69,6 +76,7 @@ policy_valid() { # <key> <value>
     disk-guard:refuse | disk-guard:warn | disk-guard:off) return 0 ;;
     link-node-modules:on | link-node-modules:off) return 0 ;;
     auto-prune:on | auto-prune:off) return 0 ;;
+    auto-reclaim:on | auto-reclaim:off) return 0 ;;
     # A number, not a word: whole gigabytes, 0 switches the limit off, and the ceiling is
     # only there so that a slip of the hand cannot refuse every spawn for ever.
     # A leading zero is refused on purpose. `test -le` reads base ten but shell arithmetic
@@ -87,7 +95,7 @@ policy_choices() {
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
     browser-writes) printf 'ask|allow\n' ;;
-    worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune) printf 'on|off\n' ;;
+    worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim) printf 'on|off\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
@@ -123,6 +131,14 @@ policy_get() {
   elif [ "$key" = "auto-prune" ]; then
     # The default is on, but a value nobody can read is not permission to delete: the
     # cautious answer for a cleanup is "do not", exactly as it is "ask" for a permission.
+    printf 'off\n'
+  elif [ "$key" = "auto-reclaim" ]; then
+    # The same direction as auto-prune above, and here it is not a matter of taste. The
+    # default is on because a finished lane that nobody takes away is the hoarding this knob
+    # exists to end. But what it switches on deletes a worktree and a branch — source, not
+    # something a build makes again — so a value nobody can read (a typo in the config file,
+    # a hand-edited meta.json) must never be read as "yes". Unreadable means off: nothing is
+    # removed, every lane says what it is holding, and `teamctl reclaim` still works by hand.
     printf 'off\n'
   else
     printf 'ask\n'
@@ -314,6 +330,7 @@ cmd_policy() {
     say "  disk-min-gb         $(policy_get disk-min-gb)       (number, GB)      free space a spawn asks for; 0 = no limit"
     say "  link-node-modules   $(policy_get link-node-modules)     (on|off)          link a new lane's node_modules to its repository's copy"
     say "  auto-prune          $(policy_get auto-prune)      (on|off)          sweep a lane's build output as soon as it is parked (protect one: teamctl keep <role>)"
+    say "  auto-reclaim        $(policy_get auto-reclaim)      (on|off)          take a parked lane off the books once its task is closed and its work is all in main (protect one: teamctl keep <role>)"
     template="$(policy_get branch-template)"
     if [ -n "$template" ]; then
       say "  branch-template     $template     how this team names its workers' branches"

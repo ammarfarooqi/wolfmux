@@ -175,6 +175,7 @@ teamctl policy disk-guard refuse|warn|off       # what a spawn does on a full di
 teamctl policy disk-min-gb 20                   # free space a spawn asks for (1 GB = 1024 MB)  default 20
 teamctl policy link-node-modules on|off         # share the repository's node_modules default off
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
+teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -474,7 +475,10 @@ teamctl prune                      # take it: node_modules and all build output
 teamctl prune --keep-node-modules  # build caches only, so a restart stays cheap
 teamctl prune --team review        # one named team
 teamctl prune --all-teams --dry-run  # the WHOLE machine: every team of every project
-teamctl keep <role>                # never sweep that lane automatically
+teamctl reclaim --dry-run          # which parked lanes are FINISHED and would go, and what holds the rest
+teamctl reclaim                    # take the finished ones: worktree, branch and record
+teamctl reclaim --all-teams --dry-run  # the WHOLE machine (yours alone to run)
+teamctl keep <role>                # never sweep or reclaim that lane automatically
 teamctl keep                       # which lanes are protected right now
 teamctl bar --explain              # what each field of the status bar means, held included
 ```
@@ -539,6 +543,73 @@ and what it took. `teamctl prune --all-teams` is the operator's view of the same
 the fact — every team of every project, a total per team and one for the machine. It is
 yours alone to run, from your own terminal: a lead has no standing outside its own team and
 is refused with exit 77 (which is also why one team's `prune` cannot reach another's lanes).
+
+### A finished lane takes itself off the books (v1.17.0)
+
+The sweep above gives back build output. The checkout itself is the bigger half of a lane
+(33.3 GB of the 52.6 GB left after a full sweep here, 2026-10-13), and only
+`teamctl remove <role>` gave that back. Now a parked lane that is **finished** goes by
+itself — worktree, branch and record — when a lane of its team is parked (`teamctl stop`, a
+plain `teamctl destroy`) or when you run `teamctl reclaim`.
+
+Finished means all of this, and **a check that cannot be answered keeps the lane**:
+
+```
+1  it is parked                        a running lane is never asked more
+2  teamctl keep does not protect it
+3  nothing is uncommitted              tracked changes, or untracked files that are not build output
+4  its worktree's HEAD is its branch   a detached HEAD holds commits no branch leads back to
+5  its branch's content is in main     or origin/main, the branch it was cut from, or the branch
+                                       checked out in your repository: merged, cherry-picked or squashed
+6  no stash was made on its branch
+7  Beads: its task is closed           no task that is not closed, and at least one that is
+8  GitHub: no open PR on its branch    gh pr list --head <branch> --state open is empty
+```
+
+A lane that stays says so. `teamctl status` prints `holding <size>: <reason>` under its
+row — `unmerged at 6c3143f`, `unpushed at 6c3143f`, `open PR #41`, `task open (fp-12)`,
+`dirty: 2 uncommitted files` — and `teamctl reclaim --dry-run` shows it for every lane.
+Status reads what the last check wrote down and asks nothing itself, so it says how old the
+answer is once that is more than ten minutes.
+
+```bash
+teamctl reclaim --dry-run            # every parked lane: would remove, or holding and why
+teamctl keep <role>                  # BEFORE stopping a worker you mean to restart or hand over
+teamctl policy auto-reclaim off      # this team: nothing goes unless you run teamctl reclaim
+```
+
+Before a branch is deleted, by `reclaim`, `remove`, `destroy --worktrees` or
+`destroy --purge`, teamctl prints `<role>: branch <name> was at <full sha>` and writes the
+same into `~/.wolfmux/state/reclaimed.jsonl` (`"event": "lane-removed"`), with why the lane
+was allowed to go and the commit that proved its content is in main. `git branch <name>
+<sha>` brings it back for as long as git keeps the commits. The removal never passes
+`--force` to git and never falls back to `rm -rf`. So a worktree git will not remove (a
+locked one, or one that holds populated submodules) is a lane that stays, shown as
+`holding <size>: git refused to remove its worktree: <git's own words>`; the ledger line
+that was written first is taken back by a second one, `"event": "lane-kept"`, with the
+same tip.
+
+What is easy to get wrong about it, each one measured on git 2.50.1:
+
+- **Plain `git cherry` does not see a squash of several commits** (three commits squashed
+  into one: three `+` lines). teamctl builds one throwaway commit holding the branch's whole
+  diff and asks `git cherry` about that. If main changed a line next to one of the branch's
+  hunks before the squash, nothing matches and the lane is **kept** as unmerged: the known
+  limit, and it errs toward disk.
+- **A stash does not die with its worktree** — `refs/stash` is one list for the whole
+  repository, and a lane's entry was still there after its worktree and branch were removed.
+  A stash made on the lane's branch keeps the lane all the same, because it is work gate 5
+  cannot see and because the entry would name a branch that no longer exists. Nothing is
+  lost either way.
+- **Content only in a main that is not pushed still counts**, and the line says
+  `main is not pushed`.
+- **`teamctl stop` on a finished worker removes its lane**, record included, so
+  `teamctl restart` on it is gone. `teamctl keep <role>` first is how a worker you will
+  bring back stays.
+
+`teamctl reclaim --all-teams` is the same for every team of every project, and yours alone
+to run (exit 77 for a lead). It is what reaches a team whose lead is gone: nobody parks a
+lane there, so nothing else asks its lanes again.
 
 `teamctl remove` and
 `teamctl destroy --worktrees` take all of it; the worktree is going away anyway. A `remove`
@@ -608,6 +679,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes, where 1 GB is 1024 MB (a gibibyte — the unit teamctl prints sizes in). A lane costs about 3 GB once it has installed and built; `0` switches the check off; no leading zero (write `8`, not `08`) |
 | `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the copy in the repository that lane belongs to (`teamctl spawn --repo` can make that another one). One directory for all of them: an install in any lane changes them all |
 | `WOLFMUX_AUTO_PRUNE` | `on` | the default of the `auto-prune` policy: sweep a lane's build output as soon as the lane is parked. `off` is v1.16.1's behaviour (the build caches only, `node_modules` kept). A value that is neither word is read as `off`: an unreadable setting is not permission to delete. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
+| `WOLFMUX_AUTO_RECLAIM` | `on` | the default of the `auto-reclaim` policy: take a parked lane off the books by itself (worktree, branch, record) once its task is closed, its content is in main, nothing is uncommitted or stashed and no PR is open. `off`: nothing is removed unless you run `teamctl reclaim`. A value that is neither word is read as `off`: this one deletes a checkout and a branch, so an unreadable setting must never read as yes. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |
 | `WOLFMUX_NOTIFY` | `all` | whose finished turns notify you: `all`, `lead`, `off`. A team founded by a lead is announced in every case |

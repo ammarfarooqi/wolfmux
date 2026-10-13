@@ -1586,6 +1586,125 @@ shipping content; neither appears. The glob and the `-r` are the lesson, not the
 **shellcheck is still not installed on this machine, so nothing here was linted with it**;
 `bash -n` was run on every changed file and no figure above stands in for a lint.
 
+## 36. A finished lane takes itself off the books (the reclaim work, stage 2)
+
+Stage 1 gave back what a build makes again. The checkout itself is the bigger half of a
+lane — **33.3 GB of the 52.6 GB** left under `~/.wolfmux/worktrees` after a full sweep,
+measured 2026-10-13 — and only `teamctl remove <role>` gave that back, by hand. Stage 2
+removes a parked lane by itself once it is finished. It is the one stage that can delete
+work, so it is built the other way round from a cleanup: a lane goes only when every gate
+says yes, and **a gate that cannot be answered says no**.
+
+The module is `lib/reclaim.sh`, the suite is `tests/reclaim.sh`, and the header of the
+module is the specification. This section is what the header does not say: what the brief
+got wrong, what measuring changed, and what is left.
+
+### Four things the brief had wrong, each found by measuring
+
+**1. Plain `git cherry` does not see a squash of several commits.** The brief said to use
+`git cherry` instead of a containment test, because a squash-merged branch looks unmerged to
+`git branch --contains`. That is half the gap. `git cherry` compares commit by commit, so
+three commits squashed into one read as three commits that are nowhere: on git 2.50.1,
+`git cherry main <branch>` printed three `+` lines, and only a ONE-commit squash matched.
+The fix keeps git as the judge: one throwaway commit holding the branch's whole diff
+(`git commit-tree`, the branch's tree on the merge base), and `git cherry` asked about that.
+
+How much that matters was then measured on the lead's own repository, read-only, 24 lane
+branches against `origin/main`, 7 seconds in all:
+
+| What says the branch's content is in main | Branches |
+|-------------------------------------------|----------|
+| the tip is an ancestor (a containment test sees these) | 4 |
+| plain `git cherry` (every commit has an equal) | 1 |
+| **only the one-commit question** (a squash of several commits) | **9** |
+| nothing (kept, as unmerged or unpushed) | 10 |
+
+So of 14 branches whose content is in main, a containment test plus plain `git cherry` —
+the brief as written — would have recognised 5, and kept the other 9 for ever.
+
+**2. A stash is not lost with its worktree.** The lead asked for a gate "the lane's
+`git stash list` must be empty", on the premise that a stash goes when the worktree goes.
+`refs/stash` lives in the repository's common git directory and is one list for every
+worktree: measured, `git stash list` gave the same entries in a lane and in the main
+checkout, and after `git worktree remove --force` plus `git branch -D` the lane's entry was
+still listed and its commit still there. The gate as asked would have kept every lane of a
+repository as soon as anybody held one stash anywhere in it. What shipped counts only the
+entries made on the lane's OWN branch, and keeps the lane for those — not because they would
+be lost, but because a stash is work the content gate cannot see, and because the entry
+would name a branch that no longer exists. Entries made on a detached HEAD belong to no
+lane; they keep none and are named once per repository.
+
+**3. "Not pushed" cannot be a gate.** Workers are told not to push and integration is a
+cherry-pick, so "the lane must be pushed" would mean nothing is ever reclaimed. Whether the
+content is in main decides; whether the tip is on a remote only chooses the word in the
+reason (`unpushed at <sha>` when it is on no remote, `unmerged at <sha>` when it is, and
+`unpushed` when both are true, because that one exists on this disk only).
+
+**4. The stub had the wrong shape, and so did the time limit.** Both were found by asking
+the real `bd` instead of the stub that encoded my guess:
+
+- `bd list --json` prints a bare array. With `--brief` or `--skip-labels` (bd 1.3.0) the same
+  list arrives wrapped as `{"issues": [...], "meta": {...}}`. The first parser accepted an
+  array only and would have read every wrapped answer as "could not be read". Both shapes
+  are read now and the stub gives both.
+- The first time limit was 20 seconds. Measured on 2026-10-14 with a load average of 18.8:
+  `bd where` 18 s, the same per-lane `bd list` 24 s, 33 s, 4 s and 4 s within five minutes.
+  At 20 seconds every lane on this machine would have been kept on a busy afternoon. The
+  limit is 45 seconds, and — the bigger change — Beads is asked **once per run for the whole
+  project** instead of once per lane: 12 s for 1,377 beads (1.2 MB) under the same load,
+  whatever the number of lanes. A question per lane would have made `teamctl stop` in a
+  team with ten finished lanes a matter of minutes.
+
+### One gate nobody asked for
+
+The worktree's HEAD has to be the tip of the lane's branch. A detached HEAD, or another
+branch checked out in the lane, holds commits that no branch name leads back to once the
+worktree is gone — which is how three commits were lost on 2026-10-13 and found again only
+as dangling objects. The content gate looks at the recorded branch and would never have
+seen them. The reason names that sha: `its worktree is at 6c3143f, which is not the tip of
+its branch`.
+
+### What is said before anything is deleted
+
+`<role>: branch <name> was at <full sha>`, on the screen and as a line in
+`~/.wolfmux/state/reclaimed.jsonl`, before the branch goes — and not only for a reclaim. The
+loss on 2026-10-13 was a `destroy --purge`, so `remove`, `destroy --worktrees` and
+`destroy --purge` say it too, and a `--force` removal also says where the worktree's own
+HEAD was when that is somewhere else. A team's own event log is deleted with the team, so
+the machine-wide ledger is the only record that outlives a purge. The reclaim itself writes
+the ledger line first and keeps the lane when it cannot: a removal nobody can look up is
+not made. It never passes `--force` to git and never falls back to `rm -rf`.
+
+### Three decisions that are easy to undo and were made on purpose
+
+- **The squash question leaves nothing in your repository.** `git commit-tree` writes an
+  object. The throwaway commit goes into a scratch object directory
+  (`GIT_OBJECT_DIRECTORY`, with the repository's own objects as an alternate) that is deleted
+  afterwards; measured, the repository's loose-object count is the same before and after.
+  Left in the repository it would have been one unreachable commit per lane per target every
+  time a lane was parked, in a repository that already sat above git's automatic-gc
+  threshold (6,871 loose objects).
+- **The team's lock is never held across a question to Beads or GitHub.** The check runs
+  outside the lock; the lock is taken for the removal, the cheap gates are asked again under
+  it, and it is released. The lock gives up after 30 seconds and a slow `bd` takes longer.
+- **Status asks nothing.** What a kept lane holds and why is written into the lane's record
+  by the check and read by `teamctl status`, with its age once it is more than ten minutes
+  old. Nothing is triggered from the status bar or the dashboard.
+
+### What it does not do
+
+The rows are in [ROADMAP.md](ROADMAP.md) and are repeated here only as a list: a squash
+after main changed the neighbouring line is kept (pinned by a test); a lane parked before
+its merge waits for the next park; without `gh`, or in a repository that is not on GitHub,
+nothing is reclaimed automatically; files `.gitignore` ignores go with the lane;
+`teamctl stop` on a finished worker ends `teamctl restart` for it (`teamctl keep` first);
+`teamctl destroy --worktrees` is the older path and asks none of these gates.
+
+One correction to how the knob was described while it was being designed: `auto-prune` does
+**not** fall back to its default on a value nobody can read. Both knobs fall back to `off`,
+and have since stage 1 (`policy_get`). For `auto-reclaim` the comment next to the code says
+why that direction is not a matter of taste.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
