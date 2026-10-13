@@ -20,9 +20,26 @@ teamctl version          # the CONTROL: it must print the branch's version, not 
 
 The version line is the control, and it is worth printing before trusting any other result:
 `WOLFMUX_VERSION` lives in `lib/common.sh`, so it changes only when the libraries really
-switched. The test suites do this for you — every one of them exports
-`WOLFMUX_HOME="$REPO/config/wolfmux"` at the top — which is why a suite can pass on a branch
-whose behaviour a hand-run command appears to deny.
+switched.
+
+**Every suite points at the branch; none of them relies on you to.** That is why a suite can
+pass on a branch whose behaviour a hand-run command appears to deny — and it is worth knowing
+that they do it in four different ways, because "they all export `WOLFMUX_HOME`" is not true
+and a reviewer who assumes it will mis-read the three that do not:
+
+| Mechanism | Suites |
+|-----------|--------|
+| `export WOLFMUX_HOME="$REPO/config/wolfmux"` at the top | `smoke` `disk` `dashboard` `inbox` `nudge-typing` `providers` |
+| sets it per command, on the one call that needs the dispatcher (`teamctl _complete`); everything else is read straight out of `$REPO` | `docs` |
+| sources the library itself: `. "$REPO/config/wolfmux/lib/provider-env.sh"` — no dispatcher involved, so nothing to point | `credential-routing` |
+| `export HOME="$WORK/home"`, run the repo's own `install.sh` into it, then drive `$HOME/bin/teamctl` — the branch is tested through its installer | `migration` `permissions` |
+
+The last row is the one to remember for another reason: **`install.sh` can be tested without
+touching your real `HOME`**, and those two suites have been doing it for releases. Nothing
+has to be installed against the live machine to find out what the installer does.
+
+The thing a reviewer must not do is run a hand command with `WOLFMUX_HOME` unset and read the
+result as the branch's.
 
 (Found the hard way during the v1.17.0 review: two blockers were nearly filed against a
 branch that was correct, and what caught it was `teamctl version` printing the installed
