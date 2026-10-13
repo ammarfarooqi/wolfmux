@@ -42,6 +42,7 @@
 # the point: this is a faster path to the same answer, not a second opinion.
 
 DASH_TAB="$(printf '\t')"
+DASH_US="$(printf '\037')" # the unit separator: what dash_team_records splits a record's fields on
 DASH_NL="
 "
 
@@ -380,8 +381,14 @@ dash_disk_label() {
 }
 
 # --- one team's records: ONE read, not one per field ---------------------------------
-# dash_team_records — one tab-separated line per agent of the loaded team:
-# role, kind, model, label, workdir, session_id, family, branch, spawned_by.
+# dash_team_records — one line per agent of the loaded team, its fields split by $DASH_US:
+# role, kind, model, label, workdir, session_id, family, branch, spawned_by, model_id,
+# model_context, model_at.
+#
+# The unit separator, not a tab. A tab is whitespace to `read`, so two in a row (an empty
+# field) collapse into one and every field after it moves up one place. A Codex agent has no
+# session_id and a record from before v1.18.0 has no model_id: with tabs the first read its
+# family as its conversation id and its branch as its family, and lost its context.
 #
 # In the registry's OWN order: lead first, then created_at, then role — exactly reg_list's
 # sort key. reg_list spawns a jq per record to produce that order and reg_field one per
@@ -395,8 +402,9 @@ dash_team_records() {
     | sort_by([(if .kind == "lead" then 0 else 1 end), (.created_at // ""), .role])
     | .[]
     | [.role, (.kind // ""), (.model // ""), (.label // ""), (.workdir // ""),
-       (.session_id // ""), (.family // ""), (.branch // ""), (.spawned_by // "")]
-    | @tsv' "$STATE_DIR"/agents/*.json 2>/dev/null || true
+       (.session_id // ""), (.family // ""), (.branch // ""), (.spawned_by // ""),
+       (.model_id // ""), (.model_context // ""), (.model_at // "")]
+    | map(tostring) | join("\u001f")' "$STATE_DIR"/agents/*.json 2>/dev/null || true
 }
 
 # --- one team -------------------------------------------------------------------------
@@ -407,13 +415,13 @@ dash_team_records() {
 # lane still shows its state and branch, and `--full` fills in the rest. That is the
 # budget rule: a fast dashboard people open beats a complete one they do not.
 dash_team_json() {
-  local panes="$1" snapshot="$2" full="$3" live=0 orphaned=0 rows="" lead_label="" founder=""
-  local role kind model label workdir session_id family branch spawned_by
+  local panes="$1" snapshot="$2" full="$3" live=0 orphaned=0 rows="" lead_label="" lead_mark="" founder=""
+  local role kind model label workdir session_id family branch spawned_by recorded_id recorded_window recorded_at
   local row pane dead pid state cpu rss usage cctx active lead_row=""
   SESSION="$(dash_meta_session "$STATE_DIR")"
   [ -n "$SESSION" ] || SESSION="$(session_name_for_project)"
   if dash_has_session "$(dash_sessions "$panes")" "$SESSION"; then live=1; fi
-  while IFS="$DASH_TAB" read -r role kind model label workdir session_id family branch spawned_by; do
+  while IFS="$DASH_US" read -r role kind model label workdir session_id family branch spawned_by recorded_id recorded_window recorded_at; do
     [ -n "$role" ] || continue
     row="$(dash_pane_row "$panes" "$SESSION" "$role")"
     # "pane|dead|pid", picked apart without a process: cut would be two more forks per agent.
@@ -429,40 +437,53 @@ dash_team_json() {
     else
       state="running"
     fi
-    if [ "$kind" = "lead" ]; then
-      branch="-"
-      lead_label="$label"
-      lead_row="$row"
-      founder="$spawned_by"
-    fi
     usage="$(dash_tree_usage "$snapshot" "$pid")"
     cpu="${usage%% *}"
     rss="${usage##* }"
     cctx="-"
     active=""
+    # Which model it runs is models_running's answer (lib/models.sh), the one status and teamctl
+    # models give: MR_ID, MR_HOW, MR_LABEL and MR_MARK. An agent that is not on fable, opus,
+    # sonnet or haiku has no such answer, and keeps its record's label and id.
+    MR_ID="$recorded_id" MR_HOW="" MR_LABEL="" MR_MARK=""
     if [ "$full" = "1" ] || [ "$state" = "running" ]; then
       CTX_FILE=""
-      agent_context "$workdir" "$model" "$family" "$session_id" || true
+      agent_context "$workdir" "$model" "$family" "$session_id" "$recorded_window" "$recorded_id" "$recorded_at" || true
       cctx="$(dash_context_label "$CTX_TOKENS" "$CTX_WINDOW")"
       # The transcript's own mtime: the very file the context reader just opened, and it
       # moves on every turn the agent takes. A file timestamp, not a claim about what the
       # agent is doing.
       active="$(dash_mtime "${CTX_FILE:-}")"
+    elif models_is_alias "$model"; then
+      # Its transcript is not opened (the budget rule above): what its record says, and "Opus ?"
+      # where the record says nothing. Never the label an old table once gave it.
+      models_running "$model" "$recorded_id" "$recorded_window" "$recorded_at" "" ""
     fi
-    rows="$rows$role$DASH_TAB$kind$DASH_TAB$model$DASH_TAB$label$DASH_TAB$state$DASH_TAB${pane:--}$DASH_TAB${branch:--}$DASH_TAB$workdir$DASH_TAB$cctx$DASH_TAB$cpu$DASH_TAB$rss$DASH_TAB$active$DASH_NL"
+    if [ -n "$MR_LABEL" ]; then label="$MR_LABEL"; fi
+    if [ "$kind" = "lead" ]; then
+      branch="-"
+      lead_label="$label"
+      lead_mark="$MR_MARK"
+      lead_row="$row"
+      founder="$spawned_by"
+    fi
+    rows="$rows$role$DASH_TAB$kind$DASH_TAB$model$DASH_TAB$label$DASH_TAB$state$DASH_TAB${pane:--}$DASH_TAB${branch:--}$DASH_TAB$workdir$DASH_TAB$cctx$DASH_TAB$cpu$DASH_TAB$rss$DASH_TAB$active$DASH_TAB$MR_MARK$DASH_TAB$MR_ID$DASH_TAB$MR_HOW$DASH_NL"
   done <<EOF
 $(dash_team_records)
 EOF
   if dash_orphaned "$lead_row"; then orphaned=1; fi
   printf '%s' "$rows" | "$JQ_BIN" -R -s \
     --arg team "$TEAM" --arg session "$SESSION" --arg live "$live" --arg orphaned "$orphaned" \
-    --arg lead "$lead_label" --arg founder "${founder:-operator}" --arg disk "$(dash_disk_label)" \
+    --arg lead "$lead_label" --arg lead_mark "$lead_mark" --arg founder "${founder:-operator}" --arg disk "$(dash_disk_label)" \
     --arg full "$full" '
     {team: $team, session: $session, session_running: ($live == "1"),
      state: (if $orphaned == "1" then "orphaned" else (if $live == "1" then "running" else "not running" end) end),
-     lead: $lead, founder: $founder, lanes_disk: $disk,
+     lead: $lead, lead_mark: $lead_mark, founder: $founder, lanes_disk: $disk,
      agents: (split("\n") | map(select(length > 0) | split("\t")) | map({
-       role: .[0], kind: .[1], model: .[2], label: .[3], state: .[4], pane: .[5],
+       role: .[0], kind: .[1], model: .[2], label: .[3], label_mark: (.[12] // ""),
+       model_id: (if (.[13] // "") == "" then null else .[13] end),
+       known_from: (if (.[14] // "") == "" then null else .[14] end),
+       state: .[4], pane: .[5],
        branch: .[6], workdir: .[7], context: .[8],
        detail: ($full == "1" or .[4] == "running"),
        cpu_percent: (.[9] | tonumber? // null), rss_kb: (.[10] | tonumber? // null),
@@ -552,18 +573,19 @@ dash_render() {
     "PROJECT \(.project)   \(.root)",
     (if (.teams | length) == 0 then "  no teams on record" else empty end),
     (.teams[] |
-      "  TEAM \(.team | pad(20)) \(.state | pad(12)) lead \(if .lead == "" then "-" else .lead end | pad(12)) agents \((.agents | length) | tostring | pad(4)) lanes \(.lanes_disk)",
+      "  TEAM \(.team | pad(20)) \(.state | pad(12)) lead \((if .lead == "" then "-" else .lead + (.lead_mark // "") end) | pad(12)) agents \((.agents | length) | tostring | pad(4)) lanes \(.lanes_disk)",
       (if (.agents | length) == 0 then "      no agents on record" else empty end),
       (.agents[] |
-        "      \(if .kind == "lead" then $wolf else $dog end) \(.role | pad(16)) \(.label | pad(14)) \(.state | pad(8))" +
+        "      \(if .kind == "lead" then $wolf else $dog end) \(.role | pad(16)) \((.label + (.label_mark // "")) | pad(14)) \(.state | pad(8))" +
         " cpu \((if .cpu_percent == null then "-" else (.cpu_percent | tostring) end) | pad(6))" +
         " mem \((.rss_kb | gb) | pad(7))" +
         " ctx \(.context | pad(10))" +
         " wrote \((.transcript_written_at | ago($now)) | pad(6)) \(.branch)"))'
   printf '\n'
-  printf '%s\n' "$doc" | "$JQ_BIN" -r '
+  printf '%s\n' "$doc" | "$JQ_BIN" -r --arg legend "$MODELS_MARK_LEGEND" '
     def gb: if . == null then "-" else "\((. / 1048576 * 10 | round) / 10) GB" end;
     "MACHINE  load \(.machine.load // "-") · memory \(.machine.memory_free_kb | gb) free · disk \(.machine.disk_free_kb | gb) free",
+    (if ([.projects[].teams[].agents[] | select(.label_mark == "*")] | length) > 0 then "  \($legend)" else empty end),
     (if (.unreadable_projects | length) > 0 then "  skipped, state could not be read: \(.unreadable_projects | join(", "))" else empty end),
     (if (.empty_projects | length) > 0 then "  skipped, nothing on record (a start that never became a team): \(.empty_projects | join(", "))" else empty end),
     (if .full then empty else "  ctx and wrote are read for RUNNING agents only. All of them: teamctl dashboard --full" end)'

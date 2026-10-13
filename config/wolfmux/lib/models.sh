@@ -59,6 +59,22 @@ models_builtin() {
   esac
 }
 
+# models_earlier_window <id> — sets MB_CONTEXT to the window of a model an alias meant BEFORE
+# teamctl recorded ids (v1.18.0), or returns 1. An agent started back then has no id and no
+# window on record; its transcript names the model, and this is where that model's window comes
+# from. Each figure is what Claude Code answered when asked for that very id (--model <id>,
+# 2026-10-13, Claude Code 2.1.296), never an assumption. The list is closed: every agent
+# started since has its id and its window on its own record.
+models_earlier_window() {
+  case "$1" in
+    claude-opus-5 | claude-sonnet-5) MB_CONTEXT="1000000" ;;
+    *)
+      MB_CONTEXT=""
+      return 1
+      ;;
+  esac
+}
+
 # models_policy — latest or pinned. Anything else counts as latest (doctor says so).
 models_policy() {
   case "${WOLFMUX_MODEL_POLICY:-latest}" in
@@ -144,6 +160,9 @@ models_newer() {
 # $WOLFMUX_DATA/models/<alias>.ok    ok|id|day|epoch|context|       the last probe that worked
 # $WOLFMUX_DATA/models/<alias>.fail  fail||day|epoch||reason        the last one that did not (removed
 #                                                                    by the next one that works)
+# $WOLFMUX_DATA/models/<id>.ok       ok|id|day|epoch|context|       what Claude Code declared for exactly
+#                                                                    that id, kept when the alias moves on:
+#                                                                    an agent still on it keeps its window
 models_cache_dir() { printf '%s/models\n' "${WOLFMUX_DATA:-$HOME/.wolfmux}"; }
 
 models_today() {
@@ -364,6 +383,9 @@ models_refresh() {
   fi
   if models_probe "$alias"; then
     models_cache_write "$alias" ok "$PROBE_ID" "$PROBE_CONTEXT" "" || true
+    # ... and under the id itself: the next answer for this alias overwrites the line above, and
+    # an agent still running this id then has nowhere else to learn its window from.
+    if [ -n "$PROBE_CONTEXT" ]; then models_cache_write "$PROBE_ID" ok "$PROBE_ID" "$PROBE_CONTEXT" "" || true; fi
     /bin/rm -f "$(models_cache_dir)/$alias.fail"
   else
     models_cache_write "$alias" fail "" "" "$PROBE_ERROR" || true
@@ -380,42 +402,151 @@ models_warn_fallback() {
 }
 
 # --- which model an agent runs ---------------------------------------------------------
-# models_transcript_model <session-id> <workdir> — prints the model of the last answer in that
-# conversation's transcript (what was actually served), or nothing.
-models_transcript_model() {
-  local file
-  [ -n "${1:-}" ] || return 0
-  file="$(session_transcript "$1" "${2:-}" 2>/dev/null || true)"
-  models_transcript_file_model "$file"
-}
+#
+# ONE answer to "which model does this agent run", for every view that may open a transcript:
+# teamctl status, teams, dashboard, models and doctor all get it from models_running, fed by
+# models_transcript_tail. Two views that each worked it out for themselves is how v1.18.0 came to
+# print "Opus ?" in status for an agent teamctl models called "Opus 5" in the same minute.
+# (The status bar and completion may not open a transcript, for speed: they say what the record
+# says, and "?" or "unknown" where it says nothing. They never name another model.)
 
-# models_transcript_file_model <transcript> — the same, for a transcript file already found
-models_transcript_file_model() {
+# models_transcript_tail <transcript> — ONE pass over the tail of a transcript, for every reader
+# of it. Sets
+#   MT_MODEL     the model of the last answer Claude served ("" = none in the tail)
+#   MT_MODEL_AT  when that answer was written, as the transcript says it ("" = it does not say)
+#   MT_TOKENS    what the last answer with usage saw: its input plus what the prompt cache
+#                holds ("" = none)
+#   MT_REQUESTS  how many answers with usage the tail holds
+# Only the tail: a view must stay fast. -R first: jq's own parser must never see a raw line, a
+# half-written one included; fromjson? decodes what parses and yields nothing for what does not.
+models_transcript_tail() {
+  local rows kind tokens model at
+  MT_MODEL="" MT_MODEL_AT="" MT_TOKENS="" MT_REQUESTS=0
   [ -n "${1:-}" ] && [ -r "$1" ] || return 0
-  tail -n 400 "$1" 2>/dev/null |
-    "$JQ_BIN" -R -r 'fromjson? | select(.type == "assistant") | .message.model // empty | select(startswith("claude-"))' 2>/dev/null |
-    tail -n 1 || true
+  rows="$(tail -n 400 "$1" 2>/dev/null | "$JQ_BIN" -R -r '
+    fromjson? | objects | select(.type == "assistant") | . as $line | (.message | objects) as $msg |
+    (($msg.model | strings | select(startswith("claude-"))) // "") as $m |
+    (($msg.usage | objects) // null) as $u |
+    select($u != null or $m != "") |
+    [(if $u != null then "u" else "m" end),
+     (if $u != null then ([$u.input_tokens, $u.cache_read_input_tokens, $u.cache_creation_input_tokens] | map(numbers) | add // 0) else 0 end),
+     $m,
+     (if $m != "" then (($line.timestamp | strings) // "") else "" end)]
+    | map(tostring) | join("\u001f")' 2>/dev/null)" || rows=""
+  # The unit separator, not a tab: a tab is whitespace to `read`, and an answer with usage and no
+  # model would then hand its (empty) model the next field.
+  while IFS="$_MODELS_SEP" read -r kind tokens model at; do
+    case "$kind" in
+      u) MT_REQUESTS=$((MT_REQUESTS + 1)) MT_TOKENS="$tokens" ;;
+      m) ;;
+      *) continue ;;
+    esac
+    if [ -n "$model" ]; then MT_MODEL="$model" MT_MODEL_AT="$at"; fi
+  done <<EOF
+$rows
+EOF
+  return 0
 }
 
-# models_context_of_id <id> — the context window Claude Code declared for exactly that id (in a
-# probe answer this machine kept, or in the built-in table), or nothing: an id no answer named
-# has no known window, and a share of some other model's window would be a wrong number.
-models_context_of_id() {
-  local alias
-  models_parse "$1" || return 0
-  alias="$MP_FAMILY"
-  models_is_alias "$alias" || return 0
-  if models_cache_read "$alias" ok && [ "$MC_ID" = "$1" ] && [ -n "$MC_CONTEXT" ]; then
-    printf '%s\n' "$MC_CONTEXT"
-  elif models_builtin "$alias" && [ "$MB_ID" = "$1" ]; then
-    printf '%s\n' "$MB_CONTEXT"
+# models_window_of <id> — sets MW_CONTEXT: the context window Claude Code declared for exactly
+# that id, or "" when nobody said. Never the window of another model: a share of the wrong
+# number is worse than no share. Where it looks, in this order:
+#   1. this machine's own line for that id (models_refresh keeps one per id it was answered)
+#   2. the line of its alias, when that answer was for this id (v1.18.0 kept no line per id)
+#   3. the built-in id of its alias (models_builtin)
+#   4. a model an alias meant before ids were recorded (models_earlier_window)
+models_window_of() {
+  MW_CONTEXT=""
+  valid_model_id "${1:-}" || return 0 # it becomes a file name below, and may come from a transcript
+  if models_cache_read "$1" ok && [ "$MC_ID" = "$1" ] && [ -n "$MC_CONTEXT" ]; then
+    MW_CONTEXT="$MC_CONTEXT"
+    return 0
+  fi
+  if models_parse "$1" && models_is_alias "$MP_FAMILY"; then
+    if models_cache_read "$MP_FAMILY" ok && [ "$MC_ID" = "$1" ] && [ -n "$MC_CONTEXT" ]; then
+      MW_CONTEXT="$MC_CONTEXT"
+      return 0
+    fi
+    if models_builtin "$MP_FAMILY" && [ "$MB_ID" = "$1" ]; then
+      MW_CONTEXT="$MB_CONTEXT"
+      return 0
+    fi
+  fi
+  if models_earlier_window "$1"; then MW_CONTEXT="$MB_CONTEXT"; fi
+  return 0
+}
+
+# _models_same <id> <id> — the same model: the same id, or the same family and version (a date
+# stamp and a [1m] marker are not another model)
+_models_same() {
+  local family major minor
+  [ "$1" = "$2" ] && return 0
+  models_parse "$1" || return 1
+  family="$MP_FAMILY" major="$MP_MAJOR" minor="$MP_MINOR"
+  models_parse "$2" || return 1
+  [ "$MP_FAMILY" = "$family" ] && [ "$MP_MAJOR" = "$major" ] && [ "$MP_MINOR" = "$minor" ]
+}
+
+# _models_before <transcript time> <record time> — true only when both are UTC times of the
+# shape 2026-10-13T09:00:00[.123]Z and the first is the earlier one, to the second. Anything
+# else proves nothing, and is not "before".
+_models_before() {
+  local a="${1:-}" b="${2:-}" LC_ALL=C
+  case "$a" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z) ;; *) return 1 ;; esac
+  case "$b" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z) ;; *) return 1 ;; esac
+  [[ "${a:0:19}" < "${b:0:19}" ]]
+}
+
+# models_running <alias> <recorded-id> <recorded-window> <recorded-at> <seen-id> <seen-at>
+# The answer itself. <recorded-*> is what the agent's record says it was started with (model_id,
+# model_context, model_at; all "" on a record from before v1.18.0). <seen-*> is the last answer
+# in its own transcript (MT_MODEL, MT_MODEL_AT; "" when there is none). Sets
+#   MR_ID      the id it runs ("" = unknown)
+#   MR_HOW     record      its record names that model, and no later answer says otherwise
+#              transcript  its last answer names it, and its record does not vouch for it: the
+#                          record has no id, or names another model
+#              unknown     neither says
+#   MR_LABEL   "Opus 5" for claude-opus-5; "Opus ?" when unknown
+#   MR_MARK    "*" when MR_HOW is transcript: what a table puts after the label, so a model the
+#              record does not vouch for never looks like one it does
+#   MR_WINDOW  the context window of exactly that model ("" = unknown, and then no share is shown)
+# What was served outranks what was asked for: Claude Code falls back to an earlier model at
+# startup when the one asked for is not available, and /model changes it in a running session.
+# With one exception: an answer written BEFORE the id was recorded says nothing about the start
+# the record describes. That is every agent right after `teamctl restart --continue`: its
+# conversation still ends with the old model's answer until it answers again.
+models_running() {
+  local alias="$1" recorded="$2" window="$3" recorded_at="$4" seen="$5" seen_at="$6"
+  MR_ID="" MR_HOW="unknown" MR_LABEL="" MR_MARK="" MR_WINDOW=""
+  valid_model_id "$seen" || seen=""
+  case "$window" in *[!0123456789]*) window="" ;; esac
+  if [ -n "$seen" ] && [ -n "$recorded" ] && ! _models_same "$seen" "$recorded" && _models_before "$seen_at" "$recorded_at"; then
+    seen=""
+  fi
+  if [ -n "$seen" ] && { [ -z "$recorded" ] || ! _models_same "$seen" "$recorded"; }; then
+    MR_ID="$seen" MR_HOW="transcript" MR_MARK="*"
+    models_window_of "$seen"
+    MR_WINDOW="$MW_CONTEXT"
+  elif [ -n "$recorded" ]; then
+    MR_ID="$recorded" MR_HOW="record" MR_WINDOW="$window"
+    if [ -z "$MR_WINDOW" ]; then
+      models_window_of "$recorded"
+      MR_WINDOW="$MW_CONTEXT"
+    fi
+  fi
+  if [ -n "$MR_ID" ]; then
+    models_label_of "$MR_ID"
+    MR_LABEL="$MODELS_LABEL"
+  else
+    models_family_label "$alias"
+    MR_LABEL="$MODELS_LABEL ?"
   fi
   return 0
 }
 
 # models_agent_rows <state-dir>... — one row (fields split by $_MODELS_SEP) per agent record of
 # an alias model in those team state directories:
-#   team role alias recorded-id state session-id workdir resolved-from
+#   team role alias recorded-id state session-id workdir resolved-from recorded-at recorded-window
 models_agent_rows() {
   local dir team file files
   for dir in "$@"; do
@@ -426,7 +557,8 @@ models_agent_rows() {
     [ "${#files[@]}" -gt 0 ] || continue
     "$JQ_BIN" -r --arg team "$team" --arg aliases " $WOLFMUX_MODEL_ALIASES " \
       'select((.model // "") as $m | $m != "" and ($aliases | contains(" " + $m + " "))) |
-       [$team, .role, .model, (.model_id // ""), (.state // ""), (.session_id // ""), (.workdir // ""), (.model_source // "")]
+       [$team, .role, .model, (.model_id // ""), (.state // ""), (.session_id // ""), (.workdir // ""), (.model_source // ""),
+        (.model_at // ""), (.model_context // "")]
        | join("\u001f")' "${files[@]}" 2>/dev/null || true
   done
 }
@@ -440,20 +572,15 @@ models_project_state_dirs() {
   return 0
 }
 
-# models_drift <team> <role> <alias> <recorded-id> <session-id> <workdir>
-# Sets MD_RUNNING (the id, or empty = unknown), MD_HOW (transcript / record / unknown),
-# MD_NEWEST, MD_VERDICT (current / behind / unknown) and MD_RESTART (the command that moves it).
+# models_drift <team> <role> <alias> <recorded-id> <session-id> <workdir> [<recorded-at>] [<recorded-window>]
+# (one row of models_agent_rows). Reads the agent's transcript and asks models_running: sets MR_*
+# and, from them, MD_RUNNING (the id, or empty = unknown) and MD_HOW (record / transcript /
+# unknown); then MD_NEWEST, MD_VERDICT (current / behind / unknown) and MD_RESTART (the command
+# that moves it).
 models_drift() {
-  local seen
-  MD_RUNNING="$4" MD_HOW="record"
-  seen="$(models_transcript_model "$5" "$6")"
-  if [ -n "$seen" ]; then
-    # What was served outranks what was asked for: Claude Code falls back to an earlier model
-    # at startup when the one asked for is not available.
-    MD_RUNNING="$seen" MD_HOW="transcript"
-  elif [ -z "$MD_RUNNING" ]; then
-    MD_HOW="unknown"
-  fi
+  models_transcript_tail "$(session_transcript "$5" "$6" 2>/dev/null || true)"
+  models_running "$3" "$4" "${8:-}" "${7:-}" "$MT_MODEL" "$MT_MODEL_AT"
+  MD_RUNNING="$MR_ID" MD_HOW="$MR_HOW"
   models_newest_known "$3" || MN_ID=""
   MD_NEWEST="$MN_ID"
   MD_RESTART="teamctl restart $2"
@@ -468,9 +595,30 @@ models_drift() {
   fi
 }
 
-# agent_label <role> — the label of an agent of the loaded team, from the id its record says
-# it started with. A record of an alias written before ids were recorded says nothing about
-# the version, so its label says so too ("Opus ?") rather than repeat the table it came from.
+# What every table prints once, under itself, when it marked a label with MR_MARK.
+MODELS_MARK_LEGEND="* = the model its last answer names; its record does not vouch for it (no model on record, or another one). teamctl models"
+
+# agent_model <role> — models_running's answer for an agent of the loaded team, for a view that
+# shows no context (teamctl teams). Sets MR_*. An agent that is not on fable, opus, sonnet or
+# haiku has no such answer: its record's label and id stand, with no provenance and no mark.
+agent_model() {
+  local model
+  model="$(reg_field "$1" model 2>/dev/null || true)"
+  MR_ID="$(reg_field "$1" model_id 2>/dev/null || true)" MR_HOW="" MR_LABEL="" MR_MARK="" MR_WINDOW=""
+  if models_is_alias "$model"; then
+    models_transcript_tail "$(session_transcript "$(reg_field "$1" session_id 2>/dev/null || true)" "$(reg_field "$1" workdir 2>/dev/null || true)" 2>/dev/null || true)"
+    models_running "$model" "$MR_ID" "$(reg_field "$1" model_context 2>/dev/null || true)" "$(reg_field "$1" model_at 2>/dev/null || true)" "$MT_MODEL" "$MT_MODEL_AT"
+  else
+    MR_LABEL="$(agent_label "$1")"
+  fi
+  return 0
+}
+
+# agent_label <role> — the label of an agent of the loaded team from its RECORD alone: the id it
+# says it started with. For a caller that may not open a transcript (completion, on every Tab),
+# and for an agent that is not on an alias. A record of an alias written before ids were recorded
+# says nothing about the version, so its label says so too ("Opus ?") rather than repeat the
+# table it came from. A view that may open a transcript asks models_running instead.
 agent_label() {
   local model id
   model="$(reg_field "$1" model 2>/dev/null || true)"
@@ -489,7 +637,7 @@ agent_label() {
 # --- teamctl models [--json] [--refresh] ------------------------------------------------
 cmd_models() {
   local json=0 refresh=0 alias aliases="" agents="" root state_dir
-  local team role model recorded state session workdir source label
+  local team role model recorded state session workdir source label recorded_at recorded_window
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=1 ;;
@@ -526,16 +674,10 @@ cmd_models() {
   if [ -n "$root" ]; then
     while IFS= read -r state_dir; do
       [ -n "$state_dir" ] || continue
-      while IFS="$_MODELS_SEP" read -r team role model recorded state session workdir source; do
+      while IFS="$_MODELS_SEP" read -r team role model recorded state session workdir source recorded_at recorded_window; do
         [ -n "$role" ] && [ "$state" = "running" ] || continue
-        models_drift "$team" "$role" "$model" "$recorded" "$session" "$workdir"
-        if [ -n "$MD_RUNNING" ]; then
-          models_label_of "$MD_RUNNING"
-          label="$MODELS_LABEL"
-        else
-          models_family_label "$model"
-          label="$MODELS_LABEL ?"
-        fi
+        models_drift "$team" "$role" "$model" "$recorded" "$session" "$workdir" "$recorded_at" "$recorded_window"
+        label="$MR_LABEL"
         agents="$agents$("$JQ_BIN" -cn --arg team "$team" --arg role "$role" --arg alias "$model" --arg recorded "$recorded" \
           --arg running "$MD_RUNNING" --arg how "$MD_HOW" --arg label "$label" --arg newest "$MD_NEWEST" \
           --arg verdict "$MD_VERDICT" --arg restart "$MD_RESTART" --arg source "$source" \
@@ -580,6 +722,7 @@ EOF
       esac
       printf '  %-14s %-14s %-7s %-26s %-11s %-11s %s\n' "$team" "$role" "$model" "$recorded" "$label" "$source" "$state"
     done
+  say "  KNOWN FROM  record: its record names that model, and no later answer of its says otherwise · transcript: its last answer names it, and its record does not (teamctl status marks it *)"
 }
 
 # --- teamctl _model-badge <root> <team> -------------------------------------------------

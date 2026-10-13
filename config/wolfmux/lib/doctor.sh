@@ -438,7 +438,7 @@ _doc_policy() {
 # the cache and the agents' transcripts; it never probes (teamctl models --refresh does). Nothing
 # is restarted: each agent behind gets the command that moves it.
 _doc_models() {
-  local alias state_dir team role model recorded state session workdir source behind=0
+  local alias state_dir team role model recorded state session workdir source recorded_at recorded_window behind=0
   _head "Models — what fable, opus, sonnet and haiku mean (policy: $(models_policy))"
   case "${WOLFMUX_MODEL_POLICY:-latest}" in
     latest | pinned) ;;
@@ -465,9 +465,9 @@ _doc_models() {
   [ -n "${ROOT:-}" ] || return 0
   while IFS= read -r state_dir; do
     [ -n "$state_dir" ] || continue
-    while IFS="$_MODELS_SEP" read -r team role model recorded state session workdir source; do
+    while IFS="$_MODELS_SEP" read -r team role model recorded state session workdir source recorded_at recorded_window; do
       [ -n "$role" ] && [ "$state" = "running" ] || continue
-      models_drift "$team" "$role" "$model" "$recorded" "$session" "$workdir"
+      models_drift "$team" "$role" "$model" "$recorded" "$session" "$workdir" "$recorded_at" "$recorded_window"
       case "$MD_VERDICT" in
         behind)
           behind=$((behind + 1))
