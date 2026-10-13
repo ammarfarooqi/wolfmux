@@ -65,8 +65,11 @@ teamctl doctor
 ```
 
 For **v1.17.0** the figures live in [BUILD-LOG.md](BUILD-LOG.md#every-suite-at-the-shipped-head):
-1069 passing, 2 failing, 0 skipped across the ten countable suites at one sha, the two
-failures being this machine's Beads install and present on a pristine base as well. The
+1069 passing, 2 failing, 0 skipped across the ten countable suites at one sha. The two
+failures are non-hermetic checks that read the live shared Beads database, so their result
+depends on its contents at the time; they are not this branch's, and the control is a
+pristine `adbc2db` failing the same two by name. The mechanism is a hypothesis with its
+evidence in the build log, and a task of its own — not a finding, and not this release's. The
 paragraph below is the v1.16.1 record and is kept as that release's measurement, not as a
 description of the suites today — their check counts have grown, as the list above shows.
 

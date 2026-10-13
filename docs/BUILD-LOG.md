@@ -1553,7 +1553,25 @@ and none was.
 pristine `adbc2db`, which fails the same two by name — `beads: a worker reaches the shared
 database from its worktree` and `rename: a Beads hook written under the old name is
 replaced`. Pristine is 346 / 2, this tree is 349 / 2: three checks added, no new failure.
-Both are properties of this machine's Beads install rather than of wolfmux.
+Both are **non-hermetic checks**: they read the LIVE shared Beads database rather than a
+throwaway one, so their result depends on what is in it at the time. They failed in three
+runs here and passed in two of the lead's, and the branch is identical across all five.
+
+**The mechanism is not established.** The leading hypothesis, with the three facts behind it
+and nothing more: the check immediately before the failing one passes, running the same
+`bd list --assignee backend` query from the project root and finding the bead the suite just
+created; the failing check runs that same query after `cd` into the worker's worktree and
+asserts `length == 1`; and in the live database that a worktree path resolves to there were
+**0** open beads assigned to the role name `backend` when measured. That fits `bd` resolving
+to the live database rather than the suite's own from inside a worktree — which would make
+the check assert the number of open beads belonging to an unrelated role, and pass only when
+that number happens to be 1. Three facts are not a proof, and this is filed as its own task
+rather than fixed here.
+
+What is NOT the explanation, so nobody reaches for either again: not this machine's Beads
+install (the install is the same in runs that pass and runs that fail), and not concurrent
+Beads writes by the agent running the suite (a run with no `bd` activity of its own at all
+failed identically).
 
 `tests/credential-routing.sh` has **no counted checks by design** — it prints four sections
 for a person to compare against its own `expected` block, so it has no summary line and no
