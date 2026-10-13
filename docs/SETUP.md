@@ -51,7 +51,8 @@ Every edited file gets `<file>.backup-YYYYMMDD-HHMMSS`. Running it again changes
 nothing; an install from before tab completion gets the two completion lines added
 to the existing `~/.zshrc` block, after a backup, exactly once. Skip parts with
 `--no-path`, `--no-completion` (only the completion lines), `--no-claude-permissions`,
-`--no-codex-rules`, `--no-notifier-app`.
+`--no-codex-rules`, `--no-notifier-app`, `--no-claude-commands` (the installer skips
+copying the Claude Code slash commands into `~/.claude/commands/`).
 It never creates `~/.tmux.conf`, never edits CLAUDE.md or AGENTS.md, and never
 reads, asks for or writes a credential.
 
