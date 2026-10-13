@@ -617,10 +617,13 @@ check "the lock file merely existing is NOT a heavy run, or every sweep would st
 # deleted it would unlink the file a real holder is locked on — which is how mutual exclusion
 # was measured broken on this machine on 2026-10-13 (lsof: holder on inode 240542083, path
 # resolving to 240709857, probe of the path returning "free"). -k -n is what makes it a read.
+# `type` first in both, for the reason this suite keeps relearning: a tree where the function
+# does not exist fails lib_eval, which '!' then reads as "the probe said free", and the check
+# would pass on v1.16.1 without the probe existing at all.
 check "the probe is read-only: a missing lock file is free and the probe does not create one" \
-  '/bin/rm -f "$WOLFMUX_DATA/machine-heavy.lock" && lib_eval "! disk_heavy_run_in_progress" && [ ! -e "$WOLFMUX_DATA/machine-heavy.lock" ]'
+  '/bin/rm -f "$WOLFMUX_DATA/machine-heavy.lock" && lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && ! disk_heavy_run_in_progress" && [ ! -e "$WOLFMUX_DATA/machine-heavy.lock" ]'
 check "and probing an existing free lock file leaves it there, neither deleted nor replaced" \
-  'touch "$WOLFMUX_DATA/machine-heavy.lock" && before="$(stat -f %i "$WOLFMUX_DATA/machine-heavy.lock")" && lib_eval "! disk_heavy_run_in_progress" && [ -e "$WOLFMUX_DATA/machine-heavy.lock" ] && [ "$(stat -f %i "$WOLFMUX_DATA/machine-heavy.lock")" = "$before" ]'
+  'touch "$WOLFMUX_DATA/machine-heavy.lock" && before="$(stat -f %i "$WOLFMUX_DATA/machine-heavy.lock")" && lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && ! disk_heavy_run_in_progress" && [ -e "$WOLFMUX_DATA/machine-heavy.lock" ] && [ "$(stat -f %i "$WOLFMUX_DATA/machine-heavy.lock")" = "$before" ]'
 if [ -x /usr/bin/lockf ]; then
   /usr/bin/lockf -k -s "$WOLFMUX_DATA/machine-heavy.lock" /bin/sleep 25 &
   HEAVY_PID=$!

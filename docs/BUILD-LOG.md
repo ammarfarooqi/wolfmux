@@ -1438,15 +1438,42 @@ was re-measured rather than carried.
 
 | Run | `dashboard` | `disk` |
 |-----|-------------|--------|
-| A — v1.16.1 code, v1.16.1 tests (baseline) | 115 / 0 / 0 | 93 / 0 |
-| B — v1.16.1 code, **new** tests | 108 / **27** / 0 | 110 / **42** / 0 |
-| C — new code, new tests | see below | see below |
+| A — v1.16.1 code, v1.16.1 tests (baseline, re-measured) | 115 / 0 / 0 | 93 / 0 |
+| B — v1.16.1 code, **the shipped tests** | 108 / **27** / 0 | 107 / **48** / 0 |
+| C — this tree, the shipped tests | 135 / 0 / 0 | 155 / 0 / 0 |
 
-B is the evidence. Of the 20 new `dashboard` checks, **16 fail on v1.16.1**; the other four
-are invariants that hold for either line (it is one line, it is within 72 characters, it
-survives its own filter, it runs no `du`) and are reported as non-discriminating rather than
-counted as proof. Eleven of B's 27 failures are existing badge-format checks, rewritten
-because the format changed deliberately. On `disk`, 42 new checks fail on v1.16.1.
+B is the evidence, and it was re-measured at the final sha rather than carried: a first pass
+reported `disk` 110/42, and then six checks were tightened (`5af8899`, `df1fb3a`) which
+changed the file B describes. The totals above are the shipped file's.
+
+Counted per check rather than by the total, which is the only way to tell evidence from
+noise:
+
+| | new checks | fail on v1.16.1 | also pass there |
+|-|-----------|-----------------|-----------------|
+| `dashboard` | 20 | **17** | 3 |
+| `disk` | 62 | **48** | 14 |
+
+The other 10 of `dashboard`'s 27 failures are existing badge-format checks, rewritten because
+the format changed deliberately; no existing `disk` check needed rewriting.
+
+The 17 that also pass on v1.16.1 are reported rather than counted as proof, because a check
+that passes on the old tree proves nothing about this one. They divide into two honest kinds:
+invariants that hold either way (the lane is a real worktree; its sources, commits and git
+state are untouched; nothing is left half-deleted; one team's `--dry-run` is open to anyone;
+`auto-prune off` IS v1.16.1's behaviour, which is the point of that path), and negative
+assertions that sit beside a discriminating positive one (nothing in the ledger claims a
+protected lane was swept).
+
+**Six checks were moved out of that second group during the work, and that is the part worth
+keeping.** They had passed on v1.16.1 because the command or the function *does not exist*
+there — `teamctl keep lead`, `teamctl bar --nonsense` and `teamctl policy auto-prune
+sometimes` all exit non-zero or 64 on a tree that has never heard of them. An exit code alone
+cannot tell "the feature refused this correctly" from "there is no feature". Each now asserts
+the reason or the usage line, or asserts that the valid values are ACCEPTED as well as that
+an invalid one is refused, and all six fail on v1.16.1 afterwards. The same trap caught two
+of the heavy-lock probe's own checks, where `! lib_eval "disk_heavy_run_in_progress"` was
+satisfied by the function being absent; they ask `type` first now.
 
 ### Changed
 
