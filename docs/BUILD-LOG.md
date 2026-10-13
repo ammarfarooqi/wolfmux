@@ -1433,29 +1433,34 @@ else.
 ### Failing first, measured both ways
 
 Every figure below was taken on this machine on 2026-10-13, with the new suites run against
-a **pristine v1.16.1 tree** (`git archive ea6509f`) and then against this one. The baseline
-was re-measured rather than carried.
+a **pristine `adbc2db`** (`git archive`, the merge base this branch was rebased onto — still
+`teamctl 1.16.1`, confirmed by its own version line) and then against this one. The baseline
+was re-measured rather than carried, and the lock was taken for every run.
 
 | Run | `dashboard` | `disk` |
 |-----|-------------|--------|
-| A — v1.16.1 code, v1.16.1 tests (baseline, re-measured) | 115 / 0 / 0 | 93 / 0 |
-| B — v1.16.1 code, **the shipped tests** | 108 / **27** / 0 | 107 / **48** / 0 |
-| C — this tree, the shipped tests | 135 / 0 / 0 | 155 / 0 / 0 |
+| A — `adbc2db` code, `adbc2db` tests (baseline, re-measured) | 115 / 0 / 0 | 93 / 0 |
+| B — `adbc2db` code, **the shipped tests** | 108 / **27** / 0 | 107 / **68** / 0 |
+| C — this tree, the shipped tests | 135 / 0 / 0 | 175 / 0 / 0 |
 
-B is the evidence, and it was re-measured at the final sha rather than carried: a first pass
-reported `disk` 110/42, and then six checks were tightened (`5af8899`, `df1fb3a`) which
-changed the file B describes. The totals above are the shipped file's.
+B is the evidence, and it was re-measured at the final sha every time the file it describes
+changed — four times in all, because three defects were found after the first pass and each
+fix changed a suite. Only the last set is above. The superseded ones (`disk` 110/42, then
+107/48, then a truncated 104/44) are recorded here as retracted rather than deleted.
 
 Counted per check rather than by the total, which is the only way to tell evidence from
 noise:
 
-| | new checks | fail on v1.16.1 | also pass there |
-|-|-----------|-----------------|-----------------|
-| `dashboard` | 20 | **17** | 3 |
-| `disk` | 62 | **48** | 14 |
+| | new checks | fail on `adbc2db` | also pass there | EXISTING checks failing in B |
+|-|-----------|-------------------|-----------------|------------------------------|
+| `dashboard` | 20 | **17** | 3 | 10 |
+| `disk` | 82 | **68** | 14 | 0 |
 
-The other 10 of `dashboard`'s 27 failures are existing badge-format checks, rewritten because
-the format changed deliberately; no existing `disk` check needed rewriting.
+Both rows close arithmetically against A and C, which is the point of counting them this
+way: `disk` 93 + 82 = 175 and every one of B's 68 failures is a new check; `dashboard`
+115 + 20 = 135 and B's 27 = 17 new + the 10 existing badge-format checks rewritten because
+the format changed deliberately. A row that did not close would mean a check had been
+silently lost.
 
 The 17 that also pass on v1.16.1 are reported rather than counted as proof, because a check
 that passes on the old tree proves nothing about this one. They divide into two honest kinds:
@@ -1475,13 +1480,47 @@ an invalid one is refused, and all six fail on v1.16.1 afterwards. The same trap
 of the heavy-lock probe's own checks, where `! lib_eval "disk_heavy_run_in_progress"` was
 satisfied by the function being absent; they ask `type` first now.
 
+### What the measurement pass found, which reading the diff did not
+
+Four defects were found by running the suites rather than by review, and three of them share
+one shape: **the operation reported success for something it had not done.** That is the
+same shape as the `-k`-less lock that excluded nothing, and as `flock` and `timeout`, which
+are not installed on this machine and say so by doing nothing.
+
+| | what it did | how it was found |
+|-|-------------|------------------|
+| `heavy --timeout ""` | ran the command with **no timeout at all**, silently: the guard asked whether the value was non-empty rather than whether the flag was given, so an empty value skipped the case that already rejected `""` | its own check could not see it — the check asserted only exit 64, and on the old tree an unknown command `heavy` also exits 64 |
+| `tests/disk.sh` | **ended at check 140 of 175** with no summary line, twice, from two different causes: a bare `exit 1` in a check body, then a variable read after a short-circuited `&&` chain, which under `set -u` aborts the shell | the missing `result:` line, not a red check — a truncated run is indistinguishable from a short clean one |
+| `destroy --purge` | printed "team 'child' is gone" and **left the team's records on disk**: the purge deletes per-team state files by name so the final `rmdir` can empty the directory, and `disk-parked-kb` was never added to that line | `tests/smoke.sh`, a suite this release does not touch, with pristine `adbc2db` as the control |
+| `docs/SETUP.md` | did not name `install.sh`'s `--no-claude-commands` | `tests/docs.sh` — and pristine `adbc2db` fails the same check, so this one is not ours |
+
+Three fixes are structural rather than careful, because being careful is what failed:
+
+- `check` now evaluates every body in a **subshell**, so a failing check cannot end its
+  suite — covering both causes, and every check nobody has written yet.
+- The purge's file list is **derived** from `lib/disk.sh` (every `printf '%s/<name>'
+  "$STATE_DIR"`) and each name must appear in `lib/agents.sh`'s purge line, so the next
+  cache file is covered the day it is added. The check asserts the derivation found at least
+  two names, so a derived list that matches nothing fails instead of passing trivially.
+- The measurement harness reports a suite with **no summary line as TRUNCATED**, with the
+  last check it printed, rather than its pass count. Without that, the second truncation
+  would have shipped as a clean run.
+
+A comment immediately above the purge line already described this exact failure happening
+once, with `disk-kb`. It was read, used as the model for the new cache file's format, and not
+followed to its conclusion. A comment saying "this went wrong once" is a warning about a
+**class**, and the only safe way to read one is to ask what else is now in that class.
+
 ### Changed
 
 - `lib/disk.sh`: the heavy-lock probe, the keep flag, the ledger, `disk_park_sweep`,
   `cmd_keep`, the parked cache, and `cmd_prune` split into `prune_team` / `prune_footer` /
   `prune_all_teams` so that one team and the whole machine run the same sweep.
 - `lib/policy.sh`: the `auto-prune` key, and `is_operator` / `require_operator`.
-- `lib/agents.sh`: `cmd_stop`'s sweep, and the new loop in `cmd_destroy`.
+- `lib/agents.sh`: `cmd_stop`'s sweep, the new loop in `cmd_destroy`, and `disk-parked-kb`
+  added to the purge's by-name file list — without it, `destroy --purge` stopped emptying
+  the team's state directory and so stopped deleting it.
+- `tests/disk.sh`, `tests/dashboard.sh`: `check` evaluates its body in a subshell.
 - `lib/dashboard.sh`: the badge line, `dash_parked_kb`, `dash_badge_held_kb`,
   `dash_tenth_gb`, `cmd_bar`.
 - `lib/views.sh`: `keep_build` per agent, `auto_prune` and `disk.parked_kb` in
@@ -1490,6 +1529,41 @@ satisfied by the function being absent; they ask `type` first now.
 - `lib/provider-env.sh`: `WOLFMUX_AUTO_PRUNE` on the allowlist, in the same commit as the
   knob — the v1.16.0 lesson, and `tests/disk.sh` round-trips it through a real config file.
 - `lib/common.sh`: line 5 only, `WOLFMUX_VERSION` to 1.17.0.
+
+### Every suite at the shipped head
+
+One pass, one sha, **`982d76b`**, rebased onto `adbc2db`. The lock was taken for the whole
+pass, in one acquisition, by a plain `lockf -k -s` and deliberately **not** by this release's
+own `teamctl heavy`: gating the measurement of a change with the code being changed makes
+the instrument depend on the thing under test, and nothing in the pass could then tell you.
+
+| suite | at `982d76b` | | suite | at `982d76b` |
+|-------|--------------|-|-------|--------------|
+| `smoke` | 349 / **2** / 0 | | `migration` | 36 / 0 |
+| `disk` | 175 / 0 / 0 | | `permissions` | 13 / 0 |
+| `dashboard` | 135 / 0 / 0 | | `commands` | 16 / 0 |
+| `docs` | 36 / 0 | | `providers` | 141 / 0 / 0 |
+| `inbox` | 107 / 0 | | `nudge-typing` | 61 / 0 |
+
+**1069 passing, 2 failing, 0 skipped across the ten countable suites.** Every figure comes
+from the suite's own summary line; a suite that printed none would be reported as TRUNCATED
+and none was.
+
+`smoke`'s two failures are **not this branch's**, and the control is the same suite on a
+pristine `adbc2db`, which fails the same two by name — `beads: a worker reaches the shared
+database from its worktree` and `rename: a Beads hook written under the old name is
+replaced`. Pristine is 346 / 2, this tree is 349 / 2: three checks added, no new failure.
+Both are properties of this machine's Beads install rather than of wolfmux.
+
+`tests/credential-routing.sh` has **no counted checks by design** — it prints four sections
+for a person to compare against its own `expected` block, so it has no summary line and no
+pass count exists to quote. All four matched when read.
+
+Two documents were edited after that pass, which two suites read without naming them:
+`tests/docs.sh` reads everything under `docs/` through its globs, and `tests/smoke.sh:174`
+and `:177` `grep -rn` over `$REPO/docs` to assert two patterns are ABSENT from it. So `docs`
+was **re-run at the final sha**, and both of smoke's patterns were re-checked against the
+shipping content; neither appears. The glob and the `-r` are the lesson, not the filename.
 
 **shellcheck is still not installed on this machine, so nothing here was linted with it**;
 `bash -n` was run on every changed file and no figure above stands in for a lint.

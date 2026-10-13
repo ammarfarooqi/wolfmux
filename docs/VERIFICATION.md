@@ -48,20 +48,27 @@ number.)
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 5 to 7 minutes, 348 checks, isolated from any running team
+tests/smoke.sh                 # 5 to 7 minutes, 351 checks, isolated from any running team
                                # (how many PASS depends on the launch: one skip per signal it
                                #  leaves ignored — see smoke.sh below)
-tests/disk.sh                  # ~2 minutes, 93 checks, its own tmux server and state
+tests/disk.sh                  # ~3 minutes, 175 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~2 minutes, 61 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/inbox.sh                 # ~4 minutes, 107 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while he is working in it
 tests/providers.sh             # the provider table and the config allowlist, 141 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
-tests/dashboard.sh             # ~90 seconds, 115 checks, its own tmux server and state: the machine-wide view and the status segment
+tests/dashboard.sh             # ~2 minutes, 135 checks, its own tmux server and state: the machine-wide view and the status segment
+tests/commands.sh              # ~20 seconds, 16 checks, in a throwaway WOLFMUX_INSTALL_HOME: the Claude Code slash commands install.sh writes
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```
+
+For **v1.17.0** the figures live in [BUILD-LOG.md](BUILD-LOG.md#every-suite-at-the-shipped-head):
+1069 passing, 2 failing, 0 skipped across the ten countable suites at one sha, the two
+failures being this machine's Beads install and present on a pristine base as well. The
+paragraph below is the v1.16.1 record and is kept as that release's measurement, not as a
+description of the suites today — their check counts have grown, as the list above shows.
 
 **950 checks across the nine countable suites, smoke counted once in its clean shape, and
 950 passing, 0 failing** (v1.16.1). Every figure measured under the heavy lock, in ONE
