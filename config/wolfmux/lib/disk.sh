@@ -529,6 +529,83 @@ disk_heavy_run_in_progress() {
   return 0
 }
 
+# --- teamctl heavy <command...> ------------------------------------------------------
+# Run something heavy while holding the machine's heavy lock, so that nothing else heavy runs
+# beside it — a test gate, a measurement, a long build — and so that the sweep on park keeps
+# its hands off every lane while it runs.
+#
+# This exists because the convention could not be kept by asking people to remember a flag.
+# `lockf` DELETES its lock file on exit unless `-k` is given, and the lock lives on the inode,
+# so ONE holder without `-k` unlinks the file and every later holder gets a fresh inode and
+# believes it is alone: mutual exclusion gone, machine-wide, silently. Measured here on
+# 2026-10-13 with lsof — a live holder on inode 240542083 while the path resolved to
+# 240709857, and a probe of the path answering "free". The brief said `lockf`, a machine-wide
+# warning that evening said `lockf`, and two lanes still ran it without `-k` within the hour.
+# A convention that lives in every team's shell history cannot be fixed by documentation; it
+# needs one command that is correct by construction. This is that command.
+#
+# What it guarantees:
+#   -k always             the lock file is never unlinked, so the lock keeps meaning something
+#   the COMMAND's status  comes back as teamctl's own exit status, not the wrapper's and not a
+#                         pipeline's. `teamctl heavy sh -c 'a | b'` still reports what the
+#                         shell reports; what this promises is that teamctl adds nothing of
+#                         its own on top of it
+#   it says what it waited for, on stderr, so a run that sat in a queue for twenty minutes
+#   says so instead of looking slow
+#
+# Exit statuses of its own, chosen not to collide with a command's: 64 for a usage error,
+# 69 when lockf is not on this machine, 75 when --timeout expired without the lock. A command
+# that itself exits 69 or 75 is indistinguishable from those two, which is why the message
+# that accompanies them is on stderr and names the lock.
+cmd_heavy() {
+  local timeout="" waited_from waited quiet=0 rc=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --timeout)
+        [ "$#" -ge 2 ] || die_usage "--timeout needs a number of seconds"
+        timeout="$2"
+        shift
+        ;;
+      --timeout=*) timeout="${1#--timeout=}" ;;
+      --quiet) quiet=1 ;;
+      --) shift; break ;;
+      -*) die_usage "unknown option for heavy: $1   (usage: teamctl heavy [--timeout <seconds>] [--quiet] <command>...)" ;;
+      *) break ;;
+    esac
+    shift
+  done
+  [ "$#" -gt 0 ] || die_usage "usage: teamctl heavy [--timeout <seconds>] [--quiet] <command>...   (holds $(short_path "$WOLFMUX_HEAVY_LOCK") while it runs)"
+  if [ -n "$timeout" ]; then
+    case "$timeout" in "" | *[!${_WM_DIGITS}]* | 0?*) die_usage "--timeout expects a whole number of seconds" ;; esac
+  fi
+  [ -n "$LOCKF_BIN" ] || die "lockf is not on this machine, so the heavy lock cannot be held. Run the command yourself, knowing that nothing is excluding anything: $*" 69
+  /bin/mkdir -p "$(dirname "$WOLFMUX_HEAVY_LOCK")" 2>/dev/null || true
+  # Whether we had to wait is worth saying, and it is only knowable BEFORE the blocking call:
+  # a -t 0 probe first, then the real acquisition. The probe is read-only (-n, no file is
+  # created), so a machine where nothing has ever registered a heavy run is not changed by
+  # being asked.
+  waited_from="$(now_epoch)"
+  if disk_heavy_run_in_progress && [ "$quiet" -eq 0 ]; then
+    info "waiting for the machine's heavy lock: $DISK_HEAVY_REASON"
+  fi
+  set +e
+  if [ -n "$timeout" ]; then
+    "$LOCKF_BIN" -k -t "$timeout" "$WOLFMUX_HEAVY_LOCK" "$@"
+  else
+    "$LOCKF_BIN" -k "$WOLFMUX_HEAVY_LOCK" "$@"
+  fi
+  rc=$?
+  set -e
+  waited=$(($(now_epoch) - waited_from))
+  if [ -n "$timeout" ] && [ "$rc" -eq 75 ]; then
+    die "the machine's heavy lock was still held after ${timeout}s, so nothing was run. Look at who has it: teamctl heavy --quiet true (it waits), or ps -o command= | grep lockf" 75
+  fi
+  if [ "$quiet" -eq 0 ] && [ "$waited" -ge 5 ]; then
+    info "held the heavy lock after waiting ${waited}s; the command's own exit status was $rc"
+  fi
+  return "$rc"
+}
+
 # --- one lane the lead wants left alone ----------------------------------------------
 # disk_keep_build <role> — is this lane protected from the automatic sweep? The flag lives
 # in the lane's own record (keep_build), and `teamctl keep <role>` is the one way to set it.

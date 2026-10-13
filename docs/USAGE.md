@@ -236,7 +236,17 @@ answers; while it is held the lane keeps its build output and the reason is prin
 probe is read-only (`lockf -k -s -n -t 0`): it neither creates the file when it is absent nor
 deletes it afterwards, so looking at the lock never changes it.
 
-**And a warning about that lock, which is the convention's and not this tool's.** `lockf`
+**Take that lock with `teamctl heavy`, not with `lockf` by hand.**
+
+```bash
+teamctl heavy tests/smoke.sh                 # holds the lock, says what it waited for
+teamctl heavy --timeout 600 npm test         # or give up after ten minutes (exit 75)
+```
+
+It returns the command's own exit status, so it drops into a gate script where the bare
+command stood. The reason it exists rather than a documented flag is the next paragraph.
+
+**The warning about that lock, which is the convention's and not this tool's.** `lockf`
 DELETES the file when its command ends unless `-k` is given, while the lock itself lives on
 the inode. So a single holder without `-k` unlinks the file on exit and splits the path from
 the locked inode: the holder still running keeps a lock nobody can see, and every later
@@ -472,6 +482,7 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl prune [--team <name>] [--all-teams] [--dry-run] [--keep-node-modules]` | the build output of every parked lane of the team, with a total in GB. Running lanes untouched; `--dry-run` deletes nothing; `--keep-node-modules` takes the build caches only; `--all-teams` does every team of every project on this machine and is yours alone to run — a lead is refused with exit 77 ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl keep [<role> [on\|off]]` | never sweep that lane's build output automatically — for a checkout that is expensive to rebuild. `prune` honours it too; with no role it lists what is protected ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl bar [--explain]` | the one line tmux shows in `status-right`; `--explain` is the legend naming every field of it ([the segment in the status bar](#the-segment-in-the-status-bar)) |
+| `teamctl heavy [--timeout <seconds>] [--quiet] <command>...` | run a heavy thing — a test gate, a measurement, a long build — holding the machine's heavy lock, so nothing else heavy runs beside it and no lane is swept while it does. Returns the **command's** exit status, not the wrapper's, and says what it waited for. `--timeout`: give up after that many seconds (exit 75) rather than wait; `--quiet`: say nothing about waiting. Prefer it to `lockf` by hand ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | the pane notices filed for a role, oldest first. Default: the lead of this team. Reading them clears the `📨` count in the status bar; it does not change whether the agent has had them, and the agent having had them does not clear your count. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new. `prefix N` opens the same thing in a popup ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |

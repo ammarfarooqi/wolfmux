@@ -116,6 +116,7 @@ worktrees.
 | `teamctl status` | free disk, what this team's lanes take, the spawn guard, and whether auto-prune is on |
 | `teamctl teams` | **measures** the lanes (a `du` per lane, seconds on a busy machine), the parked ones among them. `teamctl status` and the status bar's `held` field read the numbers this leaves behind and never measure, so both stay instant |
 | `teamctl bar [--explain]` | the one line tmux shows in `status-right`, and with `--explain` a legend naming every field of it |
+| `teamctl heavy [--timeout <seconds>] [--quiet] <command>...` | run something heavy — a test gate, a measurement, a long build — while holding the machine's heavy lock, so nothing else heavy runs beside it and no lane is swept while it does. It returns the **command's** exit status and says what it waited for. `--timeout` gives up after that many seconds (exit 75) instead of waiting; `--quiet` says nothing about waiting. **Use this instead of `lockf` by hand** — see the box below for what a bare `lockf` does to the lock |
 
 Every sweep is written down in `~/.wolfmux/state/reclaimed.jsonl`, one JSON object per line:
 when, which team of which project, which lane, how many kilobytes, what took them and what
@@ -123,12 +124,14 @@ it took. It is the answer to "where did that space go", long after the team is g
 
 A lane **mid-build** is never swept. A build runs in whatever shell started it, not in the
 lane's pane, so `stop` cannot see it; the signal is the lock this machine's heavy runs
-already hold, `lockf -k ~/.wolfmux/machine-heavy.lock <command>`. While it is held, parking a
-lane keeps its build output and says so. The file merely existing is not a lock, so only
-trying to take it answers the question — which the sweep does read-only, with `-k -n`, so
-that looking at the lock leaves the lock exactly as it was.
+already hold. Take it with `teamctl heavy <command>` and nothing else is needed. While it is
+held, parking a lane keeps its build output and says so. The file merely existing is not a
+lock, so only trying to take it answers the question — which the sweep does read-only, with
+`-k -n`, so that looking at the lock leaves the lock exactly as it was.
 
-> **Every holder must pass `-k`.** `lockf`'s default is to DELETE the file when its command
+> **If you take it by hand, every holder must pass `-k`** (`lockf -k ~/.wolfmux/machine-heavy.lock <command>`),
+> which is the whole reason `teamctl heavy` exists: it cannot be written the wrong way.
+> `lockf`'s default is to DELETE the file when its command
 > ends, and BSD locks live on the inode, not on the path. One holder that omits `-k` unlinks
 > the file on exit, and from then on a holder still running sits on the old inode while every
 > later holder and every probe gets a fresh one and succeeds — mutual exclusion is gone for

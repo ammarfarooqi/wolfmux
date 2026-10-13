@@ -130,6 +130,17 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl status                                    free disk, and what this team's lanes take
     teamctl teams                                     measures the lanes (a du per lane; status and the bar read the number)
     Every sweep is written down in ~/.wolfmux/state/reclaimed.jsonl: when, which team, which lane, how much.
+  Heavy runs  (one machine, several teams: a test gate, a measurement, a long build)
+    teamctl heavy [--timeout <seconds>] [--quiet] <command>...
+                                                      run it holding the machine's heavy lock, so nothing else
+                                                      heavy runs beside it and no lane is swept while it does.
+                                                      Returns the COMMAND's exit status, and says what it waited
+                                                      for. --timeout gives up after that many seconds (exit 75)
+                                                      instead of waiting; --quiet says nothing about waiting.
+                                                      Use this rather than lockf by hand: bare 'lockf' DELETES
+                                                      the lock file when the command ends, and the lock lives on
+                                                      the inode, so one holder without -k silently disables the
+                                                      lock for every team at once
   Status bar
     teamctl bar [--explain]                           the one line tmux shows in status-right, and with --explain
                                                       a legend naming every field of it (teams run idle load mem
@@ -218,6 +229,7 @@ main() {
     prune) cmd_prune "$@" ;;
     keep) cmd_keep "$@" ;;
     bar) cmd_bar "$@" ;;
+    heavy) cmd_heavy "$@" ;;
     nudge) cmd_nudge "$@" ;;
     inbox | notices) cmd_inbox "$@" ;;
     policy) cmd_policy "$@" ;;

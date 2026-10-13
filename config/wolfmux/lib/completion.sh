@@ -151,6 +151,7 @@ complete_first_word() {
   complete_emit "$prefix" prune "take the build output of every parked lane of the team"
   complete_emit "$prefix" keep "<role>: never sweep that lane's build output automatically"
   complete_emit "$prefix" bar "the status-bar line, and --explain names every field of it"
+  complete_emit "$prefix" heavy "<command>...: run it holding the machine's heavy lock"
   complete_emit "$prefix" nudge "<role>: one fixed notification line in a pane"
   complete_emit "$prefix" inbox "<role>: the pane notices filed for an agent (alias: notices)"
   complete_emit "$prefix" notices "alias of inbox"
@@ -192,6 +193,7 @@ complete_options() {
     destroy) options="--worktrees --purge --force --keep-transcripts --yes" ;;
     prune) options="--dry-run --keep-node-modules --all-teams" ;;
     bar) options="--explain" ;;
+    heavy) options="--timeout --quiet" ;;
     nudge) options="--quiet --all --id" ;;
     inbox | notices) options="--all --json --keep" ;;
     capture) options="--lines --all" ;;
@@ -220,6 +222,9 @@ complete_options() {
       --keep-node-modules) complete_emit "$prefix" "$option" "take the build caches only" ;;
       --all-teams) complete_emit "$prefix" "$option" "every team of every project on this machine (yours alone to run)" ;;
       --explain) complete_emit "$prefix" "$option" "a legend naming every field of the status bar" ;;
+      # --quiet is deliberately not described here: nudge and heavy both take it and it means
+      # a different thing in each, and this case block is shared by every command.
+      --timeout) complete_emit "$prefix" "$option" "<seconds>: give up waiting for the heavy lock (exit 75)" ;;
       *) complete_emit "$prefix" "$option" ;;
     esac
   done
@@ -305,7 +310,7 @@ cmd_complete() {
         fi
         ;;
       --team=*) COMPLETE_TEAM="${w#--team=}" ;;
-      --base | --branch | --repo | --from-worktree | --handover | --ticket | --id | --lines | -n | --lead-permissions | --worker-permissions | --worker-spawn | --resume)
+      --base | --branch | --repo | --from-worktree | --handover | --ticket | --id | --lines | -n | --lead-permissions | --worker-permissions | --worker-spawn | --resume | --timeout)
         # The option's value may stand after it, or be the word under the cursor.
         [ $((i + 1)) -lt $((count - 1)) ] && i=$((i + 1))
         ;;
@@ -341,7 +346,7 @@ cmd_complete() {
   # An option that takes free text (a conversation id, a bead id, a ticket key, a line count): nothing
   # can be offered for it, and above all not the roles or models of the position it stands in.
   case "$prev" in
-    --resume | --id | --handover | --ticket | --lines | -n)
+    --resume | --id | --handover | --ticket | --lines | -n | --timeout)
       case "$cur" in
         -*) ;;
         *) exit 0 ;;

@@ -498,7 +498,19 @@ the sweep tries to take the lock for an instant, which is the only thing that an
 it is held, the lane keeps its build output and the reason is printed. The probe is
 read-only (`-k -s -n -t 0`): it neither creates the file nor removes it.
 
-Write every heavy run with **`-k`**. Without it `lockf` deletes the file when its command
+Take that lock with **`teamctl heavy <command>...`** rather than by hand:
+
+```bash
+teamctl heavy tests/smoke.sh            # holds the lock, says what it waited for
+teamctl heavy --timeout 600 npm test    # give up after ten minutes instead (exit 75)
+teamctl heavy --quiet make build        # the same, without the waiting line
+```
+
+It returns the COMMAND's exit status, so it drops straight into a gate script where the bare
+command stood, and it cannot be written the wrong way — which is the point.
+
+If you do take it by hand, write every heavy run with **`-k`**
+(`lockf -k ~/.wolfmux/machine-heavy.lock <command>`). Without it `lockf` deletes the file when its command
 ends, and the lock lives on the inode rather than the path — so one holder that omits `-k`
 unlinks the file on exit, keeps a lock nobody can see, and leaves every later holder and
 probe taking a fresh inode and believing it is alone. Mutual exclusion is then gone for every

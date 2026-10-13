@@ -649,6 +649,49 @@ check "a running lane is never swept, whatever the policy says" \
 check "a parked lane holding work a person wrote is never swept, and the reason is said" \
   'teamctl spawn written glm53 --no-kickoff >/dev/null 2>&1; sleep 2; W="$(teamctl status --json | jq -r ".agents[] | select(.role == \"written\") | .workdir")" && mk_build_tree "$W" && printf "notes\n" >"$W/NOTES.md" && teamctl stop written 2>&1 | grep -q "kept:    its build output (it has untracked files that are not build output (NOTES.md))" && [ -d "$W/node_modules/pkg" ]'
 
+echo "== teamctl heavy: taking the lock correctly, because remembering a flag did not work"
+# The wrapper exists because the convention could not be kept by documentation. On the night
+# this was written the brief said lockf, a machine-wide warning said lockf, and two lanes
+# still ran it without -k within the hour - which silently disabled the lock for every team
+# (the inode measurement is in the comment above disk_heavy_run_in_progress). So the first
+# check is the one that matters: the file survives, which is what -k buys and what a bare
+# lockf destroys.
+HEAVY_LOCK="$WOLFMUX_DATA/machine-heavy.lock"
+/bin/rm -f "$HEAVY_LOCK"
+check "teamctl heavy runs the command, and the lock file SURVIVES: that is what a bare lockf destroys" \
+  'teamctl heavy /usr/bin/true && [ -f "$HEAVY_LOCK" ]'
+check "a bare lockf is the counter-example, measured here rather than asserted: it deletes the file" \
+  '/usr/bin/lockf "$HEAVY_LOCK" /usr/bin/true; [ ! -e "$HEAVY_LOCK" ]'
+check "and so the inode is a NEW one next time, which is how exclusion was lost machine-wide" \
+  'teamctl heavy /usr/bin/true && a="$(stat -f %i "$HEAVY_LOCK")" && /usr/bin/lockf "$HEAVY_LOCK" /usr/bin/true && teamctl heavy /usr/bin/true && b="$(stat -f %i "$HEAVY_LOCK")" && [ "$a" != "$b" ]'
+# The exit status is the command's own. A wrapper that returned its own status, or a
+# pipeline's, is how a failing gate gets reported as green - which has happened twice here.
+check "the COMMAND's exit status comes back, for a passing and for a failing command" \
+  'teamctl heavy /usr/bin/true; [ $? -eq 0 ] && { teamctl heavy sh -c "exit 7"; [ $? -eq 7 ]; } && { teamctl heavy sh -c "exit 1"; [ $? -eq 1 ]; }'
+check "a command that does not exist is the command's failure (127), not a usage error of ours" \
+  'teamctl heavy /nonexistent/command >/dev/null 2>&1; [ $? -ne 64 ]'
+check "no command at all IS a usage error (64), and it names the lock it would have held" \
+  'out="$(teamctl heavy 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "machine-heavy.lock"'
+check "an unknown option is a usage error naming the real usage" \
+  'out="$(teamctl heavy --nonsense true 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "teamctl heavy \[--timeout <seconds>\]"'
+check "-- ends the options, so a command of its own named --quiet still runs" \
+  'teamctl heavy -- /usr/bin/true; [ $? -eq 0 ]'
+check "--timeout wants a whole number of seconds, with no leading zero" \
+  'for v in "" banana -5 08; do teamctl heavy --timeout "$v" true >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done'
+# A second caller WAITS. This is the whole purpose, and it is asserted on a real second
+# process rather than on the lock's state: the background holder sleeps, and the foreground
+# call must not come back before it has let go.
+check "a second caller waits for the first instead of running beside it" \
+  '( teamctl heavy /bin/sleep 6 >/dev/null 2>&1 & ) ; sleep 1; start="$(date +%s)"; teamctl heavy --quiet /usr/bin/true; waited=$(( $(date +%s) - start )); [ "$waited" -ge 3 ]'
+check "--timeout gives up with exit 75 rather than waiting, and says nothing was run" \
+  '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && printf "%s" "$out" | grep -q "nothing was run"'
+check "it says what it waited for, and --quiet does not" \
+  '( teamctl heavy /bin/sleep 7 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "waiting for the machine.s heavy lock" && q="$( ( teamctl heavy /bin/sleep 5 >/dev/null 2>&1 & ) ; sleep 1; teamctl heavy --quiet /usr/bin/true 2>&1)"; [ -z "$q" ]'
+# The sweep and the wrapper are two halves of one mechanism: whatever teamctl heavy holds,
+# the park sweep must see as busy.
+check "while teamctl heavy holds the lock, the park sweep sees a heavy run and keeps its hands off" \
+  '( teamctl heavy /bin/sleep 6 >/dev/null 2>&1 & ) ; sleep 1; lib_eval "type disk_heavy_run_in_progress >/dev/null 2>&1 && disk_heavy_run_in_progress" && lib_eval "disk_heavy_run_in_progress && printf %s \"\$DISK_HEAVY_REASON\"" | grep -q "a heavy run holds"'
+
 echo "== what the status bar reads: the parked number teamctl teams leaves behind"
 # Before the second team is created: lib_eval calls load_project, which refuses to guess
 # with several teams and no --team, so every lib_eval below this point would die for that
