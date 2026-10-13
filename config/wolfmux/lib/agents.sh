@@ -172,12 +172,16 @@ new_record() {
   permissions="$(effective_permissions "$2" "$MODEL_FAMILY")"
   # Codex takes no conversation id; it resumes its own last one (resume --last).
   if [ "$MODEL_FAMILY" != "codex" ]; then session_id="$(new_session_id "$4" || true)"; fi
+  # model_id is the id this agent is started with (run_agent passes it as --model), for an alias
+  # as for claude:<id>: what an agent runs is on record, and model_source says where it came from.
   "$JQ_BIN" -n --arg role "$1" --arg kind "$2" --arg model "$3" --arg label "$MODEL_LABEL" \
     --arg family "$MODEL_FAMILY" --arg launcher "$launcher" --arg workdir "$4" --arg branch "$5" \
     --arg base_ref "$6" --arg base_commit "$7" --arg kickoff "$8" --arg now "$(now_iso)" \
     --arg spawned_by "${9:-operator}" --arg permissions "$permissions" --arg model_id "$MODEL_ID" --arg billing "$MODEL_BILLING" \
-    --arg repo "${10:-}" --arg branch_created "${11:-0}" --arg session_id "$session_id" \
-    '{role: $role, kind: $kind, model: $model, model_id: $model_id, label: $label, family: $family, billing: $billing, launcher: $launcher,
+    --arg repo "${10:-}" --arg branch_created "${11:-0}" --arg session_id "$session_id" --arg model_source "$MODEL_SOURCE" \
+    --arg model_context "$MODEL_CONTEXT" \
+    '{role: $role, kind: $kind, model: $model, model_id: $model_id, model_source: $model_source, model_context: $model_context,
+      label: $label, family: $family, billing: $billing, launcher: $launcher,
       workdir: $workdir, repo: $repo, branch: $branch, branch_created: $branch_created, base_ref: $base_ref, base_commit: $base_commit,
       kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions, session_id: $session_id,
       pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
@@ -303,6 +307,7 @@ cmd_start() {
   wt_require_commit "$ROOT"
   ensure_state_dirs
   beads_ensure "$beads"
+  models_refresh "$model" # as in spawn: at most one probe a day, outside the lock
   lock_acquire
   # What the lead record says about the team's beginnings, before anything below rewrites it.
   if reg_exists "$WOLFMUX_LEAD_ROLE"; then
@@ -524,6 +529,9 @@ cmd_spawn() {
   # made, so a refusal leaves nothing behind. A handover reuses a worktree that is already
   # there and installs nothing, so it is not asked to clear the bar (lib/disk.sh).
   if [ -z "$from_tree" ]; then disk_guard_spawn; fi
+  # fable/opus/sonnet/haiku: today's answer of Claude Code, probed here at most once a day and
+  # outside the lock (a probe takes seconds). new_record reads it back without a network call.
+  models_refresh "$model"
   lock_acquire
 
   if reg_exists "$role"; then
@@ -647,6 +655,7 @@ cmd_spawn() {
   fi
 
   say "spawned:   $role  ($MODEL_LABEL via $MODEL_LAUNCHER)  permissions: $(reg_field "$role" permissions)"
+  if [ -n "$MODEL_SOURCE" ]; then say "model:     $MODEL_ID  ($MODEL_SOURCE)"; fi
   say "pane:      $pane"
   if [ -n "$repo" ]; then say "repo:      $(short_path "$repo")   (another repository; the guard holds this teammate to the worktree below)"; fi
   say "branch:    $branch  (base: $base_ref @ $(printf '%s' "$base_commit" | cut -c1-12))"
@@ -932,6 +941,10 @@ $prompt
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && [ "$resume" -eq 0 ] && [ -n "$(reg_field "$role" handover)" ]; then
     args+=("$(handover_text)")
   fi
+  # The model pins and policy this pane inherited were frozen into the tmux server's environment
+  # when the team started (the environment outranks the config file). The record already says which
+  # model this agent runs; the launcher reads the config file afresh for whatever else it needs.
+  unset WOLFMUX_FABLE_MODEL WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL WOLFMUX_MODEL_POLICY
   exec "$launcher" "${args[@]}"
 }
 
@@ -1022,7 +1035,7 @@ restart_undone() {
 }
 
 cmd_restart() {
-  local role="" resume=0 pin="" pane workdir target conversation was_session was_kept
+  local role="" resume=0 pin="" pane workdir target conversation was_session was_kept model
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --continue) resume=1 ;;
@@ -1051,9 +1064,16 @@ cmd_restart() {
     return
   fi
   require_manager restart
+  model="$(reg_field "$role" model)"
+  models_refresh "$model" # fable/opus/sonnet/haiku: a restart is how an agent moves to a newer model
   lock_acquire
   # A restart picks up the current policy.
   reg_set "$role" permissions "$(effective_permissions "$(reg_field "$role" kind)" "$(reg_field "$role" family)")"
+  # ... and what its alias means today, which is what this pane is started with (run_agent passes
+  # model_id as --model). A record from before ids were recorded gets one here.
+  if models_is_alias "$model" && model_info "$model"; then
+    reg_set "$role" model_id "$MODEL_ID" model_source "$MODEL_SOURCE" model_context "$MODEL_CONTEXT" label "$MODEL_LABEL"
+  fi
   # Which conversation this pane comes back in: the one you named, the one it had, or a new
   # one. Codex has no id to store; it resumes its own last conversation. The pane reads the id as it
   # starts, so it is stored first, and put back if no pane comes of it.
@@ -1384,21 +1404,31 @@ EOF
   return 0
 }
 
-# agent_context <workdir> <model-key> <family> [<session-id>] — sets CTX_TOKENS ("" = unknown),
+# agent_context <workdir> <model-key> <family> [<session-id>] [<recorded-window>] — sets CTX_TOKENS ("" = unknown),
 # CTX_REQUESTS and CTX_WINDOW ("" = unknown) for one agent. The window is declared by the
 # model's provider row, by the model table (model_context_window), or by a model id ending
 # in [1m] (1M); for codex the token_count event's own window wins, since that is the one
 # Codex actually serves. A model whose window none of those know stays "" — not a 200k
 # guess — so the caller shows tokens with no share of the wrong number.
+# fable/opus/sonnet/haiku mean another model after each release, so for them the window is the
+# one of the model the agent actually runs: <recorded-window> (written with the id at spawn),
+# else the window known for the model its transcript names (an agent started before ids were
+# recorded; unknown for an id no answer of Claude Code ever named), else what the key means now.
 agent_context() {
-  local computed
+  local computed seen
   CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0" CTX_FILE=""
   if [ "$3" = "codex" ]; then
     _ctx_of_codex "$1"
   else
     _ctx_of_claude "$1" "${4:-}"
   fi
-  computed="$(model_context_window "$2" 2>/dev/null)" || computed=""
+  if models_is_alias "$2" && [ -n "${5:-}" ]; then
+    computed="$5"
+  elif models_is_alias "$2" && [ -n "$CTX_FILE" ] && seen="$(models_transcript_file_model "$CTX_FILE")" && [ -n "$seen" ]; then
+    computed="$(models_context_of_id "$seen")"
+  else
+    computed="$(model_context_window "$2" 2>/dev/null)" || computed=""
+  fi
   [ -n "$CTX_WINDOW" ] || CTX_WINDOW="$computed"
   return 0
 }

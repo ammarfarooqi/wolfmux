@@ -24,8 +24,8 @@ diagnostics can never drift apart.
 
 | Launcher | CLI | Billing | What it pins |
 |----------|-----|---------|--------------|
-| `claude-fable` | Claude Code | Claude subscription (`/login`) | `--model claude-fable-5-1[1m]`; no key, no endpoint |
-| `claude-opus` · `claude-sonnet` · `claude-haiku` | symlinks to `claude-fable` | same | the model named by the link (`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5-…`) |
+| `claude-fable` | Claude Code | Claude subscription (`/login`) | `--model <id>`: the id teamctl resolved and recorded for the agent (`lib/models.sh`); run by hand, a pin, or Claude Code's own alias `fable` (its newest Fable). No key, no endpoint |
+| `claude-opus` · `claude-sonnet` · `claude-haiku` | symlinks to `claude-fable` | same | the family named by the link, resolved the same way (`claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` on 2026-10-13) |
 | `codex-astra` | Codex CLI | ChatGPT / Codex subscription | `forced_login_method="chatgpt"`, `model_provider="openai"`, `model="gpt-6-astra"`. Starts Codex by its **real path**: Codex looks for its helper programs next to the path it was started as |
 | `claude-glm` | Claude Code | the provider named by the link: a plan (Z.ai, Kimi, MiniMax, Qwen) or a metered API (Moonshot platform, DeepSeek: refused until `WOLFMUX_METERED=on`) | endpoint, key, model ids and context window from one table (`lib/providers.sh`); every model alias → that provider's main id, background tier → its fast id; a declared window so Claude Code prints no unknown-model notice |
 | `claude-glm-flash`, `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen` | symlinks to `claude-glm` | same | the link name picks the provider; `-flash` picks GLM's fast tier |
@@ -64,6 +64,7 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 | `agents.sh` | `start`, `spawn`, the pane process (`_run-agent`), `stop`, `restart`, `destroy`, `nudge` |
 | `views.sh` | `status`, `panes`, `capture`, `log`, `focus`, `attach` |
 | `doctor.sh` | `teamctl doctor` |
+| `models.sh` | what `fable`, `opus`, `sonnet`, `haiku` mean today (`WOLFMUX_MODEL_POLICY`): pins, the daily probe of Claude Code and its cache, labels derived from ids, the drift check, `teamctl models`, `_model-badge`. Sourced by `common.sh` and by `claude-fable` |
 
 The **model table** in `common.sh` is the single place that knows which launcher
 serves which model key (`fable`, `astra`, `glm53`, `flash`) and which CLI family it

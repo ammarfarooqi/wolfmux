@@ -144,6 +144,7 @@ valid_bead_id() {
 
 # --- model table (the only place that knows which CLI serves which model) -----
 # model_info <key> — sets MODEL_KEY MODEL_ID MODEL_LAUNCHER MODEL_LABEL MODEL_FAMILY MODEL_BILLING
+# MODEL_CONTEXT MODEL_SOURCE
 # A model is a key from this table, or "claude:<model id>" / "codex:<model id>" for any
 # other model of those two subscriptions. (GLM: the Coding Plan covers only the two ids
 # behind glm53 and flash, so there is no "glm:<id>".) Every other provider of the provider
@@ -173,24 +174,27 @@ _model_info_provider() {
   MODEL_LABEL="${model_id:-$PROVIDER_LABEL}"
 }
 
+# The four keys whose meaning moves with Claude Code's releases (fable, opus, sonnet, haiku)
+# are resolved by lib/models.sh: MODEL_ID is the id an agent started on them gets, and the
+# label is derived from that id ("Opus 5.5"), never kept in a table here. MODEL_SOURCE says
+# where the id came from (a config pin, today's probe, the built-in id). No network call:
+# the probe runs only where an agent starts (models_refresh, before its record is written).
+case "${BASH_SOURCE[0]}" in */*) _wm_lib_dir="${BASH_SOURCE[0]%/*}" ;; *) _wm_lib_dir="." ;; esac
+# shellcheck source=models.sh
+. "$_wm_lib_dir/models.sh"
+unset _wm_lib_dir
+
 model_info() {
-  MODEL_KEY="$1" MODEL_ID="" MODEL_BILLING="subscription" MODEL_CONTEXT=""
+  MODEL_KEY="$1" MODEL_ID="" MODEL_BILLING="subscription" MODEL_CONTEXT="" MODEL_SOURCE=""
   case "$1" in
-    fable)
-      MODEL_LAUNCHER="claude-fable" MODEL_LABEL="Fable 5.1" MODEL_FAMILY="claude" MODEL_CONTEXT="1000000"
-      ;;
-    opus)
-      MODEL_LAUNCHER="claude-opus" MODEL_LABEL="Opus 5" MODEL_FAMILY="claude" MODEL_CONTEXT="1000000"
-      ;;
-    sonnet)
-      MODEL_LAUNCHER="claude-sonnet" MODEL_LABEL="Sonnet 5" MODEL_FAMILY="claude" MODEL_CONTEXT="1000000"
-      ;;
-    haiku)
-      MODEL_LAUNCHER="claude-haiku" MODEL_LABEL="Haiku 4.5" MODEL_FAMILY="claude" MODEL_CONTEXT="200000"
+    fable | opus | sonnet | haiku)
+      MODEL_LAUNCHER="claude-$1" MODEL_FAMILY="claude"
+      models_alias_info "$1" || return 1
       ;;
     claude:*)
       valid_model_id "${1#claude:}" || return 1
-      MODEL_ID="${1#claude:}" MODEL_LAUNCHER="claude-fable" MODEL_LABEL="${1#claude:}" MODEL_FAMILY="claude"
+      models_label_of "${1#claude:}"
+      MODEL_ID="${1#claude:}" MODEL_LAUNCHER="claude-fable" MODEL_LABEL="$MODELS_LABEL" MODEL_FAMILY="claude" MODEL_SOURCE="pinned at spawn"
       ;;
     codex:*)
       valid_model_id "${1#codex:}" || return 1
@@ -215,9 +219,10 @@ model_info() {
 }
 
 # model_context_window <model-key> — the context window, in tokens, that status shows a share of.
-# A provider of the table declares its own (PROVIDER_CONTEXT); a model id that ends in [1m]
-# means 1M; a key of the model table above declares its own (MODEL_CONTEXT) — the four numbers
-# of Anthropic's model table (fable/opus/sonnet 1M, haiku 200k unchanged). Anything else — a
+# A provider of the table declares its own (PROVIDER_CONTEXT); a key of the model table above
+# declares its own (MODEL_CONTEXT): for fable, opus, sonnet and haiku that is the window the
+# probe's answer declared (lib/models.sh; 1M for all four on 2026-10-13, haiku included);
+# a model id that ends in [1m] means 1M. Anything else — a
 # pinned claude:<id>/codex:<id> without the [1m] marker, astra, an unrecognised key — has no
 # known window: this prints nothing and returns 1, so the caller shows tokens with no share
 # rather than a percentage of a number nobody declared.
@@ -236,11 +241,14 @@ model_context_window() {
       ;;
   esac
   model_info "$key" 2>/dev/null || return 1
+  if [ -n "$MODEL_CONTEXT" ]; then
+    printf '%s\n' "$MODEL_CONTEXT"
+    return 0
+  fi
   case "${MODEL_ID:-}" in
     *\[1m\]) printf '1048576\n'; return 0 ;;
   esac
-  [ -n "$MODEL_CONTEXT" ] || return 1
-  printf '%s\n' "$MODEL_CONTEXT"
+  return 1
 }
 
 # What usage lines and "unknown model" errors list: the fixed keys, then whatever the provider

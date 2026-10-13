@@ -498,7 +498,8 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl completion <zsh\|bash>` | print the tab-completion script of that shell, so `source <(teamctl completion zsh)` works (bash: `eval "$(teamctl completion bash)"`); `./install.sh` wires it into `~/.zshrc`, and `teamctl <Tab>` then offers commands, options and values (roles, teams, models, policy keys, layouts, approvals, branches) |
 | `teamctl destroy [--worktrees] [--yes]` | end the session; never deletes dirty worktrees, unmerged branches, source, credentials or Beads data |
 | `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and free its disk space: reports first, asks, then removes session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts ([deleting a team](#deleting-a-team-and-what-a-team-costs)) |
-| `teamctl doctor [--probe]` | launcher, credential, settings and login checks; `--probe` also asks each provider whose key is set up whether its endpoint accepts it |
+| `teamctl doctor [--probe]` | launcher, credential, settings and login checks; `--probe` also asks each provider whose key is set up whether its endpoint accepts it. Also: which model each running agent started on, and the restart that moves it to a newer one |
+| `teamctl models [--json] [--refresh]` | what `fable`, `opus`, `sonnet` and `haiku` mean today (alias, model id, label, where the id came from), and the model each running agent started on. `--refresh` asks Claude Code again now; otherwise it is asked at most once a day per alias, when an agent starts (`WOLFMUX_MODEL_POLICY`) |
 
 Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`

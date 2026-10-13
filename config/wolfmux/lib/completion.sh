@@ -75,7 +75,7 @@ complete_roles() {
   for role in $(reg_list 2>/dev/null); do
     kind="$(reg_field "$role" kind 2>/dev/null || true)"
     if [ "$kind" = "lead" ] && [ "$workers_only" = "workers-only" ]; then continue; fi
-    label="$(reg_field "$role" label 2>/dev/null || true)"
+    label="$(agent_label "$role" 2>/dev/null || true)"
     complete_emit "$prefix" "$role" "$label"
   done
 }
@@ -173,6 +173,7 @@ complete_first_word() {
   complete_emit "$prefix" worktrees "list the team's worktrees"
   complete_emit "$prefix" diff "<role>: a worker's branch against its base"
   complete_emit "$prefix" doctor "provider and billing isolation report; --probe checks a key"
+  complete_emit "$prefix" models "what fable, opus, sonnet, haiku mean today, and who runs an older one"
   complete_emit "$prefix" completion "<zsh|bash>: print the tab-completion script of that shell"
   complete_emit "$prefix" --team "<name>: act on another team of this project"
   complete_emit "$prefix" help "the full help"
@@ -202,6 +203,7 @@ complete_options() {
     dashboard) options="--json --once --interval --full --socket" ;;
     approvals) options="--all" ;;
     doctor) options="--probe" ;;
+    models) options="--json --refresh" ;;
   esac
   for option in $options; do
     case "$option" in
