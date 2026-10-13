@@ -222,6 +222,17 @@ check "what its transcript shows was served is used when the record has nothing:
   'doctor | grep -q "y runs claude-opus-5 (from its transcript); claude-opus-6 is newer. Nothing restarts by itself: teamctl restart y --continue" &&
    teamctl models --json | jq -e "[.agents[] | select(.role == \"y\")][0] | .running_id == \"claude-opus-5\" and .known_from == \"transcript\" and .verdict == \"behind\""'
 
+echo "== the policy in the config file"
+# A key that is not on WOLFMUX_CONFIG_KEYS is read out of the config file and dropped without
+# a word (lib/provider-env.sh): this is the check that the policy is not one of those.
+POLICY_HOME="$WORK/wolfmux-home-policy"
+/bin/mkdir -p "$POLICY_HOME"
+for entry in "$REPO"/config/wolfmux/*; do [ "$(basename "$entry")" = "config" ] || /bin/ln -s "$entry" "$POLICY_HOME/"; done
+printf 'WOLFMUX_MODEL_POLICY=pinned\n' >"$POLICY_HOME/config"
+check "WOLFMUX_MODEL_POLICY=pinned in the config file takes effect: the built-in ids, nothing asked" \
+  'out="$(WOLFMUX_HOME="$POLICY_HOME" "$REPO/bin/teamctl" models 2>&1)" && printf "%s" "$out" | grep -q "^policy:  pinned " &&
+   printf "%s" "$out" | grep -Eq "^  opus +claude-opus-5-5 +Opus 5.5 +built-in \(policy pinned\)"'
+
 echo
 echo "result: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
