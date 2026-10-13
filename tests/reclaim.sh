@@ -641,6 +641,48 @@ TREES_OUT="$(teamctl destroy --worktrees --yes 2>&1)"
 check "destroy --worktrees says where a fully merged branch was when it deletes it" \
   'printf "%s" "$TREES_OUT" | grep -q "bytrees: branch $(br_of bytrees) was at $BYTREES_TIP" && ! git -C "$PROJECT" show-ref --verify -q "refs/heads/$(br_of bytrees)"'
 
+echo "== parking never fails because the check after it did"
+# bin/teamctl runs under `set -euo pipefail`, and both commands that park a lane ask the
+# reclaim check AFTER the lane is parked. A failure in there would end the command before it
+# said "stopped: <role>": the lane parked, and an error where the confirmation should be.
+# Nothing in the check fails today, so the failure is put there: a copy of teamctl's home in
+# which one function is replaced by one that leaves a mark and returns 7. The mark is the
+# control in every check below; without it they pass wherever that function is never called.
+# broken_home <name> <lib module> <function> — prints the home; the mark is $WORK/<name>.called
+broken_home() {
+  /bin/cp -R "$REPO/config/wolfmux" "$WORK/home-$1"
+  printf '\n%s() { : >"%s"; return 7; }\n' "$3" "$WORK/$1.called" >>"$WORK/home-$1/lib/$2.sh"
+  printf '%s' "$WORK/home-$1"
+}
+HOOK_HOME="$(broken_home hook reclaim reclaim_on_park)"
+BOOK_HOME="$(broken_home book disk disk_parked_adjust)"
+teamctl start fable --no-attach --skip-beads >/dev/null 2>&1
+teamctl policy auto-reclaim on >/dev/null 2>&1
+teamctl spawn hookstop glm53 --no-kickoff >/dev/null 2>&1
+teamctl spawn hookbook glm53 --no-kickoff >/dev/null 2>&1
+sleep 3
+state_of() { teamctl status --json | jq -r --arg r "$1" '.agents[] | select(.role == $r) | .state'; }
+STOP7="$(WOLFMUX_HOME="$HOOK_HOME" teamctl stop hookstop 2>&1)"
+STOP7_RC=$?
+check "teamctl stop exits 0 and says stopped: when the check after the park fails" \
+  '[ -e "$WORK/hook.called" ] && [ "$STOP7_RC" -eq 0 ] && printf "%s" "$STOP7" | grep -q "^stopped: hookstop " && [ "$(state_of hookstop)" = "stopped" ]'
+STOP8="$(WOLFMUX_HOME="$BOOK_HOME" teamctl stop hookbook 2>&1)"
+STOP8_RC=$?
+# The "holding" line shows the real check ran its whole course before its bookkeeping failed.
+check "and when it is the bookkeeping at the end of the check that fails" \
+  '[ -e "$WORK/book.called" ] && [ "$STOP8_RC" -eq 0 ] && printf "%s" "$STOP8" | grep -qE "^lane: +holding [0-9.]+ (KB|MB|GB): no task bead on record" && printf "%s" "$STOP8" | grep -q "^stopped: hookbook " && [ "$(state_of hookbook)" = "stopped" ]'
+# Asked of the library directly, under lib_eval's own `set -euo pipefail` and with no
+# `|| true` at the call: a `return 0` at the end of the function is not enough for this one,
+# because `set -e` ends the shell at the failing line and the `return` is never reached.
+/bin/rm -f "$WORK/book.called"
+check "reclaim_on_park itself returns 0 to a caller under set -e, with no || true to save it" \
+  '[ "$(WOLFMUX_HOME="$BOOK_HOME" lib_eval "reclaim_on_park \"\" stop 0 \"\" >/dev/null; printf reached" 2>/dev/null)" = "reached" ] && [ -e "$WORK/book.called" ]'
+/bin/rm -f "$WORK/hook.called"
+DESTROY2="$(WOLFMUX_HOME="$HOOK_HOME" teamctl destroy --yes 2>&1)"
+DESTROY2_RC=$?
+check "teamctl destroy finishes and says what it kept when the check after it fails" \
+  '[ -e "$WORK/hook.called" ] && [ "$DESTROY2_RC" -eq 0 ] && printf "%s" "$DESTROY2" | grep -q "^worktrees kept, except a lane reclaimed above"'
+
 echo "== teamctl reclaim --all-teams: the whole machine, and yours alone to run"
 teamctl start fable --team second --no-attach --skip-beads >/dev/null 2>&1
 teamctl policy auto-reclaim off --team second >/dev/null 2>&1

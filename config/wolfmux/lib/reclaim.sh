@@ -786,6 +786,13 @@ reclaim_one() {
 # Policy auto-reclaim (default on) decides whether a lane that passes is taken. Off: nothing
 # is removed, and the lane's record says that nothing is in its way.
 # Sets RECLAIM_PARKED_GONE to 1 when the lane that was just parked is the one that went.
+#
+# Always returns 0, and both callers say `|| true` as well: the lane is parked by then, and
+# the command has to say so whatever happened in here. That `|| true` also switches `set -e`
+# off for everything this calls, so no step below may count on the shell ending for it. None
+# does: the removal is reached only through `if` tests that each step has to pass. What
+# `|| true` cannot catch is an `exit`: a team lock that stays held for 30 seconds still ends
+# the command from in here (lock_acquire dies).
 reclaim_on_park() {
   local parked="$1" trigger="$2" aloud="$3" indent="$4" apply=0 role freed=0 mine asked=0
   RECLAIM_PARKED_GONE=0
@@ -832,9 +839,13 @@ reclaim_on_park() {
         ;;
     esac
   done
-  reclaim_beads_forget
-  disk_cache_adjust "$freed"
-  disk_parked_adjust "$freed"
+  # Bookkeeping, and both callers run under `set -e` with the lane already parked: parking
+  # must not fail because this did. Each line is guarded by itself, because under `set -e` a
+  # `return 0` that follows a failing command is never reached (measured, bash 3.2).
+  reclaim_beads_forget || true
+  disk_cache_adjust "$freed" || true
+  disk_parked_adjust "$freed" || true
+  return 0
 }
 
 # --- teamctl reclaim [--dry-run] [--all-teams] ----------------------------------------
