@@ -85,7 +85,9 @@ on the left; teammates stack on the right. A worker reads its Beads inbox as soo
 boots, so assign work first, then spawn. Options: `--base <ref>`, `--branch <name>`,
 `--ticket <KEY>`, `--repo <path>`, `--no-kickoff`, and
 `--from-worktree <role>`: a fresh conversation in a stopped worker's built worktree, on a
-new branch (its branch and commits stay; node_modules and build output survive). The lead
+new branch (its branch and commits stay; node_modules and build output survive, *if* that
+lane was protected with `teamctl keep <role>` before it was parked — parking sweeps build
+output since v1.17.0, and the flag travels with the worktree). The lead
 reads each agent's CONTEXT in `teamctl status` (tokens, and the share of a known
 window — Fable 5.1, Opus 5 and Sonnet 5 are 1,000,000 tokens, Haiku 4.5 is 200,000;
 anything else shows tokens alone) to choose

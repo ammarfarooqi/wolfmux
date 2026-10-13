@@ -456,7 +456,7 @@ cmd_start() {
 # a branch, a record or a pane exists, so a spawn that is turned down leaves nothing behind.
 cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
-  local from_tree="" old_record="" old_branch="" old_pane dirty
+  local from_tree="" old_record="" old_branch="" old_keep="" old_pane dirty
   local want_branch="" ticket="" repo_arg="" repo="" spawn_repo trees repo_note=""
   local pin="" link=0 linked=0
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
@@ -593,6 +593,10 @@ cmd_spawn() {
     # new role. If the pane cannot be made, the old worker is put back exactly as it was.
     old_record="$(reg_get "$from_tree")"
     old_branch="$(reg_field "$from_tree" branch)"
+    # The keep flag belongs to the WORKTREE, not to the role name: a handover reuses the
+    # same expensive checkout, so a lane that was worth protecting from the automatic sweep
+    # is still worth protecting under its new role. Read before the old record is deleted.
+    old_keep="$(reg_field "$from_tree" keep_build 2>/dev/null || true)"
     if ! "$GIT_BIN" -C "$path" switch -q -c "$branch" "$base_commit" >/dev/null 2>&1; then
       die "could not create branch $branch in $(short_path "$path") (is that directory still a git worktree of $(short_path "$spawn_repo")?)"
     fi
@@ -605,6 +609,7 @@ cmd_spawn() {
   fi
   new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}" "$repo" 1
   if [ -n "$pin" ]; then reg_set "$role" session_id "$pin"; fi
+  if [ "$old_keep" = "on" ]; then reg_set "$role" keep_build on; fi
 
   target="$(tm_split_target "$SESSION")" || target=""
   pane=""
@@ -648,6 +653,14 @@ cmd_spawn() {
   say "worktree:  $(short_path "$path")"
   if [ -n "$from_tree" ]; then
     say "handed over: the worktree of $from_tree (its branch $old_branch and its commits are kept)"
+    # The point of a handover is that the install is not repeated, and from v1.17.0 parking
+    # the old lane sweeps its build output — so say which of the two happened here instead of
+    # leaving the new agent to discover it when a build fails.
+    if [ "$old_keep" = "on" ]; then
+      say "kept:      teamctl keep came with the worktree, so its build output is still protected from the automatic sweep"
+    elif [ ! -e "$path/node_modules" ]; then
+      say "note:      this worktree has no node_modules: it was swept when $from_tree was parked. To carry an install through a handover, run teamctl keep <role> BEFORE stopping that lane (or teamctl policy auto-prune off for the team)"
+    fi
   fi
   if [ "$linked" -eq 1 ]; then
     say "deps:      node_modules linked to $(short_path "$spawn_repo")/node_modules — ONE directory for every lane, so an install in any lane changes them all"

@@ -55,7 +55,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                 teamctl status marks them with $
         --from-worktree <role>: a fresh conversation for a NEW role in that stopped worker's worktree,
                 on a new branch (the old branch and commits stay). What git ignores (node_modules,
-                build output) is kept, so install and build are not repeated
+                build output) is kept, so install and build are not repeated — but parking that
+                worker sweeps its build output first (policy auto-prune), so run
+                teamctl keep <role> BEFORE stopping the lane you mean to hand over; the flag
+                comes across with the worktree
     teamctl stop <role>                               close the pane; worktree, branch and record stay
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else
