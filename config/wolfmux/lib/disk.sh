@@ -553,12 +553,13 @@ disk_heavy_run_in_progress() {
 #   it says what it waited for, on stderr, so a run that sat in a queue for twenty minutes
 #   says so instead of looking slow
 #
-# Exit statuses of its own, chosen not to collide with a command's: 64 for a usage error,
-# 69 when lockf is not on this machine, 75 when --timeout expired without the lock. A command
-# that itself exits 69 or 75 is indistinguishable from those two, which is why the message
-# that accompanies them is on stderr and names the lock.
+# Exit statuses of its own: 64 for a usage error, 69 when lockf is not on this machine, 75
+# when --timeout expired without the lock. None of the three can be confused with a command's
+# own status of the same number: 64 and 69 are raised before anything runs, and a --timeout
+# run marks a file once the lock is held, so a 75 with the mark present is the command's and a
+# 75 without it is the lock's. Each is still accompanied by a line on stderr naming the lock.
 cmd_heavy() {
-  local timeout="" waited_from waited quiet=0 rc=0
+  local timeout="" waited_from waited quiet=0 rc=0 silent="" ran_dir="" ran=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --timeout)
@@ -580,6 +581,18 @@ cmd_heavy() {
   fi
   [ -n "$LOCKF_BIN" ] || die "lockf is not on this machine, so the heavy lock cannot be held. Run the command yourself, knowing that nothing is excluding anything: $*" 69
   /bin/mkdir -p "$(dirname "$WOLFMUX_HEAVY_LOCK")" 2>/dev/null || true
+  # lockf has a voice of its own ("already locked") and on the paths where we say the same
+  # thing better it should not speak twice. -s silences lockf ALONE: the command's own stdout
+  # and stderr still come through, which a blunt 2>/dev/null on the whole call would have eaten.
+  if [ "$quiet" -eq 1 ] || [ -n "$timeout" ]; then silent="-s"; fi
+  # A --timeout run needs to know whether the command ever started, because 75 is both "the
+  # lock never came free" and "the command exited 75". A shim marks a file once the lock is
+  # held, so the two are told apart instead of guessed at. The plain path needs no shim:
+  # without -t, lockf waits, so a 75 there can only be the command's own.
+  if [ -n "$timeout" ]; then
+    ran_dir="$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/wolfmux-heavy.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$ran_dir" ]; then ran="$ran_dir/held"; fi
+  fi
   # Whether we had to wait is worth saying, and it is only knowable BEFORE the blocking call:
   # a -t 0 probe first, then the real acquisition. The probe is read-only (-n, no file is
   # created), so a machine where nothing has ever registered a heavy run is not changed by
@@ -589,16 +602,31 @@ cmd_heavy() {
     info "waiting for the machine's heavy lock: $DISK_HEAVY_REASON"
   fi
   set +e
-  if [ -n "$timeout" ]; then
-    "$LOCKF_BIN" -k -t "$timeout" "$WOLFMUX_HEAVY_LOCK" "$@"
+  if [ -n "$ran" ]; then
+    "$LOCKF_BIN" -k $silent -t "$timeout" "$WOLFMUX_HEAVY_LOCK" \
+      /bin/sh -c ': >"$1" 2>/dev/null; shift; exec "$@"' sh "$ran" "$@"
+  elif [ -n "$timeout" ]; then
+    "$LOCKF_BIN" -k $silent -t "$timeout" "$WOLFMUX_HEAVY_LOCK" "$@"
   else
-    "$LOCKF_BIN" -k "$WOLFMUX_HEAVY_LOCK" "$@"
+    "$LOCKF_BIN" -k $silent "$WOLFMUX_HEAVY_LOCK" "$@"
   fi
   rc=$?
   set -e
   waited=$(($(now_epoch) - waited_from))
-  if [ -n "$timeout" ] && [ "$rc" -eq 75 ]; then
-    die "the machine's heavy lock was still held after ${timeout}s, so nothing was run. Look at who has it: teamctl heavy --quiet true (it waits), or ps -o command= | grep lockf" 75
+  # The shim's mark is the only honest way to tell "the lock never came free" from "your
+  # command exited 75". Absent mark plus a non-zero status means the command never started.
+  if [ -n "$ran" ] && [ ! -e "$ran" ] && [ "$rc" -ne 0 ]; then
+    if [ -n "$ran_dir" ]; then /bin/rm -rf "$ran_dir"; fi
+    if [ "$rc" -eq 75 ]; then
+      die "the machine's heavy lock was still held after ${timeout}s, so nothing was run and your command never started. Look at who has it: teamctl heavy --quiet true (it waits), or ps -o command= | grep lockf" 75
+    fi
+    die "the machine's heavy lock could not be taken (lockf exit $rc), so nothing was run and your command never started. The lock file is $(short_path "$WOLFMUX_HEAVY_LOCK")" "$rc"
+  fi
+  if [ -n "$ran_dir" ]; then /bin/rm -rf "$ran_dir"; fi
+  # No shim (mktemp had nowhere to write): 75 is genuinely ambiguous, and the message says so
+  # rather than picking the reading that flatters the wrapper.
+  if [ -z "$ran" ] && [ -n "$timeout" ] && [ "$rc" -eq 75 ]; then
+    die "lockf exited 75 after ${timeout}s: either the heavy lock was still held and nothing was run, or your command itself exited 75. Who holds it: ps -o command= | grep lockf" 75
   fi
   if [ "$quiet" -eq 0 ] && [ "$waited" -ge 5 ]; then
     info "held the heavy lock after waiting ${waited}s; the command's own exit status was $rc"

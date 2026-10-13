@@ -685,6 +685,17 @@ check "a second caller waits for the first instead of running beside it" \
   '( teamctl heavy /bin/sleep 6 >/dev/null 2>&1 & ) ; sleep 1; start="$(date +%s)"; teamctl heavy --quiet /usr/bin/true; waited=$(( $(date +%s) - start )); [ "$waited" -ge 3 ]'
 check "--timeout gives up with exit 75 rather than waiting, and says nothing was run" \
   '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && printf "%s" "$out" | grep -q "nothing was run"'
+# lockf has its own "already locked" line, and on the timeout path teamctl says the same
+# thing better. One voice, not two: -s silences lockf and leaves the command's own output
+# alone, which a 2>/dev/null on the whole call would not have.
+check "on the timeout path lockf does not say it too: one line, ours" \
+  '( teamctl heavy /bin/sleep 8 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy --timeout 1 /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "nothing was run" && ! printf "%s" "$out" | grep -qi "already locked"'
+check "a command silenced for lockf still speaks for itself" \
+  'out="$(teamctl heavy --timeout 5 /bin/sh -c "echo mine-out; echo mine-err >&2" 2>&1)"; printf "%s" "$out" | grep -q "mine-out" && printf "%s" "$out" | grep -q "mine-err"'
+# 75 means two things, and guessing wrong would report somebody else's exit status as a lock
+# failure. With the lock FREE, a command that exits 75 is the command's 75, not the lock's.
+check "a command that itself exits 75 is not reported as the lock timing out" \
+  'out="$(teamctl heavy --timeout 5 /bin/sh -c "exit 75" 2>&1)"; rc=$?; [ "$rc" -eq 75 ] && ! printf "%s" "$out" | grep -q "nothing was run"'
 check "it says what it waited for, and --quiet does not" \
   '( teamctl heavy /bin/sleep 7 >/dev/null 2>&1 & ) ; sleep 1; out="$(teamctl heavy /usr/bin/true 2>&1)"; printf "%s" "$out" | grep -q "waiting for the machine.s heavy lock" && q="$( ( teamctl heavy /bin/sleep 5 >/dev/null 2>&1 & ) ; sleep 1; teamctl heavy --quiet /usr/bin/true 2>&1)"; [ -z "$q" ]'
 # The sweep and the wrapper are two halves of one mechanism: whatever teamctl heavy holds,
