@@ -786,10 +786,8 @@ reclaim_one() {
 # Policy auto-reclaim (default on) decides whether a lane that passes is taken. Off: nothing
 # is removed, and the lane's record says that nothing is in its way.
 #
-# Always returns 0, and both callers run it as `(reclaim_on_park ...) || true`: the lane is
-# parked by then, and the command has to say so whatever happened in here. `|| true` takes a
-# failure, and the subshell takes an `exit` (lock_acquire dies when the team's lock stays
-# held for 30 seconds). Two things follow from that:
+# Always returns 0, and is never called directly: reclaim_after_park, below, runs it in a
+# subshell with `|| true`. Two things follow from that:
 # - `set -e` is off for everything this calls, so no step below may count on the shell ending
 #   for it. None does: the removal is reached only through `if` tests each step has to pass.
 # - Nothing set in here reaches the caller. What became of a lane is read from its record
@@ -845,6 +843,42 @@ reclaim_on_park() {
   disk_cache_adjust "$freed" || true
   disk_parked_adjust "$freed" || true
   return 0
+}
+
+# reclaim_after_park <as reclaim_on_park> — what the two commands that park a lane call. The
+# lane is parked by then, and the command has to say so whatever becomes of the check. So the
+# check is run where it can end nothing but itself, in two shells, one inside the other:
+#
+# - The outer one makes a scratch directory, gives it to the check as its TMPDIR, and removes
+#   it in a trap on EXIT. A check that is cut short cannot drop what Beads told it, and that
+#   answer is a file; a line after the check would be skipped by the same `exit`. The
+#   directory is made in that shell, so its trap removes only what that shell made. Being a
+#   subshell, it leaves the caller's own EXIT trap and TMPDIR as they were.
+# - The inner one runs the check and takes an `exit` in it (lock_acquire dies when the team's
+#   lock stays held for 30 seconds). It is a shell of its own for a second reason:
+#   lock_acquire re-arms the EXIT trap of the shell it runs in every time it takes the lock
+#   (lib/registry.sh). In the outer shell that would throw the cleanup away at the first lane.
+#
+# `|| true` takes a check that fails, and this returns 0 whatever happened.
+reclaim_after_park() {
+  (
+    RECLAIM_PARK_IN="${TMPDIR:-/tmp}"
+    RECLAIM_PARK_SCRATCH="$(/usr/bin/mktemp -d "$RECLAIM_PARK_IN/wolfmux-reclaim-park.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$RECLAIM_PARK_SCRATCH" ]; then
+      trap 'reclaim_park_done' EXIT
+      export TMPDIR="$RECLAIM_PARK_SCRATCH"
+    fi
+    (reclaim_on_park "$@")
+  ) || true
+  return 0
+}
+
+# reclaim_park_done — the EXIT trap of reclaim_after_park's outer shell. Only ever the
+# directory that shell made, under the temporary directory it made it in.
+reclaim_park_done() {
+  case "${RECLAIM_PARK_SCRATCH:-}" in
+    "${RECLAIM_PARK_IN:-/nowhere}"/wolfmux-reclaim-park.*) /bin/rm -rf "$RECLAIM_PARK_SCRATCH" 2>/dev/null || true ;;
+  esac
 }
 
 # --- teamctl reclaim [--dry-run] [--all-teams] ----------------------------------------

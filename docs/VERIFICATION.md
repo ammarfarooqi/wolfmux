@@ -61,7 +61,7 @@ tests/commands.sh              # ~20 seconds, 16 checks, in a throwaway WOLFMUX_
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
 tests/models.sh                # ~40 seconds, 22 checks, its own tmux server, HOME and state: WOLFMUX_MODEL_POLICY and the drift check
-tests/reclaim.sh               # ~13 minutes, 131 checks, its own tmux server and state, stand-ins for bd and gh: a finished lane goes and every lane with something to lose stays
+tests/reclaim.sh               # ~14 minutes, 134 checks, its own tmux server and state, stand-ins for bd and gh: a finished lane goes and every lane with something to lose stays
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```

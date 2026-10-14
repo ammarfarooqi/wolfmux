@@ -653,7 +653,10 @@ echo "== parking never fails because the check after it did"
 # below; without it they pass wherever that function is never called.
 # broken_home <name> <how> <function>... — prints the home; a mark is $WORK/<name>.<function>
 #   return   the function is replaced by one that returns 7
-#   exit     the function is replaced by one that exits 9, the way die does
+#   exit     the function is replaced by one that exits 9, the way die does. Before that it
+#            does what the real check does on its way: it leaves a scratch file in TMPDIR,
+#            and takes the team's lock once (lock_acquire re-arms the EXIT trap of the shell
+#            it runs in, which is what would throw a cleanup trap in that shell away)
 #   after    the function does its real work first, then returns 7
 # The functions go at the end of lib/guard.sh, the last module that both bin/teamctl and
 # lib_eval load, so they win over the real ones.
@@ -664,7 +667,7 @@ broken_home() {
   for fn in "$@"; do
     case "$how" in
       return) printf '\n%s() { : >"%s"; return 7; }\n' "$fn" "$WORK/$name.$fn" ;;
-      exit) printf '\n%s() { : >"%s"; exit 9; }\n' "$fn" "$WORK/$name.$fn" ;;
+      exit) printf '\n%s() { : >"%s"; /usr/bin/mktemp "${TMPDIR:-/tmp}/wolfmux-reclaim.XXXXXX" >/dev/null; lock_acquire; lock_release; exit 9; }\n' "$fn" "$WORK/$name.$fn" ;;
       after)
         printf '\neval "$(declare -f %s | sed "1s/^%s /%s_real /")"\n' "$fn" "$fn" "$fn"
         printf '%s() { %s_real "$@" || true; : >"%s"; return 7; }\n' "$fn" "$fn" "$WORK/$name.$fn"
@@ -695,6 +698,8 @@ commit_in "$(dir_of bookdone)" bookdone.txt "work" "bookdone: the work"
 task bookdone closed
 pg merge -q --no-ff -m "merge bookdone" "$(br_of bookdone)" >/dev/null 2>&1
 state_of() { teamctl status --json | jq -r --arg r "$1" '.agents[] | select(.role == $r) | .state'; }
+# left_behind — the scratch files and directories of a check that are still in TMPDIR
+left_behind() { /bin/ls -A "$TMPDIR" | grep "^wolfmux-reclaim" || true; }
 STOP7="$(WOLFMUX_HOME="$HOOK_HOME" teamctl stop hookstop 2>&1)"
 STOP7_RC=$?
 check "teamctl stop exits 0 and says stopped: when the check after the park fails" \
@@ -703,6 +708,10 @@ STOP8="$(WOLFMUX_HOME="$EXIT_HOME" teamctl stop hookexit 2>&1)"
 STOP8_RC=$?
 check "and when that check EXITS, which no || true can catch: it runs in a subshell" \
   'marked exit reclaim_on_park && [ "$STOP8_RC" -eq 0 ] && printf "%s" "$STOP8" | grep -q "^stopped: hookexit " && [ "$(state_of hookexit)" = "stopped" ]'
+# Keep this one. A check that is cut short cannot clear up after itself, so somebody else
+# has to, and nothing but this check and the one after the held lock says that they do.
+check "what a check that exited had left in the temporary directory is gone with it" \
+  'marked exit reclaim_on_park && [ -z "$(left_behind)" ]'
 STOP9="$(WOLFMUX_HOME="$BOOK_HOME" teamctl stop hookbook 2>&1)"
 STOP9_RC=$?
 # The "holding" line shows the real check ran its whole course before its bookkeeping failed.
@@ -714,6 +723,11 @@ check "and when it is the bookkeeping at the end of the check that fails, all th
 unmark book
 check "reclaim_on_park itself returns 0 to a caller under set -e, with nothing at the call to save it" \
   '[ "$(WOLFMUX_HOME="$BOOK_HOME" lib_eval "reclaim_on_park \"\" stop 0 \"\" >/dev/null; printf reached" 2>/dev/null)" = "reached" ] && marked book $BOOKKEEPING'
+# The trap that clears the scratch directory and the TMPDIR the check is given belong to a
+# shell of their own. In the caller's shell they would replace teamctl's own EXIT trap, which
+# is what releases the team's lock when a command dies.
+check "reclaim_after_park leaves its caller's own EXIT trap and TMPDIR as they were" \
+  '[ "$(lib_eval "trap \"printf kept\" EXIT; before=\"\$TMPDIR\"; reclaim_after_park \"\" stop 0 \"\" >/dev/null 2>&1; [ \"\$TMPDIR\" = \"\$before\" ] && printf same-" 2>/dev/null)" = "same-kept" ]'
 # The exit that really happens: the team's lock stays held while the check wants it, and
 # lock_acquire dies after 30 seconds. This `bd` is asked by the check, after the park and
 # outside the lock; it takes the lock and leaves a live pid in it, the way another teamctl
@@ -729,11 +743,17 @@ fi
 exec "$RECLAIM_STUB/bin/bd" "\$@"
 EOF
 /bin/chmod +x "$WORK/lockbin/bd"
+LEFT_BEFORE="$(left_behind)"
 STOP10="$(PATH="$WORK/lockbin:$PATH" teamctl stop hooklock 2>&1)"
 STOP10_RC=$?
 kill "$(/bin/cat "$LOCK_DIR/pid" 2>/dev/null)" 2>/dev/null
 check "teamctl stop still says stopped: when the team's lock stays held through the check" \
   'printf "%s" "$STOP10" | grep -q "another teamctl operation holds the project lock" && [ "$STOP10_RC" -eq 0 ] && printf "%s" "$STOP10" | grep -q "^stopped: hooklock " && [ "$(state_of hooklock)" = "stopped" ]'
+# Keep this one too: it is the real case of the check above. A check that exits cannot drop
+# what Beads told it, and that answer is a file. It asked Beads before it died (the control),
+# so there was a file to leave behind. The full suite on e43dea1 found exactly this.
+check "and that check, cut short, leaves nothing behind: what Beads had told it goes with it" \
+  'printf "%s" "$STOP10" | grep -q "asking Beads" && [ -z "$LEFT_BEFORE" ] && [ -z "$(left_behind)" ]'
 teamctl stop bookdone >/dev/null 2>&1
 unmark book
 RECLAIM2="$(WOLFMUX_HOME="$BOOK_HOME" teamctl reclaim 2>&1)"
@@ -754,8 +774,8 @@ teamctl start fable --no-attach --skip-beads >/dev/null 2>&1
 unmark exit
 DESTROY3="$(WOLFMUX_HOME="$EXIT_HOME" teamctl destroy --yes 2>&1)"
 DESTROY3_RC=$?
-check "and when that check exits" \
-  'marked exit reclaim_on_park && [ "$DESTROY3_RC" -eq 0 ] && printf "%s" "$DESTROY3" | grep -q "^worktrees kept, except a lane reclaimed above"'
+check "and when that check exits, with nothing of it left behind either" \
+  'marked exit reclaim_on_park && [ "$DESTROY3_RC" -eq 0 ] && printf "%s" "$DESTROY3" | grep -q "^worktrees kept, except a lane reclaimed above" && [ -z "$(left_behind)" ]'
 
 echo "== teamctl reclaim --all-teams: the whole machine, and yours alone to run"
 teamctl start fable --team second --no-attach --skip-beads >/dev/null 2>&1
