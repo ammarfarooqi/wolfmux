@@ -300,6 +300,13 @@ lane that was parked before its merge goes the next time any lane is parked, wit
 anybody remembering it. `teamctl reclaim` asks by hand, and `teamctl reclaim --dry-run`
 shows the answer for every lane without deleting anything.
 
+Parking comes first and does not depend on the answer. When the check after it fails, or
+cannot finish — the team's lock stays held by another `teamctl` for 30 seconds, say —
+`teamctl stop` still ends with `stopped: <role>` and exits 0, with the error printed above
+that line. A plain `teamctl destroy` does the same. And `teamctl reclaim` does not report a
+removal that worked as a failure because its bookkeeping afterwards (the remembered disk
+numbers) could not be written.
+
 A lane goes only when **all** of these hold. They are asked in this order, cheapest first
 and the network last, and **a check that cannot be answered keeps the lane**:
 

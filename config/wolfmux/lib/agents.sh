@@ -1004,10 +1004,15 @@ cmd_stop() {
   # was parked before its merge goes here, the next time any lane is parked. After the lock is
   # released, on purpose: the check asks Beads and GitHub, and a team's lock is not held
   # across a network call. Stopping the lead parks no lane and asks nothing.
-  # `|| true`: the lane is parked, and this command says so whatever the check did.
-  RECLAIM_PARKED_GONE=0
-  if [ "$(reg_field "$role" kind)" = "worker" ]; then reclaim_on_park "$role" stop 0 "" || true; fi
-  if [ "$RECLAIM_PARKED_GONE" -eq 1 ]; then
+  #
+  # In a subshell, and with `|| true`: the lane is parked, and this command says so whatever
+  # the check did. `|| true` takes a check that fails. The subshell takes one that EXITS,
+  # which nothing else can: lock_acquire dies when the team's lock stays held for 30 seconds.
+  # A subshell hands no variable back, and that is the better way round, not the clumsier
+  # one: whether the lane is "off the books" is read from the books (reg_exists), not from a
+  # flag the check set before its last step. Do not pass a flag back out of it.
+  if [ "$(reg_field "$role" kind)" = "worker" ]; then (reclaim_on_park "$role" stop 0 "") || true; fi
+  if ! reg_exists "$role"; then
     say "stopped: $role   (its task is closed and its work is all in main, so the lane is off the books: worktree, branch and record. To keep a lane you mean to restart: teamctl keep $role before you stop it · for the team: teamctl policy auto-reclaim off)"
   else
     say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
@@ -1648,9 +1653,9 @@ cmd_destroy() {
     # each one aloud: a team that has ended has nobody left to park a lane, so this is the
     # last automatic chance a finished lane of it gets, and a lane that stays has to say what
     # it is holding before the team's session is gone. After the lock, as in cmd_stop, and
-    # with `|| true` as there: the team has ended, and this command says so whatever the
-    # check did.
-    reclaim_on_park "" destroy 1 "  " || true
+    # in a subshell with `|| true` as there: the team has ended, and this command says so
+    # whether the check failed or exited.
+    (reclaim_on_park "" destroy 1 "  ") || true
     say "worktrees kept, except a lane reclaimed above: its task was closed and its work is all in main. What every other lane holds, and why: teamctl reclaim --dry-run · clean ones go with: teamctl destroy --worktrees · one that still holds work: teamctl remove <role> --force"
   fi
   founder_announce ended

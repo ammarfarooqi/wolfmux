@@ -785,17 +785,17 @@ reclaim_one() {
 #
 # Policy auto-reclaim (default on) decides whether a lane that passes is taken. Off: nothing
 # is removed, and the lane's record says that nothing is in its way.
-# Sets RECLAIM_PARKED_GONE to 1 when the lane that was just parked is the one that went.
 #
-# Always returns 0, and both callers say `|| true` as well: the lane is parked by then, and
-# the command has to say so whatever happened in here. That `|| true` also switches `set -e`
-# off for everything this calls, so no step below may count on the shell ending for it. None
-# does: the removal is reached only through `if` tests that each step has to pass. What
-# `|| true` cannot catch is an `exit`: a team lock that stays held for 30 seconds still ends
-# the command from in here (lock_acquire dies).
+# Always returns 0, and both callers run it as `(reclaim_on_park ...) || true`: the lane is
+# parked by then, and the command has to say so whatever happened in here. `|| true` takes a
+# failure, and the subshell takes an `exit` (lock_acquire dies when the team's lock stays
+# held for 30 seconds). Two things follow from that:
+# - `set -e` is off for everything this calls, so no step below may count on the shell ending
+#   for it. None does: the removal is reached only through `if` tests each step has to pass.
+# - Nothing set in here reaches the caller. What became of a lane is read from its record
+#   afterwards (reg_exists), which is where "off the books" is true or not.
 reclaim_on_park() {
   local parked="$1" trigger="$2" aloud="$3" indent="$4" apply=0 role freed=0 mine asked=0
-  RECLAIM_PARKED_GONE=0
   if [ "$(policy_get auto-reclaim)" = "on" ]; then apply=1; fi
   [ -n "${SESSION:-}" ] || SESSION="$(session_name_for_project)"
   # The lane that was just parked is asked first, so its line comes first; it is also on the
@@ -819,7 +819,6 @@ reclaim_on_park() {
     case "$RECLAIM_RESULT" in
       gone)
         freed=$((freed + RECLAIM_KB))
-        if [ "$mine" -eq 1 ]; then RECLAIM_PARKED_GONE=1; fi
         say "${indent}reclaimed: $role — $RECLAIM_PASSED — freed $(human_size "$RECLAIM_KB")"
         ;;
       would)
@@ -887,8 +886,10 @@ reclaim_team() {
   done
   if [ "$apply" -eq 1 ]; then
     event_log reclaim "" "freed_kb=$RECLAIM_TOTAL lanes=$RECLAIM_LANES holding=$RECLAIM_HELD"
-    disk_cache_adjust "$RECLAIM_TOTAL"
-    disk_parked_adjust "$RECLAIM_TOTAL"
+    # Bookkeeping about lanes that are already gone. It must not turn a reclaim that worked
+    # into a command that says it failed: that is how a deletion gets run a second time.
+    disk_cache_adjust "$RECLAIM_TOTAL" || true
+    disk_parked_adjust "$RECLAIM_TOTAL" || true
     layout_apply
   fi
   while IFS= read -r repo; do
@@ -952,7 +953,7 @@ cmd_reclaim() {
   fi
   if [ "$apply" -eq 1 ]; then ensure_state_dirs; fi
   reclaim_team "$apply"
-  reclaim_beads_forget
+  reclaim_beads_forget || true # bookkeeping, as in reclaim_team: the total below is still owed
   reclaim_footer "$dry" "$hint" total "" "$RECLAIM_TOTAL" "$RECLAIM_LANES" "$RECLAIM_RUNNING_LANES" "$RECLAIM_HELD" "$RECLAIM_HELD_KB"
 }
 
@@ -1010,7 +1011,7 @@ reclaim_all_teams() {
   done
   # The teams of one project share one Beads, so it was asked once per project above (a new
   # project makes reclaim_beads_load forget the last one); this drops the last answer.
-  reclaim_beads_forget
+  reclaim_beads_forget || true # bookkeeping, as in reclaim_team: the total below is still owed
   reclaim_footer "$dry" " --all-teams" "machine total" \
     " across $teams team$([ "$teams" = "1" ] || printf s) in $projects project$([ "$projects" = "1" ] || printf s)" \
     "$total" "$lanes" "$running" "$held" "$held_kb"
