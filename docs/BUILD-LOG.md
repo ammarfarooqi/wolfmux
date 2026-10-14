@@ -1826,6 +1826,192 @@ was first shown to match a line that does contain it.
 **shellcheck is not installed on this machine, so nothing here was linted with it.**
 `bash -n` was run on every changed shell file, and no figure above stands in for a lint.
 
+### What the review found: a park that could fail after it had happened
+
+The lead's review found nothing that fires today and one thing that was waiting.
+`bin/teamctl` runs under `set -euo pipefail`. `teamctl stop` and a plain `teamctl destroy`
+ask the reclaim check **after** the lane is parked. The check, `reclaim_on_park`, had no
+return of its own, and both calls were bare. So the exit status of `teamctl stop` was the
+exit status of a disk-cache writer three functions away. Had that ever failed, the command
+would have ended with an error after parking the lane and before saying `stopped: <role>`.
+
+The fix was proposed as "`return 0` as the last line, and `|| true` at both calls". Four
+things were then measured, in this order, and three of them changed it.
+
+**1. A `return 0` at the end does nothing.** On bash 3.2.57, the bash teamctl runs in:
+
+| Shape | Exit | Says `stopped:` |
+|-------|------|-----------------|
+| the last command of the function fails, the caller is bare | 7 | no |
+| `return 0` after the failing command, the caller is bare | 7 | no |
+| the caller says `\|\| true` | 0 | yes |
+| the failing command says `\|\| true` itself, then `return 0`, the caller is bare | 0 | yes |
+
+Under `set -e` the shell ends at the failing line, and the `return` after it is never
+reached. So each of the three bookkeeping lines says `|| true` for itself.
+
+**2. `|| true` at a call switches `set -e` off inside the whole function**, and inside
+everything it calls. That is what bash does with a function on the left of `||`. Every step
+of the check was read again for it. None relied on the shell ending: the removal is reached
+only through `if` tests, and those already ran without `set -e` for the same reason.
+
+**3. `|| true` cannot catch an `exit`.** `lock_acquire` dies when the team's lock stays held
+for 30 seconds, and the check takes that lock. Measured on `e3c43cd`, with a stand-in `gh`
+that takes the lock and leaves a live pid in it: `teamctl stop` ended with exit 1 after 37
+seconds, printed `another teamctl operation holds the project lock`, and never said
+`stopped:`. The lane was parked and whole. So the check runs in a subshell (`e43dea1`): the
+subshell takes the `exit`, the error still prints, and `stopped: <role>` follows it.
+
+A subshell hands no variable back, so the flag the check used to set is gone, and
+`teamctl stop` picks its closing line from the lane's record (`reg_exists`). That is the
+better way round and not the clumsier one. The line says the lane is "off the books", so it
+is read from the books, and not from what the check believed before its last step.
+
+**The same class, in `teamctl reclaim` itself.** Its bookkeeping (two lines in
+`reclaim_team`, one in `cmd_reclaim`, one in `reclaim_all_teams`) runs after the lanes are
+gone. A failure there reported a reclaim that worked as a command that failed, which is how
+somebody runs a deletion a second time. Those four lines say `|| true` as well.
+
+**4. The subshell made an old leftover visible, and only the full suite saw it.** On a
+`git archive` of `e43dea1` the suite printed 130 passed, 1 failed. The failing check was its
+last one, `no scratch file is left behind by any of it`. What Beads answers is kept in a
+file for the length of one check, and a check that ends by `exit` never reaches the line
+that drops it. That fix did not cause the leftover file. It inherited it: before `e43dea1`
+the whole command died at that `exit`, the file stayed behind then too, and it was nobody's
+problem. Once the command carries on and says `stopped:`, clearing the file is its job.
+
+So one function, `reclaim_after_park`, is what both commands call (`1ae1552`). It runs the
+check in two shells, one inside the other:
+
+- The outer one makes a scratch directory, gives it to the check as its `TMPDIR`, and
+  removes it in a trap on EXIT. A line after the check would be skipped by the same `exit`.
+  The directory is made in that shell, so the trap removes only what that shell made. Being
+  a subshell, it leaves teamctl's own EXIT trap alone, which is what releases the team's
+  lock when a command dies.
+- The inner one runs the check and takes an `exit` in it. It is a shell of its own for a
+  second reason: `lock_acquire` re-arms the EXIT trap of the shell it runs in each time it
+  takes the lock. In the outer shell that would throw the cleanup away at the first lane.
+
+Measured with plain bash 3.2.57 in the same shape, a `sleep` standing in for the check:
+
+| What ends the check | The cleanup runs | The caller goes on |
+|---------------------|------------------|--------------------|
+| `exit 9` in the inner shell | yes | yes |
+| the inner shell re-arms its own EXIT trap, then exits | yes | yes |
+| a failure (`return 7`) | yes | yes |
+| no inner shell, a re-arm, then `exit` | **no** | yes |
+| SIGTERM to the parent alone | yes | no (it was killed) |
+| SIGINT to the whole group, as Ctrl-C sends it | yes | yes |
+| SIGTERM to the whole group | yes | no |
+
+The two signal rows with "no" are the parent dying, which is what a signal is for. The
+Ctrl-C row is plain bash and not teamctl: it says the cleanup runs, not what
+`teamctl stop` prints.
+
+**Every guard is pinned by a check.** `tests/reclaim.sh` has twelve checks for all of this,
+in a copy of teamctl's home where a function leaves a mark and then fails (returns 7; exits
+9 after leaving a scratch file and taking the lock once; or does its work and then
+returns 7). Each of the twelve guarded lines was then removed, one copy of the code per
+line, and the twelve checks were run against every copy:
+
+| What was removed | Checks that fail (of 12) |
+|------------------|--------------------------|
+| nothing (`1ae1552`) | none |
+| `reclaim_after_park`: the outer shell (a brace group instead) | 6 |
+| `reclaim_after_park`: `\|\| true` after the outer shell | 1, 2, 7, 11 and 12 |
+| `reclaim_after_park`: the trap on EXIT | 3, 8 and 12 |
+| `reclaim_after_park`: the scratch directory as the check's `TMPDIR` | 3, 8 and 12 |
+| `reclaim_after_park`: the inner shell | 3, 8 and 12 |
+| `reclaim_on_park`: any one of its three lines | 5 |
+| `reclaim_team`: either of its two lines | 9 and 12 |
+| `cmd_reclaim`: its line | 9 |
+| `reclaim_all_teams`: its line | 10 |
+| the code of `e43dea1` (the subshell at the two call sites) | 3, 6, 8 and 12 |
+| the code of `e3c43cd` (the first fix) | 2, 3, 6, 7, 8, 9, 10 and 12 |
+| the code of `a157cf4` (before any of it) | all twelve |
+
+The checks, in that order: 1 `stop` when the check fails, 2 `stop` when the check exits,
+3 what that check left in the temporary directory is gone, 4 `stop` when the bookkeeping at
+the end of the real check fails, 5 `reclaim_on_park` called bare under `set -e`,
+6 `reclaim_after_park` leaves its caller's EXIT trap and `TMPDIR` as they were, 7 `stop`
+with the team's lock really held (the 30-second wait), 8 that check left nothing behind,
+9 `teamctl reclaim` with failing bookkeeping, 10 `teamctl reclaim --all-teams` the same,
+11 `destroy` when the check fails, 12 `destroy` when the check exits, with nothing left.
+
+Three things about that table, so that nobody reads more into it than is there:
+
+- Check 4 fails in no single row. Two layers cover it, so it takes `a157cf4` to fail it. It
+  is the end-to-end check and is kept as that.
+- Checks 8 and 12 ask whether ANYTHING is left in the temporary directory, so they also
+  fail when an earlier case left something. That is why the inner-shell row lists them:
+  check 3 is the one that tells that row apart. In the `reclaim_team` rows, check 12 fails
+  because the `teamctl reclaim` that died left its own Beads answer behind.
+- `teamctl reclaim` still has that leftover when it dies in the middle of a run. It has no
+  scratch directory of its own. Only the check after a park does.
+
+**A change to control flow cannot be judged by running its own section.** The leftover file
+was found by a check at the very end of the suite, far from the code that was changed, and
+the section that was being run alone to iterate could not see it. An `exit` path, a
+subshell, a trap, an early return: what they break is a released lock, a written ledger, a
+leftover file, and those checks look unrelated. Section runs to iterate, the full suite to
+conclude.
+
+**Three measurements of this round were wrong before they were right**, and each would have
+looked clean:
+
+- The lead's own run of the suite "on the lane's tree" read the worktree itself while the
+  first fix was being edited into it. teamctl reads its libraries again at every call and
+  bash reads a script as it goes, so that run measured no single commit. It printed
+  122 passed, 0 failed, the expected number exactly. It was discarded. The rule since: a
+  number about a commit is measured on a `git archive` of that sha, never in a working tree.
+- The first run of a table like the one above built nine of its eleven copies as empty
+  files: the table inside the script used `|` as its separator, and `|| true` has one in
+  it. Each row carried a count of the lines its copy had changed, and that count is what
+  gave it away. A copy that did not change exactly the lines it was meant to, or that does
+  not parse, is now refused instead of run. That refusal fired twice more the same night.
+- `e43dea1` was first judged by its own section, nine of nine. The full suite said 130 of
+  131. That is point 4 above.
+
+### Every suite after the review
+
+One sha, **`1ae1552`**, the last commit that changes code. Nothing was measured in a working
+tree: every suite ran on a `git archive` of that sha, in the clean launch shape. The one
+exception is `migration`, which replays the project's own history and cannot run without
+it. On the archive it stops at once with `commit deff83a (v1.1.0) is not in this clone's
+history` and prints no summary line, so it is TRUNCATED there, and on the archive of the
+base as well. Its figure below is from a clone pinned at the same sha.
+
+| suite | at `1ae1552` | | suite | at `1ae1552` |
+|-------|--------------|-|-------|--------------|
+| `reclaim` | 134 / 0 / 0 | | `migration` | 36 / 0 |
+| `disk` | 175 / 0 / 0 | | `permissions` | 13 / 0 |
+| `dashboard` | 135 / 0 / 0 | | `models` | 22 / 0 |
+| `docs` | 36 / 0 | | `commands` | 16 / 0 |
+| `providers` | 141 / 0 / 0 | | `nudge-typing` | 61 / 0 |
+| `inbox` | 107 / 0 | | `smoke` | 350 / **2** / 0 |
+
+**1226 passing, 2 failing, 0 skipped across the twelve countable suites.** Every figure
+comes from the suite's own summary line. `reclaim` ran bare, 00:52:30Z to 01:02:07Z on
+2026-10-14 (577 seconds, load about 4). The other ten on the archive ran under one
+acquisition of the team's own lock, 01:04:50Z to 01:25:37Z. `migration` ran bare at 01:34:37Z.
+
+`reclaim` on a pristine `9be145b` with the same suite file, same pass: 4 / **130** / 0, the
+same four as before. The lead ran both arms independently, each from a `git archive`, and
+got the same two lines, and found no `wolfmux-reclaim-*` left in the temporary directory
+afterwards.
+
+`smoke`'s two failures are the same two, by name, and the control is the same suite on the
+archive of `9be145b` in the same pass: 350 / 2 / 0, the same two names.
+
+All twelve were run again, and not only `reclaim`, because `teamctl stop` and
+`teamctl destroy` are what changed, and `disk`, `smoke`, `dashboard`, `inbox` and
+`nudge-typing` run them.
+
+The documents were edited after that pass. `tests/docs.sh` was **re-run at the final sha**
+(36 / 0), from a clone pinned at it, and the two patterns `tests/smoke.sh:177` and `:180`
+assert are ABSENT under `docs/` were searched for by hand in the shipping content. Neither
+appears, and each pattern was first shown to match a line that does contain it.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
