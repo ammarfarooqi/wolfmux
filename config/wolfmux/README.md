@@ -639,6 +639,25 @@ a warning, `off` removes the check. `teamctl spawn <role> <model> --link-node-mo
 root's copy instead of installing 2+ GB again — one directory for every lane, so an
 `npm install` in any lane changes the dependencies of all of them.
 
+### A finished team takes itself off the books
+
+```
+teamctl finish --dry-run           # what finish would take, and what would still hold the team
+teamctl finish                     # we are done: every finished lane, then the team itself
+```
+
+`teamctl finish` (the lead, the founder of a team whose lead stopped, or you) parks every
+lane and takes every lane that passes the gates above. When no lane is left and no task of
+the team is open in Beads, the team goes too: records, state directory, session, with one
+`team-destroyed` line in `~/.wolfmux/state/reclaimed.jsonl`. Transcripts are never deleted.
+When something still holds it, the session ends and the team stays, and the next
+`teamctl reclaim --all-teams` finishes it once nothing holds it.
+
+Only `finish` ever takes a team. A lead that stopped, crashed or ran a plain `destroy` does
+not count: those are written down only so that `teamctl teams` can say, under each orphaned
+team, what it holds and why it is still here. The status bar shows `orph N` and the
+dashboard `orphaned teams: N holding X`.
+
 ## Diagnostics
 
 ```bash

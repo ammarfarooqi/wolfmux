@@ -833,6 +833,8 @@ cmd_run_agent() {
   require_tools
   load_project
   reg_exists "$role" || die "no registry record for role '$role' in $(short_path "$ROOT")"
+  # A new session of the lead: how the last one ended no longer describes the team.
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then team_end_clear; fi
   launcher="$(reg_field "$role" launcher)"
   family="$(reg_field "$role" family)"
   workdir="$(reg_field "$role" workdir)"
@@ -984,6 +986,10 @@ cmd_stop() {
   require_manager stop
   lock_acquire
   SESSION="$(session_name_for_project)"
+  # How the lead's session ended, written before its pane is touched: a lead that stops itself
+  # takes the hangup with it. Evidence for `teamctl teams` only (lib/finish.sh): a stopped
+  # lead is a parked lead, and only `teamctl finish` ever ends a team.
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then team_end_note stop; fi
   pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
   if [ -n "$pane" ]; then
     tmx kill-pane -t "$pane" 2>/dev/null || true
@@ -1556,7 +1562,7 @@ _purge_team() {
   # `teamctl teams`, not named here, and the purge stopped deleting the directory. Every
   # per-team file the disk module writes belongs on this line — tests/disk.sh checks that.
   /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb" \
-    "$STATE_DIR/disk-parked-kb"
+    "$STATE_DIR/disk-parked-kb" "$STATE_DIR/lead-end.json"
   /bin/rmdir "$WORKTREES_DIR" 2>/dev/null || true
 }
 
@@ -1615,6 +1621,10 @@ cmd_destroy() {
   fi
   ensure_state_dirs
   lock_acquire
+  # Before the session goes: run inside the team it ends, this command takes the hangup at
+  # kill-session, and nothing after that line may run (common.sh). Evidence only, as in
+  # cmd_stop: a plain destroy keeps every lane that holds work, and never finishes a team.
+  team_end_note destroy
   if tm_session_exists "$SESSION"; then
     tmx kill-session -t "=$SESSION"
     say "tmux session $SESSION terminated."

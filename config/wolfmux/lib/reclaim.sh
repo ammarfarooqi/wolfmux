@@ -886,9 +886,13 @@ reclaim_park_done() {
 # up to: RECLAIM_TOTAL (freed, or would be), RECLAIM_LANES, RECLAIM_HELD, RECLAIM_HELD_KB,
 # RECLAIM_RUNNING_LANES. One function for one team and for every team on the machine, so the
 # two cannot drift, as with prune_team.
+#
+# And what keeps the team, for lib/finish.sh: RECLAIM_HOLD_N lanes (held or running),
+# RECLAIM_HOLD_KB what they take, RECLAIM_HOLD_LIST "role (why); role (why)".
 reclaim_team() {
-  local apply="$1" indent="${2:-  }" role repos="" repo rnote
+  local apply="$1" indent="${2:-  }" role repos="" repo rnote kb
   RECLAIM_TOTAL=0 RECLAIM_LANES=0 RECLAIM_HELD=0 RECLAIM_HELD_KB=0 RECLAIM_RUNNING_LANES=0
+  RECLAIM_HOLD_N=0 RECLAIM_HOLD_KB=0 RECLAIM_HOLD_LIST=""
   for role in $(reg_list); do
     [ "$(reg_field "$role" kind)" = "worker" ] || continue
     repo="$(worker_repo "$role")"
@@ -909,11 +913,18 @@ reclaim_team() {
         ;;
       running)
         RECLAIM_RUNNING_LANES=$((RECLAIM_RUNNING_LANES + 1))
-        printf '%s%-18s %9s   running, left alone%s\n' "$indent" "$role" "$(human_size "$(disk_kb "$(reg_field "$role" workdir)")")" "$rnote"
+        kb="$(disk_kb "$(reg_field "$role" workdir)")"
+        RECLAIM_HOLD_N=$((RECLAIM_HOLD_N + 1))
+        RECLAIM_HOLD_KB=$((RECLAIM_HOLD_KB + kb))
+        RECLAIM_HOLD_LIST="$RECLAIM_HOLD_LIST${RECLAIM_HOLD_LIST:+; }$role (running)"
+        printf '%s%-18s %9s   running, left alone%s\n' "$indent" "$role" "$(human_size "$kb")" "$rnote"
         ;;
       held)
         RECLAIM_HELD=$((RECLAIM_HELD + 1))
         RECLAIM_HELD_KB=$((RECLAIM_HELD_KB + RECLAIM_KB))
+        RECLAIM_HOLD_N=$((RECLAIM_HOLD_N + 1))
+        RECLAIM_HOLD_KB=$((RECLAIM_HOLD_KB + RECLAIM_KB))
+        RECLAIM_HOLD_LIST="$RECLAIM_HOLD_LIST${RECLAIM_HOLD_LIST:+; }$role ($RECLAIM_WHY)"
         printf '%s%-18s %9s   holding: %s%s\n' "$indent" "$role" "$(human_size "$RECLAIM_KB")" "$RECLAIM_WHY" "$rnote"
         ;;
     esac
@@ -1000,7 +1011,7 @@ cmd_reclaim() {
 # left to park a lane, so its finished lanes are asked by no automatic path.
 reclaim_all_teams() {
   local apply="$1" dry="$2" key team rc doubt
-  local total=0 lanes=0 running=0 held=0 held_kb=0 teams=0 projects=0 skipped=""
+  local total=0 lanes=0 running=0 held=0 held_kb=0 teams=0 projects=0 skipped="" finished=0
   require_operator "reclaim --all-teams" "every team of every project on this machine" \
     "teamctl reclaim for your own team (no --all-teams), and teamctl reclaim --dry-run for a look at it"
   if [ "$dry" -eq 1 ]; then
@@ -1032,6 +1043,10 @@ reclaim_all_teams() {
         continue
       fi
       reclaim_team "$apply" "    "
+      # A team whose lead is not running says what it is; one that ran `teamctl finish` and
+      # that nothing holds any more is finished here (lib/finish.sh). Never one without that.
+      finish_sweep_team "$apply" "    "
+      if [ "$FINISH_SWEPT" -eq 1 ]; then finished=$((finished + 1)); fi
       printf '    %-16s %9s   %s in this team (%s parked lane%s, %s running, %s holding %s)\n' \
         "team total" "$(human_size "$RECLAIM_TOTAL")" \
         "$([ "$dry" -eq 1 ] && printf 'would be freed' || printf freed)" \
@@ -1051,5 +1066,8 @@ reclaim_all_teams() {
     "$total" "$lanes" "$running" "$held" "$held_kb"
   if [ -n "$skipped" ]; then
     say "  Teams skipped whole, because a lane of theirs could not be placed:$skipped"
+  fi
+  if [ "$finished" -gt 0 ]; then
+    say "  Teams finished and gone (teamctl finish was run, and nothing held them any more): $finished"
   fi
 }

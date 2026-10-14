@@ -224,7 +224,7 @@ is_manager() {
 # all) nobody would be left to restart, stop or delete the team, so its founder may: restart, stop,
 # remove and destroy, and start --continue. Never policy, approve or deny. The founder is the Beads
 # identity in the lead's spawned_by ("lead", "review.lead"), written when the team was started.
-FOUNDER_COMMANDS="restart stop remove destroy"
+FOUNDER_COMMANDS="restart stop remove destroy finish"
 
 # caller_identity: what the calling agent is called in Beads ("lead", "review.backend"); empty for you
 caller_identity() {

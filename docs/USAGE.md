@@ -179,7 +179,8 @@ Who takes what:
 | `teamctl prune` | the same list **and** `node_modules`, for every parked lane. A parked lane is what hoards |
 | `teamctl prune --all-teams` | every team of every project on this machine, a total per team and one for the machine. **Yours alone to run**, from a terminal with no `TEAM_ROLE`: a lead has no standing outside its own team and is refused with exit 77 |
 | `teamctl reclaim` | the **whole lane** — worktree, branch and record — of every parked lane that is finished, and nothing of a lane that is not ([a finished lane](#a-finished-lane-takes-itself-off-the-books)). Parking a lane does this by itself (policy `auto-reclaim`, on by default) |
-| `teamctl reclaim --all-teams` | the same for every team of every project on this machine. **Yours alone to run**: exit 77 for a lead |
+| `teamctl reclaim --all-teams` | the same for every team of every project on this machine. **Yours alone to run**: exit 77 for a lead. It also finishes a team whose lead ran `teamctl finish` and that nothing holds any more |
+| `teamctl finish [--dry-run]` | every finished lane, then the **team itself** — records, state directory, session — once no lane is left and no task of it is open ([a finished team](#a-finished-team-takes-itself-off-the-books)). The lead's (or your) way to say "we are done"; `--dry-run` deletes nothing and anyone may run it |
 | `teamctl keep <role>` | nothing — that is the point. The lane is never swept or reclaimed automatically, and `prune` and `reclaim` honour it too |
 | `teamctl destroy` (no `--worktrees`) | the build output of every lane, because ending the session parks all of them — and the whole of every lane that is finished, for the same reason |
 | `teamctl remove <role>`, `teamctl destroy --worktrees` | all of it; the worktree is going away anyway. A `remove` that **refuses** — because the lane holds commits or files a person wrote — changes nothing at all: "nothing was removed" means the build output is still there too |
@@ -453,6 +454,39 @@ handover is not asked to clear the free-disk bar either, because it installs not
 thousands of files, and over 27 lanes it takes seconds. `status` runs every few minutes, so
 it only reads the number that the last command to change the lanes left behind (and says
 "not measured" when there is none). `teamctl teams` is the command that measures.
+
+### A finished team takes itself off the books
+
+`teamctl finish` is how a lead says the team is done. In order:
+
+1. It writes down that the team was finished, and by whom (`lead-end.json` in the team's state).
+2. It parks every lane and asks each one the gates of `teamctl reclaim`. Every lane that passes
+   goes, whatever policy `auto-reclaim` says; `teamctl keep` still protects a lane.
+3. It asks Beads for every task of the team: anything assigned to `<team>.<role>`, whether that
+   role is still on record or not. A message is not a task.
+4. No lane left and no task open: the team goes — its records, its state directory and its
+   session — and one `team-destroyed` line goes into `~/.wolfmux/state/reclaimed.jsonl`, with
+   the lead's conversation id. Transcripts are never deleted.
+5. Something still holds it: the session ends all the same and the team stays, with the reason.
+   The next `teamctl reclaim --all-teams` finishes it once nothing holds it.
+
+Killing its own session is the very last thing `finish` does, so a lead can run it from its
+own pane: nothing is left half done when the pane closes. What it said is also in
+`~/.wolfmux/state/finish.log`.
+
+**Only `finish` ever takes a team.** A lead that is not running proves nothing: a crashed lead
+and a finished one look the same from outside. `teamctl stop lead` and a plain `teamctl destroy`
+write down how the lead's session ended, but only so that `teamctl teams` can say it:
+
+```
+nudge-fix is orphaned: its lead is not running. May act on it: you. Bring it back: … · finish it: teamctl finish --team nudge-fix · delete it: …
+  holding 0 KB: lead stopped itself 2026-10-13 10:34Z, 0 tasks open, 0 lanes held
+onboarding-storage is orphaned: its lead is not running. May act on it: you. …
+  holding 1.2 GB: no record of how the lead ended (crash, kill or reboot), 0 tasks open, 2 lanes held: riley (unpushed at 3f2a9c1); sam (open PR #41)
+```
+
+The status bar shows `orph N` when any team is orphaned (the gigabytes are already in `held`),
+and the dashboard shows `orphaned teams: N holding X`.
 
 ## Deleting a team, and what a team costs
 
