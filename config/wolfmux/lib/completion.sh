@@ -149,7 +149,8 @@ complete_first_word() {
   complete_emit "$prefix" restart "<role>: run an agent again, fresh or with --continue"
   complete_emit "$prefix" destroy "end the team; --purge deletes it from disk"
   complete_emit "$prefix" prune "take the build output of every parked lane of the team"
-  complete_emit "$prefix" keep "<role>: never sweep that lane's build output automatically"
+  complete_emit "$prefix" reclaim "take every finished parked lane off the books: worktree, branch, record"
+  complete_emit "$prefix" keep "<role>: never sweep or reclaim that lane automatically"
   complete_emit "$prefix" bar "the status-bar line, and --explain names every field of it"
   complete_emit "$prefix" heavy "<command>...: run it holding the machine's heavy lock"
   complete_emit "$prefix" nudge "<role>: one fixed notification line in a pane"
@@ -193,6 +194,7 @@ complete_options() {
     remove) options="--force --yes" ;;
     destroy) options="--worktrees --purge --force --keep-transcripts --yes" ;;
     prune) options="--dry-run --keep-node-modules --all-teams" ;;
+    reclaim) options="--dry-run --all-teams" ;;
     bar) options="--explain" ;;
     heavy) options="--timeout --quiet" ;;
     nudge) options="--quiet --all --id" ;;

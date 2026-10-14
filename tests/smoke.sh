@@ -392,7 +392,7 @@ teamctl restart qa >/dev/null 2>&1
 sleep 2
 
 echo "== one manager, permissions, spawning"
-check "policy: defaults are skip / skip / worker spawning off / worker isolation on / disk guard refuse at 20 GB / no shared node_modules / auto-prune on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", lead_teams: \"on\", disk_guard: \"refuse\", disk_min_gb: 20, link_node_modules: \"off\", auto_prune: \"on\"}"'
+check "policy: defaults are skip / skip / worker spawning off / worker isolation on / disk guard refuse at 20 GB / no shared node_modules / auto-prune on / auto-reclaim on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", lead_teams: \"on\", disk_guard: \"refuse\", disk_min_gb: 20, link_node_modules: \"off\", auto_prune: \"on\", auto_reclaim: \"on\"}"'
 check "permissions: lead and workers start in their CLI's bypass mode" 'teamctl capture lead -n 8 | grep -q "flags=--dangerously-bypass-approvals-and-sandbox" && teamctl capture backend -n 8 | grep -q "flags=--dangerously-skip-permissions"'
 check "hierarchy: the CLI's own agent-teams feature is switched off inside workers" 'teamctl capture backend -n 8 | grep -q "settings={\"teams\":\"0\",\"mode\":\"in-process\",\"hook\":false}"'
 check "hierarchy: the lead's own settings are left alone" 'teamctl capture lead -n 8 | grep -q "settings=none"'
@@ -586,6 +586,15 @@ plant_ctx ctx-opus opus claude "/nonexistent/ctx"
 plant_ctx ctx-sonnet sonnet claude "/nonexistent/ctx"
 plant_ctx ctx-fable fable claude "/nonexistent/ctx"
 plant_ctx ctx-haiku haiku claude "/nonexistent/ctx"
+# Which model each of the four runs is on its record, as every spawn since v1.18.0 writes it.
+# Through v1.18.0 this fixture had no id, and the check below passed on a guess: the window of
+# whatever the key means today, for an agent nobody could name the model of. That guess is gone
+# on purpose (an unknown model has no window: tests/models.sh), so the fixture now says what a
+# real record says.
+for pair in ctx-opus:claude-opus-5-5 ctx-sonnet:claude-sonnet-5-5 ctx-fable:claude-fable-5-1 ctx-haiku:claude-haiku-5-5; do
+  jq --arg id "${pair#*:}" '.model_id = $id' "$CTX_AGENTS/${pair%%:*}.json" >"$CTX_AGENTS/${pair%%:*}.json.new" &&
+    /bin/mv "$CTX_AGENTS/${pair%%:*}.json.new" "$CTX_AGENTS/${pair%%:*}.json"
+done
 # Haiku 5.5 declares 1M as well (the probe's answer on 2026-10-13; Haiku 4.5 was 200k). The window
 # of an older id is the one recorded with it, or unknown: tests/models.sh.
 check "status: the model table declares its own window - fable, opus, sonnet and haiku 5.5 are 1M (v1.14.1, haiku since v1.18)" 'teamctl status --json | jq -e "([.agents[] | select(.role == \"ctx-opus\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-sonnet\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-fable\")][0].context_window == 1000000) and ([.agents[] | select(.role == \"ctx-haiku\")][0].context_window == 1000000)"'
@@ -606,8 +615,14 @@ check "status: glm53 and flash take their window from the glm provider row, not 
 OPUS_REAL_DIR="$WORK/ctx-opus-real-tree"
 /bin/mkdir -p "$OPUS_REAL_DIR"
 /bin/mkdir -p "$(transcripts_of "$OPUS_REAL_DIR")"
-echo '{"type":"assistant","message":{"usage":{"input_tokens":2,"cache_read_input_tokens":231411,"cache_creation_input_tokens":597}}}' >"$(transcripts_of "$OPUS_REAL_DIR")/opus-real.jsonl"
+# The fixture is that agent as it really was: started before v1.18.0 (no id on its record), with
+# a conversation of its own whose answers name the model that served them. Through v1.18.0 the
+# record had no conversation id and the answer no model, and the 23% came from a guess (the
+# window of what opus means today). The share is now of the window Claude Code declared for
+# claude-opus-5 itself, which is the model its transcript names.
+echo '{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":2,"cache_read_input_tokens":231411,"cache_creation_input_tokens":597}}}' >"$(transcripts_of "$OPUS_REAL_DIR")/opus-real.jsonl"
 plant_ctx ctx-opus-real opus claude "$OPUS_REAL_DIR"
+jq '.session_id = "opus-real"' "$CTX_AGENTS/ctx-opus-real.json" >"$CTX_AGENTS/ctx-opus-real.json.new" && /bin/mv "$CTX_AGENTS/ctx-opus-real.json.new" "$CTX_AGENTS/ctx-opus-real.json"
 check "status: 232,010 tokens on opus's real 1M window renders 232k 23%, not the old fallback's 116% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-opus-real\")][0] | .context_tokens == 232010 and .context_window == 1000000 and .context == \"232k 23%\"" && teamctl status | grep -E "ctx-opus-real .*232k +23%"'
 # haiku now means Haiku 5.5 (1M), but an agent still on Haiku 4.5 (200k) must keep its own window:
 # the one recorded with its id at spawn. One known only from its transcript, as an id no answer of
@@ -617,6 +632,11 @@ HAIKU_REAL_DIR="$WORK/ctx-haiku-real-tree"
 /bin/mkdir -p "$(transcripts_of "$HAIKU_REAL_DIR")"
 echo '{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":50000,"cache_read_input_tokens":80000,"cache_creation_input_tokens":20000}}}' >"$(transcripts_of "$HAIKU_REAL_DIR")/haiku-real.jsonl"
 plant_ctx ctx-haiku-real haiku claude "$HAIKU_REAL_DIR"
+# That transcript is its OWN conversation, by id: a model is only ever read from an agent's own
+# conversation (a record with no conversation id reads the newest file of its folder for CONTEXT,
+# and that file may be somebody else's). Without the id this agent would be "Haiku ?", and the
+# second check below would pass for a reason its title does not give.
+jq '.session_id = "haiku-real"' "$CTX_AGENTS/ctx-haiku-real.json" >"$CTX_AGENTS/ctx-haiku-real.json.new" && /bin/mv "$CTX_AGENTS/ctx-haiku-real.json.new" "$CTX_AGENTS/ctx-haiku-real.json"
 jq '.model_id = "claude-haiku-4-5-20251001" | .model_context = "200000"' "$CTX_AGENTS/ctx-haiku-real.json" >"$CTX_AGENTS/ctx-haiku-rec.json.new" &&
   jq '.role = "ctx-haiku-rec"' "$CTX_AGENTS/ctx-haiku-rec.json.new" >"$CTX_AGENTS/ctx-haiku-rec.json" && /bin/rm -f "$CTX_AGENTS/ctx-haiku-rec.json.new"
 check "status: a Haiku 4.5 agent keeps the window recorded with its id - a real 150k/200k conversation still renders 150k 75% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-haiku-rec\")][0] | .context_tokens == 150000 and .context_window == 200000 and .context == \"150k 75%\"" && teamctl status | grep -E "ctx-haiku-rec .*150k +75%"'

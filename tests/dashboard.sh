@@ -165,9 +165,25 @@ echo "== equivalence: every fast path agrees with the helper it stands in for"
 check "dash_teams lists exactly what team_list lists, in the same order" \
   'lib_eval "a=\$(team_list); b=\$(dash_teams \"\$(dash_sessions \"\$(dash_panes)\")\"); [ \"\$a\" = \"\$b\" ]"'
 check "dash_team_records yields exactly the roles reg_list yields, in the same order" \
-  'lib_eval "team_paths default; a=\$(reg_list); b=\$(dash_team_records | cut -f1); [ \"\$a\" = \"\$b\" ]"'
+  'lib_eval "team_paths default; a=\$(reg_list); b=\$(dash_team_records | cut -d \"\$DASH_US\" -f1); [ \"\$a\" = \"\$b\" ]"'
 check "dash_team_records reads the same field values reg_field reads" \
-  'lib_eval "team_paths default; r=\$(dash_team_records | awk -F\"\\t\" \"\\\$1 == \\\"worker1\\\"\"); [ \"\$(printf %s \"\$r\" | cut -f3)\" = \"\$(reg_field worker1 model)\" ] && [ \"\$(printf %s \"\$r\" | cut -f5)\" = \"\$(reg_field worker1 workdir)\" ]"'
+  'lib_eval "team_paths default; r=\$(dash_team_records | awk -F \"\$DASH_US\" \"\\\$1 == \\\"worker1\\\"\"); [ \"\$(printf %s \"\$r\" | cut -d \"\$DASH_US\" -f3)\" = \"\$(reg_field worker1 model)\" ] && [ \"\$(printf %s \"\$r\" | cut -d \"\$DASH_US\" -f5)\" = \"\$(reg_field worker1 workdir)\" ]"'
+# A record's fields are split on the unit separator, because a tab is whitespace to `read`: an
+# empty field vanished and every field after it moved up one place. A Codex agent has no
+# conversation id, so its family was read as that id and its branch as its family: no context,
+# and somebody else's value in the BRANCH column. A team of its own here, read in place.
+CX_STATE="$WORK/cx-state"
+CX_TREE="$WORK/cx-tree"
+/bin/mkdir -p "$CX_STATE/agents" "$CX_TREE" "$WOLFMUX_CODEX_SESSIONS/2026/03/03"
+jq -n --arg dir "$CX_TREE" '{role: "cx", kind: "worker", model: "astra", label: "GPT-6 Astra", workdir: $dir, session_id: "", family: "codex",
+  branch: "ai/cx-1", spawned_by: "lead", created_at: "2026-03-03T00:00:00Z"}' >"$CX_STATE/agents/cx.json"
+{
+  jq -cn --arg dir "$CX_TREE" '{type: "session_meta", payload: {cwd: $dir}}'
+  echo '{"type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"total_tokens":5000},"model_context_window":272000}}}'
+} >"$WOLFMUX_CODEX_SESSIONS/2026/03/03/rollout-2026-03-03T00-00-00-cx.jsonl"
+export CX_STATE
+check "an empty field moves nothing: a Codex agent (no conversation id) keeps its own branch, and its context is read as Codex's" \
+  'lib_eval "team_paths default; STATE_DIR=\$CX_STATE; dash_team_json \"\" \"\" 1 | \$JQ_BIN -e \".agents[0] | .role == \\\"cx\\\" and .branch == \\\"ai/cx-1\\\" and .context == \\\"5.0k 1%\\\"\""'
 check "dash_pane_row finds the same pane tm_pane_for_role finds" \
   'lib_eval "team_paths default; SESSION=\$(session_name_for_project); row=\$(dash_pane_row \"\$(dash_panes)\" \"\$SESSION\" worker1); [ \"\${row%%|*}\" = \"\$(tm_pane_for_role \"\$SESSION\" worker1)\" ]"'
 check "dash_pane_row agrees with tm_pane_state about a running pane" \

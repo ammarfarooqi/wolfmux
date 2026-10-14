@@ -174,6 +174,8 @@ new_record() {
   if [ "$MODEL_FAMILY" != "codex" ]; then session_id="$(new_session_id "$4" || true)"; fi
   # model_id is the id this agent is started with (run_agent passes it as --model), for an alias
   # as for claude:<id>: what an agent runs is on record, and model_source says where it came from.
+  # model_at is when that id was recorded: an answer written before it says nothing about this
+  # start (a continued conversation still ends with the old model's answer; models_running).
   "$JQ_BIN" -n --arg role "$1" --arg kind "$2" --arg model "$3" --arg label "$MODEL_LABEL" \
     --arg family "$MODEL_FAMILY" --arg launcher "$launcher" --arg workdir "$4" --arg branch "$5" \
     --arg base_ref "$6" --arg base_commit "$7" --arg kickoff "$8" --arg now "$(now_iso)" \
@@ -181,7 +183,7 @@ new_record() {
     --arg repo "${10:-}" --arg branch_created "${11:-0}" --arg session_id "$session_id" --arg model_source "$MODEL_SOURCE" \
     --arg model_context "$MODEL_CONTEXT" \
     '{role: $role, kind: $kind, model: $model, model_id: $model_id, model_source: $model_source, model_context: $model_context,
-      label: $label, family: $family, billing: $billing, launcher: $launcher,
+      model_at: (if $model_id == "" then "" else $now end), label: $label, family: $family, billing: $billing, launcher: $launcher,
       workdir: $workdir, repo: $repo, branch: $branch, branch_created: $branch_created, base_ref: $base_ref, base_commit: $base_commit,
       kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions, session_id: $session_id,
       pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
@@ -998,7 +1000,25 @@ cmd_stop() {
   if disk_park_sweep_say "$role" stop; then freed="$(human_size "$DISK_FREED_KB")"; fi
   event_log stop "$role" "${freed:+freed=$freed}"
   lock_release
-  say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
+  # The lane is parked now, and a parked lane whose work is finished is a whole checkout held
+  # for nothing (lib/reclaim.sh). So this is where it is asked — and every other parked lane of
+  # the team with it, because a merge is a plain git command teamctl never sees: the lane that
+  # was parked before its merge goes here, the next time any lane is parked. After the lock is
+  # released, on purpose: the check asks Beads and GitHub, and a team's lock is not held
+  # across a network call. Stopping the lead parks no lane and asks nothing.
+  #
+  # The lane is parked, and this command says so whatever the check does: reclaim_after_park
+  # runs it in a subshell with `|| true`, so that neither a failure nor an `exit` in there
+  # (lock_acquire dies when the team's lock stays held for 30 seconds) ends this command.
+  # A subshell hands no variable back, and that is the better way round, not the clumsier
+  # one: whether the lane is "off the books" is read from the books (reg_exists), not from a
+  # flag the check set before its last step. Do not pass a flag back out of it.
+  if [ "$(reg_field "$role" kind)" = "worker" ]; then reclaim_after_park "$role" stop 0 ""; fi
+  if ! reg_exists "$role"; then
+    say "stopped: $role   (its task is closed and its work is all in main, so the lane is off the books: worktree, branch and record. To keep a lane you mean to restart: teamctl keep $role before you stop it · for the team: teamctl policy auto-reclaim off)"
+  else
+    say "stopped: $role   (worktree, branch and commits are untouched; bring it back with: teamctl restart $role)"
+  fi
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then founder_announce "stopped the lead of"; else founder_announce "stopped $role of"; fi
 }
 
@@ -1072,7 +1092,7 @@ cmd_restart() {
   # ... and what its alias means today, which is what this pane is started with (run_agent passes
   # model_id as --model). A record from before ids were recorded gets one here.
   if models_is_alias "$model" && model_info "$model"; then
-    reg_set "$role" model_id "$MODEL_ID" model_source "$MODEL_SOURCE" model_context "$MODEL_CONTEXT" label "$MODEL_LABEL"
+    reg_set "$role" model_id "$MODEL_ID" model_source "$MODEL_SOURCE" model_context "$MODEL_CONTEXT" model_at "$(now_iso)" label "$MODEL_LABEL"
   fi
   # Which conversation this pane comes back in: the one you named, the one it had, or a new
   # one. Codex has no id to store; it resumes its own last conversation. The pane reads the id as it
@@ -1215,6 +1235,13 @@ cmd_remove() {
       say "$role: took $(human_size "$swept") of build output first ($DISK_CLEANED)"
       disk_cache_adjust "$swept"
     fi
+    # Where the branch is, on the screen and in the machine-wide ledger, BEFORE it is deleted:
+    # with --force this is the command that discards work on purpose, and the sha is what
+    # turns a second thought into `git branch <name> <sha>` instead of `git fsck`.
+    lane_tip_say "" "$role"
+    lane_removal_log "$role" remove "$((swept + $(disk_kb "$path")))" "$branch" "$LANE_TIP" \
+      "teamctl remove (force=$force): $dirty uncommitted, $unmerged unmerged" ||
+      warn "$role: the removal could not be written to $(short_path "$(disk_reclaim_log_file)"); the sha above is the only record of it"
     # A record is a file anyone can edit. Whatever it says, only a directory inside the
     # worktree directory of this teammate's own repository is ever deleted, and only a
     # branch teamctl created that is not checked out in that repository itself.
@@ -1244,7 +1271,7 @@ cmd_remove() {
     if [ -n "$pane" ]; then tmx kill-pane -t "$pane" 2>/dev/null || true; fi
     /bin/rm -f "$STATE_DIR/settings/$role.json"
     reg_delete "$role"
-    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged freed_kb=$((kb + swept))"
+    event_log remove "$role" "force=$force dirty=$dirty unmerged=$unmerged freed_kb=$((kb + swept)) branch=$branch tip=$LANE_TIP"
     say "removed: $role  (worktree, branch $branch and record)$repo_note — freed $(human_size "$((kb + swept))")"
   done
   layout_apply
@@ -1255,9 +1282,10 @@ cmd_remove() {
 }
 
 _destroy_worker_artifacts() {
-  local role="$1" path branch result
+  local role="$1" path branch result tip
   path="$(reg_field "$role" workdir)"
   branch="$(reg_field "$role" branch)"
+  tip="$(lane_tip "$role")"
   # Build output first. A project whose .gitignore does not list node_modules reports it
   # as untracked, wt_remove_if_clean then calls the worktree dirty, and the gigabytes stay
   # for ever (issue #11). Taking the allowlist first leaves a tree that is clean or really
@@ -1280,7 +1308,12 @@ _destroy_worker_artifacts() {
   if ! wt_branch_exists "$role" "$branch"; then
     reg_delete "$role"
   elif wt_delete_branch_if_merged "$role" "$branch"; then
+    # git's own -d did this, so every commit of it is still reachable from the branch it was
+    # merged into. The sha is said all the same: one rule for every branch teamctl deletes.
+    say "  $role: branch $branch was at $tip"
     say "  $role: deleted fully merged branch $branch"
+    LANE_HEAD=""
+    lane_removal_log "$role" destroy-worktrees 0 "$branch" "$tip" "teamctl destroy --worktrees: fully merged (git branch -d)" || true
     reg_delete "$role"
   elif ! branch_is_ours "$role"; then
     say "  $role: KEPT branch $branch (teamctl did not create it)"
@@ -1325,9 +1358,10 @@ transcripts_dir() {
 # from the transcript of the agent's own conversation (a record from before conversation ids: the
 # newest *.jsonl of its folder): what the last assistant turn saw (its input
 # plus what the prompt cache holds), and how many assistant turns with usage the tail holds.
+# Also CTX_MODEL and CTX_MODEL_AT: the model of the last answer in its own conversation, and when.
 _ctx_of_claude() {
-  local tdir file f m newest="" newest_m=0 stats last="" reqs=0 line
-  CTX_TOKENS="" CTX_REQUESTS="" CTX_FILE=""
+  local tdir f m newest="" newest_m=0
+  CTX_TOKENS="" CTX_REQUESTS="" CTX_FILE="" CTX_MODEL="" CTX_MODEL_AT=""
   if [ -n "${2:-}" ]; then
     # Its own conversation, by id. Never the newest file of the folder: every lead of a project works
     # in the same folder, and so do your own sessions, so the newest one is usually somebody else's.
@@ -1346,23 +1380,14 @@ _ctx_of_claude() {
   # contents (teamctl dashboard shows when the transcript was last written). Set here, so
   # there is never a second piece of code working out where an agent's transcript lives.
   CTX_FILE="$newest"
-  # -R first: jq's own parser must never see a raw line, a half-written one included;
-  # fromjson? then decodes what parses and yields nothing for what does not.
-  stats="$(tail -n 400 "$newest" 2>/dev/null | "$JQ_BIN" -Rr '
-    fromjson? | select(.type == "assistant" and (.message.usage != null)) |
-    [(.message.usage.input_tokens // 0),
-     (.message.usage.cache_read_input_tokens // 0),
-     (.message.usage.cache_creation_input_tokens // 0)] | @tsv' 2>/dev/null)" || stats=""
-  while IFS="$(printf '\t')" read -r line; do
-    [ -n "$line" ] || continue
-    reqs=$((reqs + 1))
-    last="$line"
-  done <<EOF
-$stats
-EOF
-  [ -n "$last" ] || return 0
-  CTX_TOKENS="$(printf '%s' "$last" | awk -F'\t' '{ print $1 + $2 + $3 }')"
-  CTX_REQUESTS="$reqs"
+  # One pass over its tail, shared with every other reader of a transcript (lib/models.sh).
+  models_transcript_tail "$newest"
+  # The model is taken only from the agent's OWN conversation: the newest file of a folder may
+  # be somebody else's, and teamctl models reads by conversation id too.
+  if [ -n "${2:-}" ]; then CTX_MODEL="$MT_MODEL" CTX_MODEL_AT="$MT_MODEL_AT"; fi
+  [ -n "$MT_TOKENS" ] || return 0
+  CTX_TOKENS="$MT_TOKENS"
+  CTX_REQUESTS="$MT_REQUESTS"
   return 0
 }
 
@@ -1404,28 +1429,32 @@ EOF
   return 0
 }
 
-# agent_context <workdir> <model-key> <family> [<session-id>] [<recorded-window>] — sets CTX_TOKENS ("" = unknown),
-# CTX_REQUESTS and CTX_WINDOW ("" = unknown) for one agent. The window is declared by the
-# model's provider row, by the model table (model_context_window), or by a model id ending
-# in [1m] (1M); for codex the token_count event's own window wins, since that is the one
-# Codex actually serves. A model whose window none of those know stays "" — not a 200k
-# guess — so the caller shows tokens with no share of the wrong number.
+# agent_context <workdir> <model-key> <family> [<session-id>] [<recorded-window>] [<recorded-id>] [<recorded-at>]
+# Everything a view shows about one agent's context AND its model, from one read of its
+# transcript. Sets CTX_TOKENS ("" = unknown), CTX_REQUESTS and CTX_WINDOW ("" = unknown). The
+# window is declared by the model's provider row, by the model table (model_context_window), or
+# by a model id ending in [1m] (1M); for codex the token_count event's own window wins, since
+# that is the one Codex actually serves. A model whose window none of those know stays "" — not
+# a 200k guess — so the caller shows tokens with no share of the wrong number.
 # fable/opus/sonnet/haiku mean another model after each release, so for them the window is the
-# one of the model the agent actually runs: <recorded-window> (written with the id at spawn),
-# else the window known for the model its transcript names (an agent started before ids were
-# recorded; unknown for an id no answer of Claude Code ever named), else what the key means now.
+# one of the model the agent actually runs, and which model that is comes from the one resolver
+# every view shares (models_running, lib/models.sh): it leaves MR_ID, MR_HOW, MR_LABEL, MR_MARK
+# and MR_WINDOW behind for the caller. A model nobody can name has no window either: tokens
+# alone, never a share of what the key happens to mean today.
 agent_context() {
-  local computed seen
-  CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0" CTX_FILE=""
+  local computed
+  CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0" CTX_FILE="" CTX_MODEL="" CTX_MODEL_AT=""
+  # MR_*: which model it runs, by the one resolver (lib/models.sh). Args 6 and 7 are the id and
+  # the time of it on its record. An agent that is not on an alias keeps its recorded id.
+  MR_ID="${6:-}" MR_HOW="" MR_LABEL="" MR_MARK="" MR_WINDOW=""
   if [ "$3" = "codex" ]; then
     _ctx_of_codex "$1"
   else
     _ctx_of_claude "$1" "${4:-}"
   fi
-  if models_is_alias "$2" && [ -n "${5:-}" ]; then
-    computed="$5"
-  elif models_is_alias "$2" && [ -n "$CTX_FILE" ] && seen="$(models_transcript_file_model "$CTX_FILE")" && [ -n "$seen" ]; then
-    computed="$(models_context_of_id "$seen")"
+  if models_is_alias "$2"; then
+    models_running "$2" "${6:-}" "${5:-}" "${7:-}" "$CTX_MODEL" "$CTX_MODEL_AT"
+    computed="$MR_WINDOW"
   else
     computed="$(model_context_window "$2" 2>/dev/null)" || computed=""
   fi
@@ -1490,6 +1519,14 @@ _purge_team() {
     if [ "$(reg_field "$role" kind)" = "worker" ]; then
       path="$(reg_field "$role" workdir)"
       branch="$(reg_field "$role" branch)"
+      # This is the path that lost work on 2026-10-13: a team was purged while a branch tip
+      # was on no remote, and its three commits lived on only as dangling objects that had to
+      # be found with git fsck. So before a lane goes, where its branch was is said on the
+      # screen and written to the machine-wide ledger — the team's own event log is deleted a
+      # few lines below, so the ledger is the only record that outlives the purge.
+      lane_tip_say "  " "$role"
+      lane_removal_log "$role" purge "$(disk_kb "$path")" "$branch" "$LANE_TIP" "teamctl destroy --purge" ||
+        warn "$role: the removal could not be written to $(short_path "$(disk_reclaim_log_file)"); the sha above is the only record of it"
       if [ -d "$path" ]; then
         if _inside_worktrees "$path" "$(worker_trees_dir "$role")"; then
           tdir="$(transcripts_dir "$path" 2>/dev/null || true)"
@@ -1566,7 +1603,10 @@ cmd_destroy() {
     return 0
   fi
   say "About to stop every agent of this project's team ($SESSION)."
-  say "Kept in all cases: your source files, every commit, unmerged branches, credentials, Beads data."
+  say "Kept in all cases: your source files, every branch whose work is not all in main and every commit on it, credentials, Beads data."
+  if [ "$remove_worktrees" -ne 1 ] && [ "$(policy_get auto-reclaim)" = "on" ]; then
+    say "A lane whose task is closed and whose work is all in main is taken off the books (policy auto-reclaim); where its branch was is printed first."
+  fi
   if [ "$remove_worktrees" -eq 1 ]; then
     say "--worktrees: clean worker worktrees are removed; fully merged branches teamctl created are deleted."
   fi
@@ -1602,11 +1642,20 @@ cmd_destroy() {
         say "  $role: kept its build output ($PARK_SWEEP_WHY)"
       fi
     done
-    say "worktrees kept. Clean ones go with: teamctl destroy --worktrees · one that still holds work: teamctl remove <role> --force"
   fi
   reg_delete "$WOLFMUX_LEAD_ROLE"
   event_log destroy "" "worktrees=$remove_worktrees"
   lock_release
+  if [ "$remove_worktrees" -ne 1 ]; then
+    # Every lane is parked now, so every lane is asked whether it is finished (lib/reclaim.sh),
+    # each one aloud: a team that has ended has nobody left to park a lane, so this is the
+    # last automatic chance a finished lane of it gets, and a lane that stays has to say what
+    # it is holding before the team's session is gone. After the lock, as in cmd_stop, and
+    # through reclaim_after_park as there: the team has ended, and this command says so
+    # whether the check failed or exited.
+    reclaim_after_park "" destroy 1 "  "
+    say "worktrees kept, except a lane reclaimed above: its task was closed and its work is all in main. What every other lane holds, and why: teamctl reclaim --dry-run · clean ones go with: teamctl destroy --worktrees · one that still holds work: teamctl remove <role> --force"
+  fi
   founder_announce ended
 }
 

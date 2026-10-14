@@ -178,8 +178,10 @@ Who takes what:
 | `teamctl stop <role>` | the whole list, `node_modules` included: parking a lane sweeps it (policy `auto-prune`, on by default). With `teamctl policy auto-prune off` it takes `.next`, `dist`, `.turbo`, `build`, `coverage`, `.cache`, `.parcel-cache`, `.vite`, `.svelte-kit`, `.nuxt`, `target` and keeps `node_modules`, which is what it did up to v1.16.1 |
 | `teamctl prune` | the same list **and** `node_modules`, for every parked lane. A parked lane is what hoards |
 | `teamctl prune --all-teams` | every team of every project on this machine, a total per team and one for the machine. **Yours alone to run**, from a terminal with no `TEAM_ROLE`: a lead has no standing outside its own team and is refused with exit 77 |
-| `teamctl keep <role>` | nothing — that is the point. The lane is never swept automatically, and `prune` honours it too |
-| `teamctl destroy` (no `--worktrees`) | the build output of every lane, because ending the session parks all of them |
+| `teamctl reclaim` | the **whole lane** — worktree, branch and record — of every parked lane that is finished, and nothing of a lane that is not ([a finished lane](#a-finished-lane-takes-itself-off-the-books)). Parking a lane does this by itself (policy `auto-reclaim`, on by default) |
+| `teamctl reclaim --all-teams` | the same for every team of every project on this machine. **Yours alone to run**: exit 77 for a lead |
+| `teamctl keep <role>` | nothing — that is the point. The lane is never swept or reclaimed automatically, and `prune` and `reclaim` honour it too |
+| `teamctl destroy` (no `--worktrees`) | the build output of every lane, because ending the session parks all of them — and the whole of every lane that is finished, for the same reason |
 | `teamctl remove <role>`, `teamctl destroy --worktrees` | all of it; the worktree is going away anyway. A `remove` that **refuses** — because the lane holds commits or files a person wrote — changes nothing at all: "nothing was removed" means the build output is still there too |
 
 Five rules hold for every one of those deletions, and they are in one place
@@ -264,6 +266,161 @@ trigger (`stop`, `destroy`, `prune`) and the directory names it took.
 ```bash
 jq -r '"\(.ts) \(.team)/\(.role) \(.freed_kb) KB \(.trigger)"' ~/.wolfmux/state/reclaimed.jsonl | tail
 ```
+
+A lane that was taken off the books is a line in the same file, marked
+`"event": "lane-removed"`. It carries what a sweep line carries, and what you need to get
+the lane back: `branch`, `tip` (the full sha that branch was at), `reason` (why it was
+allowed to go), `proof` (`ref`, `how` and `sha`: the commit that shows its content is in
+main), `main_pushed`, `workdir` and `session`. The trigger is the command that took it:
+`stop`, `destroy`, `reclaim`, `remove`, `destroy-worktrees` or `purge`.
+
+The line is written **before** anything is deleted, so that no removal can happen without
+a record. One thing follows from that order: when git then refuses the worktree (a locked
+one, or one that holds populated submodules — the reclaim never passes `--force`), the lane
+stays whole and a second line says so, `"event": "lane-kept"`, with the same `branch` and
+`tip` and git's own words as the `reason`. A `lane-removed` line with a later `lane-kept`
+for the same tip is a lane that is still there.
+
+```bash
+# every lane teamctl ever removed here, and the command that brings each one back
+jq -r 'select(.event == "lane-removed") | "\(.ts) \(.team)/\(.role) \(.trigger): git branch \(.branch) \(.tip)"' ~/.wolfmux/state/reclaimed.jsonl
+```
+
+### A finished lane takes itself off the books
+
+The sweep gives back build output. The checkout itself is the bigger half of a lane —
+33.3 GB of the 52.6 GB left under `~/.wolfmux/worktrees` after a full sweep, measured
+2026-10-13 — and until v1.17.0 only `teamctl remove <role>` gave that back, by hand.
+
+Now a parked lane that is **finished** goes by itself: its worktree, its branch and its
+record. It is asked when a lane is parked — `teamctl stop <role>`, or a plain
+`teamctl destroy` — and every other parked lane of the team is asked again at the same
+moment. Integration is a plain `git merge` in your checkout, which teamctl never sees, so a
+lane that was parked before its merge goes the next time any lane is parked, without
+anybody remembering it. `teamctl reclaim` asks by hand, and `teamctl reclaim --dry-run`
+shows the answer for every lane without deleting anything.
+
+Parking comes first and does not depend on the answer. When the check after it fails, or
+cannot finish — the team's lock stays held by another `teamctl` for 30 seconds, say —
+`teamctl stop` still ends with `stopped: <role>` and exits 0, with the error printed above
+that line. A plain `teamctl destroy` does the same. And `teamctl reclaim` does not report a
+removal that worked as a failure because its bookkeeping afterwards (the remembered disk
+numbers) could not be written.
+
+A lane goes only when **all** of these hold. They are asked in this order, cheapest first
+and the network last, and **a check that cannot be answered keeps the lane**:
+
+1. **It is parked.** A running lane is never asked anything more, and neither is one whose
+   state cannot be told.
+2. **`teamctl keep` does not protect it.**
+3. **Nothing is uncommitted.** No change to a tracked file, and no untracked file that is not
+   build output. A file your `.gitignore` ignores is not work to git and does not count; it
+   goes with the worktree, as it does with `teamctl remove`.
+4. **The worktree's HEAD is the tip of the lane's branch.** A detached HEAD, or another
+   branch checked out there, holds commits no branch name leads back to once the worktree is
+   gone. That is how three commits were lost here on 2026-10-13.
+5. **The branch's content is in main**, or in `origin/main`, or in the branch the lane was
+   cut from, or in the branch checked out in your repository (where a lead integrates).
+   Three ways count: *merged* (the tip is an ancestor), *cherry-picked* (`git cherry` finds
+   an equal patch for every commit) and *squashed* (see below).
+6. **No stash entry was made on the lane's branch.**
+7. **Beads says its work is done**: under the lane's own name there (`<team>.<role>`), there
+   is no task that is not closed and at least one that is. A lane with no task at all has no
+   answer to "is it finished", so it stays. Unread messages are not tasks. Beads is asked
+   once per run for the whole project, not once per lane, and gets 45 seconds to answer.
+8. **No pull request is open on its branch**: `gh pr list --head <branch> --state open`
+   comes back empty. No `gh`, a `gh` that fails, or one that does not answer within 45
+   seconds: the lane stays.
+
+The 45 seconds are a measurement: on 2026-10-14, with a load average of 18.8 on this machine,
+the same `bd list` took 24 s, 33 s, 4 s and 4 s within five minutes, and one question for the
+whole project (1,377 beads) took 12 s. A question that is not answered in time is "cannot
+tell", the lane stays, and the next check asks again.
+
+A lane that stays is not silent. `teamctl status` prints what it holds and why under its
+row, from what the last check wrote into the lane's record:
+
+```
+    ⤷ sam   GLM-5.3   stopped   -   skip   lead   ai/review/sam-20261013-101500   3   0   41k 20%   ~/.wolfmux/worktrees/…/sam-…
+        holding 1.9 GB: unmerged at 6c3143f
+```
+
+| The reason | What it means, and what lets the lane go |
+|------------|-------------------------------------------|
+| `unpushed at <sha>` | commits that are in no target and on no remote: they exist on this disk only. Merge the branch, or push it |
+| `unmerged at <sha>` | the same, but the tip is on a remote, so it could be fetched back. Merge it |
+| `dirty: N uncommitted files` | commit or discard them in that worktree (`teamctl diff <role> --working`) |
+| `its worktree is at <sha>, which is not the tip of its branch` | the lane holds commits on no branch. Put a branch on that sha, or check the lane's own branch out again |
+| `N stash entries on its branch, newest <sha>` | apply or drop them (`git stash list`) |
+| `task open (<id>)` | close the task in Beads |
+| `no task bead on record` | this lane was never given a task, so nothing says it is finished: `teamctl remove <role>` |
+| `open PR #<n>` | merge or close the pull request |
+| `cannot ask Beads (…)` · `cannot ask GitHub (…)` | the tool is missing, failed, or did not answer in time. The next check asks again |
+| `teamctl keep protects this lane` | `teamctl keep <role> off` |
+| `nothing is in the way: …` | policy `auto-reclaim` is off: `teamctl reclaim` takes it |
+
+Status asks nothing itself — no `du`, no Beads, no GitHub — so the line can be older than the
+lane; it says `checked 3 h ago` once it is more than ten minutes old. `teamctl reclaim
+--dry-run` asks again, and a lane parked before v1.17.0 says `not checked yet` until
+something does.
+
+**A squash, and where it stops being seen.** `git cherry` compares commit by commit, so three
+commits squashed into one read as three commits that are nowhere: measured on git 2.50.1,
+`git cherry main <branch>` prints three `+` lines, and a containment test
+(`git branch --contains`) says the same. So teamctl builds one throwaway commit that holds
+the branch's whole diff (`git commit-tree`, on the merge base) and asks `git cherry` about
+that; the commit in main it is equal to is the proof, and it is what the ledger records.
+The throwaway commit is an unreachable object in your repository and goes with `git gc`.
+**The known limit:** if main changed a line right next to one of the branch's hunks before
+the squash, the two patches differ in their context, their patch ids differ, and nothing
+matches. That lane is **kept**, as `unmerged`. It errs toward disk and never toward work,
+and `teamctl remove <role>` is how it goes. The same holds for a lane that merged main into
+itself: `git cherry` skips merge commits, so such a lane is only ever judged as a whole.
+
+**The stash, and why it keeps a lane.** Not because it would be lost: a stash does **not**
+die with its worktree. `refs/stash` lives in the repository's common git directory and is
+one list for every worktree — measured on git 2.50.1: `git stash list` gave the same entries
+in a lane and in the main checkout, and after `git worktree remove --force` and
+`git branch -D` of the lane its entry was still listed and its commit was still there.
+Nothing is lost either way. The lane is kept because a stash made on its branch is work the
+"content in main" gate cannot see (a stash is not a commit on the branch), and because once
+the branch is deleted the entry reads `On ai/x/sam` for a branch that no longer exists, in a
+list nobody looks at. Apply or drop the entry and the next check lets the lane go. An entry
+made on a detached HEAD says `(no branch)` and belongs to no lane; it keeps none, and
+`teamctl reclaim --dry-run` names it once per repository so that somebody who is missing
+something has a place to look.
+
+**Main that is not pushed.** Content that is only in a local main still counts as "in main":
+teamctl never deletes main, so it is not at the risk a lane is, and requiring a push would
+block reclaim on a repository somebody keeps local on purpose. The line and the ledger say
+so (`main is not pushed`, `"main_pushed": false`), so the record does not imply a safety
+that is not there.
+
+**Before a branch goes, where it was is said.** `sam: branch ai/review/sam-… was at <full
+sha>`, on the screen and in the ledger, before anything is deleted — by `reclaim`, by
+`remove`, by `destroy --worktrees` and by `destroy --purge`. A removed lane comes back with
+`git branch <name> <sha>` for as long as git keeps the unreachable commits (two weeks by
+default). The removal itself never passes `--force` to git and never falls back to `rm -rf`:
+a worktree git will not remove is a lane that stays.
+
+**What changes for a lead.** `teamctl stop` on a worker whose task is closed and whose work
+is merged now removes that lane, record included, so `teamctl restart` on it is gone. That
+is the point for a worker that is done, and wrong for one you mean to bring back:
+
+```bash
+teamctl keep sam                     # before stopping a worker you will restart or hand over
+teamctl policy auto-reclaim off      # this team: nothing is removed unless you run teamctl reclaim
+#WOLFMUX_AUTO_RECLAIM=off            # in ~/.config/wolfmux/config: the default for every team
+```
+
+The two knobs fall back the same way on a value nobody can read — off — and for this one it
+is not a matter of taste: `auto-prune` deletes what a build makes again, `auto-reclaim`
+deletes a checkout and a branch, so a typo in the config file must never read as "yes".
+
+**Teams whose lead is gone.** Nobody parks a lane in a team that has ended, so no automatic
+path asks its lanes again. `teamctl reclaim --all-teams`, from your own terminal, does:
+every team of every project, one line per lane, a total per team and one for the machine.
+A lead is refused with exit 77, as with `prune --all-teams`, and for the same reason.
 
 **What `remove` asks about.** It refuses a lane that holds commits your branch does not have
 or files somebody wrote, and lists them. Build output is not "files somebody wrote": a
@@ -474,19 +631,20 @@ creation time in the lead's record, so the founder keeps its authority after one
 |---------|------|
 | `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. `--ticket` sets the team's default ticket key ([branch names](#branch-names-that-fit-your-repository)). Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's own conversation (the id stored with it), `--resume` reopens the one you name ([which conversation comes back](#finding-the-manager-and-being-told-when-someone-finishes)). With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
-| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `browser-writes` (ask\|allow, DEFAULT ask: allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings — lead and workers alike — so a Chrome write resolves before Claude Code's auto-mode classifier runs on it), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off), `auto-prune` (on\|off, DEFAULT on: sweep a lane's build output as soon as the lane is parked — `teamctl keep <role>` protects one lane) |
+| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `browser-writes` (ask\|allow, DEFAULT ask: allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings — lead and workers alike — so a Chrome write resolves before Claude Code's auto-mode classifier runs on it), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off), `auto-prune` (on\|off, DEFAULT on: sweep a lane's build output as soon as the lane is parked — `teamctl keep <role>` protects one lane), `auto-reclaim` (on\|off, DEFAULT on: take a parked lane off the books by itself once its task is closed and its work is all in main — `teamctl keep <role>` protects one lane; a value that is neither on nor off counts as off: [a finished lane](#a-finished-lane-takes-itself-off-the-books)) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
 | `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). Refused when free disk is under `disk-min-gb`. `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated — **if that lane was protected before it was parked**, because from v1.17.0 `teamctl stop` sweeps a lane's build output. `teamctl keep <role>` before stopping it, and the flag travels with the worktree. Refuses a running worker, and a worktree with uncommitted changes (lists them) (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one (and sends no kickoff). `--link-node-modules`: a brand-new lane shares its repository's `node_modules` instead of installing its own ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
-| `teamctl stop <role>` | close a pane; worktree, branch and commits stay. Its build output goes, `node_modules` included (policy `auto-prune`, on by default; `off` keeps `node_modules` as before v1.17.0) |
+| `teamctl stop <role>` | close a pane; worktree, branch and commits stay. Its build output goes, `node_modules` included (policy `auto-prune`, on by default; `off` keeps `node_modules` as before v1.17.0). The one case where the lane itself goes: its task is closed and its work is all in main (policy `auto-reclaim`, on by default; `teamctl keep <role>` first, to keep a worker you mean to restart) |
 | `teamctl remove <role>... [--force] [--yes]` | take a stopped worker off the books: worktree, branch, record and the gigabytes they held. Refuses when the worker holds uncommitted files or commits your branch does not have, and lists them; `--force` discards them after one question |
 | `teamctl prune [--team <name>] [--all-teams] [--dry-run] [--keep-node-modules]` | the build output of every parked lane of the team, with a total in GB. Running lanes untouched; `--dry-run` deletes nothing; `--keep-node-modules` takes the build caches only; `--all-teams` does every team of every project on this machine and is yours alone to run — a lead is refused with exit 77 ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
-| `teamctl keep [<role> [on\|off]]` | never sweep that lane's build output automatically — for a checkout that is expensive to rebuild. `prune` honours it too; with no role it lists what is protected ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
+| `teamctl reclaim [--team <name>] [--all-teams] [--dry-run]` | take every finished parked lane of the team off the books: worktree, branch, record. One line per lane, `removed` or `holding` with the reason. `--dry-run` deletes nothing and anyone may run it; `--all-teams` is every team on the machine and yours alone to run (exit 77 for a lead) ([a finished lane](#a-finished-lane-takes-itself-off-the-books)) |
+| `teamctl keep [<role> [on\|off]]` | never sweep that lane's build output, and never reclaim the lane, automatically — for a checkout that is expensive to rebuild, or a worker you mean to restart. `prune` and `reclaim` honour it too; with no role it lists what is protected ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl bar [--explain]` | the one line tmux shows in `status-right`; `--explain` is the legend naming every field of it ([the segment in the status bar](#the-segment-in-the-status-bar)) |
 | `teamctl heavy [--timeout <seconds>] [--quiet] <command>...` | run a heavy thing — a test gate, a measurement, a long build — holding the machine's heavy lock, so nothing else heavy runs beside it and no lane is swept while it does. Returns the **command's** exit status, not the wrapper's, and says what it waited for. `--timeout`: give up after that many seconds (exit 75) rather than wait; `--quiet`: say nothing about waiting. One voice about the lock: `lockf`'s own "already locked" line is silenced, the command's own output is not. An exit 75 that is the command's own is reported as the command's, not as the lock timing out. Prefer it to `lockf` by hand ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | the pane notices filed for a role, oldest first. Default: the lead of this team. Reading them clears the `📨` count in the status bar; it does not change whether the agent has had them, and the agent having had them does not clear your count. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new. `prefix N` opens the same thing in a popup ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
-| `teamctl status [--json]` (alias `workers`) | team by team: role, model, running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
+| `teamctl status [--json]` (alias `workers`) | team by team: role, model (the one it runs, as `teamctl models` says it; `*` = its last answer names that model and its record does not vouch for it, `?` = nobody can name it), running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
 | `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. This is the command that measures that disk. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
 | `teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]` | every team on this machine, across every project, read-only; `prefix O` opens it as a popup and `q` closes it. See [The dashboard](#the-dashboard-every-team-on-the-machine). `--once` prints it and exits, `--interval` sets the redraw (default 5 s), `--full` also reads context and the transcript time for agents that are not running, `--socket <path>` asks that tmux server instead of the default |
 | `teamctl panes` | tmux's view: command, pid, cwd |
@@ -496,10 +654,10 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl worktrees` | branch, commits ahead, dirty count per worker |
 | `teamctl diff <role> [--stat\|--names\|--commits\|--working]` | the worker's changes since its base |
 | `teamctl completion <zsh\|bash>` | print the tab-completion script of that shell, so `source <(teamctl completion zsh)` works (bash: `eval "$(teamctl completion bash)"`); `./install.sh` wires it into `~/.zshrc`, and `teamctl <Tab>` then offers commands, options and values (roles, teams, models, policy keys, layouts, approvals, branches) |
-| `teamctl destroy [--worktrees] [--yes]` | end the session; never deletes dirty worktrees, unmerged branches, source, credentials or Beads data |
+| `teamctl destroy [--worktrees] [--yes]` | end the session; never deletes dirty worktrees, unmerged branches, source, credentials or Beads data. A lane whose task is closed and whose work is all in main is reclaimed (policy `auto-reclaim`), and every other lane says what it is holding |
 | `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and free its disk space: reports first, asks, then removes session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts ([deleting a team](#deleting-a-team-and-what-a-team-costs)) |
 | `teamctl doctor [--probe]` | launcher, credential, settings and login checks; `--probe` also asks each provider whose key is set up whether its endpoint accepts it. Also: which model each running agent started on, and the restart that moves it to a newer one |
-| `teamctl models [--json] [--refresh]` | what `fable`, `opus`, `sonnet` and `haiku` mean today (alias, model id, label, where the id came from), and the model each running agent started on. `--refresh` asks Claude Code again now; otherwise it is asked at most once a day per alias, when an agent starts (`WOLFMUX_MODEL_POLICY`) |
+| `teamctl models [--json] [--refresh]` | what `fable`, `opus`, `sonnet` and `haiku` mean today (alias, model id, label, where the id came from), and the model each running agent runs, with where that is known from: `record` (its record names it, and no later answer of its says otherwise) or `transcript` (its last answer names it, and its record does not). `status`, `teams` and the dashboard show the same answer. `--refresh` asks Claude Code again now; otherwise it is asked at most once a day per alias, when an agent starts (`WOLFMUX_MODEL_POLICY`) |
 
 Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`

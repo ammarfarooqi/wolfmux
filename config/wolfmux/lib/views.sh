@@ -15,7 +15,7 @@ _billing_of() {
 }
 
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir model cctx repo session_id
+  local role kind pane state branch ahead dirty workdir model cctx repo session_id recorded_id label
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
     reg_exists "$role" || continue
     kind="$(reg_field "$role" kind)"
@@ -37,24 +37,40 @@ _status_rows() { # emits one JSON object per agent
     dirty="$(wt_dirty_count "$workdir")"
     model="$(reg_field "$role" model)"
     session_id="$(reg_field "$role" session_id)" # its own conversation: what --continue reopens, and what CONTEXT reads
-    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)"
+    recorded_id="$(reg_field "$role" model_id)"
+    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)" "$recorded_id" "$(reg_field "$role" model_at)"
     if [ -n "$CTX_TOKENS" ]; then
       cctx="$(ctx_display "$CTX_TOKENS" "$CTX_WINDOW")"
     else
       cctx="-"
     fi
-    # model_id: the id the agent started with (empty: a record from before ids were recorded,
-    # whose label then says "Opus ?" rather than repeat the old table: teamctl models).
+    # Which model it runs is the one resolver's answer (models_running, lib/models.sh), the same
+    # one teamctl models prints: status does not work it out a second time. An agent that is not
+    # on fable, opus, sonnet or haiku has no such answer: its record's label and id stand.
+    #   model_id     the id it runs (null: neither its record nor its transcript says, "Opus ?")
+    #   recorded_id  the id its record says it was started with (null: a record from before v1.18.0)
+    #   known_from   record | transcript | unknown (null: not on an alias)
+    #   label_mark   "*" when known_from is transcript: the table puts it after the label
+    label="$MR_LABEL"
+    [ -n "$label" ] || label="$(agent_label "$role")"
     "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$model" \
-      --arg label "$(agent_label "$role")" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
+      --arg label "$label" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
       --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
       --arg session_id "$session_id" --arg keep "$(reg_field "$role" keep_build)" \
-      --arg model_id "$(reg_field "$role" model_id)" --arg model_source "$(reg_field "$role" model_source)" \
-      '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
+      --arg model_id "$MR_ID" --arg recorded_id "$recorded_id" --arg known_from "$MR_HOW" --arg mark "$MR_MARK" \
+      --arg model_source "$(reg_field "$role" model_source)" \
+      --arg hw "$(reg_field "$role" hold_why)" --arg hk "$(reg_field "$role" hold_kb)" --arg ha "$(reg_field "$role" hold_at)" \
+      '{role: $role, kind: $kind, model: $model, label: $label, label_mark: $mark, family: $family, billing: $billing, state: $state, pane: $pane,
         keep_build: (if $keep == "on" then "on" else "off" end),
-        model_id: (if $model_id == "" then null else $model_id end), model_source: (if $model_source == "" then null else $model_source end),
+        holding: (if $kind == "worker" and $state != "running" and $hw != "" then
+                    {kb: (($hk | tonumber?) // null), reason: $hw,
+                     checked_at: ((($ha | tonumber?) // null) | if . == null then null else todate end),
+                     checked_epoch: (($ha | tonumber?) // null)}
+                  else null end),
+        model_id: (if $model_id == "" then null else $model_id end), recorded_id: (if $recorded_id == "" then null else $recorded_id end),
+        known_from: (if $known_from == "" then null else $known_from end), model_source: (if $model_source == "" then null else $model_source end),
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
         session_id: $session_id,
@@ -62,6 +78,27 @@ _status_rows() { # emits one JSON object per agent
         context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
         context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}'
   done
+}
+
+# The `holding` of a row is what the last reclaim check wrote into that lane's record
+# (lib/reclaim.sh: hold_why, hold_kb, hold_at). Status only reads it. Asking again here would
+# be a du, a Beads query and a GitHub query per parked lane, on a command that runs every few
+# minutes — so the line can be older than the lane's state, and _hold_age says how old.
+#
+# _hold_age <epoch> — nothing while the check is fresh (under ten minutes), else its age
+_hold_age() {
+  local age
+  case "${1:-x}" in "" | *[!0-9]* | 0?*) return 0 ;; esac
+  age=$(($(now_epoch) - $1))
+  if [ "$age" -lt 600 ]; then
+    return 0
+  elif [ "$age" -lt 7200 ]; then
+    printf ' · checked %s min ago' "$((age / 60))"
+  elif [ "$age" -lt 172800 ]; then
+    printf ' · checked %s h ago' "$((age / 3600))"
+  else
+    printf ' · checked %s d ago' "$((age / 86400))"
+  fi
 }
 
 # ctx_display <tokens> <window> — "142k 71%": what the CONTEXT column shows. When the
@@ -100,12 +137,12 @@ _status_team_json() {
     --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
     --arg dg "$(policy_get disk-guard)" --arg dmin "$(policy_get disk-min-gb)" --arg lnm "$(policy_get link-node-modules)" \
-    --arg ap "$(policy_get auto-prune)" \
+    --arg ap "$(policy_get auto-prune)" --arg ar "$(policy_get auto-reclaim)" \
     --arg free "$(disk_free_kb)" --arg trees "$(disk_team_kb_cached)" --arg parked "$(disk_parked_kb "$STATE_DIR")" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
       founder: $founder, orphaned: ($orphaned == "1"),
       policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt,
-               disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm, auto_prune: $ap},
+               disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm, auto_prune: $ap, auto_reclaim: $ar},
       disk: {free_kb: (if $free == "" then null else ($free | tonumber) end),
              worktrees_kb: (if $trees == "" then null else ($trees | tonumber) end),
              parked_kb: (if $parked == "" then null else ($parked | tonumber) end)},
@@ -133,7 +170,7 @@ _status_team_text() {
   say "  policy  $(policy_summary) · approvals pending: $(approvals_pending_count)"
   # Free disk is a df call; the lane total is whatever the last command that changed the
   # lanes left behind, because measuring it here is a du over every worktree (lib/disk.sh).
-  say "  disk    $(disk_free_label) free · this team's lanes: $(disk_team_label) · spawn guard: $(policy_get disk-guard) under $(policy_get disk-min-gb) GB · auto-prune on park: $(policy_get auto-prune)"
+  say "  disk    $(disk_free_label) free · this team's lanes: $(disk_team_label) · spawn guard: $(policy_get disk-guard) under $(policy_get disk-min-gb) GB · auto-prune on park: $(policy_get auto-prune) · auto-reclaim: $(policy_get auto-reclaim)"
   rows="$(_status_rows)"
   if [ -z "$rows" ]; then
     say "  no agents on record. Start it: teamctl start <fable|astra>$hint"
@@ -154,12 +191,16 @@ _status_team_text() {
     printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
   fi
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
-  # A metered agent is marked with a $ after its label (every token it uses is billed).
+  # A metered agent is marked with a $ after its label (every token it uses is billed), and a
+  # model its record does not vouch for with a * (label_mark; the legend is below the table).
   # CONTEXT is what the agent's transcript says the conversation holds: tokens, and the
   # share of the window when the model's window is known (tokens alone otherwise — see
   # ctx_display). A stopped worker's line is the reuse-or-respawn signal.
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // "")] | join("|")' |
-    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo; do
+  # The three hold fields come last, and the reason last of all: it is the one free text in
+  # the row, and `read` gives whatever is left to its final variable.
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + .label_mark + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // ""),
+      ((.holding.kb // "") | tostring), ((.holding.checked_epoch // "") | tostring), (.holding.reason // "")] | join("|")' |
+    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo hold_kb hold_epoch hold_why; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
       else
@@ -170,9 +211,22 @@ _status_team_text() {
       else
         printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
       fi
+      # A parked lane that could not be taken off the books says what it holds and why, right
+      # under its own row: space nobody can see is the complaint this line answers. A parked
+      # lane nobody has asked yet says that instead of saying nothing.
+      if [ "$kind" = "worker" ] && [ "$state" != "running" ] && [ -d "$workdir" ]; then
+        if [ -n "$hold_why" ]; then
+          printf '        holding %s: %s%s\n' "$(human_size "${hold_kb:-0}")" "$hold_why" "$(_hold_age "$hold_epoch")"
+        else
+          printf '        holding its worktree: not checked yet (what is in the way: teamctl reclaim --dry-run)\n'
+        fi
+      fi
     done
   if [ -n "$repo_col" ]; then
     say "  REPO: the repository a teammate's worktree and branch live in ('-' = this project). teamctl spawn <role> <model> --repo <path>"
+  fi
+  if [ -n "$(printf '%s\n' "$rows" | "$JQ_BIN" -r 'select(.label_mark == "*") | .role' | head -1)" ]; then
+    say "  $MODELS_MARK_LEGEND"
   fi
   if [ -n "$(printf '%s\n' "$rows" | "$JQ_BIN" -r 'select(.billing == "metered") | .role' | head -1)" ]; then
     say '  $ = metered: every token is billed to a prepaid balance, not to a plan or subscription (WOLFMUX_METERED=on, the owner'"'"'s decision)'
@@ -217,8 +271,12 @@ _teams_facts() {
   TEAMS_STATE="running"
   if team_orphaned; then TEAMS_STATE="orphaned"; fi
   TEAMS_FOUNDER="$(team_founder)"
-  TEAMS_LEAD=""
-  if reg_exists "$WOLFMUX_LEAD_ROLE" 2>/dev/null; then TEAMS_LEAD="$(agent_label "$WOLFMUX_LEAD_ROLE")"; fi
+  TEAMS_LEAD="" TEAMS_LEAD_MARK="" TEAMS_LEAD_ID="" TEAMS_LEAD_FROM=""
+  if reg_exists "$WOLFMUX_LEAD_ROLE" 2>/dev/null; then
+    # The lead's model, by the resolver status and teamctl models use (lib/models.sh)
+    agent_model "$WOLFMUX_LEAD_ROLE"
+    TEAMS_LEAD="$MR_LABEL" TEAMS_LEAD_MARK="$MR_MARK" TEAMS_LEAD_ID="$MR_ID" TEAMS_LEAD_FROM="$MR_HOW"
+  fi
   TEAMS_COUNT="$(reg_list | wc -l | tr -d ' ')"
   # Worktrees of this team's workers (the lead works in your own checkout and adds nothing).
   # This is the command that MEASURES: a du over every lane, seconds on a busy machine, and
@@ -231,7 +289,7 @@ _teams_facts() {
 # (its pane exited or is gone, or there is no session): nobody manages it then, and the note under the table
 # says who may act on it.
 cmd_teams() {
-  local json=0 team orphans="" hint
+  local json=0 team orphans="" hint marked=""
   if [ "${1:-}" = "--json" ]; then json=1; fi
   require_tools
   load_project any
@@ -239,10 +297,13 @@ cmd_teams() {
     for team in $(team_list); do
       team_paths "$team"
       _teams_facts
+      # lead: its label. lead_model_id and lead_known_from: the id it runs and where that is known
+      # from (record | transcript | unknown; null for a lead that is not on an alias), as in status.
       "$JQ_BIN" -cn --arg team "$team" --arg state "$TEAMS_STATE" --arg lead "$TEAMS_LEAD" --arg agents "$TEAMS_COUNT" --arg kb "$TEAMS_KB" \
-        --arg founder "$TEAMS_FOUNDER" --arg session "$SESSION" \
-        '{team: $team, state: $state, orphaned: ($state == "orphaned"), founder: $founder, lead: $lead, agents: ($agents | tonumber),
-          disk_kb: ($kb | tonumber), session: $session}'
+        --arg founder "$TEAMS_FOUNDER" --arg session "$SESSION" --arg lead_id "$TEAMS_LEAD_ID" --arg lead_from "$TEAMS_LEAD_FROM" \
+        '{team: $team, state: $state, orphaned: ($state == "orphaned"), founder: $founder, lead: $lead,
+          lead_model_id: (if $lead_id == "" then null else $lead_id end), lead_known_from: (if $lead_from == "" then null else $lead_from end),
+          agents: ($agents | tonumber), disk_kb: ($kb | tonumber), session: $session}'
     done | "$JQ_BIN" -s .
     return 0
   fi
@@ -250,8 +311,9 @@ cmd_teams() {
   for team in $(team_list); do
     team_paths "$team"
     _teams_facts
-    printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' "$team" "$TEAMS_STATE" "${TEAMS_LEAD:--}" "$TEAMS_COUNT" "$(human_size "$TEAMS_KB")" \
+    printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' "$team" "$TEAMS_STATE" "${TEAMS_LEAD:--}$TEAMS_LEAD_MARK" "$TEAMS_COUNT" "$(human_size "$TEAMS_KB")" \
       "$([ "$TEAMS_FOUNDER" = "operator" ] && printf you || printf '%s' "$TEAMS_FOUNDER")" "$SESSION"
+    if [ -n "$TEAMS_LEAD_MARK" ]; then marked=1; fi
     if [ "$TEAMS_STATE" = "orphaned" ]; then
       hint=""
       if [ "$team" != "$WOLFMUX_DEFAULT_TEAM" ]; then hint=" --team $team"; fi
@@ -264,6 +326,7 @@ cmd_teams() {
     printf '%s' "$orphans"
   fi
   say ""
+  if [ -n "$marked" ]; then say "$MODELS_MARK_LEGEND"; fi
   say "disk: $(disk_free_label) free · take the build output of parked lanes: teamctl prune --dry-run"
 }
 
