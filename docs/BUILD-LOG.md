@@ -1586,6 +1586,432 @@ shipping content; neither appears. The glob and the `-r` are the lesson, not the
 **shellcheck is still not installed on this machine, so nothing here was linted with it**;
 `bash -n` was run on every changed file and no figure above stands in for a lint.
 
+## 36. A finished lane takes itself off the books (the reclaim work, stage 2)
+
+Stage 1 gave back what a build makes again. The checkout itself is the bigger half of a
+lane — **33.3 GB of the 52.6 GB** left under `~/.wolfmux/worktrees` after a full sweep,
+measured 2026-10-13 — and only `teamctl remove <role>` gave that back, by hand. Stage 2
+removes a parked lane by itself once it is finished. It is the one stage that can delete
+work, so it is built the other way round from a cleanup: a lane goes only when every gate
+says yes, and **a gate that cannot be answered says no**.
+
+The module is `lib/reclaim.sh`, the suite is `tests/reclaim.sh`, and the header of the
+module is the specification. This section is what the header does not say: what the brief
+got wrong, what measuring changed, and what is left.
+
+### Four things the brief had wrong, each found by measuring
+
+**1. Plain `git cherry` does not see a squash of several commits.** The brief said to use
+`git cherry` instead of a containment test, because a squash-merged branch looks unmerged to
+`git branch --contains`. That is half the gap. `git cherry` compares commit by commit, so
+three commits squashed into one read as three commits that are nowhere: on git 2.50.1,
+`git cherry main <branch>` printed three `+` lines, and only a ONE-commit squash matched.
+The fix keeps git as the judge: one throwaway commit holding the branch's whole diff
+(`git commit-tree`, the branch's tree on the merge base), and `git cherry` asked about that.
+
+How much that matters was then measured on the lead's own repository, read-only, 24 lane
+branches against `origin/main`, 7 seconds in all:
+
+| What says the branch's content is in main | Branches |
+|-------------------------------------------|----------|
+| the tip is an ancestor (a containment test sees these) | 4 |
+| plain `git cherry` (every commit has an equal) | 1 |
+| **only the one-commit question** (a squash of several commits) | **9** |
+| nothing (kept, as unmerged or unpushed) | 10 |
+
+So of 14 branches whose content is in main, a containment test plus plain `git cherry` —
+the brief as written — would have recognised 5, and kept the other 9 for ever.
+
+**2. A stash is not lost with its worktree.** The lead asked for a gate "the lane's
+`git stash list` must be empty", on the premise that a stash goes when the worktree goes.
+`refs/stash` lives in the repository's common git directory and is one list for every
+worktree: measured, `git stash list` gave the same entries in a lane and in the main
+checkout, and after `git worktree remove --force` plus `git branch -D` the lane's entry was
+still listed and its commit still there. The gate as asked would have kept every lane of a
+repository as soon as anybody held one stash anywhere in it. What shipped counts only the
+entries made on the lane's OWN branch, and keeps the lane for those — not because they would
+be lost, but because a stash is work the content gate cannot see, and because the entry
+would name a branch that no longer exists. Entries made on a detached HEAD belong to no
+lane; they keep none and are named once per repository.
+
+**3. "Not pushed" cannot be a gate.** Workers are told not to push and integration is a
+cherry-pick, so "the lane must be pushed" would mean nothing is ever reclaimed. Whether the
+content is in main decides; whether the tip is on a remote only chooses the word in the
+reason (`unpushed at <sha>` when it is on no remote, `unmerged at <sha>` when it is, and
+`unpushed` when both are true, because that one exists on this disk only).
+
+**4. The stub had the wrong shape, and so did the time limit.** Both were found by asking
+the real `bd` instead of the stub that encoded my guess:
+
+- `bd list --json` prints a bare array. With `--brief` or `--skip-labels` (bd 1.3.0) the same
+  list arrives wrapped as `{"issues": [...], "meta": {...}}`. The first parser accepted an
+  array only and would have read every wrapped answer as "could not be read". Both shapes
+  are read now and the stub gives both.
+- The first time limit was 20 seconds. Measured on 2026-10-14 with a load average of 18.8:
+  `bd where` 18 s, the same per-lane `bd list` 24 s, 33 s, 4 s and 4 s within five minutes.
+  At 20 seconds every lane on this machine would have been kept on a busy afternoon. The
+  limit is 45 seconds, and — the bigger change — Beads is asked **once per run for the whole
+  project** instead of once per lane: 12 s for 1,377 beads (1.2 MB) under the same load,
+  whatever the number of lanes. A question per lane would have made `teamctl stop` in a
+  team with ten finished lanes a matter of minutes.
+
+### One gate nobody asked for
+
+The worktree's HEAD has to be the tip of the lane's branch. A detached HEAD, or another
+branch checked out in the lane, holds commits that no branch name leads back to once the
+worktree is gone — which is how three commits were lost on 2026-10-13 and found again only
+as dangling objects. The content gate looks at the recorded branch and would never have
+seen them. The reason names that sha: `its worktree is at 6c3143f, which is not the tip of
+its branch`.
+
+### What is said before anything is deleted
+
+`<role>: branch <name> was at <full sha>`, on the screen and as a line in
+`~/.wolfmux/state/reclaimed.jsonl`, before the branch goes — and not only for a reclaim. The
+loss on 2026-10-13 was a `destroy --purge`, so `remove`, `destroy --worktrees` and
+`destroy --purge` say it too, and a `--force` removal also says where the worktree's own
+HEAD was when that is somewhere else. A team's own event log is deleted with the team, so
+the machine-wide ledger is the only record that outlives a purge. The reclaim itself writes
+the ledger line first and keeps the lane when it cannot: a removal nobody can look up is
+not made. It never passes `--force` to git and never falls back to `rm -rf`.
+
+Writing the line first has one cost, found by reading the code again and not by a test. Git
+can still refuse the worktree afterwards (a locked worktree, a populated submodule), and
+`git worktree remove` has no dry run, so that refusal cannot be asked for in advance. The
+ledger then said `lane-removed` for a lane that was still there. Now the lane stays whole —
+worktree, branch and record — the reason is git's own first line (`holding <size>: git
+refused to remove its worktree: cannot remove a locked working tree`), and a second ledger
+line, `"event": "lane-kept"` with the same `branch` and `tip`, takes the first one back.
+Whoever reads the ledger for a tip reads the LAST line about it.
+
+### Three decisions that are easy to undo and were made on purpose
+
+- **The squash question leaves nothing in your repository.** `git commit-tree` writes an
+  object. The throwaway commit goes into a scratch object directory
+  (`GIT_OBJECT_DIRECTORY`, with the repository's own objects as an alternate) that is deleted
+  afterwards; measured, the repository's loose-object count is the same before and after.
+  Left in the repository it would have been one unreachable commit per lane per target every
+  time a lane was parked, in a repository that already sat above git's automatic-gc
+  threshold (6,871 loose objects).
+- **The team's lock is never held across a question to Beads or GitHub.** The check runs
+  outside the lock; the lock is taken for the removal, the cheap gates are asked again under
+  it, and it is released. The lock gives up after 30 seconds and a slow `bd` takes longer.
+- **Status asks nothing.** What a kept lane holds and why is written into the lane's record
+  by the check and read by `teamctl status`, with its age once it is more than ten minutes
+  old. Nothing is triggered from the status bar or the dashboard.
+
+### What it does not do
+
+The rows are in [ROADMAP.md](ROADMAP.md) and are repeated here only as a list: a squash
+after main changed the neighbouring line is kept (pinned by a test); a lane parked before
+its merge waits for the next park; without `gh`, or in a repository that is not on GitHub,
+nothing is reclaimed automatically; files `.gitignore` ignores go with the lane;
+`teamctl stop` on a finished worker ends `teamctl restart` for it (`teamctl keep` first);
+`teamctl destroy --worktrees` is the older path and asks none of these gates.
+
+One correction to how the knob was described while it was being designed: `auto-prune` does
+**not** fall back to its default on a value nobody can read. Both knobs fall back to `off`,
+and have since stage 1 (`policy_get`). For `auto-reclaim` the comment next to the code says
+why that direction is not a matter of taste.
+
+### Failing first: the new suite against the base
+
+`tests/reclaim.sh` is a new suite, so there is no older count to compare with. The same
+file (`cmp` says identical) was run against a pristine `9be145b` — a `git archive` of the
+base, which has no `lib/reclaim.sh` — and against this tree, in one pass.
+
+| Run | `reclaim` |
+|-----|-----------|
+| `9be145b` code, **the shipped suite** | 4 / **118** / 0 |
+| this tree at `9243243`, the shipped suite | 122 / 0 / 0 |
+
+The cases the brief named, each by the check that carries it. Every one FAILS on `9be145b`
+and passes here:
+
+| The brief's case | The check, by name |
+|------------------|--------------------|
+| merged and clean: removed | `a lane whose task is closed, whose content is merged, with nothing uncommitted and no PR, passes` and `every lane that passed is gone: its worktree, its branch and its record` |
+| an unpushed commit: kept, and status says why with the sha | `a lane with an unpushed, unmerged commit is KEPT, and the reason names the tip` and `status shows a kept lane as holding <size>: <reason>, with the sha for an unpushed one` |
+| squash-merged: removed | `a lane whose three commits were SQUASHED into one passes, which plain git cherry cannot see` |
+| an open PR: kept | `a lane with an open PR is kept, and the reason names the PR` |
+| `gh` cannot answer: kept | `when gh fails, the lane is kept: deleting a worktree under a reviewer has been paid for once` |
+| the task bead still open: kept | `a lane whose task is still open is kept, and the reason names the bead` |
+
+The suite has 19 sections. Every one has a failing check on `9be145b`, and 17 of the 19 have
+no passing check there at all.
+
+The 4 that pass on `9be145b` are reported and not counted as proof, because a check that
+passes on the old tree says nothing about this one. One is an invariant (`every lane is a
+real worktree teamctl made, with a real record`). The other three are named `CONTROL:` and
+ask git itself, not teamctl: plain `git cherry` reports a squashed lane as missing, a
+containment test agrees with it, and a lane's stash is visible from the main checkout. They
+are there so that the checks beside them cannot pass for the wrong reason.
+
+### What the measurement passes found
+
+Two passes were needed, and the first one is recorded here as superseded, not deleted.
+
+**Pass 1, at `fc57e8f`: `reclaim` 121 / 1 / 0.** The one failure was in a check written the
+same day, for the locked worktree. It asked the gates about the lane while the lane was
+still running, and gate 1 keeps a running lane, so the answer was "running" and not the
+"yes" the check wanted. The check was wrong and the code was right. It now asks after
+`teamctl stop`. That is `9243243`, which changes `tests/reclaim.sh` and one number in
+`README.md` and no library.
+
+**Pass 1 also had `dashboard` 134 / 1 / 0 and a TRUNCATED `nudge-typing`.** Neither came
+back. In pass 2 both are clean on this tree (135 / 0 / 0 and 61 / 0) and clean on `9be145b`
+in the same pass (135 / 0 / 0 and 61 / 0). What that does and does not show:
+
+- This branch changes neither suite, and none of `lib/dashboard.sh`, `lib/notify.sh`,
+  `lib/inbox.sh`, `lib/disk.sh`, `lib/common.sh` or the hooks. `git diff --stat 9be145b
+  9243243` over those paths prints nothing, every path exists, and the same command over
+  `lib/views.sh` prints a line — so the empty answer is not a pattern that matches nothing.
+- **The failures were not reproduced on `9be145b`.** "Load, not this branch" rests on that
+  diff and on the clean re-run of both trees, not on a failing control. It is a hypothesis.
+- Both checks compare two readings taken at two moments. `teamctl bar prints the line the
+  status bar is given, character for character` runs `teamctl bar` and `teamctl
+  _overview-badge` as two processes, and each reads the machine's load to two decimals and
+  counts every team's agents. `mid-delivery: all five are queued, nothing typed yet` asks
+  that five notices are all still waiting after five `teamctl policy` calls. Pass 1 started
+  at a load average of 21.75. Pass 2 ran at 7 to 13.
+- `nudge-typing` printed no summary line in pass 1 because a second check failed after the
+  first: `mid-delivery: every queued notice still arrived, none was lost on the way`
+  (`tests/nudge-typing.sh:313`) ends its loop with a bare `exit 1`, and that suite's `check`
+  evaluates the body in the suite's own shell. So the failing check ended the suite instead
+  of printing FAIL. It is one of the bare-`exit` sites already filed, and it is why a run
+  with no summary line is reported as TRUNCATED and never by its pass count.
+
+**Pass 1 held the machine-wide lock, and should not have.** It ran under `teamctl heavy`
+(`~/.wolfmux/machine-heavy.lock`): 22 minutes waiting for it, then 39 minutes 32 seconds
+holding it, for twelve suites that are shell, `bd`, `git` and file work. Another team's
+release gates waited behind them. Pass 2 took the team's own lock instead (`lockf -k
+~/.wolfmux/wolfmux-ux-heavy.lock`), which nobody outside this team waits for.
+
+### Every suite at the stage 2 head
+
+One pass, one sha, **`9243243`**, twelve suites one after the other under one acquisition of
+the team's lock, 22:29:35Z to 23:12:17Z on 2026-10-13. Each suite was launched as
+`perl -e '$SIG{HUP}="DEFAULT"; $SIG{INT}="DEFAULT"; exec @ARGV' bash tests/<suite>.sh`, so
+that no signal is inherited as ignored.
+
+| suite | at `9243243` | | suite | at `9243243` |
+|-------|--------------|-|-------|--------------|
+| `reclaim` | 122 / 0 / 0 | | `migration` | 36 / 0 |
+| `disk` | 175 / 0 / 0 | | `permissions` | 13 / 0 |
+| `dashboard` | 135 / 0 / 0 | | `models` | 22 / 0 |
+| `docs` | 36 / 0 | | `commands` | 16 / 0 |
+| `providers` | 141 / 0 / 0 | | `nudge-typing` | 61 / 0 |
+| `inbox` | 107 / 0 | | `smoke` | 350 / **2** / 0 |
+
+**1214 passing, 2 failing, 0 skipped across the twelve countable suites.** Every figure
+comes from the suite's own summary line. A suite that printed none would be reported as
+TRUNCATED, and none was in this pass.
+
+`smoke`'s two failures are the two that section 35 describes, by name: `beads: a worker
+reaches the shared database from its worktree` and `rename: a Beads hook written under the
+old name is replaced`. The control is the same suite on a pristine `9be145b` in the same
+pass: 350 / 2 / 0, the same two names. They read the live shared Beads database, and the
+mechanism is still the hypothesis written down there. This branch changes one line of
+`tests/smoke.sh` and adds no check to it: 352 checks on both trees.
+
+`tests/credential-routing.sh` was **not run**. It is manual, has no check count, and needs a
+logged-in `claude`.
+
+Documents were edited after that pass: this section and `docs/VERIFICATION.md`. Two suites
+read the documents without naming them, so `tests/docs.sh` was **re-run at the final sha**
+(36 / 0), and the two patterns that `tests/smoke.sh:177` and `:180` assert are ABSENT under
+`docs/` were searched for by hand in the shipping content. Neither appears, and each pattern
+was first shown to match a line that does contain it.
+
+**shellcheck is not installed on this machine, so nothing here was linted with it.**
+`bash -n` was run on every changed shell file, and no figure above stands in for a lint.
+
+### What the review found: a park that could fail after it had happened
+
+The lead's review found nothing that fires today and one thing that was waiting.
+`bin/teamctl` runs under `set -euo pipefail`. `teamctl stop` and a plain `teamctl destroy`
+ask the reclaim check **after** the lane is parked. The check, `reclaim_on_park`, had no
+return of its own, and both calls were bare. So the exit status of `teamctl stop` was the
+exit status of a disk-cache writer three functions away. Had that ever failed, the command
+would have ended with an error after parking the lane and before saying `stopped: <role>`.
+
+The fix was proposed as "`return 0` as the last line, and `|| true` at both calls". Four
+things were then measured, in this order, and three of them changed it.
+
+**1. A `return 0` at the end does nothing.** On bash 3.2.57, the bash teamctl runs in:
+
+| Shape | Exit | Says `stopped:` |
+|-------|------|-----------------|
+| the last command of the function fails, the caller is bare | 7 | no |
+| `return 0` after the failing command, the caller is bare | 7 | no |
+| the caller says `\|\| true` | 0 | yes |
+| the failing command says `\|\| true` itself, then `return 0`, the caller is bare | 0 | yes |
+
+Under `set -e` the shell ends at the failing line, and the `return` after it is never
+reached. So each of the three bookkeeping lines says `|| true` for itself.
+
+**2. `|| true` at a call switches `set -e` off inside the whole function**, and inside
+everything it calls. That is what bash does with a function on the left of `||`. Every step
+of the check was read again for it. None relied on the shell ending: the removal is reached
+only through `if` tests, and those already ran without `set -e` for the same reason.
+
+**3. `|| true` cannot catch an `exit`.** `lock_acquire` dies when the team's lock stays held
+for 30 seconds, and the check takes that lock. Measured on `e3c43cd`, with a stand-in `gh`
+that takes the lock and leaves a live pid in it: `teamctl stop` ended with exit 1 after 37
+seconds, printed `another teamctl operation holds the project lock`, and never said
+`stopped:`. The lane was parked and whole. So the check runs in a subshell (`e43dea1`): the
+subshell takes the `exit`, the error still prints, and `stopped: <role>` follows it.
+
+A subshell hands no variable back, so the flag the check used to set is gone, and
+`teamctl stop` picks its closing line from the lane's record (`reg_exists`). That is the
+better way round and not the clumsier one. The line says the lane is "off the books", so it
+is read from the books, and not from what the check believed before its last step.
+
+**The same class, in `teamctl reclaim` itself.** Its bookkeeping (two lines in
+`reclaim_team`, one in `cmd_reclaim`, one in `reclaim_all_teams`) runs after the lanes are
+gone. A failure there reported a reclaim that worked as a command that failed, which is how
+somebody runs a deletion a second time. Those four lines say `|| true` as well.
+
+**4. The subshell made an old leftover visible, and only the full suite saw it.** On a
+`git archive` of `e43dea1` the suite printed 130 passed, 1 failed. The failing check was its
+last one, `no scratch file is left behind by any of it`. What Beads answers is kept in a
+file for the length of one check, and a check that ends by `exit` never reaches the line
+that drops it. That fix did not cause the leftover file. It inherited it: before `e43dea1`
+the whole command died at that `exit`, the file stayed behind then too, and it was nobody's
+problem. Once the command carries on and says `stopped:`, clearing the file is its job.
+
+So one function, `reclaim_after_park`, is what both commands call (`1ae1552`). It runs the
+check in two shells, one inside the other:
+
+- The outer one makes a scratch directory, gives it to the check as its `TMPDIR`, and
+  removes it in a trap on EXIT. A line after the check would be skipped by the same `exit`.
+  The directory is made in that shell, so the trap removes only what that shell made. Being
+  a subshell, it leaves teamctl's own EXIT trap alone, which is what releases the team's
+  lock when a command dies.
+- The inner one runs the check and takes an `exit` in it. It is a shell of its own for a
+  second reason: `lock_acquire` re-arms the EXIT trap of the shell it runs in each time it
+  takes the lock. In the outer shell that would throw the cleanup away at the first lane.
+
+Measured with plain bash 3.2.57 in the same shape, a `sleep` standing in for the check:
+
+| What ends the check | The cleanup runs | The caller goes on |
+|---------------------|------------------|--------------------|
+| `exit 9` in the inner shell | yes | yes |
+| the inner shell re-arms its own EXIT trap, then exits | yes | yes |
+| a failure (`return 7`) | yes | yes |
+| no inner shell, a re-arm, then `exit` | **no** | yes |
+| SIGTERM to the parent alone | yes | no (it was killed) |
+| SIGINT to the whole group, as Ctrl-C sends it | yes | yes |
+| SIGTERM to the whole group | yes | no |
+
+The two signal rows with "no" are the parent dying, which is what a signal is for. The
+Ctrl-C row is plain bash and not teamctl: it says the cleanup runs, not what
+`teamctl stop` prints.
+
+**Every guard is pinned by a check.** `tests/reclaim.sh` has twelve checks for all of this,
+in a copy of teamctl's home where a function leaves a mark and then fails (returns 7; exits
+9 after leaving a scratch file and taking the lock once; or does its work and then
+returns 7). Each of the twelve guarded lines was then removed, one copy of the code per
+line, and the twelve checks were run against every copy:
+
+| What was removed | Checks that fail (of 12) |
+|------------------|--------------------------|
+| nothing (`1ae1552`) | none |
+| `reclaim_after_park`: the outer shell (a brace group instead) | 6 |
+| `reclaim_after_park`: `\|\| true` after the outer shell | 1, 2, 7, 11 and 12 |
+| `reclaim_after_park`: the trap on EXIT | 3, 8 and 12 |
+| `reclaim_after_park`: the scratch directory as the check's `TMPDIR` | 3, 8 and 12 |
+| `reclaim_after_park`: the inner shell | 3, 8 and 12 |
+| `reclaim_on_park`: any one of its three lines | 5 |
+| `reclaim_team`: either of its two lines | 9 and 12 |
+| `cmd_reclaim`: its line | 9 |
+| `reclaim_all_teams`: its line | 10 |
+| the code of `e43dea1` (the subshell at the two call sites) | 3, 6, 8 and 12 |
+| the code of `e3c43cd` (the first fix) | 2, 3, 6, 7, 8, 9, 10 and 12 |
+| the code of `a157cf4` (before any of it) | all twelve |
+
+The checks, in that order: 1 `stop` when the check fails, 2 `stop` when the check exits,
+3 what that check left in the temporary directory is gone, 4 `stop` when the bookkeeping at
+the end of the real check fails, 5 `reclaim_on_park` called bare under `set -e`,
+6 `reclaim_after_park` leaves its caller's EXIT trap and `TMPDIR` as they were, 7 `stop`
+with the team's lock really held (the 30-second wait), 8 that check left nothing behind,
+9 `teamctl reclaim` with failing bookkeeping, 10 `teamctl reclaim --all-teams` the same,
+11 `destroy` when the check fails, 12 `destroy` when the check exits, with nothing left.
+
+Three things about that table, so that nobody reads more into it than is there:
+
+- Check 4 fails in no single row. Two layers cover it, so it takes `a157cf4` to fail it. It
+  is the end-to-end check and is kept as that.
+- Checks 8 and 12 ask whether ANYTHING is left in the temporary directory, so they also
+  fail when an earlier case left something. That is why the inner-shell row lists them:
+  check 3 is the one that tells that row apart. In the `reclaim_team` rows, check 12 fails
+  because the `teamctl reclaim` that died left its own Beads answer behind.
+- `teamctl reclaim` still has that leftover when it dies in the middle of a run. It has no
+  scratch directory of its own. Only the check after a park does.
+
+**A change to control flow cannot be judged by running its own section.** The leftover file
+was found by a check at the very end of the suite, far from the code that was changed, and
+the section that was being run alone to iterate could not see it. An `exit` path, a
+subshell, a trap, an early return: what they break is a released lock, a written ledger, a
+leftover file, and those checks look unrelated. Section runs to iterate, the full suite to
+conclude.
+
+**Three measurements of this round were wrong before they were right**, and each would have
+looked clean:
+
+- The lead's own run of the suite "on the lane's tree" read the worktree itself while the
+  first fix was being edited into it. teamctl reads its libraries again at every call and
+  bash reads a script as it goes, so that run measured no single commit. It printed
+  122 passed, 0 failed, the expected number exactly. It was discarded. The rule since: a
+  number about a commit is measured on a `git archive` of that sha, never in a working tree.
+- The first run of a table like the one above built nine of its eleven copies as empty
+  files: the table inside the script used `|` as its separator, and `|| true` has one in
+  it. Each row carried a count of the lines its copy had changed, and that count is what
+  gave it away. A copy that did not change exactly the lines it was meant to, or that does
+  not parse, is now refused instead of run. That refusal fired twice more the same night.
+- `e43dea1` was first judged by its own section, nine of nine. The full suite said 130 of
+  131. That is point 4 above.
+
+### Every suite after the review
+
+One sha, **`1ae1552`**, the last commit that changes code. Nothing was measured in a working
+tree: every suite ran on a `git archive` of that sha, in the clean launch shape. The one
+exception is `migration`, which replays the project's own history and cannot run without
+it. On the archive it stops at once with `commit deff83a (v1.1.0) is not in this clone's
+history` and prints no summary line, so it is TRUNCATED there, and on the archive of the
+base as well. Its figure below is from a clone pinned at the same sha.
+
+| suite | at `1ae1552` | | suite | at `1ae1552` |
+|-------|--------------|-|-------|--------------|
+| `reclaim` | 134 / 0 / 0 | | `migration` | 36 / 0 |
+| `disk` | 175 / 0 / 0 | | `permissions` | 13 / 0 |
+| `dashboard` | 135 / 0 / 0 | | `models` | 22 / 0 |
+| `docs` | 36 / 0 | | `commands` | 16 / 0 |
+| `providers` | 141 / 0 / 0 | | `nudge-typing` | 61 / 0 |
+| `inbox` | 107 / 0 | | `smoke` | 350 / **2** / 0 |
+
+**1226 passing, 2 failing, 0 skipped across the twelve countable suites.** Every figure
+comes from the suite's own summary line. `reclaim` ran bare, 00:52:30Z to 01:02:07Z on
+2026-10-14 (577 seconds, load about 4). The other ten on the archive ran under one
+acquisition of the team's own lock, 01:04:50Z to 01:25:37Z. `migration` ran bare at 01:34:37Z.
+
+`reclaim` on a pristine `9be145b` with the same suite file, same pass: 4 / **130** / 0, the
+same four as before. The lead ran both arms independently, each from a `git archive`, and
+got the same two lines, and found no `wolfmux-reclaim-*` left in the temporary directory
+afterwards.
+
+`smoke`'s two failures are the same two, by name, and the control is the same suite on the
+archive of `9be145b` in the same pass: 350 / 2 / 0, the same two names.
+
+All twelve were run again, and not only `reclaim`, because `teamctl stop` and
+`teamctl destroy` are what changed, and `disk`, `smoke`, `dashboard`, `inbox` and
+`nudge-typing` run them.
+
+The documents were edited after that pass. `tests/docs.sh` was **re-run at the final sha**
+(36 / 0), from a clone pinned at it, and the two patterns `tests/smoke.sh:177` and `:180`
+assert are ABSENT under `docs/` were searched for by hand in the shipping content. Neither
+appears, and each pattern was first shown to match a line that does contain it.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

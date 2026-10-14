@@ -61,8 +61,14 @@ _status_rows() { # emits one JSON object per agent
       --arg session_id "$session_id" --arg keep "$(reg_field "$role" keep_build)" \
       --arg model_id "$MR_ID" --arg recorded_id "$recorded_id" --arg known_from "$MR_HOW" --arg mark "$MR_MARK" \
       --arg model_source "$(reg_field "$role" model_source)" \
+      --arg hw "$(reg_field "$role" hold_why)" --arg hk "$(reg_field "$role" hold_kb)" --arg ha "$(reg_field "$role" hold_at)" \
       '{role: $role, kind: $kind, model: $model, label: $label, label_mark: $mark, family: $family, billing: $billing, state: $state, pane: $pane,
         keep_build: (if $keep == "on" then "on" else "off" end),
+        holding: (if $kind == "worker" and $state != "running" and $hw != "" then
+                    {kb: (($hk | tonumber?) // null), reason: $hw,
+                     checked_at: ((($ha | tonumber?) // null) | if . == null then null else todate end),
+                     checked_epoch: (($ha | tonumber?) // null)}
+                  else null end),
         model_id: (if $model_id == "" then null else $model_id end), recorded_id: (if $recorded_id == "" then null else $recorded_id end),
         known_from: (if $known_from == "" then null else $known_from end), model_source: (if $model_source == "" then null else $model_source end),
         permissions: (if $permissions == "" then "ask" else $permissions end),
@@ -72,6 +78,27 @@ _status_rows() { # emits one JSON object per agent
         context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
         context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}'
   done
+}
+
+# The `holding` of a row is what the last reclaim check wrote into that lane's record
+# (lib/reclaim.sh: hold_why, hold_kb, hold_at). Status only reads it. Asking again here would
+# be a du, a Beads query and a GitHub query per parked lane, on a command that runs every few
+# minutes — so the line can be older than the lane's state, and _hold_age says how old.
+#
+# _hold_age <epoch> — nothing while the check is fresh (under ten minutes), else its age
+_hold_age() {
+  local age
+  case "${1:-x}" in "" | *[!0-9]* | 0?*) return 0 ;; esac
+  age=$(($(now_epoch) - $1))
+  if [ "$age" -lt 600 ]; then
+    return 0
+  elif [ "$age" -lt 7200 ]; then
+    printf ' · checked %s min ago' "$((age / 60))"
+  elif [ "$age" -lt 172800 ]; then
+    printf ' · checked %s h ago' "$((age / 3600))"
+  else
+    printf ' · checked %s d ago' "$((age / 86400))"
+  fi
 }
 
 # ctx_display <tokens> <window> — "142k 71%": what the CONTEXT column shows. When the
@@ -110,12 +137,12 @@ _status_team_json() {
     --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
     --arg dg "$(policy_get disk-guard)" --arg dmin "$(policy_get disk-min-gb)" --arg lnm "$(policy_get link-node-modules)" \
-    --arg ap "$(policy_get auto-prune)" \
+    --arg ap "$(policy_get auto-prune)" --arg ar "$(policy_get auto-reclaim)" \
     --arg free "$(disk_free_kb)" --arg trees "$(disk_team_kb_cached)" --arg parked "$(disk_parked_kb "$STATE_DIR")" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
       founder: $founder, orphaned: ($orphaned == "1"),
       policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt,
-               disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm, auto_prune: $ap},
+               disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm, auto_prune: $ap, auto_reclaim: $ar},
       disk: {free_kb: (if $free == "" then null else ($free | tonumber) end),
              worktrees_kb: (if $trees == "" then null else ($trees | tonumber) end),
              parked_kb: (if $parked == "" then null else ($parked | tonumber) end)},
@@ -143,7 +170,7 @@ _status_team_text() {
   say "  policy  $(policy_summary) · approvals pending: $(approvals_pending_count)"
   # Free disk is a df call; the lane total is whatever the last command that changed the
   # lanes left behind, because measuring it here is a du over every worktree (lib/disk.sh).
-  say "  disk    $(disk_free_label) free · this team's lanes: $(disk_team_label) · spawn guard: $(policy_get disk-guard) under $(policy_get disk-min-gb) GB · auto-prune on park: $(policy_get auto-prune)"
+  say "  disk    $(disk_free_label) free · this team's lanes: $(disk_team_label) · spawn guard: $(policy_get disk-guard) under $(policy_get disk-min-gb) GB · auto-prune on park: $(policy_get auto-prune) · auto-reclaim: $(policy_get auto-reclaim)"
   rows="$(_status_rows)"
   if [ -z "$rows" ]; then
     say "  no agents on record. Start it: teamctl start <fable|astra>$hint"
@@ -169,8 +196,11 @@ _status_team_text() {
   # CONTEXT is what the agent's transcript says the conversation holds: tokens, and the
   # share of the window when the model's window is known (tokens alone otherwise — see
   # ctx_display). A stopped worker's line is the reuse-or-respawn signal.
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + .label_mark + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // "")] | join("|")' |
-    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo; do
+  # The three hold fields come last, and the reason last of all: it is the one free text in
+  # the row, and `read` gives whatever is left to its final variable.
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + .label_mark + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // ""),
+      ((.holding.kb // "") | tostring), ((.holding.checked_epoch // "") | tostring), (.holding.reason // "")] | join("|")' |
+    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo hold_kb hold_epoch hold_why; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
       else
@@ -180,6 +210,16 @@ _status_team_text() {
         printf ' %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
       else
         printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+      fi
+      # A parked lane that could not be taken off the books says what it holds and why, right
+      # under its own row: space nobody can see is the complaint this line answers. A parked
+      # lane nobody has asked yet says that instead of saying nothing.
+      if [ "$kind" = "worker" ] && [ "$state" != "running" ] && [ -d "$workdir" ]; then
+        if [ -n "$hold_why" ]; then
+          printf '        holding %s: %s%s\n' "$(human_size "${hold_kb:-0}")" "$hold_why" "$(_hold_age "$hold_epoch")"
+        else
+          printf '        holding its worktree: not checked yet (what is in the way: teamctl reclaim --dry-run)\n'
+        fi
       fi
     done
   if [ -n "$repo_col" ]; then

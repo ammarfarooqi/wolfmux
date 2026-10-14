@@ -7,9 +7,12 @@
 | Control | `teamctl` | tmux panes, which model runs where, git worktrees and branches, start / stop / restart / destroy, diagnostics | tasks, messages |
 | Data | `bd` (Beads) | tasks, dependencies, messages, history, who-did-what | processes, panes, worktrees |
 
-The only glue between them is a three-line Beads event hook that calls
-`teamctl nudge <role>`. Beads does not know tmux exists; `teamctl` never reads or
-writes a bead.
+The glue between them is a three-line Beads event hook that calls
+`teamctl nudge <role>`, and one question going the other way. Beads does not know tmux
+exists; `teamctl` never writes a bead, and it reads Beads in exactly one place: before a
+finished lane is taken off the books, `lib/reclaim.sh` asks which tasks are closed
+(`bd list`, once per run, read-only). Until v1.17.0 it read nothing at all; the question is
+the price of not deleting a lane whose task is still open.
 
 ![Two tools, two planes: teamctl, the tmux server with lead and workers, Beads, and the hook between them](diagrams/architecture.svg)
 
@@ -58,6 +61,7 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 | `tmuxctl.sh` | every tmux call, including "is a human typing in this pane" |
 | `worktree.sh` | worktree and branch creation, `worktrees`, `diff` |
 | `disk.sh` | the build-output allowlist and its safety rules, `prune`, free-disk reading, the spawn guard, shared `node_modules` |
+| `reclaim.sh` | taking a finished lane off the books by itself: the eight gates (parked, not kept, nothing uncommitted, HEAD on its branch, content in main, no stash on its branch, task closed in Beads, no open PR), the removal, `reclaim`, what a kept lane is holding, and the ledger line every removed lane gets. The one module that asks Beads and GitHub a question, each with a time limit |
 | `beads.sh` | Beads bootstrap (stealth init) and hook installation |
 | `policy.sh` | who is calling (`caller_role`), manager-only commands, the policy keys |
 | `approvals.sh` | the lead decides workers' permission requests (`_permission-hook`, `approvals`, `approve`, `deny`) |
@@ -123,8 +127,11 @@ trusting the project once covers every worker worktree.
 as a copy of the tracked files, but whatever the agent installs and builds inside it is
 its own: on one project here 2.3 GB of `node_modules`, 0.9 GB of `.next` and half a
 gigabyte of copied assets per lane. Nothing used to remove it, 27 parked lanes of one
-project reached 65 GB, and the machine filled its disk. `lib/disk.sh` is the one module
-that deletes any of it: one allowlist of regenerable directory names, and four rules —
+project reached 65 GB, and the machine filled its disk. The copy of the tracked files is
+the bigger half, and `lib/reclaim.sh` gives that back by removing a whole lane once it is
+finished — its own rules are in that file's header, and the short of them is that a lane
+goes only when every gate says yes and a gate that cannot be answered says no. Of what the
+agent installed and built, `lib/disk.sh` is the one module that deletes any: one allowlist of regenerable directory names, and four rules —
 only a name on the list, never a path git tracks, never a worktree holding uncommitted or
 untracked work of its own, and only inside the worktree directory of that lane's own
 repository (`worker_trees_dir`, so a lane spawned with `--repo` is checked against that

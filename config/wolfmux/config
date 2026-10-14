@@ -108,6 +108,15 @@
 # expensive checkout is protected with `teamctl keep <role>`. Every sweep is logged in
 # ~/.wolfmux/state/reclaimed.jsonl.
 #WOLFMUX_AUTO_PRUNE=off
+# Take a parked lane off the books by itself (its worktree, its branch, its record) once its
+# work is finished: its task closed in Beads, its branch's content in main or the integration
+# branch, nothing uncommitted or stashed, no open pull request. On by default: the checkout
+# itself is the bigger half of a lane (33.3 GB of 52.6 GB here after a full sweep, measured
+# 2026-10-13) and only `teamctl remove` gave it back. A check that cannot be answered keeps
+# the lane, `teamctl status` says what each kept lane holds and why, and one lane is
+# protected with `teamctl keep <role>`. Off: nothing is removed unless you run
+# `teamctl reclaim`. A value that is neither on nor off counts as off.
+#WOLFMUX_AUTO_RECLAIM=off
 
 # How the panes are arranged (per team: `teamctl layout <name>`).
 #   lead-left (default)  the lead large on the left, workers stacked on the right
