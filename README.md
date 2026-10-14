@@ -61,7 +61,7 @@ need it. Tasks and messages are not teamctl's: they are Beads
 | `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>]` | start a team with that model as its 🐺 lead, and open it. `--team` names a further team in the same project; `--continue` resumes the lead's **own** conversation (the id stored with it), `--resume` reopens the one you name; after the lead quit, the same command brings it back |
 | `teamctl start … [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions skip\|ask] [--worker-permissions skip\|lead\|ask] [--worker-spawn on\|off]` | `--ticket` is the team's default ticket key, used by a branch template that asks for one; `--init-beads` or `--skip-beads` answers the first start's question about Beads; the other three set the team's policy, at any start |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead. A lead may run this too; you are notified. While that lead runs, the founder does not manage the team; once it is not running the founder may `restart`, `stop`, `remove` or `destroy` it, and `start <model> --team <it> --continue`; you are told each time |
-| `teamctl status [--json]` (alias `workers`) | every team as a tree (one team with `--team`, or from inside a pane): 🐺 lead, 🐶 teammates, model, running or stopped, branch, commits ahead, uncommitted files, and CONTEXT: what each agent's conversation holds (tokens, and the share of the window when the model's window is known, from the transcript of its own conversation; a model whose window is not known shows the tokens with no percentage, never a guessed share). A team without a running lead says it is orphaned and who may act on it; `--json` has `founder`, `orphaned`, `session_id`, `context_tokens`, `context_window` and `requests` |
+| `teamctl status [--json]` (alias `workers`) | every team as a tree (one team with `--team`, or from inside a pane): 🐺 lead, 🐶 teammates, model (the one the agent runs, the same answer `teamctl models` gives; a `*` after it means its last answer names that model and its record does not vouch for it), running or stopped, branch, commits ahead, uncommitted files, and CONTEXT: what each agent's conversation holds (tokens, and the share of the window when the model's window is known, from the transcript of its own conversation; a model whose window is not known shows the tokens with no percentage, never a guessed share). A team without a running lead says it is orphaned and who may act on it; `--json` has `founder`, `orphaned`, `session_id`, `context_tokens`, `context_window` and `requests`, and per agent `model_id` (the id it runs), `recorded_id` (the id on its record) and `known_from` (`record`, `transcript` or `unknown`) |
 | `teamctl teams [--json]` | the short list: state (`running`, or `orphaned` when its lead is not running), lead, number of agents, the disk its teammates' worktrees take, and who founded it. Under the table, each orphaned team says who may act on it: you, and the lead that founded it |
 | `teamctl attach` (alias `open`) | open the team in this terminal (`Ctrl-b d` leaves it running) |
 | `teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]` | EVERY team on this machine, across every project, in one read-only view, and `prefix O` opens it as a popup (`q` closes it). Per agent: state, the CPU and memory of its whole process tree, context use, when its transcript was last written, branch. Per team: totals, state, lead, and the cached lane disk. At the foot: the machine's load, free memory and free disk. `--once` prints it and exits, `--interval` sets the redraw (default 5 s), `--full` also reads context and the transcript time for agents that are not running (slower), and `--socket <path>` asks that tmux server rather than the default one (the key binding hands its own over; the socket is never guessed). It never runs `du`: lane totals are the number `teamctl teams` left behind, and the view says so when that number is stale |
@@ -171,7 +171,7 @@ run clears, never a half-deleted `node_modules` that looks installed.
 | `teamctl destroy [--worktrees] [--yes]` | end the team. Every worktree is kept; `--worktrees` also removes teammates that hold nothing, and takes the build output of all of them first |
 | `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and give its disk space back: shows sizes and any uncommitted or unmerged work, asks, then removes the session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts. `--force` deletes that work too. Never touched: your checkout, other branches, Beads, other teams, the lead's own conversations |
 | `teamctl doctor [--probe]` | billing and credential isolation report: launchers, inherited keys, settings overrides, Keychain, logins. `--probe` also asks each provider whose key is set up whether its endpoint accepts it: one incomplete request each, nothing billed, only the HTTP status shown |
-| `teamctl models [--json] [--refresh]` | what `fable`, `opus`, `sonnet` and `haiku` mean today: alias, model id, label ("Opus 5.5") and where the id came from (a config pin, today's probe, the built-in id), then the model each running agent started on and the restart that moves it to a newer one. `--refresh` asks Claude Code again now. See [Always the newest model](#always-the-newest-model) |
+| `teamctl models [--json] [--refresh]` | what `fable`, `opus`, `sonnet` and `haiku` mean today: alias, model id, label ("Opus 5.5") and where the id came from (a config pin, today's probe, the built-in id), then the model each running agent runs, where that is known from (`record`, or `transcript` when its record does not vouch for it) and the restart that moves it to a newer one. `--refresh` asks Claude Code again now. See [Always the newest model](#always-the-newest-model) |
 | `teamctl version` · `teamctl help` | |
 
 ### Always the newest model
@@ -188,6 +188,19 @@ by itself. If the call fails, the built-in id is used and every spawn warns.
 
 A pin wins: `WOLFMUX_OPUS_MODEL=<id>` in `~/.config/wolfmux/config` means that id until you
 delete the line. `WOLFMUX_MODEL_POLICY=pinned` keeps the built-in ids of this release.
+
+**One answer in every view.** Which model an agent runs is worked out in one place, and
+`status`, `teams`, the dashboard, `models` and `doctor` all show that answer. It is the id
+on the agent's record. When the record has no id (an agent started before v1.18.0), or the
+agent's last answer names another model (Claude Code fell back to an earlier one at startup,
+or `/model` changed it in the session), the answer is the model its transcript names, and
+every table marks it with a `*` (`known_from: transcript` in `--json`). Right after
+`teamctl restart <role> --continue` the record is the newer word: the conversation still
+ends with the old model's answer, and that answer says nothing about the new start. The
+context share is of the window Claude Code declared for that very model. If nobody can
+name the model (`Opus ?`), or nobody declared a window for it, you see the tokens and no
+percentage: a share is never taken of another model's window. The status bar and shell
+completion read the record only, for speed, and say `?` or `unknown` where it has no id.
 
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
 are for you and for the team's lead; a teammate that tries them is refused (exit 77).

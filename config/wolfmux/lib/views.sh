@@ -15,7 +15,7 @@ _billing_of() {
 }
 
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir model cctx repo session_id
+  local role kind pane state branch ahead dirty workdir model cctx repo session_id recorded_id label
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
     reg_exists "$role" || continue
     kind="$(reg_field "$role" kind)"
@@ -37,24 +37,34 @@ _status_rows() { # emits one JSON object per agent
     dirty="$(wt_dirty_count "$workdir")"
     model="$(reg_field "$role" model)"
     session_id="$(reg_field "$role" session_id)" # its own conversation: what --continue reopens, and what CONTEXT reads
-    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)"
+    recorded_id="$(reg_field "$role" model_id)"
+    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)" "$recorded_id" "$(reg_field "$role" model_at)"
     if [ -n "$CTX_TOKENS" ]; then
       cctx="$(ctx_display "$CTX_TOKENS" "$CTX_WINDOW")"
     else
       cctx="-"
     fi
-    # model_id: the id the agent started with (empty: a record from before ids were recorded,
-    # whose label then says "Opus ?" rather than repeat the old table: teamctl models).
+    # Which model it runs is the one resolver's answer (models_running, lib/models.sh), the same
+    # one teamctl models prints: status does not work it out a second time. An agent that is not
+    # on fable, opus, sonnet or haiku has no such answer: its record's label and id stand.
+    #   model_id     the id it runs (null: neither its record nor its transcript says, "Opus ?")
+    #   recorded_id  the id its record says it was started with (null: a record from before v1.18.0)
+    #   known_from   record | transcript | unknown (null: not on an alias)
+    #   label_mark   "*" when known_from is transcript: the table puts it after the label
+    label="$MR_LABEL"
+    [ -n "$label" ] || label="$(agent_label "$role")"
     "$JQ_BIN" -cn --arg role "$role" --arg kind "$kind" --arg model "$model" \
-      --arg label "$(agent_label "$role")" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
+      --arg label "$label" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
       --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
       --arg session_id "$session_id" --arg keep "$(reg_field "$role" keep_build)" \
-      --arg model_id "$(reg_field "$role" model_id)" --arg model_source "$(reg_field "$role" model_source)" \
-      '{role: $role, kind: $kind, model: $model, label: $label, family: $family, billing: $billing, state: $state, pane: $pane,
+      --arg model_id "$MR_ID" --arg recorded_id "$recorded_id" --arg known_from "$MR_HOW" --arg mark "$MR_MARK" \
+      --arg model_source "$(reg_field "$role" model_source)" \
+      '{role: $role, kind: $kind, model: $model, label: $label, label_mark: $mark, family: $family, billing: $billing, state: $state, pane: $pane,
         keep_build: (if $keep == "on" then "on" else "off" end),
-        model_id: (if $model_id == "" then null else $model_id end), model_source: (if $model_source == "" then null else $model_source end),
+        model_id: (if $model_id == "" then null else $model_id end), recorded_id: (if $recorded_id == "" then null else $recorded_id end),
+        known_from: (if $known_from == "" then null else $known_from end), model_source: (if $model_source == "" then null else $model_source end),
         permissions: (if $permissions == "" then "ask" else $permissions end),
         spawned_by: (if $spawned_by == "" then "operator" else $spawned_by end),
         session_id: $session_id,
@@ -154,11 +164,12 @@ _status_team_text() {
     printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
   fi
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
-  # A metered agent is marked with a $ after its label (every token it uses is billed).
+  # A metered agent is marked with a $ after its label (every token it uses is billed), and a
+  # model its record does not vouch for with a * (label_mark; the legend is below the table).
   # CONTEXT is what the agent's transcript says the conversation holds: tokens, and the
   # share of the window when the model's window is known (tokens alone otherwise — see
   # ctx_display). A stopped worker's line is the reuse-or-respawn signal.
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // "")] | join("|")' |
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + .label_mark + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // "")] | join("|")' |
     while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
@@ -173,6 +184,9 @@ _status_team_text() {
     done
   if [ -n "$repo_col" ]; then
     say "  REPO: the repository a teammate's worktree and branch live in ('-' = this project). teamctl spawn <role> <model> --repo <path>"
+  fi
+  if [ -n "$(printf '%s\n' "$rows" | "$JQ_BIN" -r 'select(.label_mark == "*") | .role' | head -1)" ]; then
+    say "  $MODELS_MARK_LEGEND"
   fi
   if [ -n "$(printf '%s\n' "$rows" | "$JQ_BIN" -r 'select(.billing == "metered") | .role' | head -1)" ]; then
     say '  $ = metered: every token is billed to a prepaid balance, not to a plan or subscription (WOLFMUX_METERED=on, the owner'"'"'s decision)'
@@ -217,8 +231,12 @@ _teams_facts() {
   TEAMS_STATE="running"
   if team_orphaned; then TEAMS_STATE="orphaned"; fi
   TEAMS_FOUNDER="$(team_founder)"
-  TEAMS_LEAD=""
-  if reg_exists "$WOLFMUX_LEAD_ROLE" 2>/dev/null; then TEAMS_LEAD="$(agent_label "$WOLFMUX_LEAD_ROLE")"; fi
+  TEAMS_LEAD="" TEAMS_LEAD_MARK="" TEAMS_LEAD_ID="" TEAMS_LEAD_FROM=""
+  if reg_exists "$WOLFMUX_LEAD_ROLE" 2>/dev/null; then
+    # The lead's model, by the resolver status and teamctl models use (lib/models.sh)
+    agent_model "$WOLFMUX_LEAD_ROLE"
+    TEAMS_LEAD="$MR_LABEL" TEAMS_LEAD_MARK="$MR_MARK" TEAMS_LEAD_ID="$MR_ID" TEAMS_LEAD_FROM="$MR_HOW"
+  fi
   TEAMS_COUNT="$(reg_list | wc -l | tr -d ' ')"
   # Worktrees of this team's workers (the lead works in your own checkout and adds nothing).
   # This is the command that MEASURES: a du over every lane, seconds on a busy machine, and
@@ -231,7 +249,7 @@ _teams_facts() {
 # (its pane exited or is gone, or there is no session): nobody manages it then, and the note under the table
 # says who may act on it.
 cmd_teams() {
-  local json=0 team orphans="" hint
+  local json=0 team orphans="" hint marked=""
   if [ "${1:-}" = "--json" ]; then json=1; fi
   require_tools
   load_project any
@@ -239,10 +257,13 @@ cmd_teams() {
     for team in $(team_list); do
       team_paths "$team"
       _teams_facts
+      # lead: its label. lead_model_id and lead_known_from: the id it runs and where that is known
+      # from (record | transcript | unknown; null for a lead that is not on an alias), as in status.
       "$JQ_BIN" -cn --arg team "$team" --arg state "$TEAMS_STATE" --arg lead "$TEAMS_LEAD" --arg agents "$TEAMS_COUNT" --arg kb "$TEAMS_KB" \
-        --arg founder "$TEAMS_FOUNDER" --arg session "$SESSION" \
-        '{team: $team, state: $state, orphaned: ($state == "orphaned"), founder: $founder, lead: $lead, agents: ($agents | tonumber),
-          disk_kb: ($kb | tonumber), session: $session}'
+        --arg founder "$TEAMS_FOUNDER" --arg session "$SESSION" --arg lead_id "$TEAMS_LEAD_ID" --arg lead_from "$TEAMS_LEAD_FROM" \
+        '{team: $team, state: $state, orphaned: ($state == "orphaned"), founder: $founder, lead: $lead,
+          lead_model_id: (if $lead_id == "" then null else $lead_id end), lead_known_from: (if $lead_from == "" then null else $lead_from end),
+          agents: ($agents | tonumber), disk_kb: ($kb | tonumber), session: $session}'
     done | "$JQ_BIN" -s .
     return 0
   fi
@@ -250,8 +271,9 @@ cmd_teams() {
   for team in $(team_list); do
     team_paths "$team"
     _teams_facts
-    printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' "$team" "$TEAMS_STATE" "${TEAMS_LEAD:--}" "$TEAMS_COUNT" "$(human_size "$TEAMS_KB")" \
+    printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' "$team" "$TEAMS_STATE" "${TEAMS_LEAD:--}$TEAMS_LEAD_MARK" "$TEAMS_COUNT" "$(human_size "$TEAMS_KB")" \
       "$([ "$TEAMS_FOUNDER" = "operator" ] && printf you || printf '%s' "$TEAMS_FOUNDER")" "$SESSION"
+    if [ -n "$TEAMS_LEAD_MARK" ]; then marked=1; fi
     if [ "$TEAMS_STATE" = "orphaned" ]; then
       hint=""
       if [ "$team" != "$WOLFMUX_DEFAULT_TEAM" ]; then hint=" --team $team"; fi
@@ -264,6 +286,7 @@ cmd_teams() {
     printf '%s' "$orphans"
   fi
   say ""
+  if [ -n "$marked" ]; then say "$MODELS_MARK_LEGEND"; fi
   say "disk: $(disk_free_label) free · take the build output of parked lanes: teamctl prune --dry-run"
 }
 

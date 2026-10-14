@@ -56,11 +56,11 @@ tests/nudge-typing.sh          # ~2 minutes, 61 checks, its own tmux server and 
 tests/inbox.sh                 # ~4 minutes, 107 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while he is working in it
 tests/providers.sh             # the provider table and the config allowlist, 141 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
-tests/dashboard.sh             # ~2 minutes, 135 checks, its own tmux server and state: the machine-wide view and the status segment
+tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/commands.sh              # ~20 seconds, 16 checks, in a throwaway WOLFMUX_INSTALL_HOME: the Claude Code slash commands install.sh writes
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
 tests/permissions.sh           # ~5 seconds, 13 checks, in a throwaway HOME
-tests/models.sh                # ~40 seconds, 22 checks, its own tmux server, HOME and state: WOLFMUX_MODEL_POLICY and the drift check
+tests/models.sh                # ~2.5 minutes, 34 checks, its own tmux server, HOME and state: WOLFMUX_MODEL_POLICY, the drift check, and one answer to "which model does this agent run" in status, teams, dashboard and models
 tests/credential-routing.sh    # manual; needs claude logged in; see the header for side effects
 teamctl doctor
 ```

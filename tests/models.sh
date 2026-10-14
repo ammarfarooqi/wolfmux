@@ -42,7 +42,9 @@ if [ "${1:-}" = "-p" ]; then
     echo "Error: something went wrong" >&2
     exit 3
   fi
-  printf '{"type":"result","subtype":"success","is_error":false,"result":"ok","modelUsage":{"%s":{"inputTokens":2,"contextWindow":1000000}}}\n' "$id"
+  window=1000000 # the window that answer declares: answers/<alias>.window, else 1M
+  [ ! -f "$FAKE/answers/$model.window" ] || window="$(cat "$FAKE/answers/$model.window")"
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"ok","modelUsage":{"%s":{"inputTokens":2,"contextWindow":%s}}}\n' "$id" "$window"
   exit 0
 fi
 echo "FAKE sonnet_pin=${WOLFMUX_SONNET_MODEL:-none}"
@@ -81,6 +83,35 @@ trap cleanup EXIT
 probes() { grep -cx "$1" "$FAKE/probes.log" 2>/dev/null || true; } # how often <alias> was probed
 field() { teamctl status --json | jq -r --arg r "$1" --arg f "$2" '.agents[] | select(.role == $r) | .[$f] // ""'; }
 record() { cat "$(ls -d "$WOLFMUX_DATA"/state/*/agents/"$1".json)"; }
+transcript_of() { # <role>: the file of that agent's own conversation (its folder is made)
+  local dir
+  dir="$WOLFMUX_CLAUDE_PROJECTS/$(cd "$(field "$1" workdir)" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"
+  /bin/mkdir -p "$dir"
+  printf '%s/%s.jsonl\n' "$dir" "$(field "$1" session_id)"
+}
+answer() { # <model id> <tokens> <timestamp>: one answer, as Claude Code writes it into a transcript
+  printf '{"type":"assistant","timestamp":"%s","message":{"model":"%s","usage":{"input_tokens":%s,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},"content":[]}}\n' "$3" "$1" "$2"
+}
+# old_record <role>: its record as teamctl wrote it before v1.18.0: the alias, and no id, no
+# source, no window and no time for an id.
+old_record() {
+  local file
+  file="$(ls -d "$WOLFMUX_DATA"/state/*/agents/"$1".json)"
+  jq '.model_id = "" | del(.model_source, .model_context, .model_at)' "$file" >"$file.new" && /bin/mv "$file.new" "$file"
+}
+ALIAS_KEY='^(fable|opus|sonnet|haiku)$'
+# What each view says about every running agent on an alias: role|id|label|provenance[|context]
+status_says() {
+  teamctl status --json | jq -r --arg k "$ALIAS_KEY" '[.agents[] | select(.state == "running" and (.model | test($k))) |
+    [.role, (.model_id // "-"), .label, (.known_from // "-"), .context] | join("|")] | sort | .[]'
+}
+dashboard_says() {
+  teamctl dashboard --json --once | jq -r --arg k "$ALIAS_KEY" '[.projects[].teams[].agents[] | select(.state == "running" and (.model | test($k))) |
+    [.role, (.model_id // "-"), .label, (.known_from // "-"), .context] | join("|")] | sort | .[]'
+}
+models_says() {
+  teamctl models --json | jq -r '[.agents[] | [.role, (.running_id // "-"), .label, .known_from] | join("|")] | sort | .[]'
+}
 pane_says() { # <role> <text>: the agent's pane shows that line (the stub prints how it was started)
   local i
   for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -135,6 +166,7 @@ check "teamctl start opus: a lead is resolved, recorded and labelled the same wa
    [ "$(teamctl teams --json | jq -r ".[] | select(.team == \"second\") | .lead")" = "Opus 5.5" ]'
 teamctl destroy --team second --yes >/dev/null 2>&1
 echo "claude-sonnet-6" >"$FAKE/answers/sonnet"
+echo "640000" >"$FAKE/answers/sonnet.window" # a window of its own, so a share of it cannot be mistaken for another model's
 teamctl spawn s1 sonnet --no-kickoff >/dev/null 2>&1
 check "latest follows Claude Code's answer, not a table: a sonnet answered as claude-sonnet-6 is started on it, as Sonnet 6" \
   '[ "$(probes sonnet)" = 1 ] && [ "$(record s1 | jq -r .model_id)" = "claude-sonnet-6" ] && [ "$(field s1 label)" = "Sonnet 6" ] && pane_says s1 "STUB modelarg=claude-sonnet-6"'
@@ -208,19 +240,100 @@ check "teamctl restart x moves it: the record, the label and the started CLI all
   '[ "$(record x | jq -r .model_id)" = "claude-opus-6" ] && [ "$(field x label)" = "Opus 6" ] && pane_says x "STUB modelarg=claude-opus-6"'
 
 echo "== a record from before this release"
+# As teamctl wrote it before v1.18.0: the alias and a label from the old table, and no id, no
+# source and no window. (v1.18.0's own fixture left the window in, which is how this suite
+# missed that such an agent had lost its context share.)
+old_record y
 Y_FILE="$(ls -d "$WOLFMUX_DATA"/state/*/agents/y.json)"
-jq 'del(.model_id, .model_source) | .label = "Opus 5"' "$Y_FILE" >"$Y_FILE.new" && /bin/mv "$Y_FILE.new" "$Y_FILE"
+jq '.label = "Opus 5"' "$Y_FILE" >"$Y_FILE.new" && /bin/mv "$Y_FILE.new" "$Y_FILE"
 check "an old record is unknown, never assumed current: status says Opus ?, doctor and the status bar say unknown" \
   '[ "$(field y label)" = "Opus ?" ] && [ -z "$(field y model_id)" ] &&
    doctor | grep -q "y (opus): which model it runs is unknown (started before this release, nothing in its transcript yet). teamctl restart y --continue records it" &&
    teamctl _model-badge "$ROOT_REAL" default | grep -q "1 unknown"'
-Y_SESSION="$(field y session_id)"
-Y_DIR="$WOLFMUX_CLAUDE_PROJECTS/$(cd "$(field y workdir)" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"
-/bin/mkdir -p "$Y_DIR"
-printf '%s\n' '{"type":"user","message":{"content":"hi"}}' '{"type":"assistant","message":{"model":"claude-opus-5","content":[]}}' >"$Y_DIR/$Y_SESSION.jsonl"
+{
+  printf '%s\n' '{"type":"user","message":{"content":"hi"}}'
+  answer claude-opus-5 411000 2020-01-01T00:00:00.000Z
+} >"$(transcript_of y)"
 check "what its transcript shows was served is used when the record has nothing: y runs claude-opus-5, and is behind" \
   'doctor | grep -q "y runs claude-opus-5 (from its transcript); claude-opus-6 is newer. Nothing restarts by itself: teamctl restart y --continue" &&
    teamctl models --json | jq -e "[.agents[] | select(.role == \"y\")][0] | .running_id == \"claude-opus-5\" and .known_from == \"transcript\" and .verdict == \"behind\""'
+
+echo "== one answer to 'which model does this agent run', in every view"
+check "status looks where models looks: y is Opus 5 (claude-opus-5) from its transcript, marked * because its record does not vouch for it" \
+  '[ "$(field y label)" = "Opus 5" ] && [ "$(field y model_id)" = "claude-opus-5" ] && [ "$(field y known_from)" = "transcript" ] && [ -z "$(field y recorded_id)" ] &&
+   teamctl status | grep -Eq "y +Opus 5\* +running" && teamctl status | grep -q "^  \* = "'
+check "the window comes with the id: 411k of the 1M Claude Code declared for claude-opus-5 is 41%, in json and in the table" \
+  'teamctl status --json | jq -e "[.agents[] | select(.role == \"y\")][0] | .context_tokens == 411000 and .context_window == 1000000 and .context == \"411k 41%\"" &&
+   teamctl status | grep -Eq "y +Opus 5\* .*411k +41%"'
+# The no-guess rule, kept: a share is printed only of a window Claude Code declared for exactly
+# the model the agent runs. f1: nothing says which model. f2: the model is known, its window is not.
+old_record f1
+old_record f2
+printf '%s\n' '{"type":"assistant","timestamp":"2020-01-01T00:00:00.000Z","message":{"usage":{"input_tokens":150000,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}' >"$(transcript_of f1)"
+answer claude-fable-4-2 150000 2020-01-01T00:00:00.000Z >"$(transcript_of f2)"
+check "no guess when the model is unknown: f1 (no id on record, no model in its transcript) is Fable ?, 150k, and no share of what fable means today" \
+  'teamctl status --json | jq -e "[.agents[] | select(.role == \"f1\")][0] | .label == \"Fable ?\" and .model_id == null and .known_from == \"unknown\" and .context_tokens == 150000 and .context_window == 0 and .context == \"150k\""'
+check "no guess when the model is known and its window is not: f2 is Fable 4.2*, 150k, and no share of another model's window" \
+  'teamctl status --json | jq -e "[.agents[] | select(.role == \"f2\")][0] | .label == \"Fable 4.2\" and .model_id == \"claude-fable-4-2\" and .context_tokens == 150000 and .context_window == 0 and .context == \"150k\"" &&
+   teamctl status | grep -Eq "f2 +Fable 4.2\* .* 150k +[~/]"'
+# sonnet moves on to claude-sonnet-7. s3 still runs claude-sonnet-6, known from its transcript
+# alone; the window Claude Code declared for that id (640k, at s1's spawn) is still this machine's.
+old_record s3
+answer claude-sonnet-6 320000 2020-01-01T00:00:00.000Z >"$(transcript_of s3)"
+echo "claude-sonnet-7" >"$FAKE/answers/sonnet"
+/bin/rm -f "$FAKE/answers/sonnet.window"
+teamctl models --refresh >/dev/null 2>&1
+check "a window this machine was told is kept after the alias moves on: sonnet means claude-sonnet-7 now, s3 still shows 320k as 50% of claude-sonnet-6's 640k" \
+  'teamctl models | grep -Eq "^  sonnet +claude-sonnet-7 " &&
+   teamctl status --json | jq -e "[.agents[] | select(.role == \"s3\")][0] | .model_id == \"claude-sonnet-6\" and .context_window == 640000 and .context == \"320k 50%\""'
+# x was restarted on claude-opus-6 above; an answer written after that came from another model.
+answer claude-opus-5-5 90000 2099-01-01T00:00:00.000Z >"$(transcript_of x)"
+check "what was served outranks what was asked for: x's record says claude-opus-6, a later answer came from claude-opus-5-5, so status and models both say Opus 5.5, marked, and behind" \
+  '[ "$(field x label)" = "Opus 5.5" ] && [ "$(field x model_id)" = "claude-opus-5-5" ] && [ "$(field x recorded_id)" = "claude-opus-6" ] && [ "$(field x known_from)" = "transcript" ] &&
+   teamctl status | grep -Eq "x +Opus 5.5\* +running" &&
+   teamctl models --json | jq -e "[.agents[] | select(.role == \"x\")][0] | .running_id == \"claude-opus-5-5\" and .known_from == \"transcript\" and .verdict == \"behind\""'
+answer claude-sonnet-6 1000 2099-01-01T00:00:00.000Z >"$(transcript_of s1)"
+check "a record its transcript agrees with is vouched for: s1 is Sonnet 6 with no mark, known from its record, in status and in models" \
+  '[ "$(field s1 label)" = "Sonnet 6" ] && [ "$(field s1 known_from)" = "record" ] && teamctl status | grep -Eq "s1 +Sonnet 6 +running" &&
+   teamctl models --json | jq -e "[.agents[] | select(.role == \"s1\")][0] | .running_id == \"claude-sonnet-6\" and .known_from == \"record\""'
+# s2's record is one v1.18.0 wrote: an id, and no time for it. Nothing proves that id newer than
+# the last answer, so the answer keeps the last word (as it had in v1.18.0's teamctl models).
+S2_FILE="$(ls -d "$WOLFMUX_DATA"/state/*/agents/s2.json)"
+jq 'del(.model_at)' "$S2_FILE" >"$S2_FILE.new" && /bin/mv "$S2_FILE.new" "$S2_FILE"
+answer claude-sonnet-5 1000 2020-01-01T00:00:00.000Z >"$(transcript_of s2)"
+check "a record with an id and no time for it cannot outrank the transcript: s2 (record claude-sonnet-5-5, last answer claude-sonnet-5) is Sonnet 5*" \
+  '[ "$(field s2 label)" = "Sonnet 5" ] && [ "$(field s2 recorded_id)" = "claude-sonnet-5-5" ] && [ "$(field s2 known_from)" = "transcript" ] && teamctl status | grep -Eq "s2 +Sonnet 5\* +running"'
+# The rule under all of the above: two views must not answer the same question differently.
+# Eight agents run on an alias here (x y s1 s2 s3 h1 f1 f2), and all three provenances occur.
+check "status and models never answer differently: the same id, label and provenance for every running agent on an alias" \
+  'a="$(status_says | cut -d"|" -f1-4)" && b="$(models_says)" && [ -n "$a" ] && [ "$a" = "$b" ] && [ "$(printf "%s\n" "$a" | wc -l | tr -d " ")" = 8 ] &&
+   printf "%s\n" "$a" | grep -q "|transcript$" && printf "%s\n" "$a" | grep -q "|record$" && printf "%s\n" "$a" | grep -q "|unknown$"'
+check "the dashboard is the same answer a third time: id, label, provenance and context for every running agent, and the same mark in its table" \
+  'a="$(status_says)" && b="$(dashboard_says)" && [ "$(printf "%s\n" "$a" | wc -l | tr -d " ")" = 8 ] && [ "$a" = "$b" ] &&
+   printf "%s\n" "$b" | grep -qx "y|claude-opus-5|Opus 5|transcript|411k 41%" &&
+   teamctl dashboard --once | grep -Eq "y +Opus 5\* +running" && teamctl dashboard --once | grep -q "\* = "'
+teamctl start opus --team second --no-attach --skip-beads >/dev/null 2>&1
+# Its pane first: a pane that starts fresh and finds a transcript under its conversation id
+# takes a new id ("already in use"), and the answer written below would be nobody's.
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  teamctl capture lead --team second --all 2>/dev/null | grep -qF "STUB modelarg=" && break
+  sleep 0.3
+done
+L_FILE="$(ls -d "$WOLFMUX_DATA"/state/*/teams/second/agents/lead.json)"
+jq '.model_id = "" | del(.model_source, .model_context, .model_at)' "$L_FILE" >"$L_FILE.new" && /bin/mv "$L_FILE.new" "$L_FILE"
+L_DIR="$WOLFMUX_CLAUDE_PROJECTS/$(pwd -P | sed 's|[^A-Za-z0-9]|-|g')" # a lead works in the project itself
+/bin/mkdir -p "$L_DIR"
+answer claude-opus-5 1000 2020-01-01T00:00:00.000Z >"$L_DIR/$(jq -r .session_id "$L_FILE").jsonl"
+check "teamctl teams asks the same question of each lead: Opus 5*, the mark explained, the id and its provenance in json" \
+  'teamctl teams | grep -Eq "^second +running +Opus 5\* " && teamctl teams | grep -q "^\* = " &&
+   teamctl teams --json | jq -e ".[] | select(.team == \"second\") | .lead == \"Opus 5\" and .lead_model_id == \"claude-opus-5\" and .lead_known_from == \"transcript\""'
+teamctl destroy --team second --yes >/dev/null 2>&1
+# The move v1.18.0 recommends. A conversation that is continued still ends with the old model's
+# answer, so the transcript alone would go on saying Opus 5 and "behind" until y answers again.
+teamctl restart y --continue >/dev/null 2>&1
+check "a restart is the newer word until the agent answers again: y's record says claude-opus-6, its last answer predates that, and nothing calls it Opus 5 or behind any more" \
+  '[ "$(record y | jq -r .model_id)" = "claude-opus-6" ] && [ "$(field y label)" = "Opus 6" ] && [ "$(field y known_from)" = "record" ] && teamctl status | grep -Eq "y +Opus 6 +running" &&
+   teamctl models --json | jq -e "[.agents[] | select(.role == \"y\")][0] | .running_id == \"claude-opus-6\" and .known_from == \"record\" and .verdict == \"current\""'
 
 echo "== the policy in the config file"
 # A key that is not on WOLFMUX_CONFIG_KEYS is read out of the config file and dropped without

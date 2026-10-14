@@ -174,6 +174,8 @@ new_record() {
   if [ "$MODEL_FAMILY" != "codex" ]; then session_id="$(new_session_id "$4" || true)"; fi
   # model_id is the id this agent is started with (run_agent passes it as --model), for an alias
   # as for claude:<id>: what an agent runs is on record, and model_source says where it came from.
+  # model_at is when that id was recorded: an answer written before it says nothing about this
+  # start (a continued conversation still ends with the old model's answer; models_running).
   "$JQ_BIN" -n --arg role "$1" --arg kind "$2" --arg model "$3" --arg label "$MODEL_LABEL" \
     --arg family "$MODEL_FAMILY" --arg launcher "$launcher" --arg workdir "$4" --arg branch "$5" \
     --arg base_ref "$6" --arg base_commit "$7" --arg kickoff "$8" --arg now "$(now_iso)" \
@@ -181,7 +183,7 @@ new_record() {
     --arg repo "${10:-}" --arg branch_created "${11:-0}" --arg session_id "$session_id" --arg model_source "$MODEL_SOURCE" \
     --arg model_context "$MODEL_CONTEXT" \
     '{role: $role, kind: $kind, model: $model, model_id: $model_id, model_source: $model_source, model_context: $model_context,
-      label: $label, family: $family, billing: $billing, launcher: $launcher,
+      model_at: (if $model_id == "" then "" else $now end), label: $label, family: $family, billing: $billing, launcher: $launcher,
       workdir: $workdir, repo: $repo, branch: $branch, branch_created: $branch_created, base_ref: $base_ref, base_commit: $base_commit,
       kickoff: $kickoff, spawned_by: $spawned_by, permissions: $permissions, session_id: $session_id,
       pane_id: "", state: "starting", created_at: $now, updated_at: $now}' |
@@ -1072,7 +1074,7 @@ cmd_restart() {
   # ... and what its alias means today, which is what this pane is started with (run_agent passes
   # model_id as --model). A record from before ids were recorded gets one here.
   if models_is_alias "$model" && model_info "$model"; then
-    reg_set "$role" model_id "$MODEL_ID" model_source "$MODEL_SOURCE" model_context "$MODEL_CONTEXT" label "$MODEL_LABEL"
+    reg_set "$role" model_id "$MODEL_ID" model_source "$MODEL_SOURCE" model_context "$MODEL_CONTEXT" model_at "$(now_iso)" label "$MODEL_LABEL"
   fi
   # Which conversation this pane comes back in: the one you named, the one it had, or a new
   # one. Codex has no id to store; it resumes its own last conversation. The pane reads the id as it
@@ -1325,9 +1327,10 @@ transcripts_dir() {
 # from the transcript of the agent's own conversation (a record from before conversation ids: the
 # newest *.jsonl of its folder): what the last assistant turn saw (its input
 # plus what the prompt cache holds), and how many assistant turns with usage the tail holds.
+# Also CTX_MODEL and CTX_MODEL_AT: the model of the last answer in its own conversation, and when.
 _ctx_of_claude() {
-  local tdir file f m newest="" newest_m=0 stats last="" reqs=0 line
-  CTX_TOKENS="" CTX_REQUESTS="" CTX_FILE=""
+  local tdir f m newest="" newest_m=0
+  CTX_TOKENS="" CTX_REQUESTS="" CTX_FILE="" CTX_MODEL="" CTX_MODEL_AT=""
   if [ -n "${2:-}" ]; then
     # Its own conversation, by id. Never the newest file of the folder: every lead of a project works
     # in the same folder, and so do your own sessions, so the newest one is usually somebody else's.
@@ -1346,23 +1349,14 @@ _ctx_of_claude() {
   # contents (teamctl dashboard shows when the transcript was last written). Set here, so
   # there is never a second piece of code working out where an agent's transcript lives.
   CTX_FILE="$newest"
-  # -R first: jq's own parser must never see a raw line, a half-written one included;
-  # fromjson? then decodes what parses and yields nothing for what does not.
-  stats="$(tail -n 400 "$newest" 2>/dev/null | "$JQ_BIN" -Rr '
-    fromjson? | select(.type == "assistant" and (.message.usage != null)) |
-    [(.message.usage.input_tokens // 0),
-     (.message.usage.cache_read_input_tokens // 0),
-     (.message.usage.cache_creation_input_tokens // 0)] | @tsv' 2>/dev/null)" || stats=""
-  while IFS="$(printf '\t')" read -r line; do
-    [ -n "$line" ] || continue
-    reqs=$((reqs + 1))
-    last="$line"
-  done <<EOF
-$stats
-EOF
-  [ -n "$last" ] || return 0
-  CTX_TOKENS="$(printf '%s' "$last" | awk -F'\t' '{ print $1 + $2 + $3 }')"
-  CTX_REQUESTS="$reqs"
+  # One pass over its tail, shared with every other reader of a transcript (lib/models.sh).
+  models_transcript_tail "$newest"
+  # The model is taken only from the agent's OWN conversation: the newest file of a folder may
+  # be somebody else's, and teamctl models reads by conversation id too.
+  if [ -n "${2:-}" ]; then CTX_MODEL="$MT_MODEL" CTX_MODEL_AT="$MT_MODEL_AT"; fi
+  [ -n "$MT_TOKENS" ] || return 0
+  CTX_TOKENS="$MT_TOKENS"
+  CTX_REQUESTS="$MT_REQUESTS"
   return 0
 }
 
@@ -1404,28 +1398,32 @@ EOF
   return 0
 }
 
-# agent_context <workdir> <model-key> <family> [<session-id>] [<recorded-window>] — sets CTX_TOKENS ("" = unknown),
-# CTX_REQUESTS and CTX_WINDOW ("" = unknown) for one agent. The window is declared by the
-# model's provider row, by the model table (model_context_window), or by a model id ending
-# in [1m] (1M); for codex the token_count event's own window wins, since that is the one
-# Codex actually serves. A model whose window none of those know stays "" — not a 200k
-# guess — so the caller shows tokens with no share of the wrong number.
+# agent_context <workdir> <model-key> <family> [<session-id>] [<recorded-window>] [<recorded-id>] [<recorded-at>]
+# Everything a view shows about one agent's context AND its model, from one read of its
+# transcript. Sets CTX_TOKENS ("" = unknown), CTX_REQUESTS and CTX_WINDOW ("" = unknown). The
+# window is declared by the model's provider row, by the model table (model_context_window), or
+# by a model id ending in [1m] (1M); for codex the token_count event's own window wins, since
+# that is the one Codex actually serves. A model whose window none of those know stays "" — not
+# a 200k guess — so the caller shows tokens with no share of the wrong number.
 # fable/opus/sonnet/haiku mean another model after each release, so for them the window is the
-# one of the model the agent actually runs: <recorded-window> (written with the id at spawn),
-# else the window known for the model its transcript names (an agent started before ids were
-# recorded; unknown for an id no answer of Claude Code ever named), else what the key means now.
+# one of the model the agent actually runs, and which model that is comes from the one resolver
+# every view shares (models_running, lib/models.sh): it leaves MR_ID, MR_HOW, MR_LABEL, MR_MARK
+# and MR_WINDOW behind for the caller. A model nobody can name has no window either: tokens
+# alone, never a share of what the key happens to mean today.
 agent_context() {
-  local computed seen
-  CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0" CTX_FILE=""
+  local computed
+  CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0" CTX_FILE="" CTX_MODEL="" CTX_MODEL_AT=""
+  # MR_*: which model it runs, by the one resolver (lib/models.sh). Args 6 and 7 are the id and
+  # the time of it on its record. An agent that is not on an alias keeps its recorded id.
+  MR_ID="${6:-}" MR_HOW="" MR_LABEL="" MR_MARK="" MR_WINDOW=""
   if [ "$3" = "codex" ]; then
     _ctx_of_codex "$1"
   else
     _ctx_of_claude "$1" "${4:-}"
   fi
-  if models_is_alias "$2" && [ -n "${5:-}" ]; then
-    computed="$5"
-  elif models_is_alias "$2" && [ -n "$CTX_FILE" ] && seen="$(models_transcript_file_model "$CTX_FILE")" && [ -n "$seen" ]; then
-    computed="$(models_context_of_id "$seen")"
+  if models_is_alias "$2"; then
+    models_running "$2" "${6:-}" "${5:-}" "${7:-}" "$CTX_MODEL" "$CTX_MODEL_AT"
+    computed="$MR_WINDOW"
   else
     computed="$(model_context_window "$2" 2>/dev/null)" || computed=""
   fi

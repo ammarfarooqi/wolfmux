@@ -64,7 +64,7 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 | `agents.sh` | `start`, `spawn`, the pane process (`_run-agent`), `stop`, `restart`, `destroy`, `nudge` |
 | `views.sh` | `status`, `panes`, `capture`, `log`, `focus`, `attach` |
 | `doctor.sh` | `teamctl doctor` |
-| `models.sh` | what `fable`, `opus`, `sonnet`, `haiku` mean today (`WOLFMUX_MODEL_POLICY`): pins, the daily probe of Claude Code and its cache, labels derived from ids, the drift check, `teamctl models`, `_model-badge`. Sourced by `common.sh` and by `claude-fable` |
+| `models.sh` | what `fable`, `opus`, `sonnet`, `haiku` mean today (`WOLFMUX_MODEL_POLICY`): pins, the daily probe of Claude Code and its cache, labels derived from ids, the drift check, `teamctl models`, `_model-badge`. Also the one answer to "which model does this agent run" (`models_running`, fed by one pass over the transcript's tail, `models_transcript_tail`): `status`, `teams`, the dashboard, `models` and `doctor` all call it, so no two views can name different models for one agent. Sourced by `common.sh` and by `claude-fable` |
 
 The **model table** in `common.sh` is the single place that knows which launcher
 serves which model key (`fable`, `astra`, `glm53`, `flash`) and which CLI family it

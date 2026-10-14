@@ -103,6 +103,12 @@ it and running ones keep theirs: `teamctl doctor` and the status bar name them, 
 `WOLFMUX_MODEL_POLICY=pinned` keeps the built-in ids. A failed call falls back to the built-in
 id and every spawn warns.
 
+Which model an agent runs is one answer, shown the same by `status`, `teams`, the dashboard,
+`models` and `doctor`: the id on its record, or the model its transcript names when the record
+has no id (started before v1.18.0) or its last answer came from another model. A table marks
+the second case with a `*`. The context share is of that model's own window; an unknown model
+or an unknown window shows tokens and no percentage.
+
 ```bash
 teamctl models                 # alias -> id -> label -> where it came from; agents and newer models
 teamctl models --refresh       # ask Claude Code again now (one tiny call per alias)
