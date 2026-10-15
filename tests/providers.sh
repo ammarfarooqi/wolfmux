@@ -686,6 +686,7 @@ ln -s "$REPO/config/wolfmux/lib" "$WORK/realhome/lib"
 cat >"$WORK/realhome/config" <<'EOF'
 WOLFMUX_NUDGE_TYPE=off
 WOLFMUX_HUMAN_PANE_TYPING=idle
+WOLFMUX_HUMAN=ammar
 EOF
 (cd "$WORK/realproj" && git init -q 2>/dev/null)
 real_policy() { # [VAR=value...] — teamctl policy as the binary runs it, with no agent's environment
@@ -696,6 +697,22 @@ real_policy() { # [VAR=value...] — teamctl policy as the binary runs it, with 
 }
 check "real load order: WOLFMUX_NUDGE_TYPE in the config file takes effect in teamctl" 'real_policy | grep -q "WOLFMUX_NUDGE_TYPE=off"'
 check "real load order: so does the human-pane-typing default" 'real_policy | grep -qE "^  human-pane-typing +idle "'
+# WOLFMUX_HUMAN (v1.20.0) is read back off the one bd call the messages popup makes: a fake
+# bd on PATH writes down its arguments and answers an empty list.
+/bin/mkdir -p "$WORK/fakebd"
+cat >"$WORK/fakebd/bd" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$WORK/bd-args"
+printf '[]\n'
+EOF
+chmod +x "$WORK/fakebd/bd"
+real_human_popup() {
+  (cd "$WORK/realproj" && env -u TEAM_ROLE -u BEADS_ACTOR -u WOLFMUX_TEAM -u WOLFMUX_TEAM_ARG -u WOLFMUX_ROOT \
+    -u TMUX -u TMUX_PANE -u WOLFMUX_HUMAN PATH="$WORK/fakebd:$PATH" \
+    WOLFMUX_HOME="$WORK/realhome" WOLFMUX_DATA="$WORK/realdata" WOLFMUX_TMUX_SOCKET="wolfmux-test-providers-$$" \
+    "$REPO/bin/teamctl" _human-inbox --print >/dev/null 2>&1)
+}
+check "real load order: WOLFMUX_HUMAN in the config file is the name the popup asks Beads about" 'real_human_popup; grep -q -- "--assignee ammar " "$WORK/bd-args"'
 check "real load order: an environment variable still wins over the file" 'real_policy WOLFMUX_NUDGE_TYPE=workers | grep -q "WOLFMUX_NUDGE_TYPE=workers"'
 check "real load order: with no config file the built-in defaults stand" '/bin/rm -f "$WORK/realhome/config" && real_policy | grep -q "WOLFMUX_NUDGE_TYPE=detached-lead" && real_policy | grep -qE "^  human-pane-typing +off "'
 
