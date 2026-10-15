@@ -118,6 +118,10 @@ pending_dir() { printf '%s\n' "$STATE_DIR/nudge/$1.pending"; }
 notices() { teamctl capture "$1" --all 2>/dev/null | grep -c "$2"; }
 clients() { tmx list-clients -t "$SESSION" -F x 2>/dev/null | wc -l | tr -d ' '; }
 badge() { teamctl _inbox-badge "$SESSION" 2>&1; }
+# Since v1.20.0 the badge counts the HUMAN's unread Beads messages, not these notices
+# (the human-messages section below). The checks about a notice's new-ness count it the
+# way the badge used to: every role's new notices, through teamctl inbox's own reader.
+notices_new() { teamctl inbox --all --json --keep 2>/dev/null | jq '[.[] | select(.new)] | length'; }
 # notify_deliver writes OSC 9 with no newline, so several banners land on one line:
 # count the OCCURRENCES, not the lines. "1 notice waiting" is singular on purpose.
 banners() { grep -o 'notices\{0,1\} waiting' "$WOLFMUX_NOTIFY_TTY" 2>/dev/null | wc -l | tr -d ' '; }
@@ -158,6 +162,107 @@ check "badge: an invalid team name -> prints nothing, exits 0" '[ -z "$(teamctl 
 printf 'junk with no tabs at all\n\n\t\t\n' >"$(inbox_file lead)"
 check "badge: a damaged inbox file -> prints nothing, exits 0" '[ -z "$(badge)" ] && teamctl _inbox-badge "$SESSION" >/dev/null 2>&1'
 /bin/rm -f "$(inbox_file lead)"
+
+echo "== v1.20.0: the number is the human's unread Beads messages, and it opens them"
+# Never the live Beads store. The hook is run the way bd runs it (the bead id and the event
+# as arguments, the bead's JSON on stdin, in the caller's directory), with JSON shaped as bd
+# 1.3.0 sends it (measured on a scratch store, 2026-10-15), and bd itself is a fake on PATH
+# that records every call: "<BEADS_ACTOR>|<arguments>".
+US="$(printf '\037')"
+HUMAN_INDEX="$STATE_DIR/human-inbox" # the default team: its state IS the project's
+FAKE_BIN="$WORK/fake-bin"
+BD_LOG="$WORK/bd-calls"
+BD_LIST="$WORK/bd-list.json"
+/bin/mkdir -p "$FAKE_BIN"
+printf '%s\n' '#!/bin/bash' 'printf "%s|%s\n" "${BEADS_ACTOR:-}" "$*" >>"$FAKE_BD_LOG"' \
+  'case "$1" in list) /bin/cat "$FAKE_BD_LIST" ;; show) echo "SHOW $2" ;; esac' >"$FAKE_BIN/bd"
+chmod +x "$FAKE_BIN/bd"
+fake_bd() { (cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" FAKE_BD_LOG="$BD_LOG" FAKE_BD_LIST="$BD_LIST" "$@"); }
+bd_calls() { awk 'END { print NR + 0 }' "$BD_LOG" 2>/dev/null; }
+# bead_json <id> <assignee> <status> <title> [<created_at>]
+bead_json() {
+  jq -cn --arg id "$1" --arg a "$2" --arg s "$3" --arg t "$4" --arg c "${5:-2026-10-14T04:22:25.93691Z}" \
+    '{id: $id, title: $t, description: "body", status: $s, priority: 2, issue_type: "message",
+      assignee: $a, owner: "x@example.invalid", created_at: $c,
+      created_by: "communication-management.lead", updated_at: $c, ephemeral: true}'
+}
+# bd_hook <event> <json> [<actor>]. The actor is picked so that the hook's OTHER job, the
+# nudge, has nobody to tell (the assignee itself, or `human`, who has no pane): a pane
+# notice filed here would be counted by the notice checks further down.
+bd_hook() {
+  (cd "$PROJECT" && printf '%s' "$2" | WOLFMUX_BIN_DIR="$REPO/bin" BEADS_ACTOR="${3:-communication-management.lead}" \
+    "$WOLFMUX_HOME/hooks/beads-nudge" "$(printf '%s' "$2" | jq -r .id)" "$1" >/dev/null 2>&1)
+}
+index_rows() { awk -F"$US" 'NF >= 4' "$HUMAN_INDEX" 2>/dev/null | awk 'END { print NR + 0 }'; }
+index_ids() { awk -F"$US" 'NF >= 4 { printf "%s ", $1 }' "$HUMAN_INDEX" 2>/dev/null; }
+# The hook writes in the background, so a check waits (5 s at most) for the FILE — never bd.
+wait_rows() {
+  local n=0
+  while [ "$(index_rows)" != "$1" ] && [ "$n" -lt 50 ]; do
+    sleep 0.1
+    n=$((n + 1))
+  done
+}
+
+bd_hook create "$(bead_json m-1 human open 'First, with a	tab' 2026-10-14T01:00:00Z)"
+wait_rows 1
+check "hook: an open message for the human adds a row on create" '[ "$(index_ids)" = "m-1 " ]'
+check "hook: the row is id, sender, subject, created (epoch), and a tab in the subject is a space" 'grep -q "^m-1${US}communication-management.lead${US}First, with a tab${US}[0-9][0-9]*\$" "$HUMAN_INDEX"'
+bd_hook create "$(bead_json m-x lead open 'For the lead')" lead
+bd_hook create "$(bead_json m-2 human open 'Second' 2026-10-14T02:00:00Z)"
+bd_hook create "$(bead_json m-3 human open 'Third' 2026-10-14T03:00:00Z)"
+wait_rows 3
+sleep 1
+check "hook: a message for somebody else is not the human's" '[ "$(index_ids)" = "m-3 m-2 m-1 " ]'
+check "hook: newest first" '[ "$(head -1 "$HUMAN_INDEX" | cut -d "$US" -f1)" = "m-3" ]'
+check "hook: no temp file or lock left behind" '[ -z "$(ls -A "$STATE_DIR" | grep "human-inbox\.")" ]'
+: >"$BD_LOG"
+check "badge: three unread messages read 📨 3" '[ "$(fake_bd teamctl _inbox-badge "$SESSION")" = "📨 3" ]'
+check "badge: and it ran bd zero times to say so" '[ "$(bd_calls)" = "0" ]'
+bd_hook close "$(bead_json m-1 human closed 'First')"
+wait_rows 2
+check "hook: a message marked read is dropped on close" '[ "$(index_ids)" = "m-3 m-2 " ]'
+bd_hook update "$(bead_json m-2 qa open 'Second')" qa
+wait_rows 1
+check "hook: a message handed to somebody else is dropped on reassign" '[ "$(index_ids)" = "m-3 " ]'
+check "badge: one left reads 📨 1" '[ "$(badge)" = "📨 1" ]'
+
+# The popup: the index is drawn at once, then ONE targeted bd call puts it right. Beads
+# says m-3 and m-7 are open (m-7 arrived while no hook ran, m-3 is still there).
+jq -n "[$(bead_json m-7 human open 'Arrived unseen' 2026-10-14T05:00:00Z), $(bead_json m-3 human open 'Third' 2026-10-14T03:00:00Z)]" >"$BD_LIST"
+: >"$BD_LOG"
+fake_bd teamctl _human-inbox --print >"$WORK/popup-print" 2>&1
+check "popup: opening it makes exactly ONE bd call" '[ "$(bd_calls)" = "1" ]'
+check "popup: and it is the targeted one, never the whole store" 'grep -q "|list --assignee human --type message --status open --limit 0 --json$" "$BD_LOG"'
+check "popup: the index now says what Beads says, newest first" '[ "$(index_ids)" = "m-7 m-3 " ]'
+check "popup: rows carry the number, the sender, the subject and the age" 'grep -qE "^ +1  m-7  communication-management.lead  Arrived unseen  [0-9]+[mhd]$" "$WORK/popup-print"'
+: >"$BD_LOG"
+printf 'q' | fake_bd teamctl _human-inbox >/dev/null 2>&1
+check "popup, interactive: opened and closed with q, still exactly one bd call" '[ "$(bd_calls)" = "1" ] && grep -q "|list --assignee human " "$BD_LOG"'
+: >"$BD_LOG"
+printf 'jrq' | fake_bd teamctl _human-inbox >/dev/null 2>&1
+check "popup: r marks the selected message read, AS the human" 'grep -qx "human|close m-3 -r read" "$BD_LOG"'
+check "popup: and drops it from the index at once" '[ "$(index_ids)" = "m-7 " ]'
+: >"$BD_LOG"
+printf 'anq' | fake_bd teamctl _human-inbox >/dev/null 2>&1
+check "popup: a then n marks nothing" '! grep -q "|close" "$BD_LOG"'
+jq -n "[$(bead_json m-7 human open 'Arrived unseen' 2026-10-14T05:00:00Z), $(bead_json m-8 human open 'Eighth' 2026-10-14T06:00:00Z)]" >"$BD_LIST"
+: >"$BD_LOG"
+printf 'ayq' | fake_bd teamctl _human-inbox >/dev/null 2>&1
+check "popup: a then y marks them all read in ONE bd call, as the human" '[ "$(grep -c "|close" "$BD_LOG")" = "1" ] && grep -qx "human|close m-8 m-7 -r read" "$BD_LOG"'
+check "badge: hidden at 0" '[ -z "$(badge)" ] && [ "$(index_rows)" = "0" ]'
+printf 'keep-1%scomms%sKept%s1760000000\n' "$US" "$US" "$US" >"$HUMAN_INDEX"
+printf 'bd: database is locked\n' >"$BD_LIST"
+fake_bd teamctl _human-inbox --print >"$WORK/popup-print" 2>&1
+check "popup: a bd answer that is not a list leaves the index as it was, and says so" '[ "$(index_ids)" = "keep-1 " ] && grep -q "could not refresh" "$WORK/popup-print"'
+printf '[]\n' >"$BD_LIST"
+: >"$BD_LOG"
+WOLFMUX_HUMAN=ammar fake_bd teamctl _human-inbox --print >/dev/null 2>&1
+check "WOLFMUX_HUMAN: the popup asks Beads for that name" 'grep -q "|list --assignee ammar " "$BD_LOG" && [ "$(index_rows)" = "0" ]'
+(cd "$PROJECT" && bead_json m-9 ammar open 'For ammar' | WOLFMUX_HUMAN=ammar WOLFMUX_BIN_DIR="$REPO/bin" "$WOLFMUX_HOME/hooks/beads-nudge" m-9 create >/dev/null 2>&1)
+wait_rows 1
+check "WOLFMUX_HUMAN: and the hook keeps that name's messages" '[ "$(index_ids)" = "m-9 " ]'
+/bin/rm -f "$HUMAN_INDEX"
 
 echo "== v1.20.0: a pane a human is watching is never typed into (policy human-pane-typing off)"
 # Ammar, 2026-10-15: "i still see beads messages in my terminal". v1.16.1 typed into an
@@ -244,7 +349,7 @@ check "attached + a quiet lead pane: typing marked it delivered, so no hook hand
 # Both directions, because a notice delivered TWICE looks like the agent being nagged
 # with nothing in the inbox to explain it, and that is worse than one delivered late.
 check "attached + a quiet lead pane: and the Stop hook therefore has nothing to say about it" '[ -z "$(hook lead _inbox-stop)" ]'
-check "attached + a quiet lead pane: the human still has it in the badge, unread" 'badge | grep -q "📨 1"'
+check "attached + a quiet lead pane: the notice is still filed, unread, and NOT on the badge" '[ "$(notices_new)" = "1" ] && [ -z "$(badge)" ]'
 check "attached + a quiet lead pane: no banner — the notice reached the agent" '[ "$(banners)" = "0" ]'
 # The blocks below count the lead's inbox lines from the first one, so this episode
 # hands the file back empty rather than shifting every line number after it.
@@ -268,7 +373,7 @@ check "attached + a human in the lead pane: exit 3, and the message says the not
 check "attached + a human in the lead pane: NOTHING was typed into the lead pane" '[ "$(notices lead "Beads update for lead")" = "$BEFORE" ] && ! teamctl capture lead --all | grep -q "quiet-1"'
 check "attached + a human in the lead pane: a waiter IS parked, to deliver once that pane is quiet" '[ -d "$(pending_dir lead)" ]'
 check "attached + a human in the lead pane: the notice IS in the file, new and undelivered" '[ "$(state_of lead 1)" = "nu" ] && grep -q "quiet-1" "$(inbox_file lead)"'
-check "attached + a human in the lead pane: the badge now shows the envelope and a count of 1" 'badge | grep -q "📨 1"'
+check "attached + a human in the lead pane: one notice is filed for the human, unread" '[ "$(notices_new)" = "1" ]'
 check "attached + a human in the lead pane: the event log says deferred, not nudged" 'grep -q "nudge-deferred" "$STATE_DIR/events.jsonl"'
 
 echo "== and the human is told once, by a banner that carries the count"
@@ -277,7 +382,7 @@ check "stall: it names the team and role and carries the count, not the bead id"
 for n in 2 3 4 5 6 7 8 9 10 11; do teamctl nudge lead --id "burst-$n" >/dev/null 2>&1; done
 sleep 1
 check "stall: ten more beads inside the 120 s window raise NO second banner" '[ "$(banners)" = "1" ]'
-check "stall: but every one of them is in the file, and the badge counts them all" 'badge | grep -q "📨 11" && [ "$(grep -c "burst-" "$(inbox_file lead)")" = "10" ]'
+check "stall: but every one of them is in the file, and all of them count as unread" '[ "$(notices_new)" = "11" ] && [ "$(grep -c "burst-" "$(inbox_file lead)")" = "10" ]'
 check "stall: still nothing typed into the lead pane after eleven notices" '[ "$(notices lead "Beads update for lead")" = "$BEFORE" ]'
 : >"$WOLFMUX_NOTIFY_TTY"
 /bin/rm -f "$INBOX/.stall.lead"
@@ -297,7 +402,7 @@ echo "== the Stop hook: the agent is told, once, and cannot loop"
 STOP_OUT="$(hook lead _inbox-stop)"
 check "Stop hook: it blocks, and the reason carries the notices and the Beads command" 'printf "%s" "$STOP_OUT" | jq -e ".decision == \"block\"" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "quiet-1" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "bd list --assignee lead"'
 check "Stop hook: the lines were marked delivered BEFORE it answered" '[ "$(state_of lead 1)" = "nd" ]'
-check "Stop hook: and the human's column is untouched, so the badge still counts them" 'badge | grep -q "📨"'
+check "Stop hook: and the human's column is untouched, so they still count as unread" '[ "$(notices_new)" -gt 0 ]'
 check "Stop hook: a second turn ending at once says nothing (cooldown)" '[ -z "$(hook lead _inbox-stop)" ]'
 /bin/rm -f "$INBOX/.stop.lead"
 check "Stop hook: and with the cooldown gone it STILL says nothing, because they are delivered" '[ -z "$(hook lead _inbox-stop)" ]'
@@ -314,18 +419,18 @@ check "UserPromptSubmit: it has no cooldown, but delivered notices are not repea
 
 echo "== the two states are independent, in both directions"
 check "independence: everything is delivered to the agent, and all still new for the human" '[ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.delivered == false)] | length")" = "0" ] && [ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.new == false)] | length")" = "0" ]'
-check "inbox --keep: printed them and left every one marked new" 'badge | grep -q "📨"'
+check "inbox --keep: printed them and left every one marked new" '[ "$(notices_new)" -gt 0 ]'
 # The badge counts the WHOLE team, so clearing it needs --all: the worker has notices of
 # its own from the blocks above.
 teamctl inbox --all >"$WORK/inbox-1.log" 2>&1
 check "teamctl inbox: it printed the notices, oldest first" 'grep -q "quiet-1" "$WORK/inbox-1.log" && [ "$(grep -n "quiet-1" "$WORK/inbox-1.log" | cut -d: -f1)" -lt "$(grep -n "prompt-1" "$WORK/inbox-1.log" | cut -d: -f1)" ]'
 check "teamctl inbox: it points at Beads for the work itself" 'grep -q "bd list --assignee" "$WORK/inbox-1.log"'
-check "teamctl inbox --all: reading every role cleared the badge entirely" '[ -z "$(badge)" ]'
+check "teamctl inbox --all: reading every role left no notice unread" '[ "$(notices_new)" = "0" ]'
 check "teamctl inbox: it cleared new-ness WITHOUT touching delivered-ness" '[ "$(state_of lead 1)" = "sd" ] && [ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.delivered == false)] | length")" = "0" ]'
 teamctl nudge lead --id both-1 >/dev/null 2>&1
 check "independence the other way: a new notice is new for the human AND undelivered" '[ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.new and (.delivered | not))] | length")" = "1" ]'
 hook lead _inbox-stop >/dev/null 2>&1
-check "independence the other way: the agent having it does NOT clear the human's badge" 'badge | grep -q "📨 1" && [ "$(inbox_count_new_of lead)" = "1" ]'
+check "independence the other way: the agent having it does NOT mark it read for the human" '[ "$(notices_new)" = "1" ] && [ "$(inbox_count_new_of lead)" = "1" ]'
 check "teamctl notices: the alias is the same command" 'teamctl notices lead --keep | grep -q "both-1"'
 check "teamctl inbox --all: every role of the team, the worker included" 'teamctl inbox --all --keep | grep -q "^qa" && teamctl inbox --all --keep | grep -q "^lead"'
 check "teamctl inbox: it is no longer the pointer-to-Beads message it used to print" '! teamctl inbox lead --keep 2>&1 | grep -q "is not a teamctl command"'
@@ -334,9 +439,18 @@ check "moved_to_beads still covers every other word it covered" 'teamctl send 2>
 echo "== an approval: the louder mark, and typed after the grace period if still unread"
 teamctl inbox --all >/dev/null 2>&1
 printf '%s\tapproval\tnu\t[wolfmux] Permission request A1 from qa. Run: teamctl approvals\n' "$(date +%s)" >>"$(inbox_file lead)"
-check "approval: the badge adds the bell next to the envelope" 'badge | grep -q "📨 1 🔔"'
+# v1.20.0: the bell is a request still PENDING in the approvals store, not an unread notice
+# (prefix N no longer opens the notices, so a bell that waited for them to be read would
+# never go). A request file of its own, an id no real request reaches, removed after.
+APPROVAL_FILE="$STATE_DIR/approvals/A900.json"
+/bin/mkdir -p "$STATE_DIR/approvals"
+printf '{\n  "id": "A900",\n  "role": "qa",\n  "status": "pending"\n}\n' >"$APPROVAL_FILE"
+check "approval: a pending request puts the bell on the badge, alone while no message is unread" '[ "$(badge)" = "🔔" ]'
 teamctl inbox lead >/dev/null 2>&1
-check "approval: once read, the bell and the count are both gone" '[ -z "$(badge)" ]'
+check "approval: reading the notices does not take the bell away while it is pending" '[ "$(badge)" = "🔔" ]'
+printf '{\n  "id": "A900",\n  "role": "qa",\n  "status": "approved"\n}\n' >"$APPROVAL_FILE"
+check "approval: once decided, the bell is gone" '[ -z "$(badge)" ]'
+/bin/rm -f "$APPROVAL_FILE"
 LBEFORE="$(notices lead "Permission request")"
 WOLFMUX_INBOX_APPROVAL_GRACE=2 teamctl policy worker-permissions lead >/dev/null 2>&1
 sleep 1
@@ -388,9 +502,9 @@ teamctl inbox --all >/dev/null 2>&1
 WOLFMUX_NUDGE_DEBOUNCE=30 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id dedupe-1 >/dev/null 2>&1
 WOLFMUX_NUDGE_DEBOUNCE=30 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id dedupe-1 >/dev/null 2>&1
 WOLFMUX_NUDGE_DEBOUNCE=30 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id dedupe-1 >/dev/null 2>&1
-check "dedupe: three events for the SAME bead file one line, so the badge reads 1" '[ "$(grep -c "dedupe-1" "$(inbox_file lead)")" = "1" ] && badge | grep -q "📨 1"'
+check "dedupe: three events for the SAME bead file one line, so the count reads 1" '[ "$(grep -c "dedupe-1" "$(inbox_file lead)")" = "1" ] && [ "$(notices_new)" = "1" ]'
 WOLFMUX_NUDGE_DEBOUNCE=30 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id dedupe-2 >/dev/null 2>&1
-check "dedupe: a DIFFERENT bead is never collapsed away" 'badge | grep -q "📨 2" && grep -q "dedupe-2" "$(inbox_file lead)"'
+check "dedupe: a DIFFERENT bead is never collapsed away" '[ "$(notices_new)" = "2" ] && grep -q "dedupe-2" "$(inbox_file lead)"'
 teamctl inbox --all >/dev/null 2>&1
 
 echo "== a notice survives a waiter that died: the typed path lost it, the file did not"
@@ -619,15 +733,22 @@ check "tmux: prefix T still re-tiles, so the key that was there already is untou
 check "tmux: the session knows where teamctl is, so the badge and the popup can run it" '[ -x "$(tmx show-options -t "=$SESSION:" -qv @wolfmux_teamctl)" ]'
 check "tmux: status-interval is 5, so the count is never more than 5 s stale" '[ "$(tmx show-options -gqv status-interval)" = "5" ]'
 check "tmux: status-left calls the badge" 'tmx show-options -gqv status-left | grep -q "_inbox-badge"'
-
+check "tmux: prefix N opens the human's messages, not the pane notices" 'tmx list-keys -T prefix 2>/dev/null | grep -E "^bind-key +-T prefix +N " | grep -q "_human-inbox\"$"'
+check "tmux: the badge is wrapped in the inbox range, and the rest of status-left is the left range again" 'tmx show-options -gqv status-left | grep -qF "#[range=user|inbox]#(" && tmx show-options -gqv status-left | grep -qF "#[norange range=left]"'
+MOUSE_BINDING="$(tmx list-keys -T root 2>/dev/null | grep -E "^bind-key +-T root +MouseDown1Status ")"
+check "tmux: a click opens the messages popup only on the inbox range" 'printf "%s" "$MOUSE_BINDING" | grep -qF "if-shell -F \"#{==:#{mouse_status_range},inbox}\" { display-popup" && printf "%s" "$MOUSE_BINDING" | grep -qF "_human-inbox"'
+check "tmux: every other status click still does tmux's default, switch-client -t =" 'printf "%s" "$MOUSE_BINDING" | grep -qE "\} \{ switch-client -t = \}$"'
 echo "== the badge END TO END: the shipped status-left really runs it, and its output draws"
 # Three things are needed together and all three were learned the hard way: a REAL pty
 # client (with none, tmux never runs the #() job at all), time plus a forced refresh (one
 # interval is not enough), and a LITERAL MARKER grepped out of the typescript. Do NOT try
 # to read the result back through #{E:...} or #{T:...}: both come back empty even in a run
 # that demonstrably rendered, so they are a dead end as verification.
-printf '%s\tbeads\tnu\t[wolfmux] Beads update for lead (render-1)\n' "$(date +%s)" >>"$(inbox_file lead)"
-printf '%s\tapproval\tnu\t[wolfmux] Permission request A9 from qa\n' "$(date +%s)" >>"$(inbox_file lead)"
+# v1.20.0: what it draws is the human's unread messages (one row in the index the Beads
+# hook keeps) and the bell of a pending request (a request file of its own).
+printf 'render-1\037comms.lead\037Render check\037%s\n' "$(date +%s)" >"$STATE_DIR/human-inbox"
+/bin/mkdir -p "$STATE_DIR/approvals"
+printf '{\n  "id": "A909",\n  "status": "pending"\n}\n' >"$STATE_DIR/approvals/A909.json"
 RENDER_TTY="$WORK/render-typescript"
 tmx set-option -t "$SESSION" status-interval 1 >/dev/null 2>&1
 # The same spelling the shipped file uses, with a marker around it so the segment can be
@@ -643,7 +764,7 @@ sleep 3
 kill "$RENDER_PID" 2>/dev/null
 sleep 1
 check "badge end to end: the segment ran and its output is in the drawn status line" 'grep -ao "WOLFBADGE\[[^]]*\]" "$RENDER_TTY" 2>/dev/null | grep -q "📨"'
-check "badge end to end: the count and the approval bell are what was drawn" 'grep -ao "WOLFBADGE\[[^]]*\]" "$RENDER_TTY" 2>/dev/null | grep -q "🔔"'
+check "badge end to end: the count and the approval bell are what was drawn" 'grep -ao "WOLFBADGE\[[^]]*\]" "$RENDER_TTY" 2>/dev/null | grep -q "📨 1 🔔"'
 # The honest other half of the same measurement, and a documented limit: tmux draws the
 # status line BEFORE the job has produced anything, so the first draw is empty.
 check "badge end to end: the first draw is blank, which is why ROADMAP carries that limit" 'grep -aq "WOLFBADGE\[\]" "$RENDER_TTY"'
@@ -658,7 +779,7 @@ SPACED_DIR="$WORK/My bin"
 printf '#!/bin/sh\nexec "%s/bin/teamctl" "$@"\n' "$REPO" >"$SPACED_DIR/teamctl"
 chmod +x "$SPACED_DIR/teamctl"
 tmx set-option -t "=$SESSION:" @wolfmux_teamctl "$SPACED_DIR/teamctl" >/dev/null 2>&1
-printf '%s\tbeads\tnu\t[wolfmux] Beads update for lead (spaced-1)\n' "$(date +%s)" >>"$(inbox_file lead)"
+printf 'spaced-1\037comms.lead\037Spaced check\037%s\n' "$(date +%s)" >>"$STATE_DIR/human-inbox"
 RENDER_TTY2="$WORK/render-typescript-spaced"
 tmx set-option -t "$SESSION" status-interval 1 >/dev/null 2>&1
 tmx set-option -g status-left 'WOLFSPACED[#("#{?@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl}" _inbox-badge "#{session_name}" "#{@wolfmux_root}" "#{@wolfmux_team}")]' >/dev/null 2>&1
@@ -676,6 +797,7 @@ tmx set-option -t "=$SESSION:" @wolfmux_teamctl "$REPO/bin/teamctl" >/dev/null 2
 tmx set-option -gu status-left >/dev/null 2>&1
 tmx set-option -t "$SESSION" status-interval 5 >/dev/null 2>&1
 teamctl inbox --all >/dev/null 2>&1
+/bin/rm -f "$STATE_DIR/human-inbox" "$STATE_DIR/approvals/A909.json"
 
 echo "== the eight findings of the v1.15.0 review, each asserted against its own mechanism"
 

@@ -117,6 +117,16 @@ unset _wm_knob _wm_name _wm_val
 WOLFMUX_INBOX_MARK="${WOLFMUX_INBOX_MARK:-📨}"
 WOLFMUX_INBOX_APPROVAL_MARK="${WOLFMUX_INBOX_APPROVAL_MARK:-🔔}"
 
+# The human's own name in Beads (v1.20.0). Agents write to him with
+# `bd create "Subject" -t message -a human -d "..."`; the status-bar number is how many of
+# those are still open, and the popup (prefix N, or a click on the number) reads them. A
+# name that is not a plain Beads name falls back to the default rather than reach jq,
+# awk or a bd argument as something else.
+WOLFMUX_HUMAN="${WOLFMUX_HUMAN:-human}"
+case "$WOLFMUX_HUMAN" in
+  "" | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}._-]* | -*) WOLFMUX_HUMAN="human" ;;
+esac
+
 inbox_dir() { printf '%s\n' "$STATE_DIR/inbox"; }
 inbox_file() { printf '%s\n' "$STATE_DIR/inbox/$1"; }
 
@@ -155,9 +165,13 @@ inbox_text() {
 # WOLFMUX_INBOX_LOCK_TRIES rather than hold a caller up; the caller then leaves the
 # file alone, which costs at most one notice being offered twice.
 inbox_lock() {
-  local guard tries=0 started
-  guard="$(inbox_dir)/.lock.$1"
   /bin/mkdir -p "$(inbox_dir)" 2>/dev/null || return 1
+  _inbox_lock_dir "$(inbox_dir)/.lock.$1"
+}
+
+# _inbox_lock_dir <guard> — the mkdir lock itself, shared with the human's index below
+_inbox_lock_dir() {
+  local guard="$1" tries=0 started
   while [ "$tries" -lt "$WOLFMUX_INBOX_LOCK_TRIES" ]; do
     if /bin/mkdir "$guard" 2>/dev/null; then
       now_epoch >"$guard/ts" 2>/dev/null || true
@@ -654,11 +668,19 @@ cmd_inbox_badge() {
   return 0
 }
 
+#
+# v1.20.0: the number is the human's UNREAD BEADS MESSAGES in this project (open messages
+# assigned to WOLFMUX_HUMAN), counted from the index the Beads hook keeps — never from bd,
+# which this redraw every 5 seconds per client cannot afford. Pane notices are no longer
+# counted: they are the agents' business, and `teamctl inbox` still shows them. The bell
+# is a permission request of this team still pending, read from the approval files
+# themselves, so it goes when the request is decided and not when somebody happens to
+# open a list.
 _inbox_badge_text() {
-  local session="${1:-}" root="${2:-}" team="${3:-}" role total=0 count approval=0
+  local session="${1:-}" root="${2:-}" team="${3:-}" total approval=0
   [ -n "$session" ] || return 0
-  [ -n "$TMUX_BIN" ] && [ -n "$JQ_BIN" ] || return 0
   if [ -z "$root" ] || [ -z "$team" ]; then
+    [ -n "$TMUX_BIN" ] || return 0
     root="$(tmx show-options -t "=$session:" -qv @wolfmux_root 2>/dev/null)" || return 0
     team="$(tmx show-options -t "=$session:" -qv @wolfmux_team 2>/dev/null)" || return 0
   fi
@@ -668,19 +690,27 @@ _inbox_badge_text() {
   PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
   PROJECT_TREES="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
   team_paths "$team"
-  [ -d "$(inbox_dir)" ] || return 0
-  for role in $(inbox_roles); do
-    count="$(inbox_count_new "$role")"
-    case "$count" in "" | *[!0-9]*) count=0 ;; esac
-    total=$((total + count))
-    if inbox_has_new_approval "$role"; then approval=1; fi
-  done
-  [ "$total" -gt 0 ] || return 0
-  if [ "$approval" -eq 1 ]; then
+  total="$(human_inbox_count)"
+  case "$total" in "" | *[!0-9]*) total=0 ;; esac
+  if _inbox_approval_pending; then approval=1; fi
+  if [ "$total" -gt 0 ] && [ "$approval" -eq 1 ]; then
     printf '%s %s %s\n' "$WOLFMUX_INBOX_MARK" "$total" "$WOLFMUX_INBOX_APPROVAL_MARK"
-  else
+  elif [ "$total" -gt 0 ]; then
     printf '%s %s\n' "$WOLFMUX_INBOX_MARK" "$total"
+  elif [ "$approval" -eq 1 ]; then
+    printf '%s\n' "$WOLFMUX_INBOX_APPROVAL_MARK"
   fi
+  return 0
+}
+
+# _inbox_approval_pending — 0 when this team has a permission request nobody has decided.
+# One grep over the request files, not a jq per file: decided requests stay on disk for
+# `teamctl approvals --all`, so the directory only grows, and this runs every 5 seconds.
+_inbox_approval_pending() {
+  local dir
+  dir="$(approvals_dir)"
+  [ -d "$dir" ] || return 1
+  LC_ALL=C /usr/bin/grep -lqE '"status"[[:space:]]*:[[:space:]]*"pending"' "$dir"/A*.json 2>/dev/null
 }
 
 # --- the hooks ----------------------------------------------------------------
@@ -852,5 +882,337 @@ cmd_inbox() {
   fi
   [ "$keep" -eq 1 ] && return 0
   for role in $roles; do inbox_mark_seen "$role" || true; done
+  return 0
+}
+
+# --- the human's Beads messages (v1.20.0) -------------------------------------
+# What the status-bar number counts and what prefix N opens. One small index per PROJECT
+# (all its teams share one Beads, and there is one human), kept by the Beads hook and read
+# by the badge, so the status line never runs bd:
+#
+#   $WOLFMUX_DATA/state/<project>/human-inbox
+#   <id> US <sender> US <subject> US <created, epoch>        newest first, US = \037
+#
+# The unit separator, not a tab: `read` with a whitespace IFS collapses an empty field (a
+# message with no sender) and shifts the rest one place left. Every write replaces the
+# whole file, temp file then mv, under a mkdir lock, so a reader sees the old list or the
+# new one and never half of either. The index is a cache: the popup puts it right with ONE
+# targeted bd call every time it opens, so a hook that did not run costs a stale number
+# until then, not a wrong one for ever.
+_HI_US=$'\037'
+
+human_inbox_file() { printf '%s\n' "$PROJECT_STATE/human-inbox"; }
+human_inbox_lock() { [ -d "$PROJECT_STATE" ] && _inbox_lock_dir "$PROJECT_STATE/.human-inbox.lock"; }
+human_inbox_unlock() { /bin/rm -rf "$PROJECT_STATE/.human-inbox.lock" 2>/dev/null || true; }
+
+# A bead as one index row. Control characters, the separator among them, become spaces;
+# a time jq cannot read becomes 0, which the popup shows as an unknown age.
+_HUMAN_ROW_JQ='def row: [(.id // ""), (.created_by // ""), ((.title // "") | tostring | .[0:300]),
+    ((.created_at // "") | tostring | sub("\\.[0-9]+"; "") | (try fromdateiso8601 catch 0) | floor)]
+  | map(tostring | gsub("[[:cntrl:]]"; " ")) | join("\u001f");'
+
+# human_inbox_count — rows in the index; 0 on anything unexpected (it feeds the badge)
+human_inbox_count() {
+  local file
+  file="$(human_inbox_file)"
+  [ -f "$file" ] || {
+    printf '0\n'
+    return 0
+  }
+  LC_ALL=C /usr/bin/awk -F"$_HI_US" 'NF >= 4 && $1 != "" { n++ } END { print n + 0 }' "$file" 2>/dev/null ||
+    printf '0\n'
+}
+
+# _human_inbox_write <rows> — the one writer: <rows> become the whole index, newest first
+_human_inbox_write() {
+  local file tmp rc=0
+  file="$(human_inbox_file)"
+  tmp="$PROJECT_STATE/.human-inbox.tmp.$$"
+  { [ -z "$1" ] || printf '%s\n' "$1"; } |
+    LC_ALL=C /usr/bin/awk -F"$_HI_US" 'NF >= 4 && $1 != ""' |
+    LC_ALL=C sort -t "$_HI_US" -k4,4nr >"$tmp" 2>/dev/null &&
+    /bin/mv -f "$tmp" "$file" 2>/dev/null || rc=1
+  /bin/rm -f "$tmp" 2>/dev/null || true
+  return "$rc"
+}
+
+# human_inbox_edit <row> <id>... — drop the rows of these ids, then add <row> if it is not
+# empty. 1 when the lock could not be had or the write failed; the file is then untouched.
+human_inbox_edit() {
+  local row="$1" file kept rc=0
+  shift
+  file="$(human_inbox_file)"
+  # Only rows to drop, and the file holds none of them: no lock, no write. The common case
+  # is a message between two agents being closed, which is none of the human's business.
+  if [ -z "$row" ] && [ "$#" -eq 1 ] && ! /usr/bin/grep -qF "$1" "$file" 2>/dev/null; then return 0; fi
+  human_inbox_lock || return 1
+  if [ -f "$file" ]; then
+    kept="$(WM_IDS=" $* " LC_ALL=C /usr/bin/awk -F"$_HI_US" \
+      'NF >= 4 && index(ENVIRON["WM_IDS"], " " $1 " ") == 0' "$file" 2>/dev/null)" || rc=1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    _human_inbox_write "$(printf '%s\n%s' "${kept:-}" "$row")" || rc=1
+  fi
+  human_inbox_unlock
+  return "$rc"
+}
+
+# human_inbox_reconcile — put the index right from Beads with ONE targeted call. 1 when bd
+# is missing, fails, or answers with something that is not a list; the index is then left
+# as it was, because an error must not read as "no messages".
+human_inbox_reconcile() {
+  local json rows rc=0
+  [ -n "$BD_BIN" ] && [ -n "$JQ_BIN" ] || return 1
+  json="$(cd "$ROOT" && "$BD_BIN" list --assignee "$WOLFMUX_HUMAN" --type message --status open --limit 0 --json 2>/dev/null)" || return 1
+  rows="$(printf '%s' "$json" | "$JQ_BIN" -r "$_HUMAN_ROW_JQ"' if type == "array" then .[] | row else error("not a list") end' 2>/dev/null)" || return 1
+  human_inbox_lock || return 1
+  _human_inbox_write "$rows" || rc=1
+  human_inbox_unlock
+  return "$rc"
+}
+
+# cmd_human_inbox_hook — internal (`teamctl _human-inbox-hook`), run in the background by
+# hooks/beads-nudge for every message bead it sees, with the bead's JSON on stdin. An open
+# message for the human is added (or refreshed); anything else with that id — closed, or
+# handed to somebody else — is dropped. Silent and always 0: it runs under a bd command.
+cmd_human_inbox_hook() {
+  local payload
+  payload="$(/bin/cat 2>/dev/null)" || payload=""
+  (
+    set +e
+    _human_inbox_hook "$payload"
+  ) >/dev/null 2>&1 || true
+  return 0
+}
+
+_human_inbox_hook() {
+  local payload="$1" fields id assignee type status row
+  [ -n "$payload" ] && [ -n "$JQ_BIN" ] || return 0
+  ROOT="$(resolve_root 2>/dev/null)" || return 0
+  PROJECT_KEY="$(project_key "$ROOT")" || return 0
+  PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
+  [ -d "$PROJECT_STATE" ] || return 0 # not a project wolfmux runs a team in
+  fields="$(printf '%s' "$payload" | "$JQ_BIN" -r \
+    '[.id // "", .assignee // "", .issue_type // "", .status // ""] | map(tostring) | join("\u001f")' 2>/dev/null)" || return 0
+  IFS="$_HI_US" read -r id assignee type status <<EOF
+$fields
+EOF
+  valid_bead_id "$id" || return 0
+  [ "$type" = "message" ] || return 0
+  if [ "$assignee" = "$WOLFMUX_HUMAN" ] && [ "$status" = "open" ]; then
+    row="$(printf '%s' "$payload" | "$JQ_BIN" -r "$_HUMAN_ROW_JQ"' row' 2>/dev/null)" || return 0
+    [ -n "$row" ] || return 0
+    human_inbox_edit "$row" "$id"
+  else
+    human_inbox_edit "" "$id"
+  fi
+}
+
+# --- the popup -----------------------------------------------------------------
+# cmd_human_inbox — internal (`teamctl _human-inbox`): what prefix N and a click on the
+# status-bar number open. It draws the index at once, then makes its ONE bd call, rewrites
+# the index and draws again. Plain bash and tput: this machine has no fzf.
+#   up/down (or k/j) or a digit   select          Enter   the message, in less
+#   r   mark the selected one read                a       mark them all read, after y/n
+#   q or Esc   close
+# A mark-read runs as the human (BEADS_ACTOR=$WOLFMUX_HUMAN): bd refuses to close a bead
+# assigned to somebody other than the actor. --print skips the screen and the keys and
+# prints the refreshed list, for scripts and tests.
+cmd_human_inbox() {
+  local print=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --print) print=1 ;;
+      *) die_usage "unknown option for _human-inbox: $1" ;;
+    esac
+    shift
+  done
+  require_tools
+  load_project any
+  if [ "$print" -eq 1 ]; then
+    human_inbox_reconcile || warn "could not refresh from Beads; this is the list as last seen"
+    (
+      set +eu
+      _hi_load
+      _hi_print_plain
+    )
+    return 0
+  fi
+  (
+    set +eu
+    _hi_ui
+  ) || true
+  return 0
+}
+
+# _hi_load — the index into HI_ID HI_FROM HI_SUBJ HI_AT, HI_N rows
+_hi_load() {
+  local file id from subj at
+  HI_ID=() HI_FROM=() HI_SUBJ=() HI_AT=() HI_N=0
+  file="$(human_inbox_file)"
+  [ -f "$file" ] || return 0
+  while IFS="$_HI_US" read -r id from subj at; do
+    [ -n "$id" ] || continue
+    HI_ID[HI_N]="$id" HI_FROM[HI_N]="$from" HI_SUBJ[HI_N]="$subj" HI_AT[HI_N]="$at"
+    HI_N=$((HI_N + 1))
+  done <"$file"
+}
+
+# _hi_age <epoch> <now> — 5m, 2h, 3d; "now" under a minute; "?" when unknown
+_hi_age() {
+  local d
+  case "$1" in "" | 0 | *[!0-9]*)
+    printf '?'
+    return 0
+    ;;
+  esac
+  d=$(($2 - $1))
+  if [ "$d" -lt 60 ]; then
+    printf 'now'
+  elif [ "$d" -lt 3600 ]; then
+    printf '%dm' $((d / 60))
+  elif [ "$d" -lt 86400 ]; then
+    printf '%dh' $((d / 3600))
+  else
+    printf '%dd' $((d / 86400))
+  fi
+}
+
+# _hi_fit <text> <width> — cut to <width> characters and pad to it. By characters, not
+# bytes: printf's %-*s counts bytes, so a subject with an accent would push the age column.
+_hi_fit() {
+  local text="$1" width="$2"
+  if [ "${#text}" -gt "$width" ]; then text="${text:0:$((width - 1))}…"; fi
+  printf '%s%*s' "$text" $((width - ${#text})) ''
+}
+
+_hi_print_plain() {
+  local i=0 now
+  now="$(now_epoch)"
+  if [ "$HI_N" -eq 0 ]; then
+    say "no unread messages for $WOLFMUX_HUMAN"
+    return 0
+  fi
+  while [ "$i" -lt "$HI_N" ]; do
+    printf '%3d  %s  %s  %s  %s\n' $((i + 1)) "${HI_ID[i]}" "${HI_FROM[i]}" "${HI_SUBJ[i]}" \
+      "$(_hi_age "${HI_AT[i]}" "$now")" 2>/dev/null || true
+    i=$((i + 1))
+  done
+}
+
+_hi_draw() {
+  local cols lines rows width i now
+  cols="$(tput cols 2>/dev/null)"
+  lines="$(tput lines 2>/dev/null)"
+  case "$cols" in "" | *[!0-9]*) cols=80 ;; esac
+  case "$lines" in "" | *[!0-9]*) lines=24 ;; esac
+  rows=$((lines - 6))
+  [ "$rows" -ge 1 ] || rows=1
+  [ "$HI_SEL" -lt "$HI_N" ] || HI_SEL=$((HI_N - 1))
+  [ "$HI_SEL" -ge 0 ] || HI_SEL=0
+  [ "$HI_SEL" -ge "$HI_TOP" ] || HI_TOP="$HI_SEL"
+  [ "$HI_SEL" -lt $((HI_TOP + rows)) ] || HI_TOP=$((HI_SEL - rows + 1))
+  # number 3, sender 20, age 4, and the gaps between them; the subject gets the rest
+  width=$((cols - 36))
+  [ "$width" -ge 10 ] || width=10
+  now="$(now_epoch)"
+  printf '%s' "$HI_CLEAR"
+  printf ' %s%s messages for %s%s  (%s unread)\n\n' "$HI_BOLD" "$WOLFMUX_INBOX_MARK" "$WOLFMUX_HUMAN" "$HI_OFF" "$HI_N"
+  [ "$HI_N" -gt 0 ] || printf '   No unread messages.\n'
+  i="$HI_TOP"
+  while [ "$i" -lt "$HI_N" ] && [ "$i" -lt $((HI_TOP + rows)) ]; do
+    [ "$i" -ne "$HI_SEL" ] || printf '%s' "$HI_REV"
+    printf '%3d  %s  %s  %4s' $((i + 1)) "$(_hi_fit "${HI_FROM[i]:-?}" 20)" "$(_hi_fit "${HI_SUBJ[i]}" "$width")" \
+      "$(_hi_age "${HI_AT[i]}" "$now")"
+    printf '%s\n' "$HI_OFF"
+    i=$((i + 1))
+  done
+  printf '\n %s↑↓ or 1-9 select · Enter open · r mark read · a mark all read · q close%s\n' "$HI_DIM" "$HI_OFF"
+  [ -z "$HI_STATUS" ] || printf ' %s' "$HI_STATUS"
+}
+
+# _hi_close <id>... — mark read in Beads, as the human; bd's first line on failure
+_hi_close() {
+  local out
+  if out="$(cd "$ROOT" && BEADS_ACTOR="$WOLFMUX_HUMAN" "$BD_BIN" close "$@" -r read 2>&1)"; then
+    human_inbox_edit "" "$@" || true
+    _hi_load
+    return 0
+  fi
+  HI_STATUS="bd close failed: $(printf '%s\n' "$out" | head -1)"
+  return 1
+}
+
+_hi_key() {
+  local key="$1" rest yn
+  case "$key" in
+    $'\e')
+      rest=""
+      # bash 3.2 has no fractional read timeout: a lone Esc closes after a second, an
+      # arrow key's rest of sequence is already there and returns at once.
+      IFS= read -rsn2 -t 1 rest || true
+      case "$rest" in
+        '[A' | OA) HI_SEL=$((HI_SEL - 1)) ;;
+        '[B' | OB) HI_SEL=$((HI_SEL + 1)) ;;
+        '') return 1 ;;
+      esac
+      ;;
+    q | Q) return 1 ;;
+    k) HI_SEL=$((HI_SEL - 1)) ;;
+    j) HI_SEL=$((HI_SEL + 1)) ;;
+    [1-9]) [ "$key" -gt "$HI_N" ] || HI_SEL=$((key - 1)) ;;
+    '')
+      [ "$HI_N" -gt 0 ] || return 0
+      if [ -z "$BD_BIN" ]; then
+        HI_STATUS="bd is not installed"
+        return 0
+      fi
+      tput cnorm 2>/dev/null
+      (cd "$ROOT" && "$BD_BIN" show "${HI_ID[HI_SEL]}" 2>&1) | less -R
+      tput civis 2>/dev/null
+      ;;
+    r | R)
+      [ "$HI_N" -gt 0 ] || return 0
+      _hi_close "${HI_ID[HI_SEL]}" && HI_STATUS="marked read"
+      ;;
+    a | A)
+      [ "$HI_N" -gt 0 ] || return 0
+      HI_STATUS="Mark all $HI_N read? [y/n] "
+      _hi_draw
+      HI_STATUS=""
+      IFS= read -rsn1 yn || yn=n
+      case "$yn" in
+        y | Y) _hi_close "${HI_ID[@]}" && HI_STATUS="marked all read" ;;
+      esac
+      ;;
+  esac
+  [ "$HI_SEL" -ge 0 ] || HI_SEL=0
+  return 0
+}
+
+_hi_ui() {
+  local key
+  # The subject is cut by characters, which bash counts only under a UTF-8 locale; a
+  # popup gets the tmux server's environment, which may have none.
+  [ -n "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ] || export LC_CTYPE=en_US.UTF-8
+  HI_CLEAR="$(tput clear 2>/dev/null)" HI_BOLD="$(tput bold 2>/dev/null)" HI_REV="$(tput rev 2>/dev/null)"
+  HI_DIM="$(tput dim 2>/dev/null)" HI_OFF="$(tput sgr0 2>/dev/null)"
+  HI_SEL=0 HI_TOP=0 HI_STATUS="refreshing from Beads…"
+  tput civis 2>/dev/null
+  _hi_load
+  _hi_draw
+  if human_inbox_reconcile; then
+    HI_STATUS=""
+  else
+    HI_STATUS="could not refresh from Beads; this is the list as last seen"
+  fi
+  _hi_load
+  _hi_draw
+  while IFS= read -rsn1 key; do
+    HI_STATUS=""
+    _hi_key "$key" || break
+    _hi_draw
+  done
+  tput cnorm 2>/dev/null
   return 0
 }

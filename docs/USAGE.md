@@ -643,7 +643,7 @@ creation time in the lead's record, so the founder keeps its authority after one
 | `teamctl heavy [--timeout <seconds>] [--quiet] <command>...` | run a heavy thing — a test gate, a measurement, a long build — holding the machine's heavy lock, so nothing else heavy runs beside it and no lane is swept while it does. Returns the **command's** exit status, not the wrapper's, and says what it waited for. `--timeout`: give up after that many seconds (exit 75) rather than wait; `--quiet`: say nothing about waiting. One voice about the lock: `lockf`'s own "already locked" line is silenced, the command's own output is not. An exit 75 that is the command's own is reported as the command's, not as the lock timing out. Prefer it to `lockf` by hand ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
-| `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | the pane notices filed for a role, oldest first. Default: the lead of this team. Reading them clears the `📨` count in the status bar; it does not change whether the agent has had them, and the agent having had them does not clear your count. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new. `prefix N` opens the same thing in a popup ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
+| `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | for debugging: the pane notices filed for a role, oldest first. Default: the lead of this team. They are not counted in the status bar (the `📨` number is your unread Beads messages); reading them does not change whether the agent has had them. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model (the one it runs, as `teamctl models` says it; `*` = its last answer names that model and its record does not vouch for it, `?` = nobody can name it), running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
 | `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. This is the command that measures that disk. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
 | `teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]` | every team on this machine, across every project, read-only; `prefix O` opens it as a popup and `q` closes it. See [The dashboard](#the-dashboard-every-team-on-the-machine). `--once` prints it and exits, `--interval` sets the redraw (default 5 s), `--full` also reads context and the transcript time for agents that are not running, `--socket <path>` asks that tmux server instead of the default |
@@ -789,10 +789,17 @@ one line each — and is read from there by whoever needs it:
 
 | who | how they get it | does it touch your conversation |
 | --- | --- | --- |
-| you, passively | `📨 3` on the left of the status line: notices nobody has expanded yet. `🔔` as well when one of them is a permission request waiting for your decision. Nothing at all at zero | no |
-| you, on demand | `prefix N`, or `teamctl inbox` / `teamctl inbox --all`. Reading them clears the count | no |
+| you, for debugging | `teamctl inbox` / `teamctl inbox --all`. Not counted on the status line | no |
 
-The badge and `prefix N` come from `config/wolfmux/tmux.conf`, which a running tmux server has
+What the status line shows you is something else: your own Beads messages. `📨 3` on the left
+is how many messages to `human` (setting `WOLFMUX_HUMAN`) are open in this project, counted
+from an index the Beads hook keeps, so the status line never runs bd. `🔔` as well while a
+permission request of this team waits for your decision. Nothing at all when there is
+neither. `prefix N`, or a click on the number, opens them in a popup: up/down or a digit
+selects, Enter reads one, `r` marks it read, `a` marks them all read after a y/n, `q` or Esc
+closes. Opening it checks Beads once and corrects the index.
+
+The badge, the click and `prefix N` come from `config/wolfmux/tmux.conf`, which a running tmux server has
 already read. To put them on a server that is already up — teams running in it and all —
 `tmux -L wolfmux source-file ~/.config/wolfmux/tmux.conf`. That applies the status line and the
 key bindings at once, needs no server restart and **no team restart**; restarting a team for

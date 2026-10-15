@@ -72,14 +72,17 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
+  Messages for you  agents write to you in Beads: bd create "Subject" -t message -a human -d "..."
+         The status bar shows 📨 and how many are unread (🔔: a permission request is waiting).
+         prefix N, or a click on the number, opens them: Enter reads one, r marks it read.
   Notices  nothing is typed into a pane YOU are watching (policy human-pane-typing): a notice for an
-         agent is filed, the status bar shows 📨 and a count, and the agent is given it by its own
-         Stop hook (see prefix N).
+         agent is filed and the agent is given it by its own Stop hook.
          This is NOT an agent's Beads inbox — the work itself is always bd list --assignee <role>
     teamctl inbox [<role>] [--all] [--json] [--keep]       (alias: notices)
-                                                      the pane notices filed for a role (default:
-                                                      the lead), newest last; reading them clears
-                                                      the badge. --all: every role of the team.
+                                                      for debugging: the PANE notices filed for a
+                                                      role (default: the lead), newest last. Not
+                                                      your messages, and not counted on the status
+                                                      bar. --all: every role of the team.
                                                       --keep: leave them marked new
   Policy and permissions
     teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · browser-writes ask|allow
@@ -299,6 +302,8 @@ main() {
     _inbox-badge) cmd_inbox_badge "$@" ;;
     _inbox-stop) cmd_inbox_stop "$@" ;;
     _inbox-prompt) cmd_inbox_prompt "$@" ;;
+    _human-inbox) cmd_human_inbox "$@" ;;
+    _human-inbox-hook) cmd_human_inbox_hook "$@" ;;
     _open-team) cmd_open_team "$@" ;;
     _guard) cmd_guard "$@" ;;
     send | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;

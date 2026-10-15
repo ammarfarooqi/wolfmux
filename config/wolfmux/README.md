@@ -366,12 +366,20 @@ the middle of a sentence you were writing. Now a notice is written to a file fir
 `~/.wolfmux/state/<project>/[teams/<team>/]inbox/<role>`, one line each — and read from
 there by whoever needs it.
 
-- **Passively**: `📨 3` next to the wolf on the status line is how many notices nobody
-  has expanded yet, across the whole team. `🔔` appears as well when one of them is a
-  permission request waiting for your decision. At zero there is nothing there at all.
-- **On demand**: `Ctrl-b N`, or `teamctl inbox` (the lead) / `teamctl inbox --all`
-  (every role) / `teamctl inbox <role>`. `--json` for a script, `--keep` to read them
-  without clearing the count. The alias `teamctl notices` is the same command.
+- **Your messages**: `📨 3` next to the wolf on the status line is how many Beads messages
+  to YOU are unread in this project (open messages assigned to `human`, or whatever
+  `WOLFMUX_HUMAN` says; agents write them with `bd create "Subject" -t message -a human`).
+  `🔔` appears while a permission request of this team waits for your decision. At zero
+  there is nothing there at all. The number comes from a small index the Beads hook keeps
+  (`~/.wolfmux/state/<project>/human-inbox`), so the status line never runs bd.
+- **Reading them**: `Ctrl-b N`, or a click on the number, opens a popup, newest first.
+  Up/down or a digit selects, Enter reads one (`bd show` in `less`), `r` marks it read,
+  `a` marks them all read after a y/n, `q` or Esc closes. Opening it also checks Beads
+  once and puts the number right if the index had drifted.
+- **Pane notices, for debugging**: `teamctl inbox` (the lead) / `teamctl inbox --all`
+  (every role) / `teamctl inbox <role>`. `--json` for a script, `--keep` to leave them
+  marked new. The alias `teamctl notices` is the same command. They are not counted on
+  the status line.
 - **When an agent may be stuck**: one desktop notification, at most one per role every
   two minutes, carrying the count rather than the single bead — "team/lead: 4 notices
   waiting". Same notification path as a finished turn, so a click opens the team, and
@@ -696,6 +704,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_AUTO_PRUNE` | `on` | the default of the `auto-prune` policy: sweep a lane's build output as soon as the lane is parked. `off` is v1.16.1's behaviour (the build caches only, `node_modules` kept). A value that is neither word is read as `off`: an unreadable setting is not permission to delete. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
 | `WOLFMUX_HUMAN_PANE_TYPING` | `off` | the default of the `human-pane-typing` policy: may a notice be typed into a pane you are watching (your lead pane while you are attached, any pane on your screen)? `off`: never, it is filed for the agent's own hooks. `idle`: the v1.16.1 rule, typed once that pane is quiet. A value that is neither word is read as `off` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
 | `WOLFMUX_AUTO_RECLAIM` | `on` | the default of the `auto-reclaim` policy: take a parked lane off the books by itself (worktree, branch, record) once its task is closed, its content is in main, nothing is uncommitted or stashed and no PR is open. `off`: nothing is removed unless you run `teamctl reclaim`. A value that is neither word is read as `off`: this one deletes a checkout and a branch, so an unreadable setting must never read as yes. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
+| `WOLFMUX_HUMAN` | `human` | your own name in Beads. Agents write to you with `bd create "Subject" -t message -a human`; the 📨 number next to the wolf counts those still unread, and `prefix N` or a click on the number opens them (Enter reads one, `r` marks it read). Letters, digits, `.`, `_`, `-` |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |
 | `WOLFMUX_NOTIFY` | `all` | whose finished turns notify you: `all`, `lead`, `off`. A team founded by a lead is announced in every case |

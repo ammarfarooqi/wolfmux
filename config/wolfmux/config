@@ -171,8 +171,14 @@
 # Seconds a pending request waits before it is typed in after all (default 20).
 #WOLFMUX_INBOX_APPROVAL_GRACE=20
 # One desktop notification, at most per role every two minutes, when a notice could not
-# reach its agent. off leaves it to the 📨 count (WOLFMUX_NOTIFY=off also covers it).
+# reach its agent. off: no banner; the agent still gets the notice from its own hooks, and
+# teamctl inbox lists it (WOLFMUX_NOTIFY=off also covers it).
 #WOLFMUX_INBOX_STALL_NOTIFY=off
+
+# Your own name in Beads. Agents write to you with bd create ... -t message -a human; the
+# 📨 number next to the wolf counts those still unread, and prefix N (or a click on the
+# number) opens them. Letters, digits, '.', '_' and '-'; anything else means human.
+#WOLFMUX_HUMAN=human
 
 # What the keys fable, opus, sonnet and haiku mean.
 #   latest (default)  the newest model of that family Claude Code serves your account. teamctl
