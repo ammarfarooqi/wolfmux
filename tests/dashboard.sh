@@ -260,8 +260,13 @@ check "teamctl teams leaves a parked number behind, and the bar then shows it" \
 
 echo "== teamctl bar --explain: the legend a status bar cannot carry"
 BAR="$(teamctl bar --explain 2>&1)"
-check "teamctl bar prints the line the status bar is given, character for character" \
-  '[ "$(teamctl bar | head -n 1)" = "$(teamctl _overview-badge)" ]'
+# Two calls are two moments: load, mem and free disk are live readings and may move between
+# them (it failed once at load ~7). So those values are masked, and load is left out whole,
+# because a longer load number can push the line past 72 characters and drop the field.
+# Every other character is compared.
+bar_masked() { sed -E -e 's/ load [^ ]+//' -e 's/(mem|disk) [^ ]+/\1 _/g'; }
+check "teamctl bar prints the line the status bar is given, character for character (live readings masked)" \
+  'a="$(teamctl bar | head -n 1 | bar_masked)"; b="$(teamctl _overview-badge | bar_masked)"; [ -n "$a" ] && [ "$a" = "$b" ] && printf "%s" "$a" | grep -q "mem _ disk _ held "'
 check "--explain names every field of the line" \
   '(for f in teams run idle exit load mem disk held; do printf "%s" "$BAR" | grep -Eq "^  $f +N " || exit 1; done)'
 check "--explain says held is read and never measured, and names what makes it current" \
