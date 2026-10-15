@@ -476,13 +476,15 @@ own pane: nothing is left half done when the pane closes. What it said is also i
 
 **Only `finish` ever takes a team.** A lead that is not running proves nothing: a crashed lead
 and a finished one look the same from outside. `teamctl stop lead` and a plain `teamctl destroy`
-write down how the lead's session ended, but only so that `teamctl teams` can say it:
+write down how the lead's session ended, but only so that `teamctl teams` can say it. Two
+teams of this machine, as they read on 2026-10-14 (the first one's lead had parked itself with
+a note to restart from, which is exactly why a stopped lead never counts as finished):
 
 ```
 nudge-fix is orphaned: its lead is not running. May act on it: you. Bring it back: … · finish it: teamctl finish --team nudge-fix · delete it: …
-  holding 0 KB: lead stopped itself 2026-10-13 10:34Z, 0 tasks open, 0 lanes held
+  holding 0 KB: lead stopped itself 2026-10-13 10:34Z, 1 task open: fanpro-studio-fe-06ls0, 0 lanes held
 onboarding-storage is orphaned: its lead is not running. May act on it: you. …
-  holding 1.2 GB: no record of how the lead ended (crash, kill or reboot), 0 tasks open, 2 lanes held: riley (unpushed at 3f2a9c1); sam (open PR #41)
+  holding 136 MB: no record of how the lead ended (crash, kill or reboot), 0 tasks open, 2 lanes held: sam-the-backend-guy (unpushed at 8fa6b5be); riley-the-reviewer (unpushed at f1f80681)
 ```
 
 The status bar shows `orph N` when any team is orphaned (the gigabytes are already in `held`),
