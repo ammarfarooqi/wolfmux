@@ -322,6 +322,29 @@ EOF
   printf '%s\n' $(($(now_epoch) - newest))
 }
 
+# tm_pane_watched <pane-id> — 0 when an attached client is SHOWING this pane right now:
+# the active pane of the current window of the session that client is on. Any client of
+# this server counts, whichever session it is attached to, because a human who switched
+# sessions with prefix s is looking at a pane of another team. tmux reports exactly that
+# pane as a client's #{pane_id} (measured on tmux 3.7c, 2026-10-15).
+#
+# Fails CLOSED, like inbox_clients_attached: a tmux read that fails, or no pane id to ask
+# about, counts as watched. The cost of being wrong that way is a notice that is filed
+# rather than typed; the other way it is a line in front of the human.
+tm_pane_watched() {
+  local shown
+  [ -n "${1:-}" ] || return 0
+  shown="$(tmx list-clients -F '#{pane_id}' 2>/dev/null)" || return 0
+  case "
+$shown
+" in
+    *"
+$1
+"*) return 0 ;;
+  esac
+  return 1
+}
+
 # Why a notice is typed in at all, rather than shown with display-message or a popup:
 # the notice is FOR THE AGENT in that pane, not for the human. The agent reads it as
 # input and runs the inbox command it names. The status line and a popup put text in

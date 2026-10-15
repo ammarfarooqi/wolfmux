@@ -3,7 +3,8 @@
 #
 # Beads is the data plane: the bead already holds the full task or message.
 # This only turns "a bead now needs <role>'s attention" into a short tmux pane
-# notification via `teamctl nudge`. It never blocks, slows or fails a bd command.
+# notification via `teamctl nudge`, and keeps the index of the human's unread messages
+# (`teamctl _human-inbox-hook`). It never blocks, slows or fails a bd command.
 #
 # argv:  <bead-id> <create|update|close>       stdin: the bead as JSON
 event="${2:-}"
@@ -20,6 +21,16 @@ fields="$(printf '%s' "$payload" | "$jq_bin" -r '[.id // "", .assignee // "", .i
 IFS=$'\037' read -r bead_id assignee bead_type status <<EOF
 $fields
 EOF
+
+# The human's unread messages (v1.20.0): every message bead goes to teamctl, which keeps
+# the small index the status-bar number is counted from — adds an open message for the
+# human, drops one that was closed or handed to somebody else. Here and not filtered on
+# the assignee, because only teamctl knows the human's configured name (WOLFMUX_HUMAN)
+# and a reassignment AWAY from him has to reach it too. In the background and detached,
+# like the nudge below: a bd command never waits for it, and its failure is nobody's.
+if [ "$bead_type" = "message" ]; then
+  ({ printf '%s' "$payload" | "$teamctl_bin" _human-inbox-hook "$event"; } </dev/null >/dev/null 2>&1 &)
+fi
 
 actor="${BEADS_ACTOR:-${TEAM_ROLE:-}}"
 # All teams of a project share its Beads; a named team's agents are "<team>.<role>",

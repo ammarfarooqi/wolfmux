@@ -363,7 +363,7 @@ for the human. Two things close most of it:
 - **The badge.** `status-left` calls `teamctl _inbox-badge <session-name>` every 5 s. It
   resolves the project and team from the session's own `@wolfmux_root` and
   `@wolfmux_team` options, so it needs no working directory; it prints `📨 <count>`, plus
-  `🔔` when one of the new notices is an approval, and **nothing at all** on any error,
+  `🔔` while a permission request of the team is pending, and **nothing at all** on any error,
   because a badge may never break a status bar. (U+1F4E8 rather than U+1F54A DOVE: the
   dove is neither `Emoji_Presentation` nor East Asian Wide, so it needs U+FE0F to draw as
   an emoji and tmux miscounts its width, which pushes the rest of the line about.
@@ -399,8 +399,8 @@ underneath.
 **Pending, not unread, and the difference matters.** The timer asks the approvals store
 whether the request is still `pending`; approved, denied and expired all cancel it,
 because in each of those nothing is blocked any more. It deliberately does NOT ask
-whether the human has read the notice: `prefix N` prints `--all` and marks every role's
-notices seen, so a glance at a *worker's* line used to cancel the typing of an approval
+whether the human has read the notice: `teamctl inbox --all` (what `prefix N` opened
+before v1.20.0) marks every role's notices seen, so a glance at a *worker's* line used to cancel the typing of an approval
 the human had never read, handing a blocked worker back to the attention the grace
 exists to avoid. A store that cannot be read fails towards typing — a stalled worker is
 the harm, one line in a pane is the cost. An approval is the one notice that can still
@@ -412,10 +412,24 @@ human expands it, when the desktop notification is noticed, or when the lead is 
 prompted** — plus the 20 s grace above. The worker's own 10-minute fallback prompt still
 covers the case underneath. No new timer was invented for it.
 
-`teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) is what the human
-reads, and `prefix N` opens it in a `display-popup -E`. Reading marks the notices
-not-new, which is what clears the badge, and leaves the delivered column alone. The key
-is `N` and not `I` because `config/wolfmux/tmux.conf` sources the user's own
+**v1.20.0: the count is the human's Beads messages, not the notices.** Since v1.20.0 the
+`<count>` above is the number of open Beads messages assigned to the human (`human`, or
+`WOLFMUX_HUMAN`) in the project, and pane notices are not counted at all. The Beads hook
+hands every message bead to `teamctl _human-inbox-hook` in the background, which keeps
+`~/.wolfmux/state/<project>/human-inbox` (id, sender, subject, created; `\037` between
+fields; whole-file rewrite, temp file and `mv`, under a mkdir lock): an open message for
+the human is added, one closed or reassigned is dropped. The badge counts that file's
+rows and never runs bd. `prefix N`, and a click on the badge (`#[range=user|inbox]` in
+`status-left`; on tmux 3.7c a click on a user range fires `MouseDown1Status` with
+`#{mouse_status_range}` = `inbox`), open `teamctl _human-inbox`: it draws the file at
+once, makes ONE targeted `bd list --assignee human --type message --status open`,
+rewrites the file and draws again, so an index that drifted is put right whenever the
+human looks. Marking read runs `bd close` as the human (`BEADS_ACTOR=human`), because bd
+refuses to close a bead assigned to somebody other than the actor.
+
+`teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) shows the pane
+notices, for debugging. Reading marks the notices not-new and leaves the delivered
+column alone. The key is `N` and not `I` because `config/wolfmux/tmux.conf` sources the user's own
 `~/.tmux.conf` first: every wolfmux binding comes later and wins inside the wolfmux
 server, and `I` is tmux-plugins/tpm's on a machine that has it.
 
