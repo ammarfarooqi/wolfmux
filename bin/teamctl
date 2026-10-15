@@ -84,7 +84,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          The status bar shows 📨 and how many are unread (🔔: a permission request is waiting).
          prefix N, or a click on the number, opens them: Enter reads one, r marks it read.
   Notices  nothing is typed into a pane YOU are watching (policy human-pane-typing): a notice for an
-         agent is filed and the agent is given it by its own Stop hook.
+         agent is filed and the agent is given it by its own hooks: in a pane you are watching,
+         only with its next prompt (yours or its loop's), never at the end of its turn.
          This is NOT an agent's Beads inbox — the work itself is always bd list --assignee <role>
     teamctl inbox [<role>] [--all] [--json] [--keep]       (alias: notices)
                                                       for debugging: the PANE notices filed for a

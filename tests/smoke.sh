@@ -171,6 +171,46 @@ check "doctor: without --probe no key is read and curl is never started, and no 
 check "doctor --probe: the exit status is the same as plain doctor when nothing could be sent, and an unknown option is a usage error (64)" 'doctor_utf8 >/dev/null; a=$?; doctor_probe >/dev/null; b=$?; [ "$a" = "$b" ] && env HOME="$DOCTOR_HOME" "$REPO/bin/teamctl" doctor --bogus >/dev/null 2>&1; [ $? -eq 64 ]'
 check "doctor: the kimi and moonshot blocks say which console each key comes from, without --probe" 'out="$(doctor_utf8)"; printf "%s" "$out" | grep -q "key: A Kimi Code membership key comes from the Kimi Code console" && printf "%s" "$out" | grep -q "key: A Moonshot key comes from the Kimi API platform" && printf "%s" "$out" | grep -q "belongs to the moonshot provider" && printf "%s" "$out" | grep -q "belongs to the kimi provider"'
 check "help: teamctl help lists doctor --probe" 'teamctl help | grep -q "teamctl doctor \[--probe\]"'
+# The Beads store check (v1.20.0). A store tree of its own and a stand-in bd that writes down
+# every call: no real store is opened, and nothing is compacted. The journal and its index
+# are sparse files, as long as a slow store's and taking no disk.
+STORE_PROJECT="$WORK/beads store" # the space is deliberate: the printed command must quote it
+STORE_NOMS="$STORE_PROJECT/.beads/embeddeddolt/demo_db/.dolt/noms"
+STORE_BD="$WORK/store-bd"
+/bin/mkdir -p "$STORE_NOMS/oldgen" "$STORE_BD"
+git -C "$STORE_PROJECT" init -q -b main
+: >"$STORE_NOMS/oldgen/LOCK"
+cat >"$STORE_BD/bd" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >>"$STORE_BD/calls"
+case "\$*" in
+  version*) echo "bd version 0.0.0 (stand-in)" ;;
+  where*) printf '%s/.beads\n' "\$PWD" ;;
+  *count*) [ -z "\${STORE_BD_SLEEP:-}" ] || sleep "\$STORE_BD_SLEEP"; echo 0 ;;
+esac
+EOF
+/bin/chmod 755 "$STORE_BD/bd"
+store_files() { # <mode> <journal MB> <index KB>
+  printf '{"dolt_mode":"%s","dolt_database":"demo_db"}\n' "$1" >"$STORE_PROJECT/.beads/metadata.json"
+  /bin/rm -f "$STORE_NOMS/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv" "$STORE_NOMS/journal.idx"
+  dd if=/dev/zero of="$STORE_NOMS/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv" bs=1048576 count=0 seek="$2" 2>/dev/null
+  dd if=/dev/zero of="$STORE_NOMS/journal.idx" bs=1024 count=0 seek="$3" 2>/dev/null
+}
+store_doctor() { (cd "$STORE_PROJECT" && PATH="$STORE_BD:$PATH" env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME" WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null) | sed -n '/^Beads/,/^tmux team server/p'; }
+store_files embedded 1100 25600
+STORE_BIG="$(store_doctor)"
+store_files embedded 3 70
+: >"$STORE_NOMS/oldgen/0123456789abcdefghijklmnopqrstuv"
+STORE_SMALL="$(store_doctor)"
+STORE_SLOW="$(STORE_BD_SLEEP=1.6 store_doctor)"
+store_files server 1100 25600
+STORE_SERVER="$(store_doctor)"
+check "doctor: a 1.1 GB journal with a 25 MB index, never compacted, is a warning that names both and prints the compaction command for that project, quoted" 'printf "%s" "$STORE_BIG" | grep -q "warn  Beads needs compacting: journal 1.1 GB (limit 1 GB), index 25 MB (limit 20 MB)" && printf "%s" "$STORE_BIG" | grep -q "never compacted (oldgen/ is empty)" && printf "%s" "$STORE_BIG" | grep -qF "compact:  cd " && printf "%s" "$STORE_BIG" | grep -qF "/beads\\ store && bd gc --skip-decay --full --force"'
+check "doctor: the warning says how long the store is locked, that nothing is deleted, and that wolfmux never compacts by itself" 'printf "%s" "$STORE_BIG" | grep -q "about 4-5 s; every bd call waits meanwhile; it deletes nothing" && printf "%s" "$STORE_BIG" | grep -q "Wolfmux never runs it by itself: the owner decides"'
+check "doctor: the timed call is read-only (bd --readonly --sandbox count), and doctor never ran gc, compact or flatten" 'grep -qx -- "--readonly --sandbox count" "$STORE_BD/calls" && ! grep -Eq "(^| )(gc|compact|flatten)( |$)" "$STORE_BD/calls"'
+check "doctor: a small store that was compacted before is ok, with its sizes, and no warning" 'printf "%s" "$STORE_SMALL" | grep -q "ok    store     embedded Dolt, database demo_db: journal 3 MB, index 70 KB, compacted before (last " && printf "%s" "$STORE_SMALL" | grep -q "ok    one bd call [0-9]*\.[0-9][0-9] s (bd count" && ! printf "%s" "$STORE_SMALL" | grep -q "warn\|compact:"'
+check "doctor: a slow call on a small store is a warning that says other bd calls or the load may be the cause, and still prints the command" 'printf "%s" "$STORE_SLOW" | grep -q "warn  Beads is slow: one call [0-9]*\.[0-9][0-9] s (limit 1.5 s), although the store is small" && printf "%s" "$STORE_SLOW" | grep -q "bd gc --skip-decay --full --force"'
+check "doctor: in server mode it says so and skips the size checks, however big the journal file" 'printf "%s" "$STORE_SERVER" | grep -q "store     Dolt server mode: the server keeps the store open" && ! printf "%s" "$STORE_SERVER" | grep -q "journal 1.1 GB\|needs compacting\|bd gc"'
 check "doctor: no variable in any script is followed directly by a non-ASCII character" '! LC_ALL=C grep -nE "\\\$[A-Za-z_][A-Za-z0-9_]*[^ -~]" "$REPO"/bin/* "$REPO"/config/wolfmux/lib/*.sh "$REPO"/config/wolfmux/hooks/* "$REPO"/*.sh "$REPO"/tests/*.sh "$REPO"/tests/stub-agent'
 # `bd update --claim` sets in_progress: an inbox that lists only `open` hides the task a
 # restarted worker is in the middle of, and it would answer "ready" and wait for ever.

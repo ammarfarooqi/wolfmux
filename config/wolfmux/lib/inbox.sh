@@ -753,13 +753,22 @@ inbox_hook_body() {
 # cmd_inbox_stop — internal (`teamctl _inbox-stop`): a Claude Code Stop hook, added as a
 # SECOND entry in the Stop array next to lib/notify.sh's. When the role's inbox holds
 # notices the agent has not been given, it answers {"decision":"block","reason":…}, and
-# the agent carries straight on and reads its beads — no keystroke anywhere, nothing in
-# the human's conversation.
+# the agent carries straight on and reads its beads — no keystroke anywhere. The reason
+# IS printed in that pane's terminal, though, which is the v1.20.0 part below.
 #
 # A loop is impossible for two reasons, and both are needed: the lines are marked
 # delivered BEFORE the answer is printed, so the same notice can never block twice; and
 # no turn is blocked again inside WOLFMUX_INBOX_STOP_COOLDOWN, so a burst of beads
 # arriving one a second cannot block one turn per second either.
+#
+# v1.20.0: in a pane a human is watching it says NOTHING (policy human-pane-typing off,
+# the default). Claude Code prints a Stop hook's reason in the terminal, labelled "Stop
+# hook error", and Ammar saw exactly that in the pane he watches: "i am still seeing such
+# messages" (2026-10-15). Its docs give Stop no channel the human does not see (the
+# reason is shown, additionalContext is shown as "Stop hook feedback", suppressOutput
+# changes neither), while a UserPromptSubmit hook's output reaches the model alone. So
+# the notices stay undelivered, and cmd_inbox_prompt hands them over with the next
+# prompt: the human's, or the agent's own loop, whose tick arrives as a prompt too.
 cmd_inbox_stop() {
   local notices stamp last
   /bin/cat >/dev/null 2>&1 || true # the hook's JSON on stdin; nothing here needs it
@@ -769,6 +778,13 @@ cmd_inbox_stop() {
   last="$(/bin/cat "$stamp" 2>/dev/null || printf '0')"
   case "$last" in "" | *[!0-9]*) last=0 ;; esac
   [ $(($(now_epoch) - last)) -ge "$WOLFMUX_INBOX_STOP_COOLDOWN" ] || return 0
+  # Asked here, after the two cheap answers, so tmux is read only when there is something
+  # to hand over. Nothing is taken and the cooldown stamp is left alone: a pane nobody
+  # watches any more gets today's answer at the very next turn end.
+  if _inbox_stop_watched; then
+    event_log inbox-stop-silent "$INBOX_ROLE" "$(inbox_count_undelivered "$INBOX_ROLE") notice(s) left for the next prompt (human-pane-typing=off: $INBOX_HUMAN_REASON)" 2>/dev/null || true
+    return 0
+  fi
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0
   now_epoch >"$stamp" 2>/dev/null || true
@@ -790,10 +806,43 @@ cmd_inbox_stop() {
   return 0
 }
 
+# _inbox_stop_watched — 0 when the Stop hook must keep quiet: the policy is off and a human
+# is watching this agent's pane (inbox_keep_off_human_pane, the question every typed path
+# asks). Fails CLOSED like that question: a pane or a session we cannot find reads as
+# watched, and the notices wait for the next prompt rather than land on a human's screen.
+_inbox_stop_watched() {
+  inbox_human_typing_off || return 1 # idle: today's answer, and no tmux read for it
+  _inbox_stop_pane
+  inbox_keep_off_human_pane "$INBOX_ROLE" "$INBOX_PANE"
+}
+
+# _inbox_stop_pane — sets INBOX_PANE to this agent's own pane and SESSION to its team's
+# session; either may stay empty. $TMUX_PANE first: tmux exports it into every process of
+# the pane, and Claude Code hands its own environment to its hooks. It counts only when
+# it is a pane of the team's server and carries this role (@ai_role); one read gives the
+# session as well. Otherwise the pane is looked up by role, as `teamctl nudge` does.
+_inbox_stop_pane() {
+  local got
+  INBOX_PANE="" SESSION=""
+  if [ -n "${TMUX_PANE:-}" ] && tm_inside_team_server; then
+    got="$(tmx display-message -p -t "$TMUX_PANE" '#{@ai_role} #{session_name}' 2>/dev/null || true)"
+    if [ -n "$got" ] && [ "${got%% *}" = "$INBOX_ROLE" ] && [ -n "${got#* }" ]; then
+      INBOX_PANE="$TMUX_PANE" SESSION="${got#* }"
+      return 0
+    fi
+  fi
+  SESSION="$(session_name_for_project 2>/dev/null || true)"
+  [ -n "$SESSION" ] || return 0
+  INBOX_PANE="$(tm_pane_for_role "$SESSION" "$INBOX_ROLE" 2>/dev/null || true)"
+  return 0
+}
+
 # cmd_inbox_prompt — internal (`teamctl _inbox-prompt`): a Claude Code UserPromptSubmit
 # hook. Claude Code adds such a hook's stdout to the model's context, so the notices
 # reach the agent alongside whatever the human just said, and are marked delivered.
-# No cooldown: this one only ever runs because a human pressed Enter.
+# No cooldown: this one only ever runs once per prompt (a human pressed Enter, or a /loop
+# or scheduled wake-up fired, which Claude Code delivers as a prompt). Nothing of it is
+# shown to the human, which is why the Stop hook leaves a watched pane's notices to it.
 cmd_inbox_prompt() {
   local notices
   /bin/cat >/dev/null 2>&1 || true
