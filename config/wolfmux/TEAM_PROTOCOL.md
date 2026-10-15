@@ -94,8 +94,9 @@ session when your turn ends or when somebody prompts you (that is the
 `[wolfmux] You have team notices:` block). A worker's idle pane may also be typed into
 directly. A pane a human is watching never is: the lead's pane while a human is attached
 to the team, and any pane on the human's screen (policy `human-pane-typing`, default
-`off`; only the human changes it). Such a notice waits in the file, and you are given it
-by your session as above. The trade-off,
+`off`; only the human changes it). Such a notice waits in the file. In such a pane the
+end of your turn stays silent too, because Claude Code would print the notice there: you
+are given it with the next prompt, the human's or your own loop's. The trade-off,
 for a lead the human is attached to: an IDLE lead is not woken by a notice. Its own loop
 wakes it (the communication lead runs one every 20 minutes), or the human does; so sweep
 your Beads inbox at every turn. The file can be read at any time with `teamctl inbox`
