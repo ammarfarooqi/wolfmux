@@ -74,6 +74,11 @@
 # May a lead found further teams (teamctl start <model> --team <new> --handover <bead>)?
 # You are notified every time one does.
 #WOLFMUX_LEAD_TEAMS=on
+# The orphan steward: the team whose LEAD may bring back a team YOU founded while that
+# team's lead is not running (teamctl restart lead, teamctl stop <role>; nothing else).
+# The default of the orphan-steward policy, for every project that does not set its own
+# (`teamctl policy orphan-steward <team>|off`, yours alone to change). Default off.
+#WOLFMUX_ORPHAN_STEWARD=communication-management
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
 # How workers' branches are named, for every team that does not set its own

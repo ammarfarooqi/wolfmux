@@ -216,8 +216,10 @@ start_permitted() {
     if [ -n "$exists" ]; then
       # A team that has a lead is that lead's. Once that lead is not running, whoever founded the team may bring
       # it back: that is recovery, not founding, so the lead-teams policy (which is about founding) does not apply.
-      if ! founder_may_act; then
-        warn "team '$TEAM' already exists and has its own lead ($(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")). Message it; you do not manage it$(is_founder && printf ' (%s)' "$FOUNDER_HINT" || true)."
+      # So may the orphan steward, for a team you founded, but only as `teamctl restart lead` (LEAD_RESTART,
+      # set by restart_without_session): a plain start takes options that change the team's policy.
+      if ! founder_may_act && ! { [ -n "${LEAD_RESTART:-}" ] && steward_may_act restart "$WOLFMUX_LEAD_ROLE"; }; then
+        warn "team '$TEAM' already exists and has its own lead ($(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")). Message it; you do not manage it$(is_founder && printf ' (%s)' "$FOUNDER_HINT" || true)$(is_steward && printf ' (%s: teamctl restart lead --team %s)' "$STEWARD_HINT" "$TEAM" || true)."
         return 1
       fi
     elif [ "$allowed" != "on" ]; then
@@ -306,6 +308,11 @@ cmd_start() {
   # An agent acting on a team it did not found today is a founder bringing one back: it is announced and logged as that.
   if [ "$founder" != "operator" ]; then EVENT_BY="$founder"; fi
   if [ "$founder" != "operator" ] && founder_may_act; then FOUNDER_ACTING="$founder"; fi
+  # The orphan steward bringing back a team you founded is not its founder: the record goes on saying you are.
+  if [ -n "${LEAD_RESTART:-}" ] && [ -z "${FOUNDER_ACTING:-}" ] && steward_may_act restart "$WOLFMUX_LEAD_ROLE"; then
+    founder="operator"
+    steward_begin restart "$WOLFMUX_LEAD_ROLE"
+  fi
   wt_require_commit "$ROOT"
   ensure_state_dirs
   beads_ensure "$beads"
@@ -438,7 +445,7 @@ cmd_start() {
   tm_set_splash "$SESSION"
   layout_apply
   # A team that an agent founded, or brought back, is news for you.
-  if [ -n "${FOUNDER_ACTING:-}" ]; then
+  if [ -n "${FOUNDER_ACTING:-}${STEWARD_ACTING:-}" ]; then
     founder_announce restarted
   elif [ "$founder" != "operator" ]; then
     (WOLFMUX_TEAM="$TEAM" notify_deliver "$WOLFMUX_LEAD_MARK $founder started team '$TEAM' ($MODEL_LABEL). Open it: teamctl attach --team $TEAM" >/dev/null 2>&1) || true
@@ -983,7 +990,7 @@ cmd_stop() {
   require_tools
   load_project
   reg_exists "$role" || die "no such agent: $role  (see: teamctl status)"
-  require_manager stop
+  require_manager stop "$role"
   lock_acquire
   SESSION="$(session_name_for_project)"
   # How the lead's session ended, written before its pane is touched: a lead that stops itself
@@ -1019,7 +1026,9 @@ cmd_stop() {
   # A subshell hands no variable back, and that is the better way round, not the clumsier
   # one: whether the lane is "off the books" is read from the books (reg_exists), not from a
   # flag the check set before its last step. Do not pass a flag back out of it.
-  if [ "$(reg_field "$role" kind)" = "worker" ]; then reclaim_after_park "$role" stop 0 ""; fi
+  # Not when the orphan steward stopped it: a reclaim takes lanes off the books, which is `remove`, and the
+  # steward may never do that. The lane is asked the next time its own lead or you park one.
+  if [ "$(reg_field "$role" kind)" = "worker" ] && [ -z "${STEWARD_ACTING:-}" ]; then reclaim_after_park "$role" stop 0 ""; fi
   if ! reg_exists "$role"; then
     say "stopped: $role   (its task is closed and its work is all in main, so the lane is off the books: worktree, branch and record. To keep a lane you mean to restart: teamctl keep $role before you stop it · for the team: teamctl policy auto-reclaim off)"
   else
@@ -1049,6 +1058,7 @@ restart_without_session() {
   # --skip-beads. A bd that is not installed is not that: start dies about it, as a manual start does.
   if [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
   WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
+  LEAD_RESTART=1           # this start is `teamctl restart lead`, which the orphan steward may run (start_permitted)
   cmd_start "${start_args[@]}"
 }
 
@@ -1089,7 +1099,7 @@ cmd_restart() {
     restart_without_session "$role" "$resume" "$pin"
     return
   fi
-  require_manager restart
+  require_manager restart "$role"
   model="$(reg_field "$role" model)"
   models_refresh "$model" # fable/opus/sonnet/haiku: a restart is how an agent moves to a newer model
   lock_acquire

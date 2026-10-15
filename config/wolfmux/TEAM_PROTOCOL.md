@@ -33,6 +33,12 @@ lead — including a worker that was spawned by another worker.
   is not running (`teamctl teams` shows the team as `orphaned`), the founder, and only the
   founder, may `teamctl restart lead --team <name> --continue`, `stop`, `remove` and
   `destroy --team <name> --purge`; the human is told each time. Not `policy`, `approve`, `deny`.
+- A team the human founded has no founding lead. The human may name one team the **orphan
+  steward** (`teamctl policy orphan-steward <team>`; only the human can set it). That team's lead, and
+  nobody else in it, may then run `teamctl restart lead --team <name>` (with `--continue` or
+  `--resume <id>`) and `teamctl stop <role> --team <name>` on a team the human founded, while
+  its lead is not running. Nothing else: not `remove`, `destroy`, `start`, `policy`, `approve`,
+  `deny` or `spawn`. The human is told each time.
 
 ## Beads in 60 seconds
 

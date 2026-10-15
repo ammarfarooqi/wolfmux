@@ -39,6 +39,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          A team whose lead is not running is orphaned (teamctl teams says why, and what it holds). Then the lead that founded it
          may recover or clean it up, as you may: teamctl restart lead --team <name> --continue · stop · remove · finish ·
          destroy --team <name> --purge. You are told.
+         A team YOU founded: the lead of the team policy orphan-steward names may restart its lead and stop its agents, no more.
     teamctl finish [--dry-run]                      (the lead, or you) the team is DONE: park every lane, take every lane that
                                                       passes the reclaim gates, and when no lane is left and no task of the team
                                                       is open, take the team too: records, state directory, session. Something
@@ -104,6 +105,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
                                                       human-pane-typing off|idle (type a notice into a pane you are watching?
                                                       default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
+                                                      orphan-steward <team>|off (for the whole project: whose lead may restart or
+                                                      stop a team you founded while its lead is not running. Yours alone: 77)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look

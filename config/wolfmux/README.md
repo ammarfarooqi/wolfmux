@@ -183,6 +183,7 @@ teamctl policy link-node-modules on|off         # share the repository's node_mo
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
 teamctl policy human-pane-typing off|idle       # type notices into a pane you are watching?  default off (yours alone)
+teamctl policy orphan-steward <team>|off        # whose lead may bring back a team YOU founded  default off (yours alone)
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -322,6 +323,16 @@ founder. The founder may then bring it back or clean it up without you:
 `teamctl destroy --team <name> --purge`, or `teamctl start <model> --team <name> --continue`.
 You are told each time, and the event log records it with the founder's Beads name. It never
 includes `policy`, `approve` or `deny`, and it ends the moment that team's lead runs again.
+
+A team YOU started has no founding lead, so no agent may bring it back. To let one, name the
+**orphan steward** once, from your own terminal: `teamctl policy orphan-steward
+communication-management` (or `WOLFMUX_ORPHAN_STEWARD` in the config file; `off` ends it). The
+lead of that team, and nobody else in it, may then run `teamctl restart lead --team <name>`
+(also `--continue` and `--resume <id>`) and `teamctl stop <role> --team <name>` on a team you
+founded whose lead is not running. Nothing else, and nothing on a team another lead founded.
+Each act is written to `~/.wolfmux/state/<project>/steward.jsonl` first (an act whose line cannot
+be written is not done), you are told, and the event log names the steward. An agent cannot set
+the key (exit 77), and a name that is not a team of the project is refused.
 
 ## Deleting a team
 
@@ -726,6 +737,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_WORKER_SPAWN` | `off` | may workers spawn teammates (same rule: a team's own policy wins) |
 | `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
+| `WOLFMUX_ORPHAN_STEWARD` | `off` | the default of the `orphan-steward` policy: the team whose lead may restart the lead of a team you founded, or stop its agents, while that lead is not running. A value that is no team name is read as `off`. `teamctl policy orphan-steward` sets it per project, and only you can |
 | `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
 | `WOLFMUX_DISK_GUARD` | `refuse` | what `teamctl spawn` does when free disk is under the limit below: `refuse`, `warn`, `off` |
 | `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes, where 1 GB is 1024 MB (a gibibyte — the unit teamctl prints sizes in). A lane costs about 3 GB once it has installed and built; `0` switches the check off; no leading zero (write `8`, not `08`) |

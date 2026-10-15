@@ -1043,6 +1043,64 @@ end_agent "$(lead_pane_of fresh)"
 sleep 1
 check "founder: a plain destroy does not cost the founder its authority (the founder is kept with the team, not only in the lead's record): it can still delete the team afterwards" 'as_agent default lead destroy --team fresh --yes </dev/null && [ ! -e "$(ls -d "$WOLFMUX_DATA"/state/*/teams/fresh)/agents/lead.json" ] && teamctl status --json --team fresh | jq -e ".founder == \"lead\" and .orphaned == true" && teamctl teams | grep -E "^fresh +orphaned " | grep -q " lead " && as_agent default lead destroy --team fresh --purge --force && ! teamctl teams | grep -q "^fresh " && [ -z "$(git branch --list "ai/fresh/*")" ]'
 teamctl destroy --team fresh --purge --yes >/dev/null 2>&1
+
+echo "== the orphan steward: the lead of the team you name brings back a team you founded (v1.20.0)"
+# ward is yours (its founder is "operator"), kin was founded by the first team's lead. Once you name review
+# as the steward, review's lead may do two things on ward while ward's lead is not running: restart that
+# lead, stop its agents. Nothing else, on no other team, and nothing at all before you have named it.
+teamctl start fable --team ward --no-attach --skip-beads >/dev/null 2>&1
+teamctl spawn wkid flash --team ward --no-kickoff >/dev/null 2>&1
+as_agent default lead start fable --team kin --no-attach --skip-beads >/dev/null 2>&1
+sleep 2
+WARD_DIR="$(ls -d "$WOLFMUX_DATA"/state/*/teams/ward)"
+WARD_SESSION="$FIRST_SESSION-ward"
+STEWARD_LOG="$(dirname "$(dirname "$WARD_DIR")")/steward.jsonl"
+steward_lines() { if [ -f "$STEWARD_LOG" ]; then wc -l <"$STEWARD_LOG" | tr -d ' '; else printf '0\n'; fi; }
+# steward_refused <team> <role> <target team> <command>...: each is refused (exit 77) and steward.jsonl gains no line
+steward_refused() {
+  local who="$1 $2" target="$3" command before
+  shift 3
+  before="$(steward_lines)"
+  for command in "$@"; do
+    as_agent $who $command --team "$target" >/dev/null 2>&1 </dev/null
+    [ $? -eq 77 ] || { echo "not refused (77): $who $command --team $target" >&2; return 1; }
+  done
+  [ "$(steward_lines)" = "$before" ]
+}
+check "steward: off by default, and no agent may set it (exit 77), not even the lead it would name" 'teamctl policy --team ward | grep -qE "^  orphan-steward +off " && { as_agent review lead policy orphan-steward review >/dev/null 2>&1; [ $? -eq 77 ]; } && { as_agent default lead policy orphan-steward review >/dev/null 2>&1; [ $? -eq 77 ]; } && { as_agent review backend policy orphan-steward review >/dev/null 2>&1; [ $? -eq 77 ]; } && teamctl policy --team ward | grep -qE "^  orphan-steward +off "'
+check "steward: a team this project does not have is refused when set (exit 64), and so is a name no team can have" 'out="$(teamctl policy orphan-steward nosuch 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "not a team of this project" && { teamctl policy orphan-steward Bad_Name >/dev/null 2>&1; [ $? -eq 64 ]; } && teamctl policy --team ward | grep -qE "^  orphan-steward +off "'
+end_agent "$(lead_pane_of ward)"
+end_agent "$(lead_pane_of kin)"
+sleep 1
+check "steward: with the key off, the lead of review is refused on ward like any third party (exit 77)" 'steward_refused review lead ward "restart lead --continue" "stop wkid"'
+check "steward: you set it once for the whole project, without naming a team, and every team shows it" 'teamctl policy orphan-steward review | grep -q "orphan-steward = review" && teamctl policy --team ward | grep -qE "^  orphan-steward +review " && teamctl policy --team kin | grep -qE "^  orphan-steward +review "'
+check "steward: the orphaned note says 'you' to you and 'the human' to an agent, and names the steward on a team you founded only" 'teamctl teams | grep -q "ward is orphaned: its lead is not running. May act on it: you, review.lead (steward)." && teamctl status --team ward | grep -q "May act on it: you, review.lead (steward)." && as_agent default backend teams | grep -q "ward is orphaned: its lead is not running. May act on it: the human, review.lead (steward)." && as_agent default backend teams | grep -q "kin is orphaned: its lead is not running. May act on it: the human, lead (its founder)." && ! teamctl teams | grep "kin is orphaned" | grep -q steward'
+check "steward: on ward it still gets nothing but restart lead and stop (exit 77 for the rest), and nothing is written" 'steward_refused review lead ward "restart wkid" "destroy --yes" "destroy --purge --force" "remove wkid --force --yes" "start fable --continue" "policy worker-spawn on" "approve A1" "deny A1" "spawn helper flash --no-kickoff" && teamctl status --json --team ward | jq -e ".orphaned == true" && [ "$(steward_lines)" = 0 ]'
+check "steward: finish is not the steward's either: refused here (no such command yet), and not on the steward's own list" '{ as_agent review lead finish --team ward >/dev/null 2>&1 </dev/null; [ $? -ne 0 ]; } && [ "$(steward_lines)" = 0 ] && ( . "$REPO/config/wolfmux/lib/policy.sh"; WOLFMUX_LEAD_ROLE=lead; for c in finish remove destroy start spawn policy approve deny; do steward_command "$c" lead && exit 1; steward_command "$c" wkid && exit 1; done; steward_command restart lead && ! steward_command restart wkid && steward_command stop wkid && steward_command stop lead )'
+check "steward: only the steward team's LEAD: its workers, the lead of another team and ward's own worker are refused (exit 77)" 'steward_refused review backend ward "restart lead --continue" "stop wkid" && steward_refused default lead ward "restart lead --continue" "stop wkid" && steward_refused ward wkid ward "restart lead" "stop lead"'
+check "steward: a team another lead founded stays its founder's: the steward is refused on kin (exit 77)" 'steward_refused review lead kin "restart lead --continue" "stop lead" && teamctl status --json --team kin | jq -e ".orphaned == true and .founder == \"lead\""'
+check "steward: when steward.jsonl cannot be written nothing is done, nobody is told, and it says why" ': >"$WORK/tty-founder"; /bin/mkdir -p "$STEWARD_LOG"; out="$(as_agent review lead restart lead --continue --team ward 2>&1 </dev/null)"; status=$?; /bin/rmdir "$STEWARD_LOG"; [ "$status" -ne 0 ] && printf "%s" "$out" | grep -q "the steward.s record cannot be written" && teamctl status --json --team ward | jq -e ".orphaned == true" && [ ! -s "$WORK/tty-founder" ]'
+spoke lead ward
+WARD_CONVERSATION="$(teamctl status --json --team ward | jq -r '[.agents[] | select(.role == "lead")][0].session_id')"
+check "steward: it restarts ward's lead in its last conversation (exit 0), you are told, ward stays yours, and steward.jsonl has the line" ': >"$WORK/tty-founder"; as_agent review lead restart lead --continue --team ward </dev/null && sleep 1 && teamctl status --json --team ward | jq -e "([.agents[] | select(.role == \"lead\")][0].state == \"running\") and .founder == \"operator\" and .orphaned == false" && [ -n "$WARD_CONVERSATION" ] && teamctl capture lead --team ward --all | grep -q "STUB resumed=$WARD_CONVERSATION" && grep -q "review.lead restarted team .ward., which you founded; its lead was not running." "$WORK/tty-founder" && [ "$(steward_lines)" = 1 ] && tail -1 "$STEWARD_LOG" | jq -e ".steward == \"review.lead\" and .team == \"ward\" and .command == \"restart\" and .role == \"lead\" and (.ts | length > 0)"'
+check "steward: the event log of ward names the steward (by is its Beads identity)" 'jq -e "select(.type == \"restart\" and .role == \"lead\" and .by == \"review.lead\")" "$WARD_DIR/events.jsonl"'
+check "steward: once ward's lead runs again the steward is refused (exit 77), with the usual ask-its-lead text" 'steward_refused review lead ward "restart lead" "stop wkid" && out="$(as_agent review lead stop wkid --team ward 2>&1)"; [ $? -eq 77 ] && printf "%s" "$out" | grep -q "Ask that lead" && printf "%s" "$out" | grep -q "you are the orphan steward"'
+end_agent "$(lead_pane_of ward)"
+sleep 1
+WARD_PIN=33333333-4444-5555-6666-777777777777
+fake_conversation "$WARD_PIN"
+check "steward: restart lead --resume <id> passes the id through, and it is one more line" ': >"$WORK/tty-founder"; as_agent review lead restart lead --team ward --resume "$WARD_PIN" </dev/null && sleep 1 && teamctl capture lead --team ward --all | grep -q "STUB resumed=$WARD_PIN" && [ "$(teamctl status --json --team ward | jq -r "[.agents[] | select(.role == \"lead\")][0].session_id")" = "$WARD_PIN" ] && [ "$(steward_lines)" = 2 ] && grep -q "review.lead restarted team .ward., which you founded" "$WORK/tty-founder"'
+tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$WARD_SESSION" >/dev/null 2>&1
+sleep 1
+check "steward: with no session at all, restart lead starts ward again: one line (the start it runs is the same act), you are told, and you stay its founder; a plain start is still refused (exit 77)" ': >"$WORK/tty-founder"; teamctl teams | grep -Eq "^ward +orphaned " && steward_refused review lead ward "start fable --continue" && as_agent review lead restart lead --team ward </dev/null && sleep 2 && teamctl status --json --team ward | jq -e ".founder == \"operator\" and .agents[0].spawned_by == \"operator\" and .orphaned == false" && [ "$(steward_lines)" = 3 ] && grep -q "review.lead restarted team .ward., which you founded; its lead was not running." "$WORK/tty-founder"'
+end_agent "$(lead_pane_of ward)"
+sleep 1
+# The fake terminal holds the LAST notice only (notify_deliver writes it, it does not append): each act is read after it.
+check "steward: it stops a worker of ward while ward's lead is not running (exit 0), you are told, the lane stays on the books, and it is a line" ': >"$WORK/tty-founder"; as_agent review lead stop wkid --team ward && teamctl status --json --team ward | jq -e "[.agents[] | select(.role == \"wkid\")][0].state == \"stopped\"" && grep -q "review.lead stopped wkid of team .ward., which you founded; its lead was not running." "$WORK/tty-founder" && [ "$(steward_lines)" = 4 ] && tail -1 "$STEWARD_LOG" | jq -e ".command == \"stop\" and .role == \"wkid\""'
+check "steward: it stops ward's lead too (exit 0), you are told, and it is a line" ': >"$WORK/tty-founder"; as_agent review lead stop lead --team ward && teamctl status --json --team ward | jq -e "[.agents[] | select(.role == \"lead\")][0].state == \"stopped\"" && grep -q "review.lead stopped the lead of team .ward., which you founded" "$WORK/tty-founder" && [ "$(steward_lines)" = 5 ] && tail -1 "$STEWARD_LOG" | jq -e ".command == \"stop\" and .role == \"lead\" and .steward == \"review.lead\""'
+check "steward: off again, and the steward is a third party once more (exit 77)" 'teamctl policy orphan-steward off | grep -q "orphan-steward = off" && steward_refused review lead ward "restart lead --continue" && teamctl policy --team kin | grep -qE "^  orphan-steward +off "'
+teamctl destroy --team ward --purge --yes >/dev/null 2>&1
+teamctl destroy --team kin --purge --yes >/dev/null 2>&1
 echo "== branch names that fit a project's rules (issue #3)"
 teamctl start fable --team naming --no-attach --skip-beads >/dev/null 2>&1
 teamctl spawn plain flash --team naming --no-kickoff >/dev/null 2>&1
