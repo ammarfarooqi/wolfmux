@@ -681,12 +681,19 @@ dashboard `orphaned teams: N holding X`.
 ## Diagnostics
 
 ```bash
-teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins
+teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins, Beads store size
 teamctl doctor --probe                          # the same, plus one incomplete request per stored provider key: is it accepted?
 teamctl models                                  # what fable/opus/sonnet/haiku mean today, and who runs an older model
 WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
 WOLFMUX_DRY_RUN=1 claude-kimi                   # any provider name works; shows billing and the metered gate too
 ```
+
+Beads gets slower as its store grows: every bd call reads the journal's index first, and
+calls run one at a time. `teamctl doctor` shows the store's size and one call's time, and
+past 1 GB of journal, 20 MB of index or 1.5 s a call it prints the command to compact it:
+`cd <project> && bd gc --skip-decay --full --force` (about 4-5 s, every bd call waits
+meanwhile, nothing is deleted). Wolfmux never runs it itself. A weekly habit: run
+`teamctl doctor` once a week, and compact when it says so.
 
 ## Where things live
 

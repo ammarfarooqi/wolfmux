@@ -385,6 +385,119 @@ _doc_providers() {
   fi
 }
 
+# --- is the Beads store slow to open? (v1.20.0) -----------------------------------------
+# Every bd call opens the whole store before it reads one row, and bd calls run one at a
+# time. In embedded mode (bd's default) opening means reading the chunk journal's index.
+# Measured 2026-10-15: a 2.17 GB journal with a 48 MB index, never compacted since the store
+# was made, cost 2.7 s a call, 79% of it reading that index and 4% the query; when one notice
+# made several agents look, the k-th call waited k x 2.7 s. `bd gc --skip-decay --full
+# --force` took 5 s and left 181 MB, and a call then took 0.24 s. It grows back: about
+# 1.9 MB of index a day, and each MB costs about 0.042 s a call. At the limits below a call
+# costs about a second more than it has to. Wolfmux never compacts by itself: the store is
+# the owner's, and so is the moment every bd call waits for it.
+DOC_BEADS_JOURNAL_WARN_KB=1048576 # 1 GB
+DOC_BEADS_INDEX_WARN_KB=20480     # 20 MB
+DOC_BEADS_CALL_WARN_MS=1500
+DOC_BEADS_ASK_SECONDS=30
+DOC_BEADS_JOURNAL="vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv" # Dolt's name for the chunk journal file
+DOC_BEADS_GC="bd gc --skip-decay --full --force"
+
+# _doc_kb <file> — its length in KB, 0 when it is not there. ls and not du: du counts the
+# blocks, which says nothing for a sparse file, and the length is what bd reads.
+_doc_kb() {
+  [ -f "$1" ] || {
+    printf '0\n'
+    return 0
+  }
+  { LC_ALL=C /bin/ls -ln "$1" 2>/dev/null || true; } | awk '{ n = $5 } END { printf "%d\n", n / 1024 }'
+}
+
+# _doc_ms — milliseconds since the epoch, or nothing. Bash 3.2 and date(1) count whole seconds.
+_doc_ms() { /usr/bin/perl -MTime::HiRes=time -e 'printf "%d\n", time * 1000' 2>/dev/null || true; }
+
+# _doc_beads_store <beads-dir> — the store's mode and size, and how long one call takes
+_doc_beads_store() {
+  local dir="$1" meta mode db noms="" journal_kb=0 index_kb=0 compacted="" out t0="" t1="" rc=0 ms="" secs="" why="" load project
+  meta="$dir/metadata.json"
+  mode="$("$JQ_BIN" -r '.dolt_mode // ""' "$meta" 2>/dev/null || true)"
+  db="$("$JQ_BIN" -r '.dolt_database // ""' "$meta" 2>/dev/null || true)"
+  if [ -z "$mode" ] && [ -d "$dir/embeddeddolt" ]; then mode="embedded"; fi
+  case "$mode" in
+    embedded)
+      if [ -n "$db" ] && [ -d "$dir/embeddeddolt/$db/.dolt/noms" ]; then
+        noms="$dir/embeddeddolt/$db/.dolt/noms"
+      elif [ "$(/bin/ls -d "$dir"/embeddeddolt/*/.dolt/noms 2>/dev/null | wc -l | tr -d ' ')" = "1" ]; then
+        noms="$(/bin/ls -d "$dir"/embeddeddolt/*/.dolt/noms)"
+        db="$(basename "$(dirname "$(dirname "$noms")")")"
+      fi
+      if [ -z "$noms" ]; then
+        _note "store     embedded, but its files are not where teamctl looks ($(short_path "$dir")/embeddeddolt/<database>/.dolt/noms): size checks skipped"
+      else
+        journal_kb="$(_doc_kb "$noms/$DOC_BEADS_JOURNAL")"
+        index_kb="$(_doc_kb "$noms/journal.idx")"
+        # A compaction moves the old chunks into table files under oldgen/; until the first
+        # one, oldgen/ holds no table file (at most its LOCK and manifest).
+        compacted="$(/bin/ls -t "$noms/oldgen" 2>/dev/null | grep -E '^[0-9a-v]{32}$' | head -1 || true)"
+        if [ -n "$compacted" ]; then
+          compacted="compacted before (last $(date -r "$noms/oldgen/$compacted" '+%Y-%m-%d %H:%M' 2>/dev/null || printf 'at an unknown time'))"
+        else
+          compacted="never compacted (oldgen/ is empty)"
+        fi
+        if [ "$journal_kb" -ge "$DOC_BEADS_JOURNAL_WARN_KB" ]; then why="$why, journal $(human_size "$journal_kb") (limit 1 GB)"; fi
+        if [ "$index_kb" -ge "$DOC_BEADS_INDEX_WARN_KB" ]; then why="$why, index $(human_size "$index_kb") (limit 20 MB)"; fi
+        if [ -z "$why" ]; then _ok "store     embedded Dolt, database $db: journal $(human_size "$journal_kb"), index $(human_size "$index_kb"), $compacted"; else _note "store     embedded Dolt, database $db: journal $(human_size "$journal_kb"), index $(human_size "$index_kb"), $compacted"; fi
+      fi
+      ;;
+    "") _note "store     no dolt_mode in $(short_path "$meta"): a layout teamctl does not know, size checks skipped" ;;
+    *) _ok "store     Dolt $mode mode: the server keeps the store open, so a call does not read the journal; size checks skipped" ;;
+  esac
+
+  # One call that opens the store (count does; --version and where need not). It waits for
+  # any other bd call first, because bd runs them one at a time: say so next to the number.
+  out="$(mktemp "${TMPDIR:-/tmp}/wolfmux-doctor.XXXXXX" 2>/dev/null)" || out=""
+  if [ -n "$out" ]; then
+    t0="$(_doc_ms)"
+    reclaim_ask "$DOC_BEADS_ASK_SECONDS" "$out" "$ROOT" "$BD_BIN" --readonly --sandbox count || rc=$?
+    t1="$(_doc_ms)"
+    if [ "$rc" -eq 124 ]; then
+      ms=$((DOC_BEADS_ASK_SECONDS * 1000))
+      _note "one bd call did not finish in $DOC_BEADS_ASK_SECONDS s (bd count, which opens the store)"
+    elif [ "$rc" -ne 0 ]; then
+      _warn "one bd call failed (bd --readonly --sandbox count, exit $rc)$(reclaim_said "$out")"
+    elif [ -n "$t0" ] && [ -n "$t1" ]; then
+      ms=$((t1 - t0))
+      secs="$(awk -v ms="$ms" 'BEGIN { printf "%.2f", ms / 1000 }')"
+      if [ "$ms" -lt "$DOC_BEADS_CALL_WARN_MS" ]; then
+        _ok "one bd call $secs s (bd count; bd runs one call at a time, so this includes any wait for another)"
+      else
+        _note "one bd call $secs s (bd count; bd runs one call at a time, so this includes any wait for another)"
+      fi
+    else
+      _note "one bd call answered, but it could not be timed (no /usr/bin/perl with Time::HiRes)"
+    fi
+    reclaim_scratch_done "$out"
+  fi
+
+  if [ -n "$ms" ] && [ "$ms" -ge "$DOC_BEADS_CALL_WARN_MS" ]; then
+    if [ "$rc" -eq 124 ]; then why="$why, one call over $DOC_BEADS_ASK_SECONDS s (limit 1.5 s)"; else why="$why, one call $secs s (limit 1.5 s)"; fi
+  fi
+  [ -n "$why" ] || return 0
+  if [ "$mode" != "embedded" ] || [ -z "$noms" ]; then
+    _warn "Beads is slow: ${why#, }. Compaction advice here is for embedded stores; for a server, look at it: bd dolt status"
+    return 0
+  fi
+  if [ "$journal_kb" -lt "$DOC_BEADS_JOURNAL_WARN_KB" ] && [ "$index_kb" -lt "$DOC_BEADS_INDEX_WARN_KB" ]; then
+    load="$(dash_load 2>/dev/null || true)"
+    _warn "Beads is slow: ${why#, }, although the store is small. Other bd calls were probably running (bd runs them one at a time), or the machine is busy (load ${load:-unknown}). Run teamctl doctor again; if it stays slow, compact the store:"
+  else
+    _warn "Beads needs compacting: ${why#, }. Every bd call reads the journal's index before it reads one row, and the calls run one at a time, so every agent pays it on every call."
+  fi
+  project="$ROOT"
+  if [ "$(basename "$dir")" = ".beads" ]; then project="$(dirname "$dir")"; fi
+  _note "compact:  cd $(printf '%q' "$project") && $DOC_BEADS_GC"
+  _note "about 4-5 s; every bd call waits meanwhile; it deletes nothing (no issue is decayed or removed). Wolfmux never runs it by itself: the owner decides. Once a week keeps it small."
+}
+
 _doc_beads() {
   local dir
   _head "Beads — tasks and messages"
@@ -393,6 +506,7 @@ _doc_beads() {
   [ -n "${ROOT:-}" ] || { _note "not inside a git repository: project checks skipped"; return 0; }
   if dir="$(beads_dir)"; then
     _ok "workspace $(short_path "$dir")"
+    _doc_beads_store "$dir"
     case "$(beads_hooks_status "$dir")" in
       installed) _ok "pane-notification hooks installed (on_create, on_update, on_close)" ;;
       partial) _note "some pane-notification hooks are missing or not ours; teamctl start repairs what it safely can" ;;
