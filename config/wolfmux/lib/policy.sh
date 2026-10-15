@@ -45,10 +45,17 @@
 #                                           v1.16.1 rule: typed once that pane has been quiet.
 #                                           Only you may change it, never an agent: it is about
 #                                           your own screen (require_operator).
+#   orphan-steward      <team> | off        DEFAULT off. The one team of this project whose LEAD may
+#                                           bring back a team YOU founded while that team's lead is
+#                                           not running: restart its lead, stop its agents, nothing
+#                                           else (the orphan steward, below). One value for the whole
+#                                           project, so it is kept in a file of the project's own
+#                                           (project_policy_file), not in one team's meta.json. Only
+#                                           you may set it, never an agent (require_operator).
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing orphan-steward"
 
 policy_default() {
   case "$1" in
@@ -65,14 +72,20 @@ policy_default() {
     auto-reclaim) printf '%s\n' "${WOLFMUX_AUTO_RECLAIM:-on}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     human-pane-typing) printf '%s\n' "${WOLFMUX_HUMAN_PANE_TYPING:-off}" ;;
+    orphan-steward) printf '%s\n' "${WOLFMUX_ORPHAN_STEWARD:-off}" ;;
     *) return 1 ;;
   esac
 }
 
 policy_valid() { # <key> <value>
-  # The one key that is not a choice out of a fixed set.
+  # The keys that are not a choice out of a fixed set.
   if [ "$1" = "branch-template" ]; then
     branch_template_valid "$2"
+    return
+  fi
+  # A team's name, or off. Whether that team exists is asked where it is set (cmd_policy).
+  if [ "$1" = "orphan-steward" ]; then
+    [ "$2" = "off" ] || valid_team_name "$2"
     return
   fi
   case "$1:$2" in
@@ -110,14 +123,35 @@ policy_choices() {
     human-pane-typing) printf 'off|idle\n' ;;
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
+    orphan-steward) printf 'a team of this project, or off\n' ;;
   esac
+}
+
+# The one key that belongs to the project, not to a team: it names a team of the project. In a team's
+# meta.json it would be read by that team only, and the default team's goes with `teamctl destroy --purge`.
+project_policy_file() { printf '%s/policy.json\n' "$PROJECT_STATE"; }
+
+project_policy_get() { # <field>
+  [ -n "${PROJECT_STATE:-}" ] && [ -f "$(project_policy_file)" ] || return 1
+  "$JQ_BIN" -r --arg f "$1" '.[$f] // empty' "$(project_policy_file)"
+}
+
+project_policy_put() { # <field> <value>
+  local record="{}"
+  /bin/mkdir -p "$PROJECT_STATE"
+  [ -f "$(project_policy_file)" ] && record="$(/bin/cat "$(project_policy_file)")"
+  printf '%s' "$record" | "$JQ_BIN" --arg f "$1" --arg v "$2" '.[$f] = $v' | _reg_write_atomic "$(project_policy_file)"
 }
 
 # policy_get <key> — never fails; an invalid stored or configured value falls back
 # to the safe side (ask / off) instead of silently widening what agents may do.
 policy_get() {
   local key="$1" value
-  value="$(meta_get "policy_${key//-/_}" 2>/dev/null || true)"
+  if [ "$key" = "orphan-steward" ]; then
+    value="$(project_policy_get policy_orphan_steward 2>/dev/null || true)"
+  else
+    value="$(meta_get "policy_${key//-/_}" 2>/dev/null || true)"
+  fi
   [ -n "$value" ] || value="$(policy_default "$key")"
   if [ "$key" = "branch-template" ]; then
     # Empty, or anything unusable, means the built-in shape: a stored template that can no
@@ -154,6 +188,9 @@ policy_get() {
   elif [ "$key" = "human-pane-typing" ]; then
     # Unreadable means the human's screen stays quiet: a typo must not bring the lines back.
     printf 'off\n'
+  elif [ "$key" = "orphan-steward" ]; then
+    # Unreadable means nobody but you and a team's founder may act on a team: no steward.
+    printf 'off\n'
   else
     printf 'ask\n'
   fi
@@ -173,6 +210,10 @@ policy_set() { # <key> <value>
     return 0
   fi
   policy_valid "$1" "$2" || die_usage "$1 must be one of: $(policy_choices "$1")"
+  if [ "$1" = "orphan-steward" ]; then
+    project_policy_put policy_orphan_steward "$2"
+    return 0
+  fi
   meta_put "policy_${1//-/_}" "$2"
 }
 
@@ -289,14 +330,82 @@ founder_may_act() {
 
 FOUNDER_HINT="you founded it: once its lead has stopped you may restart or destroy it"
 
-# founder_announce <what it did>: set by require_manager / cmd_start when a founder acts: you are told, the way
-# founding a team is told, and the event log says who acted (event_log: by is the founder's identity)
+# --- the orphan steward ------------------------------------------------------------------
+# A team YOU start has no founding lead (team_founder says "operator"), so once its lead is gone no agent may
+# bring it back. Policy orphan-steward names one team of the project whose LEAD may do that much for you, on a
+# team you founded whose lead is not running: `teamctl restart lead` (also --continue and --resume <id>) and
+# `teamctl stop <role>`. Nothing else: not remove, destroy, start, policy, approve, deny or spawn, and nothing
+# on a team another lead founded (that is its founder's) or on one whose lead runs (that is its lead's).
+# Each act is written to the project's steward.jsonl BEFORE it happens, and not done when that line cannot be
+# written; you are told, and the event log names the steward.
+STEWARD_HINT="you are the orphan steward: once its lead has stopped you may restart its lead or stop its agents"
+
+# orphan_steward: the team policy orphan-steward names, empty when it is off
+orphan_steward() {
+  local team
+  team="$(policy_get orphan-steward)"
+  [ "$team" = "off" ] || printf '%s\n' "$team"
+}
+
+# is_steward: the caller is the lead of the steward team, and the loaded team is another one, founded by you
+is_steward() {
+  local steward own
+  [ "$(caller_role)" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  steward="$(orphan_steward)"
+  [ -n "$steward" ] || return 1
+  own="$(caller_team)"
+  [ "${own:-$WOLFMUX_DEFAULT_TEAM}" = "$steward" ] && [ "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" != "$steward" ] || return 1
+  [ "$(team_founder)" = "operator" ]
+}
+
+# steward_command <command> <role>: one of the steward's two: restart of the lead, stop of any agent
+steward_command() {
+  case "$1" in
+    restart) [ "${2:-}" = "$WOLFMUX_LEAD_ROLE" ] ;;
+    stop) [ -n "${2:-}" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# steward_may_act <command> <role>: is_steward, the command is the steward's, and the loaded team's lead is not running
+steward_may_act() {
+  steward_command "$1" "${2:-}" && is_steward && ! team_lead_running
+}
+
+steward_log_file() { printf '%s/steward.jsonl\n' "$PROJECT_STATE"; }
+
+# steward_begin <command> <role>: the steward is about to act. Who it is goes into STEWARD_ACTING and EVENT_BY,
+# and one line into steward.jsonl, once per command (a restart that runs start, or start that runs restart, is
+# one act). A line that cannot be written stops the act, as the removal ledger does (lib/reclaim.sh).
+steward_begin() {
+  local file
+  STEWARD_ACTING="$(caller_identity)"
+  EVENT_BY="$STEWARD_ACTING"
+  [ -z "${STEWARD_RECORDED:-}" ] || return 0
+  file="$(steward_log_file)"
+  /bin/mkdir -p "$PROJECT_STATE" 2>/dev/null || true
+  # The braces are for the redirection: a file that cannot be opened is reported here, in the die below.
+  if ! {
+    "$JQ_BIN" -cn --arg ts "$(now_iso)" --arg steward "$STEWARD_ACTING" --arg team "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" \
+      --arg command "$1" --arg role "${2:-}" '{ts: $ts, steward: $steward, team: $team, command: $command, role: $role}' >>"$file"
+  } 2>/dev/null; then
+    die "'teamctl $1 ${2:-}' was not done: the steward's record cannot be written ($(short_path "$file")), and an act of the orphan steward that nobody can look up is not made."
+  fi
+  STEWARD_RECORDED=1
+}
+
+# founder_announce <what it did>: set by require_manager / cmd_start when a founder or the orphan steward acts: you
+# are told, the way founding a team is told, and the event log says who acted (event_log: by is its identity)
 founder_announce() {
+  if [ -n "${STEWARD_ACTING:-}" ]; then
+    (WOLFMUX_TEAM="$TEAM" notify_deliver "$WOLFMUX_LEAD_MARK $STEWARD_ACTING $1 team '$TEAM', which you founded; its lead was not running." >/dev/null 2>&1) || true
+    return 0
+  fi
   [ -n "${FOUNDER_ACTING:-}" ] || return 0
   (WOLFMUX_TEAM="$TEAM" notify_deliver "$WOLFMUX_LEAD_MARK $FOUNDER_ACTING $1 team '$TEAM', which it founded (its lead was not running)." >/dev/null 2>&1) || true
 }
 
-require_manager() { # <command name>
+require_manager() { # <command name> [<role>]
   local hint=""
   is_manager && return 0
   case " $FOUNDER_COMMANDS " in
@@ -311,14 +420,28 @@ require_manager() { # <command name>
       fi
       ;;
   esac
+  if steward_command "$1" "${2:-}" && is_steward; then
+    if ! team_lead_running; then
+      steward_begin "$1" "${2:-}"
+      return 0
+    fi
+    hint="; $STEWARD_HINT"
+  fi
   die "'teamctl $1' is reserved for the lead of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}'. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")'$hint. Ask that lead: bd create \"<what you need>\" -t message -a $(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE") -d \"<why>\"" 77
 }
 
-# team_orphaned_note: who may act on the loaded team while its lead is not running
+# team_orphaned_note: who may act on the loaded team while its lead is not running. "you" is said to you only:
+# in an agent's pane it reads as that agent, so an agent is told "the human".
 team_orphaned_note() {
-  local founder note="you"
+  local founder steward note="you"
+  is_operator || note="the human"
   founder="$(team_founder)"
-  if [ "$founder" != "operator" ]; then note="you, $founder (its founder)"; fi
+  if [ "$founder" != "operator" ]; then
+    note="$note, $founder (its founder)"
+  else
+    steward="$(orphan_steward)"
+    if [ -n "$steward" ] && [ "$steward" != "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ]; then note="$note, $(team_identity "$steward" "$WOLFMUX_LEAD_ROLE") (steward)"; fi
+  fi
   printf 'orphaned: its lead is not running. May act on it: %s.' "$note"
 }
 
@@ -329,9 +452,10 @@ policy_summary() {
 
 # teamctl policy [<key> <value>]
 cmd_policy() {
-  local key="${1:-}" value="${2:-}" template
+  local key="${1:-}" value="${2:-}" template teams
   require_tools
-  load_project
+  # orphan-steward is the project's, not a team's: it is set without naming a team.
+  if [ "$key" = "orphan-steward" ]; then load_project any; else load_project; fi
   if [ -z "$key" ]; then
     say "policy for $(short_path "$ROOT")"
     say "  lead-permissions    $(policy_get lead-permissions)    (skip|ask)"
@@ -357,6 +481,8 @@ cmd_policy() {
     say "  human-pane-typing   $(policy_get human-pane-typing)       (off|idle)        type a notice into a pane you are watching (the lead's while you are attached,"
     say "                      and any pane on your screen)? off = never, it is filed for the agent's own hooks · idle = once that pane is quiet."
     say "                      Yours alone to change, from your own terminal. Who is typed into at all: WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE"
+    say "  orphan-steward      $(policy_get orphan-steward)       (<team>|off)      for the whole project: the team whose lead may restart the lead of a team"
+    say "                      you founded, or stop its agents, while that lead is not running. Nothing else. Yours alone to change."
     say ""
     say "change:  teamctl policy <key> <value>     permission changes apply at the next start/restart of an agent"
     return 0
@@ -368,6 +494,24 @@ cmd_policy() {
   if [ "$key" = "human-pane-typing" ]; then
     require_operator "policy human-pane-typing" "the human's own screen (may a notice be typed into a pane they are watching)" \
       "nothing to change: your notices reach you through your own Stop and UserPromptSubmit hooks. If that is not enough, tell the human"
+  fi
+  # Who may bring back the teams the human founded is the human's call, and the steward's own lead is the
+  # last one who should decide that it is the steward.
+  if [ "$key" = "orphan-steward" ]; then
+    require_operator "policy orphan-steward" "every team the human founded in this project (which team's lead may restart or stop them)" \
+      "nothing to set: if a team the human founded needs bringing back, tell the human"
+    policy_valid "$key" "$value" || die_usage "orphan-steward must be $(policy_choices "$key")"
+    if [ "$value" != "off" ]; then
+      teams="$(team_list | tr '\n' ' ')" # in a variable: no pipe for a grep -q to close under pipefail
+      case " $teams " in
+        *" $value "*) ;;
+        *) die_usage "orphan-steward: '$value' is not a team of this project (teams: ${teams% })" ;;
+      esac
+    fi
+    policy_set "$key" "$value"
+    event_log policy "" "$key=$value"
+    say "policy: $key = $value   (for the whole project)"
+    return 0
   fi
   require_manager policy
   ensure_state_dirs

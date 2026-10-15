@@ -687,16 +687,18 @@ cat >"$WORK/realhome/config" <<'EOF'
 WOLFMUX_NUDGE_TYPE=off
 WOLFMUX_HUMAN_PANE_TYPING=idle
 WOLFMUX_HUMAN=ammar
+WOLFMUX_ORPHAN_STEWARD=comms
 EOF
 (cd "$WORK/realproj" && git init -q 2>/dev/null)
 real_policy() { # [VAR=value...] — teamctl policy as the binary runs it, with no agent's environment
   (cd "$WORK/realproj" && env -u TEAM_ROLE -u BEADS_ACTOR -u WOLFMUX_TEAM -u WOLFMUX_TEAM_ARG -u WOLFMUX_ROOT \
-    -u TMUX -u TMUX_PANE -u WOLFMUX_NUDGE_TYPE -u WOLFMUX_HUMAN_PANE_TYPING \
+    -u TMUX -u TMUX_PANE -u WOLFMUX_NUDGE_TYPE -u WOLFMUX_HUMAN_PANE_TYPING -u WOLFMUX_ORPHAN_STEWARD \
     WOLFMUX_HOME="$WORK/realhome" WOLFMUX_DATA="$WORK/realdata" WOLFMUX_TMUX_SOCKET="wolfmux-test-providers-$$" \
     "$@" "$REPO/bin/teamctl" policy 2>&1)
 }
 check "real load order: WOLFMUX_NUDGE_TYPE in the config file takes effect in teamctl" 'real_policy | grep -q "WOLFMUX_NUDGE_TYPE=off"'
 check "real load order: so does the human-pane-typing default" 'real_policy | grep -qE "^  human-pane-typing +idle "'
+check "real load order: and the orphan-steward default (v1.20.0)" 'real_policy | grep -qE "^  orphan-steward +comms "'
 # WOLFMUX_HUMAN (v1.20.0) is read back off the one bd call the messages popup makes: a fake
 # bd on PATH writes down its arguments and answers an empty list.
 /bin/mkdir -p "$WORK/fakebd"
@@ -714,7 +716,7 @@ real_human_popup() {
 }
 check "real load order: WOLFMUX_HUMAN in the config file is the name the popup asks Beads about" 'real_human_popup; grep -q -- "--assignee ammar " "$WORK/bd-args"'
 check "real load order: an environment variable still wins over the file" 'real_policy WOLFMUX_NUDGE_TYPE=workers | grep -q "WOLFMUX_NUDGE_TYPE=workers"'
-check "real load order: with no config file the built-in defaults stand" '/bin/rm -f "$WORK/realhome/config" && real_policy | grep -q "WOLFMUX_NUDGE_TYPE=detached-lead" && real_policy | grep -qE "^  human-pane-typing +off "'
+check "real load order: with no config file the built-in defaults stand" '/bin/rm -f "$WORK/realhome/config" && real_policy | grep -q "WOLFMUX_NUDGE_TYPE=detached-lead" && real_policy | grep -qE "^  human-pane-typing +off " && real_policy | grep -qE "^  orphan-steward +off "'
 
 echo
 echo "result: $passed passed, $failed failed, $skipped skipped"

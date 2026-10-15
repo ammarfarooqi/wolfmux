@@ -38,6 +38,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl start fable --team next --handover <bead-id>    (a lead may do this too) the new lead starts by reading that bead
          A team whose lead is not running is orphaned (teamctl teams). Then the lead that founded it may recover or clean it up,
          as you may: teamctl restart lead --team <name> --continue · stop · remove · destroy --team <name> --purge. You are told.
+         A team YOU founded: the lead of the team policy orphan-steward names may restart its lead and stop its agents, no more.
   Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you,
          and start/restart/stop/remove/destroy for the founder of a team whose lead is not running)
     teamctl start <fable|astra|any model> [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads|--skip-beads]
@@ -95,6 +96,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
                                                       human-pane-typing off|idle (type a notice into a pane you are watching?
                                                       default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
+                                                      orphan-steward <team>|off (for the whole project: whose lead may restart or
+                                                      stop a team you founded while its lead is not running. Yours alone: 77)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
