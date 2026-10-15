@@ -60,8 +60,16 @@ trap cleanup EXIT
 
 # --- Beads and GitHub, as stubs (the shapes tests/reclaim.sh measured) ----------------
 #   bd.mode     ok | fail
-#   tasks/<id>.json   one bead each; `bd list` prints all of them
+#   tasks/<id>.json   one bead each; `bd list` prints all of them, `bd query` the ones its
+#                     expression selects
 #   prs/<branch, / as _>.json   what `gh pr list --head <branch>` prints ([] when absent)
+#
+# `bd query` answers the way the real one was measured to (bd 1.3.0, 2026-10-15): a bare
+# array; `assignee="x"` is an exact match and OR'd names select any of them, `status!=closed`
+# and `type!=message` leave those out, closed beads come only with --all, --limit cuts the
+# list (0: no limit, default 50). An expression with anything else in it is REFUSED (exit 2),
+# never answered with everything: a stub that returns every bead whatever it is asked is how
+# a question that was too narrow went unseen once.
 export RECLAIM_STUB="$WORK/stub"
 /bin/mkdir -p "$RECLAIM_STUB/bin" "$RECLAIM_STUB/tasks" "$RECLAIM_STUB/prs"
 /bin/cat >"$RECLAIM_STUB/bin/bd" <<'EOF'
@@ -79,6 +87,31 @@ case "${1:-}" in
     else
       jq -s . "$RECLAIM_STUB"/tasks/*.json 2>/dev/null || echo "[]"
     fi
+    ;;
+  query)
+    echo "warning: beads.role not configured (GH#2950)." >&2
+    case "$mode" in fail) echo "bd: the database is locked" >&2; exit 3 ;; esac
+    expr="${2:-}" all=0 limit=50
+    shift 2
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --all | -a) all=1 ;;
+        --limit | -n) limit="${2:-50}"; shift ;;
+      esac
+      shift
+    done
+    rest="$(printf '%s' "$expr" | sed -E -e 's/assignee="[A-Za-z0-9._-]*"//g' -e 's/status!=closed//g' -e 's/type!=message//g' -e 's/AND//g' -e 's/OR//g' -e 's/[() ]//g')"
+    if [ -n "$rest" ]; then echo "stub bd: cannot read this query: $expr" >&2; exit 2; fi
+    names="$(printf '%s' "$expr" | grep -o 'assignee="[^"]*"' | sed -e 's/^assignee="//' -e 's/"$//')"
+    open=0 nomsg=0
+    case "$expr" in *'status!=closed'*) open=1 ;; esac
+    case "$expr" in *'type!=message'*) nomsg=1 ;; esac
+    jq -s --arg names "$names" --argjson all "$all" --argjson open "$open" --argjson nomsg "$nomsg" --argjson limit "$limit" '
+      ($names | split("\n") | map(select(. != ""))) as $n
+      | map(select(($n | length) == 0 or (.assignee as $a | any($n[]; . == $a))))
+      | map(select(($all == 1 and $open == 0) or (.status // "open") != "closed"))
+      | map(select($nomsg == 0 or (.issue_type // "task") != "message"))
+      | if $limit > 0 then .[:$limit] else . end' "$RECLAIM_STUB"/tasks/*.json 2>/dev/null || echo "[]"
     ;;
 esac
 exit 0
@@ -186,6 +219,18 @@ check "teamctl finds the stub gh and the stub bd, so nothing here reaches a real
   '[ "$(lib_eval "printf %s \"\$GH_BIN\"")" = "$RECLAIM_STUB/bin/gh" ] && [ "$(lib_eval "printf %s \"\$BD_BIN\"")" = "$RECLAIM_STUB/bin/bd" ]'
 check "teamctl knows the verb: finish is in its help, and an unknown option of it names the real usage" \
   'teamctl help | grep -q "teamctl finish" && out="$(teamctl finish --nonsense 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "usage: teamctl finish \[--team <name>\] \[--dry-run\]"'
+bead ctl-open ctl.a open
+bead ctl-lead ctl.lead in_progress
+bead ctl-done ctl.a closed
+bead ctl-msg ctl.lead open message
+ids_of() { jq -r '[.[].id] | sort | join(" ")'; }
+check "CONTROL: the stub bd answers a query by its filter, never with every bead: open work, a lane's tasks, the limit, and an unknown term refused" \
+  '[ "$(bd query "status!=closed AND type!=message" --all --limit 0 --json 2>/dev/null | ids_of)" = "ctl-lead ctl-open" ] &&
+   [ "$(bd query "(assignee=\"ctl.a\") AND type!=message" --all --limit 0 --json 2>/dev/null | ids_of)" = "ctl-done ctl-open" ] &&
+   [ "$(bd query "(assignee=\"ctl.a\") AND type!=message" --limit 0 --json 2>/dev/null | ids_of)" = "ctl-open" ] &&
+   [ "$(bd query "status!=closed AND type!=message" --all --limit 1 --json 2>/dev/null | jq length)" = "1" ] &&
+   ! bd query "status=open" --all --json >/dev/null 2>&1'
+/bin/rm -f "$RECLAIM_STUB"/tasks/ctl-*.json
 
 # ------------------------------------------------------------------------------------
 echo "== evidence, not authority: what a lead's end leaves behind"
@@ -283,6 +328,38 @@ check "when Beads cannot be asked, the team is kept, and the reason quotes Beads
 teamctl reclaim --all-teams >/dev/null 2>&1
 check "and once Beads answers that every task is closed, the sweep finishes it" \
   '! listed tasks && [ ! -e "$(state_of tasks)" ]'
+
+# ------------------------------------------------------------------------------------
+echo "== open work is asked of the whole project, not of the lanes on record"
+# reclaim's question names the team's worker lanes ON RECORD and nothing else. Each team here
+# has a worker lane on record while finish runs, so that question is never empty, and its
+# answer leaves out the one task that matters.
+team_with leadwork lw1
+bead demo-leadwork-lead leadwork.lead in_progress
+: >"$RECLAIM_STUB/bd.log"
+FIN5="$(as_lead leadwork finish --team leadwork 2>&1)"
+check "a team with a worker lane on record and an open task on its LEAD is kept, and the line names the task" \
+  'listed leadwork && printf "%s" "$FIN5" | grep -qE "kept: team .leadwork. is holding .*, 1 task open: demo-leadwork-lead, 0 lanes held"'
+check "finish asks Beads its own question: every open bead of the project, messages left out, bounded" \
+  'grep "^bd query " "$RECLAIM_STUB/bd.log" | grep -qE "^bd query status!=closed AND type!=message --all --limit [1-9][0-9]* --json$"'
+team_with gone g1 g2
+teamctl remove g2 --team gone --yes >/dev/null 2>&1
+bead demo-gone-later gone.g2 open # a lane taken off the books, then given new work
+check "CONTROL: the lane g2 is off the record and g1 is on it when finish runs" \
+  '[ "$(st_of gone | jq -r "[.agents[].role] | sort | join(\" \")")" = "g1 lead" ]'
+FIN6="$(as_lead gone finish --team gone 2>&1)"
+check "the same with the open task on a REMOVED lane's name: kept, and the line names it" \
+  'listed gone && printf "%s" "$FIN6" | grep -qE "kept: team .gone. is holding .*, 1 task open: demo-gone-later, 0 lanes held"'
+team_with capped c1
+bead demo-elsewhere other.x open # one open bead in the project, so an answer of one reaches the limit
+FIN7="$(TEAM_ROLE=lead WOLFMUX_TEAM=capped WOLFMUX_TEAM_ARG=capped lib_eval "TEAM_BEADS_LIMIT=1; cmd_finish" 2>&1)"
+check "an answer that reaches the limit keeps the team, and the line says why" \
+  'listed capped && printf "%s" "$FIN7" | grep -q "kept: team .capped. is holding .*tasks unknown (cannot ask Beads (its answer stopped at 1 open beads, and a task of this team could be past that))"'
+: >"$RECLAIM_STUB/bd.log"
+teamctl teams >/dev/null 2>&1
+TEAMS_ASKED="$(grep -c "^bd query status!=closed" "$RECLAIM_STUB/bd.log")"
+check "teamctl teams asks that question once for the whole project, however many teams are orphaned" \
+  '[ "$(teamctl teams --json 2>/dev/null | jq "[.[] | select(.orphaned)] | length")" -ge 3 ] && [ "$TEAMS_ASKED" = "1" ]'
 
 # ------------------------------------------------------------------------------------
 echo "== finish, run by the lead from a pane of the session it ends"

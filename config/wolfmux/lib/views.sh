@@ -328,7 +328,7 @@ cmd_teams() {
                tasks_open: ($tasks | tonumber? // null),
                lead_end: (if $end_how == "" then null else {how: $end_how, by: $end_by, ts: $end_ts} end)} end)}'
       done
-      reclaim_beads_forget || true # the scratch file of what Beads said
+      team_beads_forget || true # the scratch file of what Beads said
     } | "$JQ_BIN" -s .
     return 0
   fi
@@ -347,7 +347,7 @@ cmd_teams() {
 "
     fi
   done
-  reclaim_beads_forget || true # the scratch file of what Beads said
+  team_beads_forget || true # the scratch file of what Beads said
   if [ -n "$orphans" ]; then
     say ""
     printf '%s' "$orphans"

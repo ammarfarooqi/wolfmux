@@ -1102,8 +1102,10 @@ reclaim_all_teams() {
     done
   done
   # Beads was asked once per team above, about that team's lanes alone (a new team makes
-  # reclaim_beads_load forget the last answer); this drops the last one.
+  # reclaim_beads_load forget the last answer); this drops the last one. An orphaned team's
+  # reason asked its own question once per project (team_beads_load); that one goes too.
   reclaim_beads_forget || true # bookkeeping, as in reclaim_team: the total below is still owed
+  team_beads_forget || true
   reclaim_footer "$dry" " --all-teams" "machine total" \
     " across $teams team$([ "$teams" = "1" ] || printf s) in $projects project$([ "$projects" = "1" ] || printf s)" \
     "$total" "$lanes" "$running" "$held" "$held_kb"

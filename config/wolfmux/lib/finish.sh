@@ -138,19 +138,107 @@ team_end_words() {
   esac
 }
 
-# team_tasks_open — every task of the LOADED team that is not closed, from the one answer
-# Beads gives per project (reclaim_beads_load). Sets TEAM_TASKS_OPEN (a count) and
-# TEAM_TASKS_IDS (the first three ids), or returns 1 with RECLAIM_WHY set.
+# --- every open task of the project: finish's own question to Beads -------------------
+# NOT reclaim_beads_load. That one asks about a team's CURRENT worker lanes and nothing else,
+# which is right for a lane and wrong for a team: the lead's own tasks, and the tasks of a
+# lane that was removed and given new work, are not in its answer. Read from it, a team whose
+# lead still has a task open would say "0 tasks open" and be finished with work left.
+#
+# So finish asks its own question, once per project per run: every bead that is not closed
+# and not a message. It is bounded, as reclaim's is: 241 beads, 0.9 MB and about a second on
+# 2026-10-15 for the busiest project here (the whole store was 1,465). An answer that reaches
+# the limit is "cannot tell", and the team stays.
+TEAM_BEADS_LIMIT=2000
+TEAM_BEADS_FILE=""
+TEAM_BEADS_AT=""
+TEAM_BEADS_DOWN=""
+TEAM_BEADS_DOWN_AT=""
+
+# team_beads_forget — drop the answer. Called when a run that asked ends.
+team_beads_forget() {
+  [ -z "$TEAM_BEADS_FILE" ] || /bin/rm -f "$TEAM_BEADS_FILE"
+  TEAM_BEADS_FILE=""
+  TEAM_BEADS_AT=""
+}
+
+# _team_beads_down <why> — Beads cannot be asked about this project, for the rest of the run.
+_team_beads_down() {
+  TEAM_BEADS_DOWN="$1"
+  TEAM_BEADS_DOWN_AT="$ROOT"
+  RECLAIM_WHY="cannot ask Beads ($1)"
+  return 1
+}
+
+# team_beads_load — every bead of the project that is not closed and not a message, asked
+# once per project per run. Sets TEAM_BEADS_FILE (a JSON array), or returns 1 with RECLAIM_WHY
+# set: when bd is missing, fails, does not answer in time, says something that cannot be
+# read, or stops at the limit. Every one of those keeps the team. A project where reclaim
+# already found Beads down is not asked again: the same bd would make it wait the same limit.
+team_beads_load() {
+  local out rc=0 count
+  if [ "$TEAM_BEADS_AT" = "$ROOT" ] && [ -n "$TEAM_BEADS_FILE" ] && [ -f "$TEAM_BEADS_FILE" ]; then return 0; fi
+  if [ -n "$TEAM_BEADS_DOWN" ] && [ "$TEAM_BEADS_DOWN_AT" = "$ROOT" ]; then
+    RECLAIM_WHY="cannot ask Beads ($TEAM_BEADS_DOWN)"
+    return 1
+  fi
+  if [ -n "${RECLAIM_BEADS_DOWN:-}" ] && [ "${RECLAIM_BEADS_DOWN_AT:-}" = "$ROOT" ]; then
+    RECLAIM_WHY="cannot ask Beads ($RECLAIM_BEADS_DOWN)"
+    return 1
+  fi
+  team_beads_forget
+  [ -n "$BD_BIN" ] || { _team_beads_down "bd is not installed" || return 1; }
+  if [ ! -e "$ROOT/.beads" ] && [ -z "${BEADS_DIR:-}" ]; then
+    _team_beads_down "no Beads workspace in $(short_path "$ROOT")" || return 1
+  fi
+  out="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/wolfmux-finish.XXXXXX" 2>/dev/null || true)"
+  [ -n "$out" ] || { _team_beads_down "no scratch file could be made in ${TMPDIR:-/tmp}" || return 1; }
+  info "finish: asking Beads which tasks of the project are open (it gets $RECLAIM_ASK_SECONDS s to answer)"
+  reclaim_ask "$RECLAIM_ASK_SECONDS" "$out" "$ROOT" "$BD_BIN" query "status!=closed AND type!=message" --all --limit "$TEAM_BEADS_LIMIT" --json || rc=$?
+  if [ "$rc" -eq 124 ]; then
+    reclaim_scratch_done "$out"
+    _team_beads_down "bd did not answer in $RECLAIM_ASK_SECONDS s" || return 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    rc="bd failed, exit $rc$(reclaim_said "$out")"
+    reclaim_scratch_done "$out"
+    _team_beads_down "$rc" || return 1
+  fi
+  # Read the way reclaim_beads_load reads its answer: a bare array, or a wrapped one.
+  if ! "$JQ_BIN" -c 'if type == "array" then . elif type == "object" and (.issues | type) == "array" then .issues else error("neither a list nor a wrapped list") end
+        | if all(.[]; type == "object") then . else error("a list of something else") end' "$out" >"$out.beads" 2>/dev/null; then
+    reclaim_scratch_done "$out"
+    /bin/rm -f "$out.beads"
+    _team_beads_down "its answer could not be read" || return 1
+  fi
+  reclaim_scratch_done "$out"
+  count="$("$JQ_BIN" -r 'length' "$out.beads" 2>/dev/null || true)"
+  case "${count:-x}" in "" | *[!0-9]*)
+    /bin/rm -f "$out.beads"
+    _team_beads_down "its answer could not be read" || return 1
+    ;;
+  esac
+  if [ "$count" -ge "$TEAM_BEADS_LIMIT" ]; then
+    /bin/rm -f "$out.beads"
+    _team_beads_down "its answer stopped at $TEAM_BEADS_LIMIT open beads, and a task of this team could be past that" || return 1
+  fi
+  TEAM_BEADS_FILE="$out.beads"
+  TEAM_BEADS_AT="$ROOT"
+  return 0
+}
+
+# team_tasks_open — every task of the LOADED team that is not closed, from finish's own answer
+# (team_beads_load). Sets TEAM_TASKS_OPEN (a count) and TEAM_TASKS_IDS (the first three ids),
+# or returns 1 with RECLAIM_WHY set.
 #
 # A task of the team is one assigned to any of its members, as Beads names them: every
 # <team>.<role> of a named team, whether that role is still on record or not (a lane that was
-# reclaimed can still be given new work). The first team's members carry bare names, so there
-# it is every role on record, every role its event log has seen, and the lead. A message is
-# not a task.
+# reclaimed can still be given new work), the lead included. The first team's members carry
+# bare names, so there it is every role on record, every role its event log has seen, and the
+# lead. A message is not a task.
 team_tasks_open() {
   local names out
   TEAM_TASKS_OPEN="" TEAM_TASKS_IDS=""
-  reclaim_beads_load || return 1
+  team_beads_load || return 1
   if [ "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" = "$WOLFMUX_DEFAULT_TEAM" ]; then
     names="$({
       printf '%s\n' "$WOLFMUX_LEAD_ROLE"
@@ -160,11 +248,11 @@ team_tasks_open() {
     [ -n "$names" ] || names='["lead"]'
     out="$("$JQ_BIN" -r --argjson names "$names" '[.[] | select((.assignee // "") as $a | $names | index($a))
       | select((.issue_type // "task") != "message" and (.status // "open") != "closed") | .id]
-      | "\(length) \(.[0:3] | join(", "))"' "$RECLAIM_BEADS_FILE" 2>/dev/null || true)"
+      | "\(length) \(.[0:3] | join(", "))"' "$TEAM_BEADS_FILE" 2>/dev/null || true)"
   else
     out="$("$JQ_BIN" -r --arg p "$TEAM." '[.[] | select((.assignee // "") | startswith($p))
       | select((.issue_type // "task") != "message" and (.status // "open") != "closed") | .id]
-      | "\(length) \(.[0:3] | join(", "))"' "$RECLAIM_BEADS_FILE" 2>/dev/null || true)"
+      | "\(length) \(.[0:3] | join(", "))"' "$TEAM_BEADS_FILE" 2>/dev/null || true)"
   fi
   case "${out%% *}" in
     "" | *[!0-9]*)
@@ -369,6 +457,7 @@ cmd_finish() {
   reclaim_team "$apply" "  "
   team_reason "$RECLAIM_HOLD_N" "$RECLAIM_HOLD_LIST"
   reclaim_beads_forget || true
+  team_beads_forget || true
   say ""
   if [ "$dry" -eq 1 ]; then
     if [ "$TEAM_CLEAR" -eq 1 ]; then
