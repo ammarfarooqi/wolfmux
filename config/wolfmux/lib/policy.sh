@@ -37,10 +37,18 @@
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
 #                                           value is free text, so it is handled apart below.
+#   human-pane-typing   off | idle          DEFAULT off. May a notice be TYPED into a pane a human
+#                                           is watching: the lead's pane while a client is attached
+#                                           to the team, and whatever pane an attached client is
+#                                           showing? off = never; the notice is filed and the agent
+#                                           gets it from its own hooks (lib/inbox.sh). idle = the
+#                                           v1.16.1 rule: typed once that pane has been quiet.
+#                                           Only you may change it, never an agent: it is about
+#                                           your own screen (require_operator).
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing"
 
 policy_default() {
   case "$1" in
@@ -56,6 +64,7 @@ policy_default() {
     auto-prune) printf '%s\n' "${WOLFMUX_AUTO_PRUNE:-on}" ;;
     auto-reclaim) printf '%s\n' "${WOLFMUX_AUTO_RECLAIM:-on}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
+    human-pane-typing) printf '%s\n' "${WOLFMUX_HUMAN_PANE_TYPING:-off}" ;;
     *) return 1 ;;
   esac
 }
@@ -77,6 +86,7 @@ policy_valid() { # <key> <value>
     link-node-modules:on | link-node-modules:off) return 0 ;;
     auto-prune:on | auto-prune:off) return 0 ;;
     auto-reclaim:on | auto-reclaim:off) return 0 ;;
+    human-pane-typing:off | human-pane-typing:idle) return 0 ;;
     # A number, not a word: whole gigabytes, 0 switches the limit off, and the ceiling is
     # only there so that a slip of the hand cannot refuse every spawn for ever.
     # A leading zero is refused on purpose. `test -le` reads base ten but shell arithmetic
@@ -97,6 +107,7 @@ policy_choices() {
     browser-writes) printf 'ask|allow\n' ;;
     worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim) printf 'on|off\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
+    human-pane-typing) printf 'off|idle\n' ;;
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
   esac
@@ -139,6 +150,9 @@ policy_get() {
     # something a build makes again — so a value nobody can read (a typo in the config file,
     # a hand-edited meta.json) must never be read as "yes". Unreadable means off: nothing is
     # removed, every lane says what it is holding, and `teamctl reclaim` still works by hand.
+    printf 'off\n'
+  elif [ "$key" = "human-pane-typing" ]; then
+    # Unreadable means the human's screen stays quiet: a typo must not bring the lines back.
     printf 'off\n'
   else
     printf 'ask\n'
@@ -340,12 +354,21 @@ cmd_policy() {
     say "                      placeholders {team} {role} {ts} {ticket}; {ts} is required. A template with {ticket}"
     say "                      needs teamctl spawn --ticket <KEY>, or a team default: teamctl start <model> --ticket <KEY>"
     say "                      back to the built-in shape: teamctl policy branch-template default"
+    say "  human-pane-typing   $(policy_get human-pane-typing)       (off|idle)        type a notice into a pane you are watching (the lead's while you are attached,"
+    say "                      and any pane on your screen)? off = never, it is filed for the agent's own hooks · idle = once that pane is quiet."
+    say "                      Yours alone to change, from your own terminal. Who is typed into at all: WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE"
     say ""
     say "change:  teamctl policy <key> <value>     permission changes apply at the next start/restart of an agent"
     return 0
   fi
   case " $POLICY_KEYS " in *" $key "*) ;; *) die_usage "unknown policy '$key' (known: $POLICY_KEYS)" ;; esac
   [ -n "$value" ] || die_usage "usage: teamctl policy $key <$(policy_choices "$key")>"
+  # Whether notices may be typed in front of the human is the human's call. A lead that is
+  # not being woken has every reason to want it back on, and its pane IS the human's.
+  if [ "$key" = "human-pane-typing" ]; then
+    require_operator "policy human-pane-typing" "the human's own screen (may a notice be typed into a pane they are watching)" \
+      "nothing to change: your notices reach you through your own Stop and UserPromptSubmit hooks. If that is not enough, tell the human"
+  fi
   require_manager policy
   ensure_state_dirs
   policy_set "$key" "$value"

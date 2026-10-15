@@ -182,6 +182,7 @@ teamctl policy disk-min-gb 20                   # free space a spawn asks for (1
 teamctl policy link-node-modules on|off         # share the repository's node_modules default off
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
+teamctl policy human-pane-typing off|idle       # type notices into a pane you are watching?  default off (yours alone)
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -379,11 +380,18 @@ there by whoever needs it.
   when you next prompt it. No keystroke anywhere. In its transcript it appears as a
   `[wolfmux] You have team notices:` block, and the last line is always its own Beads
   command, so a notice that lost its bead id still leads to the work.
-- **Typed, still**: a worker's idle pane is typed into as before. Your lead pane is typed
-  into only while it is **quiet** — no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE`
-  (300 s), nothing half-typed on the input line, not in copy mode. With nobody attached
-  that is every idle moment, and the line only goes to scrollback. While you are working
-  in there the notice waits and goes in by itself once the pane is quiet.
+- **Typed, still**: a worker's idle pane is typed into as before, and so is the lead's
+  pane while nobody is attached to the team (the line only goes to scrollback).
+- **Never typed: a pane you are watching** (v1.20.0, policy `human-pane-typing`, default
+  `off`). That is your lead pane while you are attached to the team, quiet or not, and
+  whatever pane is on your screen, a worker's included. If tmux cannot say who is
+  watching, the answer is "you are". Such a notice is filed only, and the agent gets it
+  from its own hooks. The price: an **idle** lead you are attached to is not woken by a
+  notice; its own loop wakes it (the communication lead runs one every 20 minutes), or you
+  do by prompting it. `teamctl policy human-pane-typing idle` brings back the v1.16.1
+  rule: typed in once the pane is quiet, no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE`
+  (300 s), nothing half-typed on the input line, not in copy mode. Only you may change
+  it, from your own terminal; an agent gets exit 77.
 
 `teamctl inbox` is the pane notices. An agent's own inbox — the work — is always
 `bd list --assignee <role> --status open,in_progress,blocked --include-infra`.
@@ -392,7 +400,8 @@ Two facts are kept per notice and they do not touch each other: whether **you** 
 expanded it (the status-bar count) and whether the **agent** has been given it. Reading
 yours never hides a notice from the agent; an agent reading one never clears your count.
 
-Two notices still reach your conversation on purpose:
+Under `human-pane-typing idle` only, two notices still reach your conversation on purpose
+(under the default `off` neither is typed into a pane you are watching):
 
 - **A permission request**, because it holds a worker until you answer. Still PENDING
   after `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) and it is typed in after all. What stops
@@ -408,11 +417,11 @@ That case used to be broken and v1.16.1 fixed it: a client attached and the lead
 meant the notice was filed and nothing more, and a filed notice reaches the agent through
 its `Stop` hook, which only fires when a turn ENDS. An idle agent has no turn left to
 end, so the notice waited for the badge to be noticed or for your next prompt — hours, in
-the case that was measured. Now the lead's pane is typed into whenever it is QUIET: no
+the case that was measured. v1.16.1 typed into the lead's pane whenever it was QUIET: no
 keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s), nothing half-typed on the input
-line, not in copy mode. Busy instead, and the notice waits in the marker and goes in by
-itself once the pane is quiet. So an idle lead wakes up on its own, and a lead you are in
-the middle of talking to is still not interrupted.
+line, not in copy mode. That still put lines in front of you ("i still see beads messages
+in my terminal", 2026-10-15), so v1.20.0 made "never" the default and kept the quiet rule
+as `human-pane-typing idle`.
 
 ## Git
 
@@ -685,6 +694,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes, where 1 GB is 1024 MB (a gibibyte — the unit teamctl prints sizes in). A lane costs about 3 GB once it has installed and built; `0` switches the check off; no leading zero (write `8`, not `08`) |
 | `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the copy in the repository that lane belongs to (`teamctl spawn --repo` can make that another one). One directory for all of them: an install in any lane changes them all |
 | `WOLFMUX_AUTO_PRUNE` | `on` | the default of the `auto-prune` policy: sweep a lane's build output as soon as the lane is parked. `off` is v1.16.1's behaviour (the build caches only, `node_modules` kept). A value that is neither word is read as `off`: an unreadable setting is not permission to delete. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
+| `WOLFMUX_HUMAN_PANE_TYPING` | `off` | the default of the `human-pane-typing` policy: may a notice be typed into a pane you are watching (your lead pane while you are attached, any pane on your screen)? `off`: never, it is filed for the agent's own hooks. `idle`: the v1.16.1 rule, typed once that pane is quiet. A value that is neither word is read as `off` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
 | `WOLFMUX_AUTO_RECLAIM` | `on` | the default of the `auto-reclaim` policy: take a parked lane off the books by itself (worktree, branch, record) once its task is closed, its content is in main, nothing is uncommitted or stashed and no PR is open. `off`: nothing is removed unless you run `teamctl reclaim`. A value that is neither word is read as `off`: this one deletes a checkout and a branch, so an unreadable setting must never read as yes. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |

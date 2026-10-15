@@ -85,11 +85,14 @@ How that notice reaches you depends on where you are, and you may get it without
 word appearing in your pane at all. It is filed first, then handed to you by your own
 session when your turn ends or when somebody prompts you (that is the
 `[wolfmux] You have team notices:` block). A worker's idle pane may also be typed into
-directly, and the human's own lead pane is typed into only while nobody is watching the
-team — otherwise the notice waits in the file, the human sees a `📨` count in the status
-bar, and you are given it by your session as above. The human can open the file at any
-time with `prefix N` or `teamctl inbox` (that command is the pane notices, NOT your
-Beads inbox).
+directly. A pane a human is watching never is: the lead's pane while a human is attached
+to the team, and any pane on the human's screen (policy `human-pane-typing`, default
+`off`; only the human changes it). Such a notice waits in the file, the human sees a `📨`
+count in the status bar, and you are given it by your session as above. The trade-off,
+for a lead the human is attached to: an IDLE lead is not woken by a notice. Its own loop
+wakes it (the communication lead runs one every 20 minutes), or the human does; so sweep
+your Beads inbox at every turn. The human can open the file at any time with `prefix N`
+or `teamctl inbox` (that command is the pane notices, NOT your Beads inbox).
 
 Nothing is ever typed over a half-typed line: a pane somebody is typing in is left
 alone and the notice arrives by itself once that pane is idle. Several notices that

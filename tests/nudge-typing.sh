@@ -52,6 +52,7 @@ export WOLFMUX_NUDGE_DEBOUNCE=0 # the debounce has its own check in smoke.sh
 # Run from an agent's pane, the environment carries that agent's team and session.
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
+unset WOLFMUX_HUMAN_PANE_TYPING WOLFMUX_INBOX_WATCHED WOLFMUX_INBOX_CLIENTS WOLFMUX_NUDGE_TYPE
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 tmx() { tmux -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
 
@@ -225,7 +226,21 @@ check "collapse: exactly ONE notice arrived for three nudges, not one per nudge"
 check "collapse: three bead ids became the generic line, which names the whole inbox" '! teamctl capture qa --all | grep -qE "half-(1|2|3)" && teamctl capture qa --all | grep -q "Beads update for qa\. Run: bd list"'
 check "collapse: the marker is gone once the notice has been delivered" '[ ! -d "$(pending_dir qa)" ]'
 
-echo "== a human at the keyboard, with an empty input line"
+echo "== the human looking at a worker's pane: under the default policy it is never typed into (v1.20.0)"
+detach_client
+attach_client # a fresh client: tmux counts the attach as input from it
+tmx select-window -t "$WINDOW" >/dev/null 2>&1
+tmx select-pane -t "$PANE" >/dev/null 2>&1 # now the human is looking at qa
+BEFORE="$(notices qa "Beads update for qa")"
+teamctl nudge qa --id watched-qa-1 >"$WORK/watched-qa-1.log" 2>&1
+WATCHED_QA_STATUS=$?
+sleep 6 # longer than WOLFMUX_NUDGE_HUMAN_IDLE: quiet makes no difference to this rule
+check "human-pane-typing off: the pane on the human's screen is filed for, not typed into (exit 4)" '[ "$WATCHED_QA_STATUS" -eq 4 ] && grep -q "^filed: a human is watching qa" "$WORK/watched-qa-1.log" && [ "$(notices qa "Beads update for qa")" = "$BEFORE" ] && [ ! -d "$(pending_dir qa)" ]'
+
+# From here to the "giving up" block the v1.16.1 rule is asserted as it was: it is still
+# there, as policy human-pane-typing idle.
+export WOLFMUX_HUMAN_PANE_TYPING=idle
+echo "== under policy idle: a human at the keyboard, with an empty input line"
 detach_client
 attach_client # a fresh client: tmux counts the attach as input from it
 tmx select-window -t "$WINDOW" >/dev/null 2>&1
@@ -371,6 +386,7 @@ teamctl nudge lead --id unwatched-1 >"$WORK/unwatched-1.log" 2>&1
 UNWATCHED_STATUS=$?
 sleep 2
 check "no client attached + the same idle lead + a bead: it IS typed, exactly as before" '[ "$UNWATCHED_STATUS" -eq 0 ] && grep -q "notified: lead" "$WORK/unwatched-1.log" && teamctl capture lead --all | grep -q "Beads update for lead (unwatched-1)"'
+unset WOLFMUX_HUMAN_PANE_TYPING # the v1.16.1 region ends; nothing below has a client watching
 
 echo "== giving up: a pane that never goes idle"
 type_text "$PANE" "$HALF2"

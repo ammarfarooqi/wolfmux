@@ -9,12 +9,17 @@
 # perfectly is still an interruption.
 #
 # What has to hold, and each of these is a check below:
+#   · v1.20.0, the default (policy human-pane-typing off): a client is attached -> the
+#     lead pane is NEVER typed into, quiet or not; it is filed for the agent's own hooks.
+#     A worker pane the human is looking at is not typed into either; other workers are.
+#     A notice parked for a pane waits while the human watches it. tmux errors -> not typed
+#   · under human-pane-typing idle, the v1.16.1 rule, asserted as it always was:
 #   · a client is attached and a human is WORKING in the lead pane -> nothing is typed
 #     into it; the notice waits in the marker and arrives once that pane is quiet
 #   · a client is attached and the lead pane is QUIET -> it IS typed (issue #12: a
 #     filed notice reaches an agent through its Stop hook, and an agent that is already
 #     idle has no turn boundary left, so filing alone never reached it)
-#   · no client attached -> it IS typed, exactly as v1.14.0 did it
+#   · no client attached -> it IS typed, exactly as v1.14.0 did it, under either policy
 #   · the Stop hook blocks once and only once, and cannot loop
 #   · the badge is empty at zero, and never fails however broken its input is
 #   · `teamctl inbox` clears new-ness but not delivered-ness; the agent's hook clears
@@ -55,7 +60,7 @@ export WOLFMUX_OSASCRIPT="$WORK/no-such-osascript"
 : >"$WOLFMUX_NOTIFY_TTY"
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
-unset WOLFMUX_NUDGE_TYPE WOLFMUX_INBOX_CLIENTS WOLFMUX_INBOX_STALL_NOTIFY
+unset WOLFMUX_NUDGE_TYPE WOLFMUX_INBOX_CLIENTS WOLFMUX_INBOX_STALL_NOTIFY WOLFMUX_HUMAN_PANE_TYPING WOLFMUX_INBOX_WATCHED
 unset WOLFMUX_INBOX_APPROVAL_TYPE WOLFMUX_INBOX_STOP_COOLDOWN WOLFMUX_INBOX_MARK
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 tmx() { tmux -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
@@ -154,7 +159,73 @@ printf 'junk with no tabs at all\n\n\t\t\n' >"$(inbox_file lead)"
 check "badge: a damaged inbox file -> prints nothing, exits 0" '[ -z "$(badge)" ] && teamctl _inbox-badge "$SESSION" >/dev/null 2>&1'
 /bin/rm -f "$(inbox_file lead)"
 
-echo "== a client attached and a QUIET lead pane: the notice is typed after all (issue #12)"
+echo "== v1.20.0: a pane a human is watching is never typed into (policy human-pane-typing off)"
+# Ammar, 2026-10-15: "i still see beads messages in my terminal". v1.16.1 typed into an
+# attached lead's pane once it had been quiet for WOLFMUX_NUDGE_LEAD_IDLE, and at once
+# while he was looking at another pane. The default now is never, for the lead's pane of
+# an attached team and for whatever pane an attached client is showing; such a notice is
+# filed and the agent's own hooks hand it over. A second worker, aux, is the "other
+# workers still are" half: the human looks at qa, and aux must still be typed into.
+teamctl spawn aux flash --no-kickoff >/dev/null 2>&1
+sleep 2
+AUX_PANE="$(teamctl status --json | jq -r '.agents[] | select(.role == "aux") | .pane')"
+attach_client
+tmx select-window -t "$WINDOW" >/dev/null 2>&1
+tmx select-pane -t "$PANE" >/dev/null 2>&1 # the human is looking at the qa pane
+sleep 4                                    # longer than any idle window this suite uses
+check "setup: one client attached, showing qa, a second worker aux, and the policy at its default off" '[ "$(clients)" = "1" ] && [ "$(tmx list-clients -F "#{pane_id}")" = "$PANE" ] && [ -n "$AUX_PANE" ] && [ "$AUX_PANE" != "null" ] && teamctl policy | grep -qE "^  human-pane-typing +off "'
+HBEFORE="$(notices lead "Beads update for lead")"
+teamctl nudge lead --id human-lead-1 >"$WORK/human-lead-1.log" 2>&1
+HUMAN_LEAD_STATUS=$?
+sleep 2
+check "attached + the lead pane: filed, not typed (exit 4), and the message names the policy" '[ "$HUMAN_LEAD_STATUS" -eq 4 ] && grep -q "^filed: a human is watching lead" "$WORK/human-lead-1.log" && grep -q "human-pane-typing is off" "$WORK/human-lead-1.log"'
+check "attached + the lead pane: nothing reached it, though it is quiet and not on screen" '[ "$(notices lead "Beads update for lead")" = "$HBEFORE" ] && ! teamctl capture lead --all | grep -q "human-lead-1"'
+check "attached + the lead pane: no waiter was parked either, so nothing types it in later" '[ ! -d "$(pending_dir lead)" ]'
+check "attached + the lead pane: the event log names the rule" 'grep -q "human-pane-typing=off: a client is attached" "$STATE_DIR/events.jsonl"'
+check "attached + the lead pane: the agent's own Stop hook hands the notice over" 'hook lead _inbox-stop | jq -r .reason | grep -q "human-lead-1"'
+QBEFORE="$(notices qa "Beads update for qa")"
+teamctl nudge qa --id human-qa-1 >"$WORK/human-qa-1.log" 2>&1
+HUMAN_QA_STATUS=$?
+sleep 2
+check "attached + the human viewing the qa pane: qa is not typed into (exit 4)" '[ "$HUMAN_QA_STATUS" -eq 4 ] && grep -q "an attached client is showing this pane" "$WORK/human-qa-1.log" && [ "$(notices qa "Beads update for qa")" = "$QBEFORE" ]'
+check "attached + the human viewing qa: it is filed, and qa's own hook hands it over" 'grep -q "human-qa-1" "$(inbox_file qa)" && hook qa _inbox-stop | jq -r .reason | grep -q "human-qa-1"'
+teamctl nudge aux --id human-aux-1 >"$WORK/human-aux-1.log" 2>&1
+HUMAN_AUX_STATUS=$?
+sleep 2
+check "attached + the human viewing qa: ANOTHER worker, aux, is typed into exactly as before" '[ "$HUMAN_AUX_STATUS" -eq 0 ] && teamctl capture aux --all | grep -q "Beads update for aux (human-aux-1)"'
+LPBEFORE="$(notices lead "Policy changed")"
+teamctl policy lead-teams on >/dev/null 2>&1
+sleep 2
+check "attached + a policy notice for the lead (notify_lead): filed, never typed" '[ "$(notices lead "Policy changed")" = "$LPBEFORE" ] && grep -q "Policy changed: lead-teams = on" "$(inbox_file lead)"'
+# A notice already PARKED for a pane must not be typed once the human starts watching it:
+# the waiter asks the same question before every line. aux gets a half-typed line, so the
+# notice parks; then the human looks at aux and the line goes. It waits while he watches,
+# and arrives by itself once he looks away.
+tmx send-keys -t "$AUX_PANE" -l "aux has a half typed line" >/dev/null 2>&1
+sleep 0.5
+teamctl nudge aux --id parked-aux-1 >"$WORK/parked-aux-1.log" 2>&1
+PARKED_AUX_STATUS=$?
+check "parked then watched: the notice parks behind aux's half-typed line (exit 3)" '[ "$PARKED_AUX_STATUS" -eq 3 ] && [ -d "$(pending_dir aux)" ]'
+tmx select-pane -t "$AUX_PANE" >/dev/null 2>&1
+tmx send-keys -t "$AUX_PANE" Enter >/dev/null 2>&1
+sleep 5
+check "parked then watched: while the human watches aux, the waiter types nothing" '! teamctl capture aux --all | grep -q "(parked-aux-1)" && [ -d "$(pending_dir aux)" ]'
+tmx select-pane -t "$PANE" >/dev/null 2>&1
+sleep 5
+check "parked then watched: once the human looks away, it arrives by itself" 'teamctl capture aux --all | grep -q "Beads update for aux (parked-aux-1)" && [ ! -d "$(pending_dir aux)" ]'
+detach_client
+# The blocks below count the lead's inbox lines from the first one and the banners from
+# zero, so this section hands everything back empty.
+teamctl inbox --all >/dev/null 2>&1
+: >"$(inbox_file lead)"
+: >"$WOLFMUX_NOTIFY_TTY"
+/bin/rm -f "$WOLFMUX_DATA/.stall.lead" "$INBOX/.stall.lead" "$INBOX/.stop.lead" "$INBOX/.stop.qa"
+
+# From here to the detach further down, the v1.16.1 rule is asserted exactly as it was:
+# it is still there, as policy human-pane-typing idle, for whoever chooses it.
+export WOLFMUX_HUMAN_PANE_TYPING=idle
+
+echo "== under policy idle: a client attached and a QUIET lead pane: the notice is typed after all (issue #12)"
 # Measured in production on 2026-10-12: a lead idle from 13:58Z never received P1
 # notices sent at 16:13Z or 16:53Z, because v1.15.0 filed them and filing reaches the
 # agent through its Stop hook, which needs a turn boundary an idle agent does not have.
@@ -286,7 +357,7 @@ teamctl policy worker-permissions skip >/dev/null 2>&1
 sleep 1
 teamctl inbox --all >/dev/null 2>&1
 
-echo "== no client attached: the lead IS typed into, exactly as v1.14.0 did it"
+echo "== no client attached: the lead IS typed into, exactly as v1.14.0 did it, under the default policy"
 # The region above left a half-typed line in the lead pane and a waiter behind it. Both
 # have to go, or the next notice joins that marker instead of being typed into the pane.
 tmx send-keys -t "$LEAD_PANE" Enter >/dev/null 2>&1
@@ -294,6 +365,7 @@ tmx send-keys -t "$LEAD_PANE" Enter >/dev/null 2>&1
 sleep 1
 detach_client
 sleep 1
+unset WOLFMUX_HUMAN_PANE_TYPING # the v1.16.1 region ends: the default policy, off, again
 check "setup: no client is attached now" '[ "$(clients)" = "0" ]'
 : >"$WOLFMUX_NOTIFY_TTY"
 /bin/rm -f "$INBOX/.stall.lead"
@@ -439,16 +511,101 @@ check "who is typed into: off/workers/detached-lead/all x lead/worker x claude/c
 ) >/dev/null 2>&1
 CLOSED_STATUS=$?
 check "is anybody watching: a tmux read we cannot make sense of counts as attached" '[ "$CLOSED_STATUS" -eq 0 ]'
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/policy.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  SESSION="irrelevant"
+  unset WOLFMUX_INBOX_WATCHED
+  # v1.20.0, fail CLOSED: a tmux that errors says "a human is watching", so nothing is typed
+  tmx() { return 1; }
+  tm_pane_watched "%7" || exit 1
+  tm_pane_watched "" || exit 1
+  WOLFMUX_INBOX_CLIENTS=0
+  inbox_human_pane qa "%7" || exit 1
+  TMUX_BIN=""
+  inbox_human_pane qa "%7" || exit 1
+  # a tmux that answers: only the panes on a client's screen are watched
+  TMUX_BIN=/usr/bin/true
+  tmx() { printf '%%3\n%%9\n'; }
+  tm_pane_watched "%3" || exit 1
+  tm_pane_watched "%31" && exit 1
+  inbox_human_pane qa "%5" && exit 1
+  # the lead's pane of an attached team, wherever the client is looking
+  WOLFMUX_INBOX_CLIENTS=1
+  inbox_human_pane lead "%5" || exit 1
+  inbox_human_pane qa "%5" && exit 1
+  # the seam, and its error word
+  WOLFMUX_INBOX_WATCHED="%2 %4"
+  inbox_human_pane qa "%4" || exit 1
+  inbox_human_pane qa "%5" && exit 1
+  WOLFMUX_INBOX_WATCHED=error
+  inbox_human_pane qa "%5" || exit 1
+  # the policy: off (also unset, or nonsense) keeps off the pane; idle lets the old rule decide
+  policy_get() { printf '%s\n' "${FAKE_POLICY:-}"; }
+  FAKE_POLICY=off inbox_keep_off_human_pane qa "%5" || exit 1
+  FAKE_POLICY="" inbox_keep_off_human_pane qa "%5" || exit 1
+  FAKE_POLICY=idle inbox_keep_off_human_pane qa "%5" && exit 1
+  unset -f policy_get
+  . "$WOLFMUX_HOME/lib/policy.sh" # the real one back, for the last question
+  [ "$(WOLFMUX_HUMAN_PANE_TYPING=junk policy_get human-pane-typing)" = "off" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+HUMAN_CLOSED_STATUS=$?
+check "a human's pane: a tmux error, no tmux, or the error seam all read as watched; only shown panes count; nonsense policy is off" '[ "$HUMAN_CLOSED_STATUS" -eq 0 ]'
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/policy.sh"
+  . "$WOLFMUX_HOME/lib/approvals.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/brand.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  . "$WOLFMUX_HOME/lib/agents.sh"
+  STATE_DIR="$WORK/human-approval"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  SESSION="irrelevant" WOLFMUX_INBOX_CLIENTS=1 WOLFMUX_INBOX_STALL_NOTIFY=off
+  tm_pane_for_role() { printf '%%1\n'; }
+  tm_pane_state() { printf 'running\n'; }
+  _notify_type_or_park() { printf '%s\n' "$3" >>"$WORK/human-approval.typed"; }
+  : >"$WORK/human-approval.typed"
+  # an approval with APPROVAL_TYPE=always, the loudest setting there is: under the default
+  # policy the attached lead's pane still gets nothing typed, and it is filed
+  rc=0
+  WOLFMUX_INBOX_APPROVAL_TYPE=always notify_lead approval A1 qa || rc=$?
+  [ "$rc" -eq 4 ] && [ ! -s "$WORK/human-approval.typed" ] || exit 1
+  grep -q "Permission request A1 from qa" "$STATE_DIR/inbox/lead" || exit 1
+  # and under idle, the v1.16.1 override is back: typed at once
+  WOLFMUX_HUMAN_PANE_TYPING=idle WOLFMUX_INBOX_APPROVAL_TYPE=always notify_lead approval A2 qa || true
+  grep -q "A2" "$WORK/human-approval.typed" || exit 1
+  exit 0
+) >/dev/null 2>&1
+HUMAN_APPROVAL_STATUS=$?
+check "a human's pane: even an approval with APPROVAL_TYPE=always is filed, not typed; under idle it is typed" '[ "$HUMAN_APPROVAL_STATUS" -eq 0 ]'
 
-echo "== WOLFMUX_NUDGE_TYPE=all brings the pre-1.15.0 behaviour back"
+echo "== WOLFMUX_NUDGE_TYPE=all brings the pre-1.15.0 behaviour back, under policy idle only"
 attach_client
 tmx select-pane -t "$PANE" >/dev/null 2>&1
 sleep 4
 BEFORE="$(notices lead "Beads update for lead")"
-WOLFMUX_NUDGE_TYPE=all teamctl nudge lead --id all-1 >/dev/null 2>&1
+WOLFMUX_NUDGE_TYPE=all teamctl nudge lead --id all-off-1 >/dev/null 2>&1
+ALL_OFF_STATUS=$?
+sleep 2
+check "WOLFMUX_NUDGE_TYPE=all under the default policy: the attached lead is still not typed into" '[ "$ALL_OFF_STATUS" -eq 4 ] && [ "$(notices lead "Beads update for lead")" = "$BEFORE" ] && ! teamctl capture lead --all | grep -q "all-off-1"'
+WOLFMUX_HUMAN_PANE_TYPING=idle WOLFMUX_NUDGE_TYPE=all teamctl nudge lead --id all-1 >/dev/null 2>&1
 ALL_STATUS=$?
 sleep 2
-check "WOLFMUX_NUDGE_TYPE=all: typed into an attached lead pane again, for whoever wants it" '[ "$ALL_STATUS" -eq 0 ] && teamctl capture lead --all | grep -q "Beads update for lead (all-1)"'
+check "WOLFMUX_NUDGE_TYPE=all + human-pane-typing idle: typed into an attached lead pane again" '[ "$ALL_STATUS" -eq 0 ] && teamctl capture lead --all | grep -q "Beads update for lead (all-1)"'
 BEFORE="$(notices lead "Beads update for lead")"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge qa --id none-1 >/dev/null 2>&1
 sleep 2

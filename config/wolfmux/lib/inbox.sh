@@ -74,6 +74,12 @@ WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE="${WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE:-120}
 # workers, plus the lead while NO client is attached to the team's session — nobody is
 # looking then, the agent wakes at once, and the line only goes to scrollback. all: the
 # v1.14.0 behaviour, the lead's pane included whoever is watching.
+#
+# On top of this knob, and whatever it says, sits the policy human-pane-typing (default
+# off, v1.20.0): a pane a HUMAN is watching is never typed into — the lead's pane while a
+# client is attached to the team, and any pane an attached client is showing. See
+# inbox_human_pane. So under the default policy `all` types into the same panes as
+# `detached-lead`; the difference between them comes back only with human-pane-typing idle.
 WOLFMUX_NUDGE_TYPE="${WOLFMUX_NUDGE_TYPE:-detached-lead}"
 case "$WOLFMUX_NUDGE_TYPE" in
   off | workers | detached-lead | all) ;;
@@ -517,6 +523,59 @@ inbox_type_when_idle() {
   [ "$WOLFMUX_NUDGE_TYPE" = "detached-lead" ] || return 1
   [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
   return 0
+}
+
+# inbox_human_pane <role> <pane> — 0 when this pane is in front of a human right now, so
+# under human-pane-typing off NOTHING is typed into it. Two cases, and either is enough:
+#   a. it is the LEAD's pane and a client is attached to the team's session. That pane is
+#      the human's conversation, whether he is looking at it this second or not.
+#   b. an attached client is showing it: the active pane of the window on his screen, in
+#      any session of this server. A worker's pane he is reading counts too.
+# Both reads fail CLOSED (inbox_clients_attached, tm_pane_watched): when tmux cannot tell
+# us, the answer is "a human is there". INBOX_HUMAN_REASON says which case it was.
+#
+# Why "never" and not "once it is quiet" (the v1.16.1 rule, still there as idle): Ammar,
+# 2026-10-15, "i still see beads messages in my terminal". Quiet for 300 s is a human
+# reading, or thinking, or away for a coffee; any of those, and a line arrives in his
+# conversation. The price is issue #12 again for that one pane: an IDLE lead that a human
+# is attached to is not woken by a notice. Its own loop wakes it (the communication lead
+# runs one every 20 minutes), or the human does, and the Stop and UserPromptSubmit hooks
+# hand the notices over then. That trade is the human's to make, hence a policy.
+inbox_human_pane() {
+  local role="$1" pane="$2"
+  INBOX_HUMAN_REASON=""
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && inbox_clients_attached "${SESSION:-}"; then
+    INBOX_HUMAN_REASON="a client is attached to the team and this is the lead's pane"
+    return 0
+  fi
+  if [ -n "${WOLFMUX_INBOX_WATCHED+x}" ]; then # test seam: the panes on screen, or "error"
+    case " $WOLFMUX_INBOX_WATCHED " in
+      *" error "* | *" $pane "*)
+        INBOX_HUMAN_REASON="an attached client is showing this pane"
+        return 0
+        ;;
+    esac
+    return 1
+  fi
+  [ -n "$TMUX_BIN" ] || {
+    INBOX_HUMAN_REASON="tmux cannot be asked who is watching"
+    return 0
+  }
+  if tm_pane_watched "$pane"; then
+    INBOX_HUMAN_REASON="an attached client is showing this pane"
+    return 0
+  fi
+  return 1
+}
+
+# inbox_human_typing_off — 0 under the default: a pane a human is watching is not typed into
+inbox_human_typing_off() { [ "$(policy_get human-pane-typing 2>/dev/null || true)" != "idle" ]; }
+
+# inbox_keep_off_human_pane <role> <pane> — the one question every typed path asks: 0 when
+# this notice must NOT be typed into that pane now (the policy is off and a human is there)
+inbox_keep_off_human_pane() {
+  inbox_human_typing_off || return 1
+  inbox_human_pane "$1" "$2"
 }
 
 # inbox_stall_notify <role> <kind> — the third human-facing channel, and the only

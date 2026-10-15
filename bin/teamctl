@@ -17,10 +17,15 @@ for module in provider-env common registry tmuxctl worktree disk reclaim beads p
   fi
   # shellcheck source=/dev/null
   . "$WOLFMUX_HOME/lib/$module.sh"
+  # ~/.config/wolfmux/config supplies defaults; the environment wins. Read right after the
+  # module that defines the reader, and BEFORE the rest: inbox.sh and agents.sh set their
+  # defaults when they are sourced (WOLFMUX_NUDGE_TYPE="${WOLFMUX_NUDGE_TYPE:-…}"), and the
+  # loader skips a name that is already set, so loading it after them ignored every one of
+  # those keys in the file (found 2026-10-15; tests/providers.sh runs this binary to check).
+  if [ "$module" = provider-env ]; then wolfmux_load_config; fi
 done
 TEAMCTL_ARGS="$*"
 trap 'teamctl_on_exit' EXIT
-wolfmux_load_config # ~/.config/wolfmux/config supplies defaults; the environment wins
 tm_adopt_legacy_server
 
 usage() {
@@ -67,8 +72,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
-  Notices  nothing is typed into YOUR conversation: a notice for an agent is filed, the status
-         bar shows 📨 and a count, and the agent is given it by its own Stop hook (see prefix N).
+  Notices  nothing is typed into a pane YOU are watching (policy human-pane-typing): a notice for an
+         agent is filed, the status bar shows 📨 and a count, and the agent is given it by its own
+         Stop hook (see prefix N).
          This is NOT an agent's Beads inbox — the work itself is always bd list --assignee <role>
     teamctl inbox [<role>] [--all] [--json] [--keep]       (alias: notices)
                                                       the pane notices filed for a role (default:
@@ -84,6 +90,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       auto-prune on|off (sweep a lane's build output as soon as it is parked)
                                                       auto-reclaim on|off (take a parked lane off the books once its work is all in main)
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
+                                                      human-pane-typing off|idle (type a notice into a pane you are watching?
+                                                      default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look

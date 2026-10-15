@@ -631,7 +631,7 @@ creation time in the lead's record, so the founder keeps its authority after one
 |---------|------|
 | `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. `--ticket` sets the team's default ticket key ([branch names](#branch-names-that-fit-your-repository)). Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's own conversation (the id stored with it), `--resume` reopens the one you name ([which conversation comes back](#finding-the-manager-and-being-told-when-someone-finishes)). With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
-| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `browser-writes` (ask\|allow, DEFAULT ask: allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings — lead and workers alike — so a Chrome write resolves before Claude Code's auto-mode classifier runs on it), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off), `auto-prune` (on\|off, DEFAULT on: sweep a lane's build output as soon as the lane is parked — `teamctl keep <role>` protects one lane), `auto-reclaim` (on\|off, DEFAULT on: take a parked lane off the books by itself once its task is closed and its work is all in main — `teamctl keep <role>` protects one lane; a value that is neither on nor off counts as off: [a finished lane](#a-finished-lane-takes-itself-off-the-books)) |
+| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `browser-writes` (ask\|allow, DEFAULT ask: allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings — lead and workers alike — so a Chrome write resolves before Claude Code's auto-mode classifier runs on it), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)), `human-pane-typing` (off\|idle, DEFAULT off: never type a notice into a pane you are watching; only you may change it), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off), `auto-prune` (on\|off, DEFAULT on: sweep a lane's build output as soon as the lane is parked — `teamctl keep <role>` protects one lane), `auto-reclaim` (on\|off, DEFAULT on: take a parked lane off the books by itself once its task is closed and its work is all in main — `teamctl keep <role>` protects one lane; a value that is neither on nor off counts as off: [a finished lane](#a-finished-lane-takes-itself-off-the-books)) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
 | `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). Refused when free disk is under `disk-min-gb`. `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated — **if that lane was protected before it was parked**, because from v1.17.0 `teamctl stop` sweeps a lane's build output. `teamctl keep <role>` before stopping it, and the flag travels with the worktree. Refuses a running worker, and a worktree with uncommitted changes (lists them) (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one (and sends no kickoff). `--link-node-modules`: a brand-new lane shares its repository's `node_modules` instead of installing its own ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay. Its build output goes, `node_modules` included (policy `auto-prune`, on by default; `off` keeps `node_modules` as before v1.17.0). The one case where the lane itself goes: its task is closed and its work is all in main (policy `auto-reclaim`, on by default; `teamctl keep <role>` first, to keep a worker you mean to restart) |
@@ -801,14 +801,21 @@ is a `set -g` overwrite, so re-sourcing is safe to repeat, and it re-reads your 
 `~/.tmux.conf` as well.
 | you, when an agent is stuck | one desktop notification, at most one per role every two minutes, carrying the count: "team/lead: 4 notices waiting". A click opens the team | no |
 | the agent | its own session hands them over when its turn ends, or when you next prompt it. In its transcript that is a `[wolfmux] You have team notices:` block | no |
-| the agent, typed | a worker's idle pane is still typed into, as before. Your lead pane is typed into only while it is **quiet**: no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE` (5 minutes), nothing half-typed on its input line, not in copy mode. Otherwise the notice waits and goes in by itself once that pane is quiet | never while you are working in it |
+| the agent, typed | a worker's idle pane is still typed into, as before, and the lead's pane while nobody is attached. A pane **you are watching** never is (policy `human-pane-typing`, default `off`): your lead pane while you are attached, quiet or not, and any pane on your screen. A tmux read that fails counts as watching. Under `human-pane-typing idle` the v1.16.1 rule is back: typed in once the pane is quiet, no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE` (5 minutes), nothing half-typed on its input line, not in copy mode | never, under the default |
+
+The price of the default: an **idle** lead you are attached to is not woken by a notice.
+Its own loop wakes it (the communication lead runs one every 20 minutes), or you do, and
+its hooks hand the notices over then. `teamctl policy human-pane-typing idle` is yours
+alone to run, from your own terminal: an agent gets exit 77, because its own pane is the
+one it would be asking to type into.
 
 Two things are tracked per notice, and they are independent: whether **you** have
 expanded it (that is the count in the status bar) and whether the **agent** has been
 given it. Reading your notices never hides them from the agent, and an agent reading
 them never clears your count.
 
-Two cases still put a line in your conversation on purpose:
+Under `human-pane-typing idle` only, two cases still put a line in your conversation on
+purpose (under the default `off`, neither is typed into a pane you are watching):
 
 - **A permission request.** It holds a worker until you answer, so if it is still
   PENDING after `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) it is typed in after all.
@@ -821,10 +828,13 @@ Two cases still put a line in your conversation on purpose:
   hand a notice over with, so typing is the only channel that reaches that agent at all.
 
 The knob for the rest is `WOLFMUX_NUDGE_TYPE`: `off` (never type into anybody),
-`workers`, `detached-lead` (the default — workers, plus the lead's pane whenever it is
-quiet) and `all` (the pre-1.15.0 behaviour, which types in whatever you are doing).
-`WOLFMUX_NUDGE_LEAD_IDLE` is how quiet the lead's pane has to be first: 300 seconds, and
-only the keystroke check uses it — a half-typed line or copy mode is busy at any setting.
+`workers`, `detached-lead` (the default — workers, plus the lead's pane while nobody is
+attached) and `all` (the pre-1.15.0 behaviour). `human-pane-typing off` sits on top of all
+four, so under it `all` types into the same panes as `detached-lead`.
+`WOLFMUX_NUDGE_LEAD_IDLE` is how quiet the lead's pane has to be first under
+`human-pane-typing idle`: 300 seconds, and only the keystroke check uses it — a half-typed
+line or copy mode is busy at any setting. `WOLFMUX_HUMAN_PANE_TYPING` in the config file is
+the policy's default for every team.
 `WOLFMUX_INBOX_STALL_NOTIFY=off` drops the desktop notification, and `WOLFMUX_NOTIFY=off`
 already does.
 
@@ -834,15 +844,19 @@ These six — `WOLFMUX_NUDGE_TYPE`, `WOLFMUX_NUDGE_LEAD_IDLE`,
 `~/.config/wolfmux/config` as `KEY=value` lines, which is where a knob has to live to
 reach an agent's pane: a pane's environment comes from the tmux server, not from the
 shell you typed `teamctl` in. Before v1.16.1 none of them was on that file's allowlist,
-so writing one there was read and dropped, with no error and no effect.
+so writing one there was read and dropped, with no error and no effect. And before
+v1.20.0 the six that `lib/inbox.sh` and `lib/agents.sh` give a default when they load were
+still ignored there, because `teamctl` read the file after loading them; it reads the file
+first now, and `tests/providers.sh` runs the real binary to check.
 
 **v1.16.0 and earlier left one case broken, and v1.16.1 is the fix.** A client attached
 and the lead idle meant the notice was filed and nothing else, and a filed notice reaches
 the agent through its **Stop** hook, which only fires when a turn ENDS. An agent that is
 already idle has no turn left to end, so the notice sat there: measured on 2026-10-12, a
 lead idle from 13:58Z never received P1 notices sent at 16:13Z or 16:53Z and was still
-asleep at 17:35Z. Now such a notice is typed in once the pane is quiet, so an idle lead
-wakes up by itself — and a lead you are in the middle of talking to still does not.
+asleep at 17:35Z. v1.16.1 typed such a notice in once the pane was quiet. v1.20.0 keeps
+that as `human-pane-typing idle` and does not type into your pane at all by default: a
+quiet pane was often a human reading it.
 
 ## tmux, in the team session only
 
