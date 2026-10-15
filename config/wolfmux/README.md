@@ -182,6 +182,8 @@ teamctl policy disk-min-gb 20                   # free space a spawn asks for (1
 teamctl policy link-node-modules on|off         # share the repository's node_modules default off
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
+teamctl policy human-pane-typing off|idle       # type notices into a pane you are watching?  default off (yours alone)
+teamctl policy orphan-steward <team>|off        # whose lead may bring back a team YOU founded  default off (yours alone)
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
 ```
 
@@ -322,6 +324,16 @@ founder. The founder may then bring it back or clean it up without you:
 You are told each time, and the event log records it with the founder's Beads name. It never
 includes `policy`, `approve` or `deny`, and it ends the moment that team's lead runs again.
 
+A team YOU started has no founding lead, so no agent may bring it back. To let one, name the
+**orphan steward** once, from your own terminal: `teamctl policy orphan-steward
+communication-management` (or `WOLFMUX_ORPHAN_STEWARD` in the config file; `off` ends it). The
+lead of that team, and nobody else in it, may then run `teamctl restart lead --team <name>`
+(also `--continue` and `--resume <id>`) and `teamctl stop <role> --team <name>` on a team you
+founded whose lead is not running. Nothing else, and nothing on a team another lead founded.
+Each act is written to `~/.wolfmux/state/<project>/steward.jsonl` first (an act whose line cannot
+be written is not done), you are told, and the event log names the steward. An agent cannot set
+the key (exit 77), and a name that is not a team of the project is refused.
+
 ## Deleting a team
 
 ```bash
@@ -365,12 +377,20 @@ the middle of a sentence you were writing. Now a notice is written to a file fir
 `~/.wolfmux/state/<project>/[teams/<team>/]inbox/<role>`, one line each — and read from
 there by whoever needs it.
 
-- **Passively**: `📨 3` next to the wolf on the status line is how many notices nobody
-  has expanded yet, across the whole team. `🔔` appears as well when one of them is a
-  permission request waiting for your decision. At zero there is nothing there at all.
-- **On demand**: `Ctrl-b N`, or `teamctl inbox` (the lead) / `teamctl inbox --all`
-  (every role) / `teamctl inbox <role>`. `--json` for a script, `--keep` to read them
-  without clearing the count. The alias `teamctl notices` is the same command.
+- **Your messages**: `📨 3` next to the wolf on the status line is how many Beads messages
+  to YOU are unread in this project (open messages assigned to `human`, or whatever
+  `WOLFMUX_HUMAN` says; agents write them with `bd create "Subject" -t message -a human`).
+  `🔔` appears while a permission request of this team waits for your decision. At zero
+  there is nothing there at all. The number comes from a small index the Beads hook keeps
+  (`~/.wolfmux/state/<project>/human-inbox`), so the status line never runs bd.
+- **Reading them**: `Ctrl-b N`, or a click on the number, opens a popup, newest first.
+  Up/down or a digit selects, Enter reads one (`bd show` in `less`), `r` marks it read,
+  `a` marks them all read after a y/n, `q` or Esc closes. Opening it also checks Beads
+  once and puts the number right if the index had drifted.
+- **Pane notices, for debugging**: `teamctl inbox` (the lead) / `teamctl inbox --all`
+  (every role) / `teamctl inbox <role>`. `--json` for a script, `--keep` to leave them
+  marked new. The alias `teamctl notices` is the same command. They are not counted on
+  the status line.
 - **When an agent may be stuck**: one desktop notification, at most one per role every
   two minutes, carrying the count rather than the single bead — "team/lead: 4 notices
   waiting". Same notification path as a finished turn, so a click opens the team, and
@@ -379,11 +399,21 @@ there by whoever needs it.
   when you next prompt it. No keystroke anywhere. In its transcript it appears as a
   `[wolfmux] You have team notices:` block, and the last line is always its own Beads
   command, so a notice that lost its bead id still leads to the work.
-- **Typed, still**: a worker's idle pane is typed into as before. Your lead pane is typed
-  into only while it is **quiet** — no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE`
-  (300 s), nothing half-typed on the input line, not in copy mode. With nobody attached
-  that is every idle moment, and the line only goes to scrollback. While you are working
-  in there the notice waits and goes in by itself once the pane is quiet.
+- **Typed, still**: a worker's idle pane is typed into as before, and so is the lead's
+  pane while nobody is attached to the team (the line only goes to scrollback).
+- **Never typed: a pane you are watching** (v1.20.0, policy `human-pane-typing`, default
+  `off`). That is your lead pane while you are attached to the team, quiet or not, and
+  whatever pane is on your screen, a worker's included. If tmux cannot say who is
+  watching, the answer is "you are". Such a notice is filed only, and the agent gets it
+  from its own hooks. In such a pane the turn-end hook stays silent too (Claude Code
+  prints what a `Stop` hook says, as "Stop hook error"), so the notices arrive with the
+  next prompt: yours, or the agent's own loop's, which is a prompt as well and shows you
+  nothing. The price: an **idle** lead you are attached to is not woken by a
+  notice; its own loop wakes it (the communication lead runs one every 20 minutes), or you
+  do by prompting it. `teamctl policy human-pane-typing idle` brings back the v1.16.1
+  rule: typed in once the pane is quiet, no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE`
+  (300 s), nothing half-typed on the input line, not in copy mode. Only you may change
+  it, from your own terminal; an agent gets exit 77.
 
 `teamctl inbox` is the pane notices. An agent's own inbox — the work — is always
 `bd list --assignee <role> --status open,in_progress,blocked --include-infra`.
@@ -392,7 +422,8 @@ Two facts are kept per notice and they do not touch each other: whether **you** 
 expanded it (the status-bar count) and whether the **agent** has been given it. Reading
 yours never hides a notice from the agent; an agent reading one never clears your count.
 
-Two notices still reach your conversation on purpose:
+Under `human-pane-typing idle` only, two notices still reach your conversation on purpose
+(under the default `off` neither is typed into a pane you are watching):
 
 - **A permission request**, because it holds a worker until you answer. Still PENDING
   after `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) and it is typed in after all. What stops
@@ -408,11 +439,11 @@ That case used to be broken and v1.16.1 fixed it: a client attached and the lead
 meant the notice was filed and nothing more, and a filed notice reaches the agent through
 its `Stop` hook, which only fires when a turn ENDS. An idle agent has no turn left to
 end, so the notice waited for the badge to be noticed or for your next prompt — hours, in
-the case that was measured. Now the lead's pane is typed into whenever it is QUIET: no
+the case that was measured. v1.16.1 typed into the lead's pane whenever it was QUIET: no
 keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s), nothing half-typed on the input
-line, not in copy mode. Busy instead, and the notice waits in the marker and goes in by
-itself once the pane is quiet. So an idle lead wakes up on its own, and a lead you are in
-the middle of talking to is still not interrupted.
+line, not in copy mode. That still put lines in front of you ("i still see beads messages
+in my terminal", 2026-10-15), so v1.20.0 made "never" the default and kept the quiet rule
+as `human-pane-typing idle`.
 
 ## Git
 
@@ -639,15 +670,41 @@ a warning, `off` removes the check. `teamctl spawn <role> <model> --link-node-mo
 root's copy instead of installing 2+ GB again — one directory for every lane, so an
 `npm install` in any lane changes the dependencies of all of them.
 
+### A finished team takes itself off the books
+
+```
+teamctl finish --dry-run           # what finish would take, and what would still hold the team
+teamctl finish                     # we are done: every finished lane, then the team itself
+```
+
+`teamctl finish` (the lead, the founder of a team whose lead stopped, or you) parks every
+lane and takes every lane that passes the gates above. When no lane is left and no task of
+the team is open in Beads, the team goes too: records, state directory, session, with one
+`team-destroyed` line in `~/.wolfmux/state/reclaimed.jsonl`. Transcripts are never deleted.
+When something still holds it, the session ends and the team stays, and the next
+`teamctl reclaim --all-teams` finishes it once nothing holds it.
+
+Only `finish` ever takes a team. A lead that stopped, crashed or ran a plain `destroy` does
+not count: those are written down only so that `teamctl teams` can say, under each orphaned
+team, what it holds and why it is still here. The status bar shows `orph N` and the
+dashboard `orphaned teams: N holding X`.
+
 ## Diagnostics
 
 ```bash
-teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins
+teamctl doctor                                  # launchers, inherited keys, settings overrides, Keychain, logins, Beads store size
 teamctl doctor --probe                          # the same, plus one incomplete request per stored provider key: is it accepted?
 teamctl models                                  # what fable/opus/sonnet/haiku mean today, and who runs an older model
 WOLFMUX_DRY_RUN=1 claude-glm                    # what a launcher would exec — no secrets, nothing started
 WOLFMUX_DRY_RUN=1 claude-kimi                   # any provider name works; shows billing and the metered gate too
 ```
+
+Beads gets slower as its store grows: every bd call reads the journal's index first, and
+calls run one at a time. `teamctl doctor` shows the store's size and one call's time, and
+past 1 GB of journal, 20 MB of index or 1.5 s a call it prints the command to compact it:
+`cd <project> && bd gc --skip-decay --full --force` (about 4-5 s, every bd call waits
+meanwhile, nothing is deleted). Wolfmux never runs it itself. A weekly habit: run
+`teamctl doctor` once a week, and compact when it says so.
 
 ## Where things live
 
@@ -680,12 +737,15 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_WORKER_SPAWN` | `off` | may workers spawn teammates (same rule: a team's own policy wins) |
 | `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
+| `WOLFMUX_ORPHAN_STEWARD` | `off` | the default of the `orphan-steward` policy: the team whose lead may restart the lead of a team you founded, or stop its agents, while that lead is not running. A value that is no team name is read as `off`. `teamctl policy orphan-steward` sets it per project, and only you can |
 | `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
 | `WOLFMUX_DISK_GUARD` | `refuse` | what `teamctl spawn` does when free disk is under the limit below: `refuse`, `warn`, `off` |
 | `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes, where 1 GB is 1024 MB (a gibibyte — the unit teamctl prints sizes in). A lane costs about 3 GB once it has installed and built; `0` switches the check off; no leading zero (write `8`, not `08`) |
 | `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the copy in the repository that lane belongs to (`teamctl spawn --repo` can make that another one). One directory for all of them: an install in any lane changes them all |
 | `WOLFMUX_AUTO_PRUNE` | `on` | the default of the `auto-prune` policy: sweep a lane's build output as soon as the lane is parked. `off` is v1.16.1's behaviour (the build caches only, `node_modules` kept). A value that is neither word is read as `off`: an unreadable setting is not permission to delete. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
+| `WOLFMUX_HUMAN_PANE_TYPING` | `off` | the default of the `human-pane-typing` policy: may a notice be typed into a pane you are watching (your lead pane while you are attached, any pane on your screen)? `off`: never, it is filed for the agent's own hooks. `idle`: the v1.16.1 rule, typed once that pane is quiet. A value that is neither word is read as `off` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
 | `WOLFMUX_AUTO_RECLAIM` | `on` | the default of the `auto-reclaim` policy: take a parked lane off the books by itself (worktree, branch, record) once its task is closed, its content is in main, nothing is uncommitted or stashed and no PR is open. `off`: nothing is removed unless you run `teamctl reclaim`. A value that is neither word is read as `off`: this one deletes a checkout and a branch, so an unreadable setting must never read as yes. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
+| `WOLFMUX_HUMAN` | `human` | your own name in Beads. Agents write to you with `bd create "Subject" -t message -a human`; the 📨 number next to the wolf counts those still unread, and `prefix N` or a click on the number opens them (Enter reads one, `r` marks it read). Letters, digits, `.`, `_`, `-` |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |
 | `WOLFMUX_NOTIFY` | `all` | whose finished turns notify you: `all`, `lead`, `off`. A team founded by a lead is announced in every case |

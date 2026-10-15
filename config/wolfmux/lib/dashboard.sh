@@ -417,7 +417,7 @@ dash_team_records() {
 dash_team_json() {
   local panes="$1" snapshot="$2" full="$3" live=0 orphaned=0 rows="" lead_label="" lead_mark="" founder=""
   local role kind model label workdir session_id family branch spawned_by recorded_id recorded_window recorded_at
-  local row pane dead pid state cpu rss usage cctx active lead_row=""
+  local row pane dead pid state cpu rss usage cctx active lead_row="" lanes_kb="" stamp=""
   SESSION="$(dash_meta_session "$STATE_DIR")"
   [ -n "$SESSION" ] || SESSION="$(session_name_for_project)"
   if dash_has_session "$(dash_sessions "$panes")" "$SESSION"; then live=1; fi
@@ -472,13 +472,19 @@ dash_team_json() {
 $(dash_team_records)
 EOF
   if dash_orphaned "$lead_row"; then orphaned=1; fi
+  # The lane total as teamctl teams last measured it, whatever its age: the number the
+  # dashboard's "orphaned teams: N holding X" line adds up. Never measured here.
+  lanes_kb=""
+  if [ -f "$(disk_cache_file)" ]; then read -r stamp lanes_kb <"$(disk_cache_file)" 2>/dev/null || true; fi
+  case "${lanes_kb:-x}" in "" | *[!0-9]* | 0?*) lanes_kb="" ;; esac
   printf '%s' "$rows" | "$JQ_BIN" -R -s \
     --arg team "$TEAM" --arg session "$SESSION" --arg live "$live" --arg orphaned "$orphaned" \
     --arg lead "$lead_label" --arg lead_mark "$lead_mark" --arg founder "${founder:-operator}" --arg disk "$(dash_disk_label)" \
-    --arg full "$full" '
+    --arg lanes_kb "$lanes_kb" --arg full "$full" '
     {team: $team, session: $session, session_running: ($live == "1"),
      state: (if $orphaned == "1" then "orphaned" else (if $live == "1" then "running" else "not running" end) end),
      lead: $lead, lead_mark: $lead_mark, founder: $founder, lanes_disk: $disk,
+     lanes_kb: ($lanes_kb | tonumber? // null),
      agents: (split("\n") | map(select(length > 0) | split("\t")) | map({
        role: .[0], kind: .[1], model: .[2], label: .[3], label_mark: (.[12] // ""),
        model_id: (if (.[13] // "") == "" then null else .[13] end),
@@ -530,7 +536,10 @@ dash_collect() {
     {at: $at, full: ($full == "1"), projects: .,
      machine: {load: ($load | tonumber? // null),
                memory_free_kb: ($mem | tonumber? // null),
-               disk_free_kb: ($disk | tonumber? // null)},
+               disk_free_kb: ($disk | tonumber? // null),
+               orphaned: ([.[].teams[] | select(.state == "orphaned")] as $o |
+                 {teams: ($o | length), kb: ([$o[].lanes_kb // 0] | add // 0),
+                  unmeasured: ([$o[] | select(.lanes_kb == null)] | length)})},
      unreadable_projects: (if $skipped == "" then [] else ($skipped | split(" ")) end),
      empty_projects: (if $empty == "" then [] else ($empty | split(" ")) end)}'
 }
@@ -550,7 +559,7 @@ dash_project_has_any_record() {
 # dash_render <json> — the popup's own drawing: one project at a time, each team a small
 # tree under it, the machine at the foot.
 dash_render() {
-  local doc="$1"
+  local doc="$1" o_teams="" o_kb="" o_unmeasured=""
   printf '%s %s   %s\n' "$WOLFMUX_LEAD_MARK" "WOLFMUX DASHBOARD" \
     "$(printf '%s' "$doc" | "$JQ_BIN" -r '.at')"
   printf '%s\n' "$doc" | "$JQ_BIN" -r '
@@ -561,6 +570,16 @@ dash_render() {
     ([.projects[].teams[].agents[] | select(.state == "exited")] | length) as $exit |
     ([.projects[].teams[] | select(.state == "orphaned")] | length) as $orph |
     " \($p) project\(if $p == 1 then "" else "s" end) · \($t) team\(if $t == 1 then "" else "s" end) (\($orph) orphaned) · \($a) agents: \($run) running · \($stop) stopped · \($exit) exited"'
+  # The one line Ammar asked for, 2026-10-14: how many teams nobody leads, and what they hold.
+  # Why each one is still here is a Beads question, so it is in teamctl teams, not here.
+  read -r o_teams o_kb o_unmeasured <<EOF
+$(printf '%s' "$doc" | "$JQ_BIN" -r '.machine.orphaned | "\(.teams // 0) \(.kb // 0) \(.unmeasured // 0)"' 2>/dev/null || true)
+EOF
+  case "${o_teams:-x}" in "" | *[!0-9]*) o_teams=0 ;; esac
+  if [ "$o_teams" -gt 0 ]; then
+    printf ' orphaned teams: %s holding %s%s · why each one, and what ends it: teamctl teams\n' "$o_teams" "$(human_size "${o_kb:-0}")" \
+      "$([ "${o_unmeasured:-0}" = "0" ] || printf ' (%s not measured yet: teamctl teams measures)' "$o_unmeasured")"
+  fi
   printf '%s\n' "$doc" | "$JQ_BIN" -r --arg wolf "$WOLFMUX_LEAD_MARK" --arg dog "$WOLFMUX_WORKER_MARK" '
     def pad($n): (. + (" " * 44))[0:$n];
     def gb: if . == null then "-" else "\((. / 1048576 * 10 | round) / 10)G" end;
@@ -653,7 +672,7 @@ cmd_dashboard() {
 # keeps it inside the budget a thing redrawn every few seconds has to live in. Measured on
 # the machine this was written on: 18 ms of work.
 dash_badge_line() {
-  local panes sessions key dir name teams=0 run=0 stopped=0 exited=0 line dead have
+  local panes sessions key dir name teams=0 run=0 stopped=0 exited=0 orph=0 line dead have
   # No tmux, no truth about what is running, and "0run" would be a lie: say nothing.
   [ -n "$TMUX_BIN" ] || return 1
   panes="$(dash_panes)"
@@ -668,6 +687,12 @@ dash_badge_line() {
         dash_has_session "$sessions" "$(dash_meta_session "${dir%/}")" || continue
       fi
       teams=$((teams + 1))
+      # Orphaned by dash_orphaned's own rule, so the bar and the dashboard give one number:
+      # no lead on record, or a lead whose pane is not alive. Two forks per team, no jq.
+      if [ ! -f "${dir}agents/$WOLFMUX_LEAD_ROLE.json" ] ||
+        dash_orphaned "$(dash_pane_row "$panes" "$(dash_meta_session "${dir%/}")" "$WOLFMUX_LEAD_ROLE")"; then
+        orph=$((orph + 1))
+      fi
     done
   done
   # A pane with no @ai_role is not an agent: a split somebody opened themselves.
@@ -694,11 +719,33 @@ EOF
   # that set deliberately: no separator was added, because the labels already separate.
   # Measured on this machine: "teams 21 run 13 idle 93 load 3.56 mem 8G disk 76G held 9.2G"
   # is 60 characters, and with "exit 2" in it 67.
-  line="teams $teams run $run idle $stopped"
-  [ "$exited" -eq 0 ] || line="$line exit $exited"
-  printf '%s load %s mem %s disk %s held %s\n' "$line" "$(dash_load)" \
+  dash_badge_compose "$teams" "$run" "$stopped" "$exited" "$orph" "$(dash_load)" \
     "$(dash_short_gb "$(dash_mem_free_kb)")" "$(dash_short_gb "$(disk_free_kb)")" \
     "$(dash_tenth_gb "$(dash_badge_held_kb)")"
+}
+
+# dash_badge_compose <teams> <run> <idle> <exit> <orph> <load> <mem> <disk> <held> — the line
+# itself, from numbers already in hand.
+#
+# `exit` and `orph` are there only when they are not zero: no number is good news. `orph`
+# carries the COUNT of teams whose lead is not running; the gigabytes are already in `held`,
+# and the reason for each team is in `teamctl teams`.
+#
+# The budget is 72 characters (cmd_overview_badge cuts there, silently, from the right — so
+# `held` would be the first thing lost). When the line would pass it, `load` is left out
+# first: it is the one field no decision hangs on, and the dashboard is a keystroke away.
+# `mem` and `disk` never are: both are hard limits that bit this machine (a 12 GB build on a
+# 24 GB machine; the spawn guard refuses under 20 GB free). After `load`, `teams` goes.
+dash_badge_compose() {
+  local head tail line
+  head="teams $1 run $2 idle $3"
+  [ "$4" = "0" ] || head="$head exit $4"
+  [ "$5" = "0" ] || head="$head orph $5"
+  tail="mem $7 disk $8 held $9"
+  line="$head load $6 $tail"
+  if [ "${#line}" -gt 72 ]; then line="$head $tail"; fi
+  if [ "${#line}" -gt 72 ]; then line="${line#"teams $1 "}"; fi
+  printf '%s\n' "$line"
 }
 
 # dash_parked_kb <state-dir> — sets DASH_PARKED_KB to that team's remembered PARKED lane
@@ -818,6 +865,10 @@ cmd_bar() {
   say "  run   N   agent panes alive right now"
   say "  idle  N   agents on record with no pane: parked, and restartable (teamctl restart <role>)"
   say "  exit  N   panes whose agent exited. Only there when there are any, so no number is good news"
+  say "  orph  N   teams whose lead is not running (orphaned). Only there when there are any. What"
+  say "            each one holds and why it is still here: teamctl teams · end one: teamctl finish"
+  say "            (the space they hold is part of held). Should the line pass 72 characters, load"
+  say "            is left out first, then teams; mem and disk never are"
   say "  load  N   the one-minute load average of the machine"
   say "  mem   N   memory a process could still get (free plus inactive; the kernel hands inactive back)"
   say "  disk  N   free space on the disk that holds ~/.wolfmux"

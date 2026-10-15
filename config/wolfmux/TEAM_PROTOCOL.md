@@ -33,13 +33,19 @@ lead — including a worker that was spawned by another worker.
   is not running (`teamctl teams` shows the team as `orphaned`), the founder, and only the
   founder, may `teamctl restart lead --team <name> --continue`, `stop`, `remove` and
   `destroy --team <name> --purge`; the human is told each time. Not `policy`, `approve`, `deny`.
+- A team the human founded has no founding lead. The human may name one team the **orphan
+  steward** (`teamctl policy orphan-steward <team>`; only the human can set it). That team's lead, and
+  nobody else in it, may then run `teamctl restart lead --team <name>` (with `--continue` or
+  `--resume <id>`) and `teamctl stop <role> --team <name>` on a team the human founded, while
+  its lead is not running. Nothing else: not `remove`, `destroy`, `start`, `policy`, `approve`,
+  `deny` or `spawn`. The human is told each time.
 
 ## Beads in 60 seconds
 
 **"Your inbox" is the Beads command below, always.** The work itself lives there and
 nowhere else. `teamctl inbox` (alias `teamctl notices`) is a different thing: the short
-pane notices filed for a role, which the human opens with `prefix N` — you are given
-yours automatically, by your own session's hooks, and never need to ask for them.
+pane notices filed for a role, kept for debugging — you are given yours automatically,
+by your own session's hooks, and never need to ask for them.
 
 ```bash
 bd list --assignee $TEAM_ROLE --status open,in_progress,blocked --include-infra     # YOUR INBOX: your tasks (new, claimed, blocked) + unread messages
@@ -76,6 +82,13 @@ bd show <id> --thread                                                    # whole
 bd close <id> -r read                                                    # mark read — always do this
 ```
 
+**The human** has a Beads name too: `human` (the setting `WOLFMUX_HUMAN` can change it).
+A message to `human` is what the number next to the wolf in the status bar counts, and
+the human reads it with `prefix N` or a click on that number. Only the
+communication-management lead (`communication-management.lead`) writes messages to
+`human`; any other team that needs the human sends its message to that lead. This is a
+rule of the protocol: nothing in the code enforces it.
+
 To reach everyone, send one message per role. Creating or assigning a bead
 notifies the assignee automatically; you then see the one-line notice
 `[wolfmux] Beads update for <role> ...`. When you see it, run the command it names.
@@ -85,11 +98,15 @@ How that notice reaches you depends on where you are, and you may get it without
 word appearing in your pane at all. It is filed first, then handed to you by your own
 session when your turn ends or when somebody prompts you (that is the
 `[wolfmux] You have team notices:` block). A worker's idle pane may also be typed into
-directly, and the human's own lead pane is typed into only while nobody is watching the
-team — otherwise the notice waits in the file, the human sees a `📨` count in the status
-bar, and you are given it by your session as above. The human can open the file at any
-time with `prefix N` or `teamctl inbox` (that command is the pane notices, NOT your
-Beads inbox).
+directly. A pane a human is watching never is: the lead's pane while a human is attached
+to the team, and any pane on the human's screen (policy `human-pane-typing`, default
+`off`; only the human changes it). Such a notice waits in the file. In such a pane the
+end of your turn stays silent too, because Claude Code would print the notice there: you
+are given it with the next prompt, the human's or your own loop's. The trade-off,
+for a lead the human is attached to: an IDLE lead is not woken by a notice. Its own loop
+wakes it (the communication lead runs one every 20 minutes), or the human does; so sweep
+your Beads inbox at every turn. The file can be read at any time with `teamctl inbox`
+(that command is the pane notices, for debugging, NOT your Beads inbox).
 
 Nothing is ever typed over a half-typed line: a pane somebody is typing in is left
 alone and the notice arrives by itself once that pane is idle. Several notices that

@@ -5,9 +5,11 @@
 # sure a Beads workspace exists before a team starts and (2) two tiny event hooks that turn
 # "a bead needs <role>" into a tmux pane notification through `teamctl nudge`.
 #
-# One place READS Beads, and it is not this file: lib/reclaim.sh asks which tasks are closed
-# (`bd list`, once per run) before it takes a finished lane off the books. Before v1.17.0
-# nothing in teamctl read a bead at all.
+# Two places READ Beads, and neither is this file: lib/reclaim.sh asks which tasks are closed
+# (`bd query`, once per team per run) before it takes a finished lane off the books, and
+# `teamctl doctor` times one `bd --readonly count` (lib/doctor.sh). Before v1.17.0 nothing in
+# teamctl read a bead at all. Nothing that runs per notice or per status-bar redraw calls bd:
+# tests/beads-hotpath.sh holds that.
 
 WOLFMUX_HOOK_MARKER="wolfmux-hook v1"
 WOLFMUX_LEGACY_HOOK_MARKER="ai-team-hook" # written before the rename; safe to replace

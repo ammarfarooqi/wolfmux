@@ -335,46 +335,61 @@ EOF
 }
 
 # --- gate 7: Beads --------------------------------------------------------------------
-# _reclaim_beads_down <why> — Beads cannot be asked. Remembered for this project for the rest
-# of the run: a bd that hung once will hang again, and every further lane would wait the
-# whole limit for the same non-answer.
+# _reclaim_beads_down <why> [<scope>] — Beads cannot be asked. Remembered for the rest of the
+# run, for this project unless <scope> says otherwise: a bd that hung once will hang again,
+# and every further lane would wait the whole limit for the same non-answer. An answer that
+# was cut short is a fact about one team's question, not about bd, so that one is remembered
+# for the team alone (reclaim_beads_key).
 _reclaim_beads_down() {
   RECLAIM_BEADS_DOWN="$1"
-  RECLAIM_BEADS_DOWN_AT="$ROOT"
+  RECLAIM_BEADS_DOWN_AT="${2:-$ROOT}"
   RECLAIM_WHY="cannot ask Beads ($1)"
   return 1
 }
 
 # reclaim_beads_forget — drop what Beads said. Called when a run ends, and before Beads is
-# asked about another project.
+# asked about another team.
 RECLAIM_BEADS_FILE=""
 RECLAIM_BEADS_AT=""
+RECLAIM_BEADS_WHO=""
 reclaim_beads_forget() {
   [ -z "$RECLAIM_BEADS_FILE" ] || /bin/rm -f "$RECLAIM_BEADS_FILE"
   RECLAIM_BEADS_FILE=""
   RECLAIM_BEADS_AT=""
+  RECLAIM_BEADS_WHO=""
 }
 
-# reclaim_beads_load — ask Beads ONCE per project per run, for every bead it has, and answer
-# every lane from that. Sets RECLAIM_BEADS_FILE (a JSON array of beads) or returns 1 with
-# RECLAIM_WHY set.
+# reclaim_beads_key — what one answer is good for: one team of one project. The question
+# names that team's lanes, so another team of the same project has to ask its own.
+reclaim_beads_key() { printf '%s|%s\n' "$ROOT" "${TEAM:-}"; }
+
+# The most beads one answer may hold. The question names a team's worker lanes, and a lane has
+# a handful of tasks; an answer this long means the question was not read the way it was
+# written, and an open task could be past the cut. So an answer of this length is "cannot
+# tell", and the lanes stay.
+RECLAIM_BEADS_LIMIT=1000
+
+# reclaim_beads_load — ask Beads ONCE per team per run, for the tasks of that team's worker
+# lanes and nothing else, and answer every lane from that. Sets RECLAIM_BEADS_FILE (a JSON
+# array of beads) and RECLAIM_BEADS_WHO (the names asked about, one per line), or returns 1
+# with RECLAIM_WHY set.
 #
-# Once, and not once per lane, because of what a question costs here: 4 to 33 seconds each on
-# 2026-10-14 (the measurement is next to RECLAIM_ASK_SECONDS). Every parked lane that passes
-# the local gates reaches this one — a lane with no task among them, every single time — so a
-# question per lane would have made `teamctl stop` in a team with ten such lanes a matter of
-# minutes. One question for the whole project took 12 s for 1,377 beads (1.2 MB) under the
-# same load, whatever the number of lanes.
+# Once, and not once per lane, because every bd call opens the whole store before it reads a
+# row, and they run one at a time: 4 to 33 seconds each on 2026-10-14 (the measurement is
+# next to RECLAIM_ASK_SECONDS), and 2.7 s for the smallest question on 2026-10-15 with
+# nothing else waiting. A question per lane would make `teamctl stop` in a team with ten
+# parked lanes a matter of minutes, and hold every other agent's bd call behind it.
 #
-# Two shapes come back and both are read, because the flags decide which: plain
-# `bd list --json` prints an array, and with --brief or --skip-labels (bd 1.3.0) the same list
-# arrives wrapped as {"issues": [...], "meta": {...}}. --brief and --skip-labels are what
-# keep the answer small (no descriptions, no label lookups); a bd that does not know them
-# fails, and is asked once more without them.
+# v1.19.0 asked for every bead in the project (`bd list --all --limit 0`): 1,465 beads, 1.2
+# MB, on every `teamctl stop`, for the few that matter. This asks by name: the beads assigned
+# to this team's worker lanes, messages left out, in one `bd query`. The answer is a bare
+# array; a wrapped {"issues": [...]} is read as well, so a bd that changes its shape is not
+# taken for a broken one.
 reclaim_beads_load() {
-  local out rc=0
-  if [ "$RECLAIM_BEADS_AT" = "$ROOT" ] && [ -n "$RECLAIM_BEADS_FILE" ] && [ -f "$RECLAIM_BEADS_FILE" ]; then return 0; fi
-  if [ "${RECLAIM_BEADS_DOWN_AT:-}" = "$ROOT" ] && [ -n "${RECLAIM_BEADS_DOWN:-}" ]; then
+  local out rc=0 key role who expr="" count
+  key="$(reclaim_beads_key)"
+  if [ "$RECLAIM_BEADS_AT" = "$key" ] && [ -n "$RECLAIM_BEADS_FILE" ] && [ -f "$RECLAIM_BEADS_FILE" ]; then return 0; fi
+  if [ -n "${RECLAIM_BEADS_DOWN:-}" ] && { [ "${RECLAIM_BEADS_DOWN_AT:-}" = "$ROOT" ] || [ "${RECLAIM_BEADS_DOWN_AT:-}" = "$key" ]; }; then
     RECLAIM_WHY="cannot ask Beads ($RECLAIM_BEADS_DOWN)"
     return 1
   fi
@@ -389,16 +404,25 @@ reclaim_beads_load() {
   if [ ! -e "$ROOT/.beads" ] && [ -z "${BEADS_DIR:-}" ]; then
     _reclaim_beads_down "no Beads workspace in $(short_path "$ROOT")" || return 1
   fi
+  # The names, as Beads knows them (<team>.<role>, or the bare role in the first team). A name
+  # teamctl would never give (anything but letters, digits, '.', '_' and '-') is not put into
+  # the question; that lane then has no answer, and stays.
+  for role in $(reg_list); do
+    [ "$(reg_field "$role" kind 2>/dev/null || true)" = "worker" ] || continue
+    who="$(team_identity "$TEAM" "$role")"
+    case "$who" in "" | *[!A-Za-z0-9._-]*) continue ;; esac
+    expr="$expr${expr:+ OR }assignee=\"$who\""
+    RECLAIM_BEADS_WHO="$RECLAIM_BEADS_WHO$who$_RECLAIM_NL"
+  done
+  [ -n "$expr" ] || { _reclaim_beads_down "no worker lane of team $TEAM has a name Beads could be asked about" "$key" || return 1; }
   out="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/wolfmux-reclaim.XXXXXX" 2>/dev/null || true)"
   [ -n "$out" ] || { _reclaim_beads_down "no scratch file could be made in ${TMPDIR:-/tmp}" || return 1; }
   # Said before the wait, on stderr: a command that goes quiet for half a minute looks hung,
   # and this is the one place where it may really be waiting that long.
   info "reclaim: asking Beads which tasks are closed (it gets $RECLAIM_ASK_SECONDS s to answer)"
-  reclaim_ask "$RECLAIM_ASK_SECONDS" "$out" "$ROOT" "$BD_BIN" list --all --limit 0 --json --brief --skip-labels || rc=$?
-  if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
-    rc=0
-    reclaim_ask "$RECLAIM_ASK_SECONDS" "$out" "$ROOT" "$BD_BIN" list --all --limit 0 --json || rc=$?
-  fi
+  # --all: a closed task is what says a lane is done, and bd query leaves closed ones out
+  # without it.
+  reclaim_ask "$RECLAIM_ASK_SECONDS" "$out" "$ROOT" "$BD_BIN" query "($expr) AND type!=message" --all --limit "$RECLAIM_BEADS_LIMIT" --json || rc=$?
   if [ "$rc" -eq 124 ]; then
     reclaim_scratch_done "$out"
     _reclaim_beads_down "bd did not answer in $RECLAIM_ASK_SECONDS s" || return 1
@@ -415,8 +439,18 @@ reclaim_beads_load() {
     _reclaim_beads_down "its answer could not be read" || return 1
   fi
   reclaim_scratch_done "$out"
+  count="$("$JQ_BIN" -r 'length' "$out.beads" 2>/dev/null || true)"
+  case "${count:-x}" in "" | *[!0-9]*)
+    /bin/rm -f "$out.beads"
+    _reclaim_beads_down "its answer could not be read" || return 1
+    ;;
+  esac
+  if [ "$count" -ge "$RECLAIM_BEADS_LIMIT" ]; then
+    /bin/rm -f "$out.beads"
+    _reclaim_beads_down "its answer stopped at $RECLAIM_BEADS_LIMIT beads, and an open task could be past that" "$key" || return 1
+  fi
   RECLAIM_BEADS_FILE="$out.beads"
-  RECLAIM_BEADS_AT="$ROOT"
+  RECLAIM_BEADS_AT="$key"
   return 0
 }
 
@@ -429,6 +463,15 @@ reclaim_task() {
   RECLAIM_TASK=""
   reclaim_beads_load || return 1
   who="$(team_identity "$TEAM" "$role")"
+  # A lane that joined the team after the question was put was not named in it, so the
+  # answer says nothing about it either way.
+  case "$_RECLAIM_NL$RECLAIM_BEADS_WHO" in
+    *"$_RECLAIM_NL$who$_RECLAIM_NL"*) ;;
+    *)
+      RECLAIM_WHY="Beads was not asked about $who in this run"
+      return 1
+      ;;
+  esac
   open="$("$JQ_BIN" -r --arg who "$who" '[.[] | select(.assignee == $who and (.issue_type // "task") != "message" and (.status // "open") != "closed")] | (.[0].id // "")' "$RECLAIM_BEADS_FILE" 2>/dev/null || true)"
   closed="$("$JQ_BIN" -r --arg who "$who" '[.[] | select(.assignee == $who and (.issue_type // "task") != "message" and .status == "closed")] | sort_by(.closed_at // "") | (last.id // "")' "$RECLAIM_BEADS_FILE" 2>/dev/null || true)"
   if [ -n "$open" ]; then
@@ -886,9 +929,13 @@ reclaim_park_done() {
 # up to: RECLAIM_TOTAL (freed, or would be), RECLAIM_LANES, RECLAIM_HELD, RECLAIM_HELD_KB,
 # RECLAIM_RUNNING_LANES. One function for one team and for every team on the machine, so the
 # two cannot drift, as with prune_team.
+#
+# And what keeps the team, for lib/finish.sh: RECLAIM_HOLD_N lanes (held or running),
+# RECLAIM_HOLD_KB what they take, RECLAIM_HOLD_LIST "role (why); role (why)".
 reclaim_team() {
-  local apply="$1" indent="${2:-  }" role repos="" repo rnote
+  local apply="$1" indent="${2:-  }" role repos="" repo rnote kb
   RECLAIM_TOTAL=0 RECLAIM_LANES=0 RECLAIM_HELD=0 RECLAIM_HELD_KB=0 RECLAIM_RUNNING_LANES=0
+  RECLAIM_HOLD_N=0 RECLAIM_HOLD_KB=0 RECLAIM_HOLD_LIST=""
   for role in $(reg_list); do
     [ "$(reg_field "$role" kind)" = "worker" ] || continue
     repo="$(worker_repo "$role")"
@@ -909,11 +956,18 @@ reclaim_team() {
         ;;
       running)
         RECLAIM_RUNNING_LANES=$((RECLAIM_RUNNING_LANES + 1))
-        printf '%s%-18s %9s   running, left alone%s\n' "$indent" "$role" "$(human_size "$(disk_kb "$(reg_field "$role" workdir)")")" "$rnote"
+        kb="$(disk_kb "$(reg_field "$role" workdir)")"
+        RECLAIM_HOLD_N=$((RECLAIM_HOLD_N + 1))
+        RECLAIM_HOLD_KB=$((RECLAIM_HOLD_KB + kb))
+        RECLAIM_HOLD_LIST="$RECLAIM_HOLD_LIST${RECLAIM_HOLD_LIST:+; }$role (running)"
+        printf '%s%-18s %9s   running, left alone%s\n' "$indent" "$role" "$(human_size "$kb")" "$rnote"
         ;;
       held)
         RECLAIM_HELD=$((RECLAIM_HELD + 1))
         RECLAIM_HELD_KB=$((RECLAIM_HELD_KB + RECLAIM_KB))
+        RECLAIM_HOLD_N=$((RECLAIM_HOLD_N + 1))
+        RECLAIM_HOLD_KB=$((RECLAIM_HOLD_KB + RECLAIM_KB))
+        RECLAIM_HOLD_LIST="$RECLAIM_HOLD_LIST${RECLAIM_HOLD_LIST:+; }$role ($RECLAIM_WHY)"
         printf '%s%-18s %9s   holding: %s%s\n' "$indent" "$role" "$(human_size "$RECLAIM_KB")" "$RECLAIM_WHY" "$rnote"
         ;;
     esac
@@ -1000,7 +1054,7 @@ cmd_reclaim() {
 # left to park a lane, so its finished lanes are asked by no automatic path.
 reclaim_all_teams() {
   local apply="$1" dry="$2" key team rc doubt
-  local total=0 lanes=0 running=0 held=0 held_kb=0 teams=0 projects=0 skipped=""
+  local total=0 lanes=0 running=0 held=0 held_kb=0 teams=0 projects=0 skipped="" finished=0
   require_operator "reclaim --all-teams" "every team of every project on this machine" \
     "teamctl reclaim for your own team (no --all-teams), and teamctl reclaim --dry-run for a look at it"
   if [ "$dry" -eq 1 ]; then
@@ -1032,6 +1086,10 @@ reclaim_all_teams() {
         continue
       fi
       reclaim_team "$apply" "    "
+      # A team whose lead is not running says what it is; one that ran `teamctl finish` and
+      # that nothing holds any more is finished here (lib/finish.sh). Never one without that.
+      finish_sweep_team "$apply" "    "
+      if [ "$FINISH_SWEPT" -eq 1 ]; then finished=$((finished + 1)); fi
       printf '    %-16s %9s   %s in this team (%s parked lane%s, %s running, %s holding %s)\n' \
         "team total" "$(human_size "$RECLAIM_TOTAL")" \
         "$([ "$dry" -eq 1 ] && printf 'would be freed' || printf freed)" \
@@ -1043,13 +1101,18 @@ reclaim_all_teams() {
       held_kb=$((held_kb + RECLAIM_HELD_KB))
     done
   done
-  # The teams of one project share one Beads, so it was asked once per project above (a new
-  # project makes reclaim_beads_load forget the last one); this drops the last answer.
+  # Beads was asked once per team above, about that team's lanes alone (a new team makes
+  # reclaim_beads_load forget the last answer); this drops the last one. An orphaned team's
+  # reason asked its own question once per project (team_beads_load); that one goes too.
   reclaim_beads_forget || true # bookkeeping, as in reclaim_team: the total below is still owed
+  team_beads_forget || true
   reclaim_footer "$dry" " --all-teams" "machine total" \
     " across $teams team$([ "$teams" = "1" ] || printf s) in $projects project$([ "$projects" = "1" ] || printf s)" \
     "$total" "$lanes" "$running" "$held" "$held_kb"
   if [ -n "$skipped" ]; then
     say "  Teams skipped whole, because a lane of theirs could not be placed:$skipped"
+  fi
+  if [ "$finished" -gt 0 ]; then
+    say "  Teams finished and gone (teamctl finish was run, and nothing held them any more): $finished"
   fi
 }

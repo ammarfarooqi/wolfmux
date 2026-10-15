@@ -10,17 +10,22 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
   fi
   # shellcheck source=/dev/null
   . "$WOLFMUX_HOME/lib/$module.sh"
+  # ~/.config/wolfmux/config supplies defaults; the environment wins. Read right after the
+  # module that defines the reader, and BEFORE the rest: inbox.sh and agents.sh set their
+  # defaults when they are sourced (WOLFMUX_NUDGE_TYPE="${WOLFMUX_NUDGE_TYPE:-…}"), and the
+  # loader skips a name that is already set, so loading it after them ignored every one of
+  # those keys in the file (found 2026-10-15; tests/providers.sh runs this binary to check).
+  if [ "$module" = provider-env ]; then wolfmux_load_config; fi
 done
 TEAMCTL_ARGS="$*"
 trap 'teamctl_on_exit' EXIT
-wolfmux_load_config # ~/.config/wolfmux/config supplies defaults; the environment wins
 tm_adopt_legacy_server
 
 usage() {
@@ -31,8 +36,17 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          With one team you never need it. teamctl status shows them all; teamctl teams is the short list.
     teamctl start fable --team review               a second team, named by you, with its own session
     teamctl start fable --team next --handover <bead-id>    (a lead may do this too) the new lead starts by reading that bead
-         A team whose lead is not running is orphaned (teamctl teams). Then the lead that founded it may recover or clean it up,
-         as you may: teamctl restart lead --team <name> --continue · stop · remove · destroy --team <name> --purge. You are told.
+         A team whose lead is not running is orphaned (teamctl teams says why, and what it holds). Then the lead that founded it
+         may recover or clean it up, as you may: teamctl restart lead --team <name> --continue · stop · remove · finish ·
+         destroy --team <name> --purge. You are told.
+         A team YOU founded: the lead of the team policy orphan-steward names may restart its lead and stop its agents, no more.
+    teamctl finish [--dry-run]                      (the lead, or you) the team is DONE: park every lane, take every lane that
+                                                      passes the reclaim gates, and when no lane is left and no task of the team
+                                                      is open, take the team too: records, state directory, session. Something
+                                                      still holding it: the session ends, the team stays, teamctl teams says why,
+                                                      and teamctl reclaim --all-teams finishes it once nothing holds it. Only
+                                                      finish ever takes a team: a lead that stopped, crashed or was destroyed
+                                                      never counts. Transcripts are never deleted. --dry-run: anyone may look
   Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you,
          and start/restart/stop/remove/destroy for the founder of a team whose lead is not running)
     teamctl start <fable|astra|any model> [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads|--skip-beads]
@@ -67,13 +81,18 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
-  Notices  nothing is typed into YOUR conversation: a notice for an agent is filed, the status
-         bar shows 📨 and a count, and the agent is given it by its own Stop hook (see prefix N).
+  Messages for you  agents write to you in Beads: bd create "Subject" -t message -a human -d "..."
+         The status bar shows 📨 and how many are unread (🔔: a permission request is waiting).
+         prefix N, or a click on the number, opens them: Enter reads one, r marks it read.
+  Notices  nothing is typed into a pane YOU are watching (policy human-pane-typing): a notice for an
+         agent is filed and the agent is given it by its own hooks: in a pane you are watching,
+         only with its next prompt (yours or its loop's), never at the end of its turn.
          This is NOT an agent's Beads inbox — the work itself is always bd list --assignee <role>
     teamctl inbox [<role>] [--all] [--json] [--keep]       (alias: notices)
-                                                      the pane notices filed for a role (default:
-                                                      the lead), newest last; reading them clears
-                                                      the badge. --all: every role of the team.
+                                                      for debugging: the PANE notices filed for a
+                                                      role (default: the lead), newest last. Not
+                                                      your messages, and not counted on the status
+                                                      bar. --all: every role of the team.
                                                       --keep: leave them marked new
   Policy and permissions
     teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · browser-writes ask|allow
@@ -84,6 +103,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       auto-prune on|off (sweep a lane's build output as soon as it is parked)
                                                       auto-reclaim on|off (take a parked lane off the books once its work is all in main)
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
+                                                      human-pane-typing off|idle (type a notice into a pane you are watching?
+                                                      default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
+                                                      orphan-steward <team>|off (for the whole project: whose lead may restart or
+                                                      stop a team you founded while its lead is not running. Yours alone: 77)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
@@ -255,6 +278,7 @@ main() {
     destroy) cmd_destroy "$@" ;;
     prune) cmd_prune "$@" ;;
     reclaim) cmd_reclaim "$@" ;;
+    finish) cmd_finish "$@" ;;
     keep) cmd_keep "$@" ;;
     bar) cmd_bar "$@" ;;
     heavy) cmd_heavy "$@" ;;
@@ -291,6 +315,8 @@ main() {
     _inbox-badge) cmd_inbox_badge "$@" ;;
     _inbox-stop) cmd_inbox_stop "$@" ;;
     _inbox-prompt) cmd_inbox_prompt "$@" ;;
+    _human-inbox) cmd_human_inbox "$@" ;;
+    _human-inbox-hook) cmd_human_inbox_hook "$@" ;;
     _open-team) cmd_open_team "$@" ;;
     _guard) cmd_guard "$@" ;;
     send | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;

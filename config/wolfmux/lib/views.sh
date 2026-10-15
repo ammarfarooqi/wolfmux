@@ -283,6 +283,18 @@ _teams_facts() {
   # the number it leaves behind in state/<project>/disk-kb is what `teamctl status` shows
   # without measuring anything itself (lib/disk.sh).
   TEAMS_KB="$(disk_team_kb_measure)"
+  # An orphaned team says why it is still here (lib/finish.sh): how its lead ended, its open
+  # tasks (one Beads question for the whole project, the first time it is needed), and its
+  # lanes with what the last check of each wrote down. GitHub is not asked here.
+  TEAMS_WHY="" TEAMS_LANES_HELD=0
+  TEAM_END_HOW="" TEAM_END_BY="" TEAM_END_TS="" TEAM_TASKS_OPEN=""
+  if [ "$TEAMS_STATE" = "orphaned" ]; then
+    team_lanes_on_record
+    team_reason "$TEAM_LANES" "$TEAM_LANE_LIST"
+    TEAMS_WHY="$TEAM_WHY"
+    TEAMS_LANES_HELD="$TEAM_LANES"
+    team_end_words >/dev/null # the reason ran it in a subshell; the JSON wants its parts
+  fi
 }
 
 # teamctl teams [--json]: the short list. STATE: running, or orphaned when the team's lead is not running
@@ -294,17 +306,30 @@ cmd_teams() {
   require_tools
   load_project any
   if [ "$json" -eq 1 ]; then
-    for team in $(team_list); do
-      team_paths "$team"
-      _teams_facts
-      # lead: its label. lead_model_id and lead_known_from: the id it runs and where that is known
-      # from (record | transcript | unknown; null for a lead that is not on an alias), as in status.
-      "$JQ_BIN" -cn --arg team "$team" --arg state "$TEAMS_STATE" --arg lead "$TEAMS_LEAD" --arg agents "$TEAMS_COUNT" --arg kb "$TEAMS_KB" \
-        --arg founder "$TEAMS_FOUNDER" --arg session "$SESSION" --arg lead_id "$TEAMS_LEAD_ID" --arg lead_from "$TEAMS_LEAD_FROM" \
-        '{team: $team, state: $state, orphaned: ($state == "orphaned"), founder: $founder, lead: $lead,
-          lead_model_id: (if $lead_id == "" then null else $lead_id end), lead_known_from: (if $lead_from == "" then null else $lead_from end),
-          agents: ($agents | tonumber), disk_kb: ($kb | tonumber), session: $session}'
-    done | "$JQ_BIN" -s .
+    # In braces with the loop: the left side of a pipe is a subshell, and the Beads answer an
+    # orphaned team's reason fetched lives there. Dropped after the pipe, it would be a file
+    # nobody can name any more.
+    {
+      for team in $(team_list); do
+        team_paths "$team"
+        _teams_facts
+        # lead: its label. lead_model_id and lead_known_from: the id it runs and where that is known
+        # from (record | transcript | unknown; null for a lead that is not on an alias), as in status.
+        # orphan: null for a team whose lead runs; otherwise why it is still here (lib/finish.sh).
+        "$JQ_BIN" -cn --arg team "$team" --arg state "$TEAMS_STATE" --arg lead "$TEAMS_LEAD" --arg agents "$TEAMS_COUNT" --arg kb "$TEAMS_KB" \
+          --arg founder "$TEAMS_FOUNDER" --arg session "$SESSION" --arg lead_id "$TEAMS_LEAD_ID" --arg lead_from "$TEAMS_LEAD_FROM" \
+          --arg why "$TEAMS_WHY" --arg end_how "$TEAM_END_HOW" --arg end_by "$TEAM_END_BY" --arg end_ts "$TEAM_END_TS" \
+          --arg tasks "${TEAM_TASKS_OPEN:-}" --arg held "$TEAMS_LANES_HELD" \
+          '{team: $team, state: $state, orphaned: ($state == "orphaned"), founder: $founder, lead: $lead,
+            lead_model_id: (if $lead_id == "" then null else $lead_id end), lead_known_from: (if $lead_from == "" then null else $lead_from end),
+            agents: ($agents | tonumber), disk_kb: ($kb | tonumber), session: $session,
+            orphan: (if $state != "orphaned" then null else
+              {why: $why, kb: ($kb | tonumber), lanes_held: ($held | tonumber),
+               tasks_open: ($tasks | tonumber? // null),
+               lead_end: (if $end_how == "" then null else {how: $end_how, by: $end_by, ts: $end_ts} end)} end)}'
+      done
+      team_beads_forget || true # the scratch file of what Beads said
+    } | "$JQ_BIN" -s .
     return 0
   fi
   printf '%-16s %-12s %-16s %-7s %-8s %-16s %s\n' TEAM STATE LEAD AGENTS DISK FOUNDER SESSION
@@ -317,10 +342,12 @@ cmd_teams() {
     if [ "$TEAMS_STATE" = "orphaned" ]; then
       hint=""
       if [ "$team" != "$WOLFMUX_DEFAULT_TEAM" ]; then hint=" --team $team"; fi
-      orphans="$orphans$team is $(team_orphaned_note) Bring it back: teamctl restart lead$hint --continue · delete it: teamctl destroy$hint --purge
+      orphans="$orphans$team is $(team_orphaned_note) Bring it back: teamctl restart lead$hint --continue · finish it: teamctl finish$hint · delete it: teamctl destroy$hint --purge
+  holding $(human_size "$TEAMS_KB"): $TEAMS_WHY
 "
     fi
   done
+  team_beads_forget || true # the scratch file of what Beads said
   if [ -n "$orphans" ]; then
     say ""
     printf '%s' "$orphans"

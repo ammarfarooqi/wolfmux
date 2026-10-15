@@ -216,8 +216,10 @@ start_permitted() {
     if [ -n "$exists" ]; then
       # A team that has a lead is that lead's. Once that lead is not running, whoever founded the team may bring
       # it back: that is recovery, not founding, so the lead-teams policy (which is about founding) does not apply.
-      if ! founder_may_act; then
-        warn "team '$TEAM' already exists and has its own lead ($(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")). Message it; you do not manage it$(is_founder && printf ' (%s)' "$FOUNDER_HINT" || true)."
+      # So may the orphan steward, for a team you founded, but only as `teamctl restart lead` (LEAD_RESTART,
+      # set by restart_without_session): a plain start takes options that change the team's policy.
+      if ! founder_may_act && ! { [ -n "${LEAD_RESTART:-}" ] && steward_may_act restart "$WOLFMUX_LEAD_ROLE"; }; then
+        warn "team '$TEAM' already exists and has its own lead ($(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")). Message it; you do not manage it$(is_founder && printf ' (%s)' "$FOUNDER_HINT" || true)$(is_steward && printf ' (%s: teamctl restart lead --team %s)' "$STEWARD_HINT" "$TEAM" || true)."
         return 1
       fi
     elif [ "$allowed" != "on" ]; then
@@ -306,6 +308,11 @@ cmd_start() {
   # An agent acting on a team it did not found today is a founder bringing one back: it is announced and logged as that.
   if [ "$founder" != "operator" ]; then EVENT_BY="$founder"; fi
   if [ "$founder" != "operator" ] && founder_may_act; then FOUNDER_ACTING="$founder"; fi
+  # The orphan steward bringing back a team you founded is not its founder: the record goes on saying you are.
+  if [ -n "${LEAD_RESTART:-}" ] && [ -z "${FOUNDER_ACTING:-}" ] && steward_may_act restart "$WOLFMUX_LEAD_ROLE"; then
+    founder="operator"
+    steward_begin restart "$WOLFMUX_LEAD_ROLE"
+  fi
   wt_require_commit "$ROOT"
   ensure_state_dirs
   beads_ensure "$beads"
@@ -438,7 +445,7 @@ cmd_start() {
   tm_set_splash "$SESSION"
   layout_apply
   # A team that an agent founded, or brought back, is news for you.
-  if [ -n "${FOUNDER_ACTING:-}" ]; then
+  if [ -n "${FOUNDER_ACTING:-}${STEWARD_ACTING:-}" ]; then
     founder_announce restarted
   elif [ "$founder" != "operator" ]; then
     (WOLFMUX_TEAM="$TEAM" notify_deliver "$WOLFMUX_LEAD_MARK $founder started team '$TEAM' ($MODEL_LABEL). Open it: teamctl attach --team $TEAM" >/dev/null 2>&1) || true
@@ -833,6 +840,8 @@ cmd_run_agent() {
   require_tools
   load_project
   reg_exists "$role" || die "no registry record for role '$role' in $(short_path "$ROOT")"
+  # A new session of the lead: how the last one ended no longer describes the team.
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then team_end_clear; fi
   launcher="$(reg_field "$role" launcher)"
   family="$(reg_field "$role" family)"
   workdir="$(reg_field "$role" workdir)"
@@ -981,9 +990,13 @@ cmd_stop() {
   require_tools
   load_project
   reg_exists "$role" || die "no such agent: $role  (see: teamctl status)"
-  require_manager stop
+  require_manager stop "$role"
   lock_acquire
   SESSION="$(session_name_for_project)"
+  # How the lead's session ended, written before its pane is touched: a lead that stops itself
+  # takes the hangup with it. Evidence for `teamctl teams` only (lib/finish.sh): a stopped
+  # lead is a parked lead, and only `teamctl finish` ever ends a team.
+  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then team_end_note stop; fi
   pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
   if [ -n "$pane" ]; then
     tmx kill-pane -t "$pane" 2>/dev/null || true
@@ -1013,7 +1026,9 @@ cmd_stop() {
   # A subshell hands no variable back, and that is the better way round, not the clumsier
   # one: whether the lane is "off the books" is read from the books (reg_exists), not from a
   # flag the check set before its last step. Do not pass a flag back out of it.
-  if [ "$(reg_field "$role" kind)" = "worker" ]; then reclaim_after_park "$role" stop 0 ""; fi
+  # Not when the orphan steward stopped it: a reclaim takes lanes off the books, which is `remove`, and the
+  # steward may never do that. The lane is asked the next time its own lead or you park one.
+  if [ "$(reg_field "$role" kind)" = "worker" ] && [ -z "${STEWARD_ACTING:-}" ]; then reclaim_after_park "$role" stop 0 ""; fi
   if ! reg_exists "$role"; then
     say "stopped: $role   (its task is closed and its work is all in main, so the lane is off the books: worktree, branch and record. To keep a lane you mean to restart: teamctl keep $role before you stop it · for the team: teamctl policy auto-reclaim off)"
   else
@@ -1043,6 +1058,7 @@ restart_without_session() {
   # --skip-beads. A bd that is not installed is not that: start dies about it, as a manual start does.
   if [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
   WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
+  LEAD_RESTART=1           # this start is `teamctl restart lead`, which the orphan steward may run (start_permitted)
   cmd_start "${start_args[@]}"
 }
 
@@ -1083,7 +1099,7 @@ cmd_restart() {
     restart_without_session "$role" "$resume" "$pin"
     return
   fi
-  require_manager restart
+  require_manager restart "$role"
   model="$(reg_field "$role" model)"
   models_refresh "$model" # fable/opus/sonnet/haiku: a restart is how an agent moves to a newer model
   lock_acquire
@@ -1556,7 +1572,7 @@ _purge_team() {
   # `teamctl teams`, not named here, and the purge stopped deleting the directory. Every
   # per-team file the disk module writes belongs on this line — tests/disk.sh checks that.
   /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb" \
-    "$STATE_DIR/disk-parked-kb"
+    "$STATE_DIR/disk-parked-kb" "$STATE_DIR/lead-end.json"
   /bin/rmdir "$WORKTREES_DIR" 2>/dev/null || true
 }
 
@@ -1615,6 +1631,10 @@ cmd_destroy() {
   fi
   ensure_state_dirs
   lock_acquire
+  # Before the session goes: run inside the team it ends, this command takes the hangup at
+  # kill-session, and nothing after that line may run (common.sh). Evidence only, as in
+  # cmd_stop: a plain destroy keeps every lane that holds work, and never finishes a team.
+  team_end_note destroy
   if tm_session_exists "$SESSION"; then
     tmx kill-session -t "=$SESSION"
     say "tmux session $SESSION terminated."
@@ -1716,6 +1736,16 @@ notify_lead() {
   # The record, before anything is decided about typing: from here on nothing can lose
   # the notice. The bead or the approval stays where it is too.
   inbox_add "$WOLFMUX_LEAD_ROLE" "$kind" "$text"
+  # v1.20.0, and ahead of everything below, the approval overrides included: with a human
+  # attached the lead's pane is his, and under the default policy nothing is typed into it.
+  # An approval still gets the bell on the status bar and the banner, and the lead's agent
+  # gets the notice from its own hooks. WOLFMUX_INBOX_APPROVAL_TYPE (grace, always) applies
+  # again only under human-pane-typing idle.
+  if inbox_keep_off_human_pane "$WOLFMUX_LEAD_ROLE" "$pane"; then
+    event_log inbox-filed "$WOLFMUX_LEAD_ROLE" "$kind (human-pane-typing=off: $INBOX_HUMAN_REASON)"
+    inbox_stall_notify "$WOLFMUX_LEAD_ROLE" "$kind"
+    return 4
+  fi
   if ! inbox_type_allowed "$WOLFMUX_LEAD_ROLE"; then
     # An approval blocks a worker until the lead decides, so it may not get slower than
     # it was in v1.14.0. grace: file it, and type it after all if it is still unread
@@ -1747,6 +1777,20 @@ notify_lead() {
   _notify_type_or_park "$WOLFMUX_LEAD_ROLE" "$pane" "$text" "$cap" "$kind"
 }
 
+# _notice_pane_busy <role> <pane> [<idle-seconds>] — 0 when a notice may NOT be typed into
+# this pane right now. tm_pane_human_busy (a keystroke, a half-typed line, copy mode), plus
+# the v1.20.0 rule: under policy human-pane-typing off, a pane a human is watching is busy
+# for as long as he watches it (inbox_human_pane). Every typed path asks THIS, right before
+# each line, so a human who attaches, or switches to the pane, while a notice is parked is
+# never typed in front of. TM_BUSY_REASON says why, as tm_pane_human_busy does.
+_notice_pane_busy() {
+  if inbox_keep_off_human_pane "$1" "$2"; then
+    TM_BUSY_REASON="a human is watching this pane: $INBOX_HUMAN_REASON"
+    return 0
+  fi
+  tm_pane_human_busy "$2" "${3:-}"
+}
+
 # _notify_type_or_park <role> <pane> <text> <cap> <kind> — type one fixed notice into a
 # pane, or park it for the one waiter if a human may be typing in there. Unchanged
 # v1.14.0 machinery, lifted out of notify_lead so the approval-grace path below uses
@@ -1768,7 +1812,7 @@ _notify_type_or_park() {
   # The lead is a pane a human sits in front of: never type over a half-typed line.
   # Each of these notices names its own event, so they queue instead of collapsing.
   # Without the lock we never type either: another notifier may be mid-line right now.
-  if [ "$locked" -eq 0 ] || tm_pane_human_busy "$pane"; then
+  if [ "$locked" -eq 0 ] || _notice_pane_busy "$role" "$pane"; then
     if ! nudge_pending_exists "$role"; then
       if nudge_pending_open "$role"; then fresh=1; fi
     fi
@@ -1880,6 +1924,7 @@ _nudge_one() {
   # debounce, the one waiter, the collapse, inbox_mark_typed — is the same machinery
   # v1.14.0 used, in the order v1.14.0 used it.
   idle_window="$WOLFMUX_NUDGE_HUMAN_IDLE"
+  NUDGE_FILED_WHY="nothing is ever typed into ${role}'s pane (WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE)"
   if ! inbox_type_allowed "$role"; then
     if ! inbox_type_when_idle "$role"; then
       event_log inbox-filed "$role" "${bead:-no bead} (nudge-type=$WOLFMUX_NUDGE_TYPE, nothing is typed into this pane)"
@@ -1888,6 +1933,15 @@ _nudge_one() {
     fi
     watched=1
     idle_window="$WOLFMUX_NUDGE_LEAD_IDLE"
+  fi
+  # v1.20.0: a pane a human is watching is not typed into at all, quiet or not, unless he
+  # has asked for the v1.16.1 rule (policy human-pane-typing idle). Filed only: the agent
+  # gets it from its own Stop and UserPromptSubmit hooks. See inbox_human_pane.
+  if inbox_keep_off_human_pane "$role" "$pane"; then
+    NUDGE_FILED_WHY="a human is watching ${role}'s pane ($INBOX_HUMAN_REASON) and policy human-pane-typing is off"
+    event_log inbox-filed "$role" "${bead:-no bead} (human-pane-typing=off: $INBOX_HUMAN_REASON)"
+    inbox_stall_notify "$role" beads
+    return 4
   fi
   nudge_begin "$role" || return 2
   # A marker whose waiter died must not swallow this role's nudges for ever: reap it
@@ -1914,7 +1968,7 @@ _nudge_one() {
   fi
   # A human may be typing in there. Park the notice and wait instead of gluing it
   # onto their half-typed line. The lock is NOT held across the wait.
-  if tm_pane_human_busy "$pane" "$idle_window"; then
+  if _notice_pane_busy "$role" "$pane" "$idle_window"; then
     if nudge_pending_open "$role"; then
       nudge_pending_put_bead "$role" "$bead" || true
       nudge_pending_put_idle "$role" "$idle_window" || true
@@ -1995,7 +2049,7 @@ _nudge_defer_wait() {
       event_log nudge-defer-dropped "$role" "pane ended after ${waited}s"
       return 0
     fi
-    if tm_pane_human_busy "$pane" "$idlew"; then
+    if _notice_pane_busy "$role" "$pane" "$idlew"; then
       sleep "$WOLFMUX_NUDGE_RETRY"
       waited=$((waited + WOLFMUX_NUDGE_RETRY))
       continue
@@ -2013,7 +2067,7 @@ _nudge_defer_wait() {
     # Each line leaves the marker as it is typed, so stopping here, or being killed
     # mid-delivery, can never re-send what already went out.
     while nudge_pending_has_lines "$role"; do
-      if tm_pane_human_busy "$pane" "$idlew"; then
+      if _notice_pane_busy "$role" "$pane" "$idlew"; then
         busy_again=1
         break
       fi
@@ -2024,7 +2078,7 @@ _nudge_defer_wait() {
       delivered=$((delivered + 1))
     done
     if [ "$busy_again" -eq 0 ] && nudge_pending_has_bead "$role"; then
-      if tm_pane_human_busy "$pane" "$idlew"; then
+      if _notice_pane_busy "$role" "$pane" "$idlew"; then
         busy_again=1
       else
         bead="$(nudge_pending_bead "$role")"
@@ -2056,6 +2110,7 @@ _nudge_defer_wait() {
 
 cmd_nudge() {
   local role="" bead="" quiet=0 all=0 target failed=0 shown_cap
+  NUDGE_FILED_WHY="nothing is ever typed into that pane (WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE)" # _nudge_one says which rule
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --quiet | -q) quiet=1 ;;
@@ -2126,7 +2181,7 @@ cmd_nudge() {
       return 3
       ;;
     4)
-      say "filed: nothing is ever typed into ${role}'s pane (WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE). The notice is in its inbox: the status bar counts it, the agent is given it by its own Stop hook when its turn ends or when somebody prompts it, and you can read it now with: teamctl inbox $role"
+      say "filed: $NUDGE_FILED_WHY. The notice is in its inbox: the status bar counts it, the agent is given it by its own Stop hook when its turn ends or when somebody prompts it, and you can read it now with: teamctl inbox $role"
       return 4
       ;;
     *) die "'$role' has no running pane (its beads are waiting in Beads; start it with: teamctl restart $role)" ;;

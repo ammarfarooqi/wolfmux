@@ -9,12 +9,17 @@
 # perfectly is still an interruption.
 #
 # What has to hold, and each of these is a check below:
+#   · v1.20.0, the default (policy human-pane-typing off): a client is attached -> the
+#     lead pane is NEVER typed into, quiet or not; it is filed for the agent's own hooks.
+#     A worker pane the human is looking at is not typed into either; other workers are.
+#     A notice parked for a pane waits while the human watches it. tmux errors -> not typed
+#   · under human-pane-typing idle, the v1.16.1 rule, asserted as it always was:
 #   · a client is attached and a human is WORKING in the lead pane -> nothing is typed
 #     into it; the notice waits in the marker and arrives once that pane is quiet
 #   · a client is attached and the lead pane is QUIET -> it IS typed (issue #12: a
 #     filed notice reaches an agent through its Stop hook, and an agent that is already
 #     idle has no turn boundary left, so filing alone never reached it)
-#   · no client attached -> it IS typed, exactly as v1.14.0 did it
+#   · no client attached -> it IS typed, exactly as v1.14.0 did it, under either policy
 #   · the Stop hook blocks once and only once, and cannot loop
 #   · the badge is empty at zero, and never fails however broken its input is
 #   · `teamctl inbox` clears new-ness but not delivered-ness; the agent's hook clears
@@ -55,7 +60,7 @@ export WOLFMUX_OSASCRIPT="$WORK/no-such-osascript"
 : >"$WOLFMUX_NOTIFY_TTY"
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
-unset WOLFMUX_NUDGE_TYPE WOLFMUX_INBOX_CLIENTS WOLFMUX_INBOX_STALL_NOTIFY
+unset WOLFMUX_NUDGE_TYPE WOLFMUX_INBOX_CLIENTS WOLFMUX_INBOX_STALL_NOTIFY WOLFMUX_HUMAN_PANE_TYPING WOLFMUX_INBOX_WATCHED
 unset WOLFMUX_INBOX_APPROVAL_TYPE WOLFMUX_INBOX_STOP_COOLDOWN WOLFMUX_INBOX_MARK
 teamctl() { "$REPO/bin/teamctl" "$@"; }
 tmx() { tmux -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
@@ -113,6 +118,10 @@ pending_dir() { printf '%s\n' "$STATE_DIR/nudge/$1.pending"; }
 notices() { teamctl capture "$1" --all 2>/dev/null | grep -c "$2"; }
 clients() { tmx list-clients -t "$SESSION" -F x 2>/dev/null | wc -l | tr -d ' '; }
 badge() { teamctl _inbox-badge "$SESSION" 2>&1; }
+# Since v1.20.0 the badge counts the HUMAN's unread Beads messages, not these notices
+# (the human-messages section below). The checks about a notice's new-ness count it the
+# way the badge used to: every role's new notices, through teamctl inbox's own reader.
+notices_new() { teamctl inbox --all --json --keep 2>/dev/null | jq '[.[] | select(.new)] | length'; }
 # notify_deliver writes OSC 9 with no newline, so several banners land on one line:
 # count the OCCURRENCES, not the lines. "1 notice waiting" is singular on purpose.
 banners() { grep -o 'notices\{0,1\} waiting' "$WOLFMUX_NOTIFY_TTY" 2>/dev/null | wc -l | tr -d ' '; }
@@ -124,6 +133,17 @@ inbox_count_new_of() { awk -F'\t' 'NF >= 4 && substr($3, 1, 1) == "n" { n++ } EN
 # A hook runs with the agent's own environment, in the agent's own directory.
 hook() { # <role> <_inbox-stop|_inbox-prompt>
   (cd "$PROJECT" && TEAM_ROLE="$1" WOLFMUX_TEAM=default teamctl "$2" </dev/null 2>/dev/null)
+}
+# hook_in <pane> <role> <hook> — the hook as the agent IN that pane runs it: tmux put TMUX
+# and TMUX_PANE into the pane's processes, and Claude Code hands its environment to hooks.
+# (hook above has neither, so the Stop hook finds the pane by role, from the team record.)
+hook_in() {
+  (cd "$PROJECT" && TMUX="$(tmx display-message -p -t "$1" '#{socket_path}'),0,0" TMUX_PANE="$1" \
+    TEAM_ROLE="$2" WOLFMUX_TEAM=default teamctl "$3" </dev/null 2>/dev/null)
+}
+# delivered_of <role> <text> <true|false> — has the agent been given the notice naming text?
+delivered_of() {
+  teamctl inbox "$1" --keep --json | jq -e --arg t "$2" --argjson want "$3" '[.[] | select(.text | contains($t)) | .delivered] == [$want]' >/dev/null
 }
 attach_client() {
   script -q /dev/null tmux -L "$WOLFMUX_TMUX_SOCKET" attach -t "$SESSION" >/dev/null 2>&1 &
@@ -154,7 +174,239 @@ printf 'junk with no tabs at all\n\n\t\t\n' >"$(inbox_file lead)"
 check "badge: a damaged inbox file -> prints nothing, exits 0" '[ -z "$(badge)" ] && teamctl _inbox-badge "$SESSION" >/dev/null 2>&1'
 /bin/rm -f "$(inbox_file lead)"
 
-echo "== a client attached and a QUIET lead pane: the notice is typed after all (issue #12)"
+echo "== v1.20.0: the number is the human's unread Beads messages, and it opens them"
+# Never the live Beads store. The hook is run the way bd runs it (the bead id and the event
+# as arguments, the bead's JSON on stdin, in the caller's directory), with JSON shaped as bd
+# 1.3.0 sends it (measured on a scratch store, 2026-10-15), and bd itself is a fake on PATH
+# that records every call: "<BEADS_ACTOR>|<arguments>".
+US="$(printf '\037')"
+HUMAN_INDEX="$STATE_DIR/human-inbox" # the default team: its state IS the project's
+FAKE_BIN="$WORK/fake-bin"
+BD_LOG="$WORK/bd-calls"
+BD_LIST="$WORK/bd-list.json"
+/bin/mkdir -p "$FAKE_BIN"
+printf '%s\n' '#!/bin/bash' 'printf "%s|%s\n" "${BEADS_ACTOR:-}" "$*" >>"$FAKE_BD_LOG"' \
+  'case "$1" in list) /bin/cat "$FAKE_BD_LIST" ;; show) echo "SHOW $2" ;; esac' >"$FAKE_BIN/bd"
+chmod +x "$FAKE_BIN/bd"
+fake_bd() { (cd "$PROJECT" && PATH="$FAKE_BIN:$PATH" FAKE_BD_LOG="$BD_LOG" FAKE_BD_LIST="$BD_LIST" "$@"); }
+bd_calls() { awk 'END { print NR + 0 }' "$BD_LOG" 2>/dev/null; }
+# bead_json <id> <assignee> <status> <title> [<created_at>]
+bead_json() {
+  jq -cn --arg id "$1" --arg a "$2" --arg s "$3" --arg t "$4" --arg c "${5:-2026-10-14T04:22:25.93691Z}" \
+    '{id: $id, title: $t, description: "body", status: $s, priority: 2, issue_type: "message",
+      assignee: $a, owner: "x@example.invalid", created_at: $c,
+      created_by: "communication-management.lead", updated_at: $c, ephemeral: true}'
+}
+# bd_hook <event> <json> [<actor>]. The actor is picked so that the hook's OTHER job, the
+# nudge, has nobody to tell (the assignee itself, or `human`, who has no pane): a pane
+# notice filed here would be counted by the notice checks further down.
+bd_hook() {
+  (cd "$PROJECT" && printf '%s' "$2" | WOLFMUX_BIN_DIR="$REPO/bin" BEADS_ACTOR="${3:-communication-management.lead}" \
+    "$WOLFMUX_HOME/hooks/beads-nudge" "$(printf '%s' "$2" | jq -r .id)" "$1" >/dev/null 2>&1)
+}
+index_rows() { awk -F"$US" 'NF >= 4' "$HUMAN_INDEX" 2>/dev/null | awk 'END { print NR + 0 }'; }
+index_ids() { awk -F"$US" 'NF >= 4 { printf "%s ", $1 }' "$HUMAN_INDEX" 2>/dev/null; }
+# The hook writes in the background, so a check waits (5 s at most) for the FILE — never bd.
+wait_rows() {
+  local n=0
+  while [ "$(index_rows)" != "$1" ] && [ "$n" -lt 50 ]; do
+    sleep 0.1
+    n=$((n + 1))
+  done
+}
+
+bd_hook create "$(bead_json m-1 human open 'First, with a	tab' 2026-10-14T01:00:00Z)"
+wait_rows 1
+check "hook: an open message for the human adds a row on create" '[ "$(index_ids)" = "m-1 " ]'
+check "hook: the row is id, sender, subject, created (epoch), and a tab in the subject is a space" 'grep -q "^m-1${US}communication-management.lead${US}First, with a tab${US}[0-9][0-9]*\$" "$HUMAN_INDEX"'
+bd_hook create "$(bead_json m-x lead open 'For the lead')" lead
+bd_hook create "$(bead_json m-2 human open 'Second' 2026-10-14T02:00:00Z)"
+bd_hook create "$(bead_json m-3 human open 'Third' 2026-10-14T03:00:00Z)"
+wait_rows 3
+sleep 1
+check "hook: a message for somebody else is not the human's" '[ "$(index_ids)" = "m-3 m-2 m-1 " ]'
+check "hook: newest first" '[ "$(head -1 "$HUMAN_INDEX" | cut -d "$US" -f1)" = "m-3" ]'
+check "hook: no temp file or lock left behind" '[ -z "$(ls -A "$STATE_DIR" | grep "human-inbox\.")" ]'
+: >"$BD_LOG"
+check "badge: three unread messages read 📨 3" '[ "$(fake_bd teamctl _inbox-badge "$SESSION")" = "📨 3" ]'
+check "badge: and it ran bd zero times to say so" '[ "$(bd_calls)" = "0" ]'
+bd_hook close "$(bead_json m-1 human closed 'First')"
+wait_rows 2
+check "hook: a message marked read is dropped on close" '[ "$(index_ids)" = "m-3 m-2 " ]'
+bd_hook update "$(bead_json m-2 qa open 'Second')" qa
+wait_rows 1
+check "hook: a message handed to somebody else is dropped on reassign" '[ "$(index_ids)" = "m-3 " ]'
+check "badge: one left reads 📨 1" '[ "$(badge)" = "📨 1" ]'
+
+# The popup: the index is drawn at once, then ONE targeted bd call puts it right. Beads
+# says m-3 and m-7 are open (m-7 arrived while no hook ran, m-3 is still there).
+jq -n "[$(bead_json m-7 human open 'Arrived unseen' 2026-10-14T05:00:00Z), $(bead_json m-3 human open 'Third' 2026-10-14T03:00:00Z)]" >"$BD_LIST"
+: >"$BD_LOG"
+fake_bd teamctl _human-inbox --print >"$WORK/popup-print" 2>&1
+check "popup: opening it makes exactly ONE bd call" '[ "$(bd_calls)" = "1" ]'
+check "popup: and it is the targeted one, never the whole store" 'grep -q "|list --assignee human --type message --status open --limit 0 --json$" "$BD_LOG"'
+check "popup: the index now says what Beads says, newest first" '[ "$(index_ids)" = "m-7 m-3 " ]'
+check "popup: rows carry the number, the sender, the subject and the age" 'grep -qE "^ +1  m-7  communication-management.lead  Arrived unseen  [0-9]+[mhd]$" "$WORK/popup-print"'
+: >"$BD_LOG"
+printf 'q' | fake_bd teamctl _human-inbox >/dev/null 2>&1
+check "popup, interactive: opened and closed with q, still exactly one bd call" '[ "$(bd_calls)" = "1" ] && grep -q "|list --assignee human " "$BD_LOG"'
+: >"$BD_LOG"
+printf 'jrq' | fake_bd teamctl _human-inbox >/dev/null 2>&1
+check "popup: r marks the selected message read, AS the human" 'grep -qx "human|close m-3 -r read" "$BD_LOG"'
+check "popup: and drops it from the index at once" '[ "$(index_ids)" = "m-7 " ]'
+: >"$BD_LOG"
+printf 'anq' | fake_bd teamctl _human-inbox >/dev/null 2>&1
+check "popup: a then n marks nothing" '! grep -q "|close" "$BD_LOG"'
+jq -n "[$(bead_json m-7 human open 'Arrived unseen' 2026-10-14T05:00:00Z), $(bead_json m-8 human open 'Eighth' 2026-10-14T06:00:00Z)]" >"$BD_LIST"
+: >"$BD_LOG"
+printf 'ayq' | fake_bd teamctl _human-inbox >/dev/null 2>&1
+check "popup: a then y marks them all read in ONE bd call, as the human" '[ "$(grep -c "|close" "$BD_LOG")" = "1" ] && grep -qx "human|close m-8 m-7 -r read" "$BD_LOG"'
+check "badge: hidden at 0" '[ -z "$(badge)" ] && [ "$(index_rows)" = "0" ]'
+printf 'keep-1%scomms%sKept%s1760000000\n' "$US" "$US" "$US" >"$HUMAN_INDEX"
+printf 'bd: database is locked\n' >"$BD_LIST"
+fake_bd teamctl _human-inbox --print >"$WORK/popup-print" 2>&1
+check "popup: a bd answer that is not a list leaves the index as it was, and says so" '[ "$(index_ids)" = "keep-1 " ] && grep -q "could not refresh" "$WORK/popup-print"'
+printf '[]\n' >"$BD_LIST"
+: >"$BD_LOG"
+WOLFMUX_HUMAN=ammar fake_bd teamctl _human-inbox --print >/dev/null 2>&1
+check "WOLFMUX_HUMAN: the popup asks Beads for that name" 'grep -q "|list --assignee ammar " "$BD_LOG" && [ "$(index_rows)" = "0" ]'
+(cd "$PROJECT" && bead_json m-9 ammar open 'For ammar' | WOLFMUX_HUMAN=ammar WOLFMUX_BIN_DIR="$REPO/bin" "$WOLFMUX_HOME/hooks/beads-nudge" m-9 create >/dev/null 2>&1)
+wait_rows 1
+check "WOLFMUX_HUMAN: and the hook keeps that name's messages" '[ "$(index_ids)" = "m-9 " ]'
+/bin/rm -f "$HUMAN_INDEX"
+
+echo "== v1.20.0: a pane a human is watching is never typed into (policy human-pane-typing off)"
+# Ammar, 2026-10-15: "i still see beads messages in my terminal". v1.16.1 typed into an
+# attached lead's pane once it had been quiet for WOLFMUX_NUDGE_LEAD_IDLE, and at once
+# while he was looking at another pane. The default now is never, for the lead's pane of
+# an attached team and for whatever pane an attached client is showing; such a notice is
+# filed and the agent's own hooks hand it over. A second worker, aux, is the "other
+# workers still are" half: the human looks at qa, and aux must still be typed into.
+teamctl spawn aux flash --no-kickoff >/dev/null 2>&1
+sleep 2
+AUX_PANE="$(teamctl status --json | jq -r '.agents[] | select(.role == "aux") | .pane')"
+attach_client
+tmx select-window -t "$WINDOW" >/dev/null 2>&1
+tmx select-pane -t "$PANE" >/dev/null 2>&1 # the human is looking at the qa pane
+sleep 4                                    # longer than any idle window this suite uses
+check "setup: one client attached, showing qa, a second worker aux, and the policy at its default off" '[ "$(clients)" = "1" ] && [ "$(tmx list-clients -F "#{pane_id}")" = "$PANE" ] && [ -n "$AUX_PANE" ] && [ "$AUX_PANE" != "null" ] && teamctl policy | grep -qE "^  human-pane-typing +off "'
+HBEFORE="$(notices lead "Beads update for lead")"
+teamctl nudge lead --id human-lead-1 >"$WORK/human-lead-1.log" 2>&1
+HUMAN_LEAD_STATUS=$?
+sleep 2
+check "attached + the lead pane: filed, not typed (exit 4), and the message names the policy" '[ "$HUMAN_LEAD_STATUS" -eq 4 ] && grep -q "^filed: a human is watching lead" "$WORK/human-lead-1.log" && grep -q "human-pane-typing is off" "$WORK/human-lead-1.log"'
+check "attached + the lead pane: nothing reached it, though it is quiet and not on screen" '[ "$(notices lead "Beads update for lead")" = "$HBEFORE" ] && ! teamctl capture lead --all | grep -q "human-lead-1"'
+check "attached + the lead pane: no waiter was parked either, so nothing types it in later" '[ ! -d "$(pending_dir lead)" ]'
+check "attached + the lead pane: the event log names the rule" 'grep -q "human-pane-typing=off: a client is attached" "$STATE_DIR/events.jsonl"'
+# v1.20.0, second path: Claude Code prints a Stop hook's reason in the pane ("Stop hook
+# error"), so in a watched pane the Stop hook keeps quiet and the next prompt hands it over.
+check "attached + the lead pane: the agent's own Stop hook keeps quiet, and the notice waits" '[ -z "$(hook lead _inbox-stop)" ] && delivered_of lead human-lead-1 false'
+check "attached + the lead pane: the next prompt hands it over, and it is marked delivered" 'hook lead _inbox-prompt | grep -q "human-lead-1" && delivered_of lead human-lead-1 true'
+QBEFORE="$(notices qa "Beads update for qa")"
+teamctl nudge qa --id human-qa-1 >"$WORK/human-qa-1.log" 2>&1
+HUMAN_QA_STATUS=$?
+sleep 2
+check "attached + the human viewing the qa pane: qa is not typed into (exit 4)" '[ "$HUMAN_QA_STATUS" -eq 4 ] && grep -q "an attached client is showing this pane" "$WORK/human-qa-1.log" && [ "$(notices qa "Beads update for qa")" = "$QBEFORE" ]'
+check "attached + the human viewing qa: it is filed, qa's Stop hook keeps quiet, its next prompt hands it over" 'grep -q "human-qa-1" "$(inbox_file qa)" && [ -z "$(hook qa _inbox-stop)" ] && delivered_of qa human-qa-1 false && hook qa _inbox-prompt | grep -q "human-qa-1" && delivered_of qa human-qa-1 true'
+teamctl nudge aux --id human-aux-1 >"$WORK/human-aux-1.log" 2>&1
+HUMAN_AUX_STATUS=$?
+sleep 2
+check "attached + the human viewing qa: ANOTHER worker, aux, is typed into exactly as before" '[ "$HUMAN_AUX_STATUS" -eq 0 ] && teamctl capture aux --all | grep -q "Beads update for aux (human-aux-1)"'
+LPBEFORE="$(notices lead "Policy changed")"
+teamctl policy lead-teams on >/dev/null 2>&1
+sleep 2
+check "attached + a policy notice for the lead (notify_lead): filed, never typed" '[ "$(notices lead "Policy changed")" = "$LPBEFORE" ] && grep -q "Policy changed: lead-teams = on" "$(inbox_file lead)"'
+# A notice already PARKED for a pane must not be typed once the human starts watching it:
+# the waiter asks the same question before every line. aux gets a half-typed line, so the
+# notice parks; then the human looks at aux and the line goes. It waits while he watches,
+# and arrives by itself once he looks away.
+tmx send-keys -t "$AUX_PANE" -l "aux has a half typed line" >/dev/null 2>&1
+sleep 0.5
+teamctl nudge aux --id parked-aux-1 >"$WORK/parked-aux-1.log" 2>&1
+PARKED_AUX_STATUS=$?
+check "parked then watched: the notice parks behind aux's half-typed line (exit 3)" '[ "$PARKED_AUX_STATUS" -eq 3 ] && [ -d "$(pending_dir aux)" ]'
+tmx select-pane -t "$AUX_PANE" >/dev/null 2>&1
+tmx send-keys -t "$AUX_PANE" Enter >/dev/null 2>&1
+sleep 5
+check "parked then watched: while the human watches aux, the waiter types nothing" '! teamctl capture aux --all | grep -q "(parked-aux-1)" && [ -d "$(pending_dir aux)" ]'
+tmx select-pane -t "$PANE" >/dev/null 2>&1
+sleep 5
+check "parked then watched: once the human looks away, it arrives by itself" 'teamctl capture aux --all | grep -q "Beads update for aux (parked-aux-1)" && [ ! -d "$(pending_dir aux)" ]'
+
+echo "== v1.20.0: the Stop hook says nothing in a pane a human is watching; the next prompt carries it"
+# Ammar, 2026-10-15, a screenshot of the pane he watches: "Stop hook error: [wolfmux] You
+# have team notices: …" — "i am still seeing such messages". Claude Code prints a Stop
+# hook's reason in the pane; a UserPromptSubmit hook's output reaches the model alone.
+# Still attached here, showing qa. WOLFMUX_NUDGE_TYPE=off files each notice without
+# typing it, so the Stop hook is the only thing that could hand it over.
+FAKE_TMUX_DIR="$WORK/fake-tmux"
+/bin/mkdir -p "$FAKE_TMUX_DIR"
+# a tmux that fails ONE subcommand, FAKE_TMUX_FAIL, and hands every other to the real one
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "$FAKE_TMUX_FAIL" ] && exit 1; done\nexec "%s" "$@"\n' "$(command -v tmux)" >"$FAKE_TMUX_DIR/tmux"
+chmod +x "$FAKE_TMUX_DIR/tmux"
+/bin/rm -f "$INBOX/.stop.lead" "$INBOX/.stop.qa" "$INBOX/.stop.aux"
+stop_silent_events() { grep -c '"type":"inbox-stop-silent"' "$STATE_DIR/events.jsonl" 2>/dev/null || true; }
+SILENT_BEFORE="$(stop_silent_events)"
+WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id silent-lead-1 >/dev/null 2>&1
+hook lead _inbox-stop >"$WORK/silent-lead.out"
+SILENT_LEAD_STATUS=$?
+check "watched lead pane (found by role): the Stop hook exits 0 and prints NOTHING" '[ "$SILENT_LEAD_STATUS" -eq 0 ] && [ ! -s "$WORK/silent-lead.out" ]'
+check "watched lead pane: the notice is still undelivered, waiting for the next prompt" 'delivered_of lead silent-lead-1 false'
+check "watched lead pane: one event line says why, and the cooldown stamp is left alone" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "next prompt (human-pane-typing=off: a client is attached" && [ ! -e "$INBOX/.stop.lead" ]'
+check "watched lead pane (found through TMUX_PANE): silent as well" '[ -z "$(hook_in "$LEAD_PANE" lead _inbox-stop)" ] && delivered_of lead silent-lead-1 false'
+PROMPT_SILENT="$(hook lead _inbox-prompt)"
+check "watched lead pane: the next prompt hands it over and marks it delivered" 'printf "%s" "$PROMPT_SILENT" | grep -q "silent-lead-1" && printf "%s" "$PROMPT_SILENT" | grep -q "bd list --assignee lead" && delivered_of lead silent-lead-1 true'
+check "watched lead pane: after that the Stop hook has nothing left to say" '[ -z "$(hook lead _inbox-stop)" ]'
+WOLFMUX_NUDGE_TYPE=off teamctl nudge qa --id silent-qa-1 >/dev/null 2>&1
+check "watched worker pane (the client shows qa): silent, by TMUX_PANE and by role" '[ -z "$(hook_in "$PANE" qa _inbox-stop)" ] && [ -z "$(hook qa _inbox-stop)" ] && delivered_of qa silent-qa-1 false && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "an attached client is showing this pane"'
+check "watched worker pane: qa's next prompt hands it over" 'hook_in "$PANE" qa _inbox-prompt | grep -q "silent-qa-1" && delivered_of qa silent-qa-1 true'
+WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id silent-aux-1 >/dev/null 2>&1
+AUX_STOP="$(hook_in "$AUX_PANE" aux _inbox-stop)"
+check "UNwatched worker pane (aux, same team, same time): the block answer exactly as before" 'printf "%s" "$AUX_STOP" | jq -e ".decision == \"block\"" && printf "%s" "$AUX_STOP" | jq -r .reason | grep -q "silent-aux-1" && delivered_of aux silent-aux-1 true && [ -s "$INBOX/.stop.aux" ]'
+/bin/rm -f "$INBOX/.stop.aux"
+WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id tmuxerr-1 >/dev/null 2>&1
+TMUXERR_OUT="$(
+  export PATH="$FAKE_TMUX_DIR:$PATH" FAKE_TMUX_FAIL=list-clients
+  hook_in "$AUX_PANE" aux _inbox-stop
+)"
+check "a tmux error on who is watching: read as watched, so silent, and the notice waits" '[ -z "$TMUXERR_OUT" ] && delivered_of aux tmuxerr-1 false && [ ! -e "$INBOX/.stop.aux" ]'
+check "a tmux error: and the same hook with tmux answering blocks as before" 'hook_in "$AUX_PANE" aux _inbox-stop | jq -r .reason | grep -q "tmuxerr-1" && delivered_of aux tmuxerr-1 true'
+/bin/rm -f "$INBOX/.stop.aux"
+WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id lookup-1 >/dev/null 2>&1
+LOOKUP_OUT="$(
+  export PATH="$FAKE_TMUX_DIR:$PATH" FAKE_TMUX_FAIL=list-panes
+  hook aux _inbox-stop
+)"
+check "the pane cannot be found by role (tmux fails list-panes): fail closed, silent" '[ -z "$LOOKUP_OUT" ] && delivered_of aux lookup-1 false'
+LOOKUP_OUT="$(
+  export PATH="$FAKE_TMUX_DIR:$PATH" FAKE_TMUX_FAIL=list-panes
+  hook_in "$AUX_PANE" aux _inbox-stop
+)"
+check "the same, but TMUX_PANE names the pane: it is found without the lookup, and blocks" 'printf "%s" "$LOOKUP_OUT" | jq -r .reason | grep -q "lookup-1" && delivered_of aux lookup-1 true'
+WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id idle-stop-1 >/dev/null 2>&1
+IDLE_STOP="$(WOLFMUX_HUMAN_PANE_TYPING=idle hook lead _inbox-stop)"
+check "policy idle: the watched lead pane gets the block answer exactly as before" 'printf "%s" "$IDLE_STOP" | jq -e ".decision == \"block\"" && printf "%s" "$IDLE_STOP" | jq -r .reason | grep -q "idle-stop-1" && delivered_of lead idle-stop-1 true'
+detach_client
+/bin/rm -f "$INBOX/.stop.lead"
+WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id unwatched-1 >/dev/null 2>&1
+check "detached (nobody watching), policy off: the lead's Stop hook blocks as before" 'hook lead _inbox-stop | jq -r .reason | grep -q "unwatched-1" && delivered_of lead unwatched-1 true'
+WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id unwatched-2 >/dev/null 2>&1
+check "detached, policy off: the cooldown still holds the next block back" '[ -z "$(hook lead _inbox-stop)" ] && delivered_of lead unwatched-2 false'
+/bin/rm -f "$INBOX/.stop.lead"
+check "detached, policy off: and once it has passed, the next turn end blocks with it" 'hook lead _inbox-stop | jq -r .reason | grep -q "unwatched-2"'
+
+# The blocks below count the lead's inbox lines from the first one and the banners from
+# zero, so this section hands everything back empty.
+teamctl inbox --all >/dev/null 2>&1
+: >"$(inbox_file lead)"
+: >"$WOLFMUX_NOTIFY_TTY"
+/bin/rm -f "$WOLFMUX_DATA/.stall.lead" "$INBOX/.stall.lead" "$INBOX/.stop.lead" "$INBOX/.stop.qa" "$INBOX/.stop.aux"
+
+# From here to the detach further down, the v1.16.1 rule is asserted exactly as it was:
+# it is still there, as policy human-pane-typing idle, for whoever chooses it.
+export WOLFMUX_HUMAN_PANE_TYPING=idle
+
+echo "== under policy idle: a client attached and a QUIET lead pane: the notice is typed after all (issue #12)"
 # Measured in production on 2026-10-12: a lead idle from 13:58Z never received P1
 # notices sent at 16:13Z or 16:53Z, because v1.15.0 filed them and filing reaches the
 # agent through its Stop hook, which needs a turn boundary an idle agent does not have.
@@ -173,7 +425,7 @@ check "attached + a quiet lead pane: typing marked it delivered, so no hook hand
 # Both directions, because a notice delivered TWICE looks like the agent being nagged
 # with nothing in the inbox to explain it, and that is worse than one delivered late.
 check "attached + a quiet lead pane: and the Stop hook therefore has nothing to say about it" '[ -z "$(hook lead _inbox-stop)" ]'
-check "attached + a quiet lead pane: the human still has it in the badge, unread" 'badge | grep -q "📨 1"'
+check "attached + a quiet lead pane: the notice is still filed, unread, and NOT on the badge" '[ "$(notices_new)" = "1" ] && [ -z "$(badge)" ]'
 check "attached + a quiet lead pane: no banner — the notice reached the agent" '[ "$(banners)" = "0" ]'
 # The blocks below count the lead's inbox lines from the first one, so this episode
 # hands the file back empty rather than shifting every line number after it.
@@ -197,7 +449,7 @@ check "attached + a human in the lead pane: exit 3, and the message says the not
 check "attached + a human in the lead pane: NOTHING was typed into the lead pane" '[ "$(notices lead "Beads update for lead")" = "$BEFORE" ] && ! teamctl capture lead --all | grep -q "quiet-1"'
 check "attached + a human in the lead pane: a waiter IS parked, to deliver once that pane is quiet" '[ -d "$(pending_dir lead)" ]'
 check "attached + a human in the lead pane: the notice IS in the file, new and undelivered" '[ "$(state_of lead 1)" = "nu" ] && grep -q "quiet-1" "$(inbox_file lead)"'
-check "attached + a human in the lead pane: the badge now shows the envelope and a count of 1" 'badge | grep -q "📨 1"'
+check "attached + a human in the lead pane: one notice is filed for the human, unread" '[ "$(notices_new)" = "1" ]'
 check "attached + a human in the lead pane: the event log says deferred, not nudged" 'grep -q "nudge-deferred" "$STATE_DIR/events.jsonl"'
 
 echo "== and the human is told once, by a banner that carries the count"
@@ -206,7 +458,7 @@ check "stall: it names the team and role and carries the count, not the bead id"
 for n in 2 3 4 5 6 7 8 9 10 11; do teamctl nudge lead --id "burst-$n" >/dev/null 2>&1; done
 sleep 1
 check "stall: ten more beads inside the 120 s window raise NO second banner" '[ "$(banners)" = "1" ]'
-check "stall: but every one of them is in the file, and the badge counts them all" 'badge | grep -q "📨 11" && [ "$(grep -c "burst-" "$(inbox_file lead)")" = "10" ]'
+check "stall: but every one of them is in the file, and all of them count as unread" '[ "$(notices_new)" = "11" ] && [ "$(grep -c "burst-" "$(inbox_file lead)")" = "10" ]'
 check "stall: still nothing typed into the lead pane after eleven notices" '[ "$(notices lead "Beads update for lead")" = "$BEFORE" ]'
 : >"$WOLFMUX_NOTIFY_TTY"
 /bin/rm -f "$INBOX/.stall.lead"
@@ -226,7 +478,7 @@ echo "== the Stop hook: the agent is told, once, and cannot loop"
 STOP_OUT="$(hook lead _inbox-stop)"
 check "Stop hook: it blocks, and the reason carries the notices and the Beads command" 'printf "%s" "$STOP_OUT" | jq -e ".decision == \"block\"" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "quiet-1" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "bd list --assignee lead"'
 check "Stop hook: the lines were marked delivered BEFORE it answered" '[ "$(state_of lead 1)" = "nd" ]'
-check "Stop hook: and the human's column is untouched, so the badge still counts them" 'badge | grep -q "📨"'
+check "Stop hook: and the human's column is untouched, so they still count as unread" '[ "$(notices_new)" -gt 0 ]'
 check "Stop hook: a second turn ending at once says nothing (cooldown)" '[ -z "$(hook lead _inbox-stop)" ]'
 /bin/rm -f "$INBOX/.stop.lead"
 check "Stop hook: and with the cooldown gone it STILL says nothing, because they are delivered" '[ -z "$(hook lead _inbox-stop)" ]'
@@ -243,18 +495,18 @@ check "UserPromptSubmit: it has no cooldown, but delivered notices are not repea
 
 echo "== the two states are independent, in both directions"
 check "independence: everything is delivered to the agent, and all still new for the human" '[ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.delivered == false)] | length")" = "0" ] && [ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.new == false)] | length")" = "0" ]'
-check "inbox --keep: printed them and left every one marked new" 'badge | grep -q "📨"'
+check "inbox --keep: printed them and left every one marked new" '[ "$(notices_new)" -gt 0 ]'
 # The badge counts the WHOLE team, so clearing it needs --all: the worker has notices of
 # its own from the blocks above.
 teamctl inbox --all >"$WORK/inbox-1.log" 2>&1
 check "teamctl inbox: it printed the notices, oldest first" 'grep -q "quiet-1" "$WORK/inbox-1.log" && [ "$(grep -n "quiet-1" "$WORK/inbox-1.log" | cut -d: -f1)" -lt "$(grep -n "prompt-1" "$WORK/inbox-1.log" | cut -d: -f1)" ]'
 check "teamctl inbox: it points at Beads for the work itself" 'grep -q "bd list --assignee" "$WORK/inbox-1.log"'
-check "teamctl inbox --all: reading every role cleared the badge entirely" '[ -z "$(badge)" ]'
+check "teamctl inbox --all: reading every role left no notice unread" '[ "$(notices_new)" = "0" ]'
 check "teamctl inbox: it cleared new-ness WITHOUT touching delivered-ness" '[ "$(state_of lead 1)" = "sd" ] && [ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.delivered == false)] | length")" = "0" ]'
 teamctl nudge lead --id both-1 >/dev/null 2>&1
 check "independence the other way: a new notice is new for the human AND undelivered" '[ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.new and (.delivered | not))] | length")" = "1" ]'
 hook lead _inbox-stop >/dev/null 2>&1
-check "independence the other way: the agent having it does NOT clear the human's badge" 'badge | grep -q "📨 1" && [ "$(inbox_count_new_of lead)" = "1" ]'
+check "independence the other way: the agent having it does NOT mark it read for the human" '[ "$(notices_new)" = "1" ] && [ "$(inbox_count_new_of lead)" = "1" ]'
 check "teamctl notices: the alias is the same command" 'teamctl notices lead --keep | grep -q "both-1"'
 check "teamctl inbox --all: every role of the team, the worker included" 'teamctl inbox --all --keep | grep -q "^qa" && teamctl inbox --all --keep | grep -q "^lead"'
 check "teamctl inbox: it is no longer the pointer-to-Beads message it used to print" '! teamctl inbox lead --keep 2>&1 | grep -q "is not a teamctl command"'
@@ -263,9 +515,18 @@ check "moved_to_beads still covers every other word it covered" 'teamctl send 2>
 echo "== an approval: the louder mark, and typed after the grace period if still unread"
 teamctl inbox --all >/dev/null 2>&1
 printf '%s\tapproval\tnu\t[wolfmux] Permission request A1 from qa. Run: teamctl approvals\n' "$(date +%s)" >>"$(inbox_file lead)"
-check "approval: the badge adds the bell next to the envelope" 'badge | grep -q "📨 1 🔔"'
+# v1.20.0: the bell is a request still PENDING in the approvals store, not an unread notice
+# (prefix N no longer opens the notices, so a bell that waited for them to be read would
+# never go). A request file of its own, an id no real request reaches, removed after.
+APPROVAL_FILE="$STATE_DIR/approvals/A900.json"
+/bin/mkdir -p "$STATE_DIR/approvals"
+printf '{\n  "id": "A900",\n  "role": "qa",\n  "status": "pending"\n}\n' >"$APPROVAL_FILE"
+check "approval: a pending request puts the bell on the badge, alone while no message is unread" '[ "$(badge)" = "🔔" ]'
 teamctl inbox lead >/dev/null 2>&1
-check "approval: once read, the bell and the count are both gone" '[ -z "$(badge)" ]'
+check "approval: reading the notices does not take the bell away while it is pending" '[ "$(badge)" = "🔔" ]'
+printf '{\n  "id": "A900",\n  "role": "qa",\n  "status": "approved"\n}\n' >"$APPROVAL_FILE"
+check "approval: once decided, the bell is gone" '[ -z "$(badge)" ]'
+/bin/rm -f "$APPROVAL_FILE"
 LBEFORE="$(notices lead "Permission request")"
 WOLFMUX_INBOX_APPROVAL_GRACE=2 teamctl policy worker-permissions lead >/dev/null 2>&1
 sleep 1
@@ -286,7 +547,7 @@ teamctl policy worker-permissions skip >/dev/null 2>&1
 sleep 1
 teamctl inbox --all >/dev/null 2>&1
 
-echo "== no client attached: the lead IS typed into, exactly as v1.14.0 did it"
+echo "== no client attached: the lead IS typed into, exactly as v1.14.0 did it, under the default policy"
 # The region above left a half-typed line in the lead pane and a waiter behind it. Both
 # have to go, or the next notice joins that marker instead of being typed into the pane.
 tmx send-keys -t "$LEAD_PANE" Enter >/dev/null 2>&1
@@ -294,6 +555,7 @@ tmx send-keys -t "$LEAD_PANE" Enter >/dev/null 2>&1
 sleep 1
 detach_client
 sleep 1
+unset WOLFMUX_HUMAN_PANE_TYPING # the v1.16.1 region ends: the default policy, off, again
 check "setup: no client is attached now" '[ "$(clients)" = "0" ]'
 : >"$WOLFMUX_NOTIFY_TTY"
 /bin/rm -f "$INBOX/.stall.lead"
@@ -316,9 +578,9 @@ teamctl inbox --all >/dev/null 2>&1
 WOLFMUX_NUDGE_DEBOUNCE=30 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id dedupe-1 >/dev/null 2>&1
 WOLFMUX_NUDGE_DEBOUNCE=30 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id dedupe-1 >/dev/null 2>&1
 WOLFMUX_NUDGE_DEBOUNCE=30 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id dedupe-1 >/dev/null 2>&1
-check "dedupe: three events for the SAME bead file one line, so the badge reads 1" '[ "$(grep -c "dedupe-1" "$(inbox_file lead)")" = "1" ] && badge | grep -q "📨 1"'
+check "dedupe: three events for the SAME bead file one line, so the count reads 1" '[ "$(grep -c "dedupe-1" "$(inbox_file lead)")" = "1" ] && [ "$(notices_new)" = "1" ]'
 WOLFMUX_NUDGE_DEBOUNCE=30 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id dedupe-2 >/dev/null 2>&1
-check "dedupe: a DIFFERENT bead is never collapsed away" 'badge | grep -q "📨 2" && grep -q "dedupe-2" "$(inbox_file lead)"'
+check "dedupe: a DIFFERENT bead is never collapsed away" '[ "$(notices_new)" = "2" ] && grep -q "dedupe-2" "$(inbox_file lead)"'
 teamctl inbox --all >/dev/null 2>&1
 
 echo "== a notice survives a waiter that died: the typed path lost it, the file did not"
@@ -439,16 +701,171 @@ check "who is typed into: off/workers/detached-lead/all x lead/worker x claude/c
 ) >/dev/null 2>&1
 CLOSED_STATUS=$?
 check "is anybody watching: a tmux read we cannot make sense of counts as attached" '[ "$CLOSED_STATUS" -eq 0 ]'
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/policy.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  SESSION="irrelevant"
+  unset WOLFMUX_INBOX_WATCHED
+  # v1.20.0, fail CLOSED: a tmux that errors says "a human is watching", so nothing is typed
+  tmx() { return 1; }
+  tm_pane_watched "%7" || exit 1
+  tm_pane_watched "" || exit 1
+  WOLFMUX_INBOX_CLIENTS=0
+  inbox_human_pane qa "%7" || exit 1
+  TMUX_BIN=""
+  inbox_human_pane qa "%7" || exit 1
+  # a tmux that answers: only the panes on a client's screen are watched
+  TMUX_BIN=/usr/bin/true
+  tmx() { printf '%%3\n%%9\n'; }
+  tm_pane_watched "%3" || exit 1
+  tm_pane_watched "%31" && exit 1
+  inbox_human_pane qa "%5" && exit 1
+  # the lead's pane of an attached team, wherever the client is looking
+  WOLFMUX_INBOX_CLIENTS=1
+  inbox_human_pane lead "%5" || exit 1
+  inbox_human_pane qa "%5" && exit 1
+  # the seam, and its error word
+  WOLFMUX_INBOX_WATCHED="%2 %4"
+  inbox_human_pane qa "%4" || exit 1
+  inbox_human_pane qa "%5" && exit 1
+  WOLFMUX_INBOX_WATCHED=error
+  inbox_human_pane qa "%5" || exit 1
+  # the policy: off (also unset, or nonsense) keeps off the pane; idle lets the old rule decide
+  policy_get() { printf '%s\n' "${FAKE_POLICY:-}"; }
+  FAKE_POLICY=off inbox_keep_off_human_pane qa "%5" || exit 1
+  FAKE_POLICY="" inbox_keep_off_human_pane qa "%5" || exit 1
+  FAKE_POLICY=idle inbox_keep_off_human_pane qa "%5" && exit 1
+  unset -f policy_get
+  . "$WOLFMUX_HOME/lib/policy.sh" # the real one back, for the last question
+  [ "$(WOLFMUX_HUMAN_PANE_TYPING=junk policy_get human-pane-typing)" = "off" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+HUMAN_CLOSED_STATUS=$?
+check "a human's pane: a tmux error, no tmux, or the error seam all read as watched; only shown panes count; nonsense policy is off" '[ "$HUMAN_CLOSED_STATUS" -eq 0 ]'
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/policy.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  unset WOLFMUX_INBOX_WATCHED WOLFMUX_INBOX_CLIENTS
+  CALLS="$WORK/stop-pane.calls"
+  : >"$CALLS"
+  TMUX_BIN=/usr/bin/true
+  tmx() {
+    printf '%s\n' "$*" >>"$CALLS"
+    case "$1" in
+      display-message) printf '%s\n' "$FAKE_READ" ;;
+      list-clients) printf '%s\n' "$FAKE_SHOWN" ;;
+      *) return 1 ;;
+    esac
+  }
+  session_name_for_project() { printf 'team-from-record\n'; }
+  tm_pane_for_role() { printf '%%9\n'; }
+  policy_get() { printf '%s\n' "$FAKE_POLICY"; }
+  INBOX_ROLE=qa FAKE_POLICY=off FAKE_SHOWN=""
+  # 1. TMUX_PANE, a pane of the team's server that carries this role: it, and its session
+  TMUX="/tmp/tmux-1/$WOLFMUX_TMUX_SOCKET,1,0" TMUX_PANE=%7 FAKE_READ="qa team-x"
+  _inbox_stop_pane
+  [ "$INBOX_PANE" = "%7" ] && [ "$SESSION" = "team-x" ] || exit 1
+  # 2. it carries another role, or none: the lookup by role decides
+  FAKE_READ="lead team-x"
+  _inbox_stop_pane
+  [ "$INBOX_PANE" = "%9" ] && [ "$SESSION" = "team-from-record" ] || exit 1
+  FAKE_READ=" team-x"
+  _inbox_stop_pane
+  [ "$INBOX_PANE" = "%9" ] || exit 1
+  # 3. a pane of ANOTHER tmux server is not even read
+  : >"$CALLS"
+  TMUX="/tmp/tmux-1/default,1,0" FAKE_READ="qa team-x"
+  _inbox_stop_pane
+  [ "$INBOX_PANE" = "%9" ] && ! grep -q display-message "$CALLS" || exit 1
+  # 4. no TMUX_PANE at all: the lookup
+  unset TMUX_PANE
+  _inbox_stop_pane
+  [ "$INBOX_PANE" = "%9" ] || exit 1
+  # 5. found and on nobody's screen: not watched, so the hook answers as it always did;
+  #    on a client's screen: watched
+  FAKE_SHOWN="%3"
+  _inbox_stop_watched && exit 1
+  FAKE_SHOWN="%9"
+  _inbox_stop_watched || exit 1
+  # 6. nothing can be found: no pane, no session, and that reads as WATCHED (fail closed),
+  #    for a worker and for the lead alike
+  session_name_for_project() { return 1; }
+  FAKE_SHOWN="%3"
+  _inbox_stop_pane
+  [ -z "$INBOX_PANE" ] && [ -z "$SESSION" ] || exit 1
+  _inbox_stop_watched || exit 1
+  INBOX_ROLE=lead
+  _inbox_stop_watched || exit 1
+  # 7. policy idle: never watched, and tmux is not asked anything at all
+  : >"$CALLS"
+  FAKE_POLICY=idle FAKE_SHOWN="%9"
+  _inbox_stop_watched && exit 1
+  [ ! -s "$CALLS" ] || exit 1
+  exit 0
+) >/dev/null 2>&1
+STOP_PANE_STATUS=$?
+check "the Stop hook's own pane: TMUX_PANE when it is this role's on this server, else by role; none found reads as watched; idle asks nothing" '[ "$STOP_PANE_STATUS" -eq 0 ]'
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/policy.sh"
+  . "$WOLFMUX_HOME/lib/approvals.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/brand.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  . "$WOLFMUX_HOME/lib/agents.sh"
+  STATE_DIR="$WORK/human-approval"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  SESSION="irrelevant" WOLFMUX_INBOX_CLIENTS=1 WOLFMUX_INBOX_STALL_NOTIFY=off
+  tm_pane_for_role() { printf '%%1\n'; }
+  tm_pane_state() { printf 'running\n'; }
+  _notify_type_or_park() { printf '%s\n' "$3" >>"$WORK/human-approval.typed"; }
+  : >"$WORK/human-approval.typed"
+  # an approval with APPROVAL_TYPE=always, the loudest setting there is: under the default
+  # policy the attached lead's pane still gets nothing typed, and it is filed
+  rc=0
+  WOLFMUX_INBOX_APPROVAL_TYPE=always notify_lead approval A1 qa || rc=$?
+  [ "$rc" -eq 4 ] && [ ! -s "$WORK/human-approval.typed" ] || exit 1
+  grep -q "Permission request A1 from qa" "$STATE_DIR/inbox/lead" || exit 1
+  # and under idle, the v1.16.1 override is back: typed at once
+  WOLFMUX_HUMAN_PANE_TYPING=idle WOLFMUX_INBOX_APPROVAL_TYPE=always notify_lead approval A2 qa || true
+  grep -q "A2" "$WORK/human-approval.typed" || exit 1
+  exit 0
+) >/dev/null 2>&1
+HUMAN_APPROVAL_STATUS=$?
+check "a human's pane: even an approval with APPROVAL_TYPE=always is filed, not typed; under idle it is typed" '[ "$HUMAN_APPROVAL_STATUS" -eq 0 ]'
 
-echo "== WOLFMUX_NUDGE_TYPE=all brings the pre-1.15.0 behaviour back"
+echo "== WOLFMUX_NUDGE_TYPE=all brings the pre-1.15.0 behaviour back, under policy idle only"
 attach_client
 tmx select-pane -t "$PANE" >/dev/null 2>&1
 sleep 4
 BEFORE="$(notices lead "Beads update for lead")"
-WOLFMUX_NUDGE_TYPE=all teamctl nudge lead --id all-1 >/dev/null 2>&1
+WOLFMUX_NUDGE_TYPE=all teamctl nudge lead --id all-off-1 >/dev/null 2>&1
+ALL_OFF_STATUS=$?
+sleep 2
+check "WOLFMUX_NUDGE_TYPE=all under the default policy: the attached lead is still not typed into" '[ "$ALL_OFF_STATUS" -eq 4 ] && [ "$(notices lead "Beads update for lead")" = "$BEFORE" ] && ! teamctl capture lead --all | grep -q "all-off-1"'
+WOLFMUX_HUMAN_PANE_TYPING=idle WOLFMUX_NUDGE_TYPE=all teamctl nudge lead --id all-1 >/dev/null 2>&1
 ALL_STATUS=$?
 sleep 2
-check "WOLFMUX_NUDGE_TYPE=all: typed into an attached lead pane again, for whoever wants it" '[ "$ALL_STATUS" -eq 0 ] && teamctl capture lead --all | grep -q "Beads update for lead (all-1)"'
+check "WOLFMUX_NUDGE_TYPE=all + human-pane-typing idle: typed into an attached lead pane again" '[ "$ALL_STATUS" -eq 0 ] && teamctl capture lead --all | grep -q "Beads update for lead (all-1)"'
 BEFORE="$(notices lead "Beads update for lead")"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge qa --id none-1 >/dev/null 2>&1
 sleep 2
@@ -462,15 +879,22 @@ check "tmux: prefix T still re-tiles, so the key that was there already is untou
 check "tmux: the session knows where teamctl is, so the badge and the popup can run it" '[ -x "$(tmx show-options -t "=$SESSION:" -qv @wolfmux_teamctl)" ]'
 check "tmux: status-interval is 5, so the count is never more than 5 s stale" '[ "$(tmx show-options -gqv status-interval)" = "5" ]'
 check "tmux: status-left calls the badge" 'tmx show-options -gqv status-left | grep -q "_inbox-badge"'
-
+check "tmux: prefix N opens the human's messages, not the pane notices" 'tmx list-keys -T prefix 2>/dev/null | grep -E "^bind-key +-T prefix +N " | grep -q "_human-inbox\"$"'
+check "tmux: the badge is wrapped in the inbox range, and the rest of status-left is the left range again" 'tmx show-options -gqv status-left | grep -qF "#[range=user|inbox]#(" && tmx show-options -gqv status-left | grep -qF "#[norange range=left]"'
+MOUSE_BINDING="$(tmx list-keys -T root 2>/dev/null | grep -E "^bind-key +-T root +MouseDown1Status ")"
+check "tmux: a click opens the messages popup only on the inbox range" 'printf "%s" "$MOUSE_BINDING" | grep -qF "if-shell -F \"#{==:#{mouse_status_range},inbox}\" { display-popup" && printf "%s" "$MOUSE_BINDING" | grep -qF "_human-inbox"'
+check "tmux: every other status click still does tmux's default, switch-client -t =" 'printf "%s" "$MOUSE_BINDING" | grep -qE "\} \{ switch-client -t = \}$"'
 echo "== the badge END TO END: the shipped status-left really runs it, and its output draws"
 # Three things are needed together and all three were learned the hard way: a REAL pty
 # client (with none, tmux never runs the #() job at all), time plus a forced refresh (one
 # interval is not enough), and a LITERAL MARKER grepped out of the typescript. Do NOT try
 # to read the result back through #{E:...} or #{T:...}: both come back empty even in a run
 # that demonstrably rendered, so they are a dead end as verification.
-printf '%s\tbeads\tnu\t[wolfmux] Beads update for lead (render-1)\n' "$(date +%s)" >>"$(inbox_file lead)"
-printf '%s\tapproval\tnu\t[wolfmux] Permission request A9 from qa\n' "$(date +%s)" >>"$(inbox_file lead)"
+# v1.20.0: what it draws is the human's unread messages (one row in the index the Beads
+# hook keeps) and the bell of a pending request (a request file of its own).
+printf 'render-1\037comms.lead\037Render check\037%s\n' "$(date +%s)" >"$STATE_DIR/human-inbox"
+/bin/mkdir -p "$STATE_DIR/approvals"
+printf '{\n  "id": "A909",\n  "status": "pending"\n}\n' >"$STATE_DIR/approvals/A909.json"
 RENDER_TTY="$WORK/render-typescript"
 tmx set-option -t "$SESSION" status-interval 1 >/dev/null 2>&1
 # The same spelling the shipped file uses, with a marker around it so the segment can be
@@ -486,7 +910,7 @@ sleep 3
 kill "$RENDER_PID" 2>/dev/null
 sleep 1
 check "badge end to end: the segment ran and its output is in the drawn status line" 'grep -ao "WOLFBADGE\[[^]]*\]" "$RENDER_TTY" 2>/dev/null | grep -q "📨"'
-check "badge end to end: the count and the approval bell are what was drawn" 'grep -ao "WOLFBADGE\[[^]]*\]" "$RENDER_TTY" 2>/dev/null | grep -q "🔔"'
+check "badge end to end: the count and the approval bell are what was drawn" 'grep -ao "WOLFBADGE\[[^]]*\]" "$RENDER_TTY" 2>/dev/null | grep -q "📨 1 🔔"'
 # The honest other half of the same measurement, and a documented limit: tmux draws the
 # status line BEFORE the job has produced anything, so the first draw is empty.
 check "badge end to end: the first draw is blank, which is why ROADMAP carries that limit" 'grep -aq "WOLFBADGE\[\]" "$RENDER_TTY"'
@@ -501,7 +925,7 @@ SPACED_DIR="$WORK/My bin"
 printf '#!/bin/sh\nexec "%s/bin/teamctl" "$@"\n' "$REPO" >"$SPACED_DIR/teamctl"
 chmod +x "$SPACED_DIR/teamctl"
 tmx set-option -t "=$SESSION:" @wolfmux_teamctl "$SPACED_DIR/teamctl" >/dev/null 2>&1
-printf '%s\tbeads\tnu\t[wolfmux] Beads update for lead (spaced-1)\n' "$(date +%s)" >>"$(inbox_file lead)"
+printf 'spaced-1\037comms.lead\037Spaced check\037%s\n' "$(date +%s)" >>"$STATE_DIR/human-inbox"
 RENDER_TTY2="$WORK/render-typescript-spaced"
 tmx set-option -t "$SESSION" status-interval 1 >/dev/null 2>&1
 tmx set-option -g status-left 'WOLFSPACED[#("#{?@wolfmux_teamctl,#{@wolfmux_teamctl},teamctl}" _inbox-badge "#{session_name}" "#{@wolfmux_root}" "#{@wolfmux_team}")]' >/dev/null 2>&1
@@ -519,6 +943,7 @@ tmx set-option -t "=$SESSION:" @wolfmux_teamctl "$REPO/bin/teamctl" >/dev/null 2
 tmx set-option -gu status-left >/dev/null 2>&1
 tmx set-option -t "$SESSION" status-interval 5 >/dev/null 2>&1
 teamctl inbox --all >/dev/null 2>&1
+/bin/rm -f "$STATE_DIR/human-inbox" "$STATE_DIR/approvals/A909.json"
 
 echo "== the eight findings of the v1.15.0 review, each asserted against its own mechanism"
 
@@ -648,15 +1073,27 @@ check "F6: an interleaved create/update pair still files ONE line, two beads rea
   printf '#!/bin/sh\nexit 1\n' >"$JQ_BIN"
   chmod +x "$JQ_BIN"
   _inbox_hook_ready() { return 0; }
+  # nobody is watching: the answer is attempted (v1.20.0 keeps quiet in a watched pane,
+  # and quiet would leave both lines undelivered too, passing this for the wrong reason)
+  _inbox_stop_watched() { return 1; }
   cmd_inbox_stop </dev/null >/dev/null 2>&1
+  # the answer really was attempted: only that path writes the cooldown stamp
+  [ -s "$STATE_DIR/inbox/.stop.lead" ] || exit 1
   # both lines must be undelivered again, or they are lost for good
   [ "$(inbox_count_undelivered lead)" = "2" ] || exit 1
   # and the human's count is untouched by any of it
   [ "$(inbox_count_new lead)" = "2" ] || exit 1
+  # v1.20.0: a watched pane takes nothing, prints nothing and writes no stamp
+  /bin/rm -f "$STATE_DIR/inbox/.stop.lead"
+  JQ_BIN="$(command -v jq)"
+  _inbox_stop_watched() { INBOX_HUMAN_REASON="test"; return 0; }
+  [ -z "$(cmd_inbox_stop </dev/null 2>/dev/null)" ] || exit 1
+  [ ! -e "$STATE_DIR/inbox/.stop.lead" ] || exit 1
+  [ "$(inbox_count_undelivered lead)" = "2" ] || exit 1
   exit 0
 ) >/dev/null 2>&1
 F7_STATUS=$?
-check "F7: a Stop hook whose answer fails re-queues the notices instead of eating them" '[ "$F7_STATUS" -eq 0 ]'
+check "F7: a Stop hook whose answer fails re-queues the notices instead of eating them; a watched pane takes none" '[ "$F7_STATUS" -eq 0 ]'
 
 # F5 -- the grace waiter must watch THIS request. prefix N prints --all and marks every
 # role seen, so asking "has this role a new approval" let a glance at a worker's line

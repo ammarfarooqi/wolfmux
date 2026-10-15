@@ -41,14 +41,20 @@ WOLFMUX_GLM_GUARD_TOKEN="wolfmux-glm-worker-no-anthropic-credential"
 # commit as the knob, because the v1.16.0 lesson is that a knob and its allowlist entry have
 # to arrive together or the knob silently does nothing (tests/disk.sh round-trips it).
 # WOLFMUX_AUTO_RECLAIM, the default of the auto-reclaim policy, arrived the same way and for
-# the same reason (tests/reclaim.sh round-trips it).
+# the same reason (tests/reclaim.sh round-trips it). v1.20.0: WOLFMUX_HUMAN_PANE_TYPING, the
+# default of the human-pane-typing policy, likewise. That release also found the notice keys
+# above had been on the list and STILL did nothing: bin/teamctl read this file after the
+# modules that set their defaults when sourced. It reads it first now (tests/providers.sh).
+# Also v1.20.0: WOLFMUX_HUMAN, the human's own Beads name, which the status-bar number and
+# the messages popup read (lib/inbox.sh), in the same commit as the knob. And
+# WOLFMUX_ORPHAN_STEWARD, the default of the orphan-steward policy (lib/policy.sh).
 WOLFMUX_CONFIG_KEYS="WOLFMUX_GLM_AUTH_MODE WOLFMUX_GLM_CONTEXT WOLFMUX_FABLE_MODEL WOLFMUX_ASTRA_MODEL
 WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL WOLFMUX_MODEL_POLICY
-WOLFMUX_LEAD_PERMISSIONS WOLFMUX_WORKER_PERMISSIONS WOLFMUX_WORKER_SPAWN WOLFMUX_WORKER_ISOLATION WOLFMUX_LEAD_TEAMS WOLFMUX_APPROVAL_TIMEOUT WOLFMUX_BRANCH_TEMPLATE
+WOLFMUX_LEAD_PERMISSIONS WOLFMUX_WORKER_PERMISSIONS WOLFMUX_WORKER_SPAWN WOLFMUX_WORKER_ISOLATION WOLFMUX_LEAD_TEAMS WOLFMUX_ORPHAN_STEWARD WOLFMUX_APPROVAL_TIMEOUT WOLFMUX_BRANCH_TEMPLATE
 WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES WOLFMUX_AUTO_PRUNE WOLFMUX_AUTO_RECLAIM
 WOLFMUX_SPLASH WOLFMUX_NOTIFY WOLFMUX_LAYOUT WOLFMUX_TERMINAL
-WOLFMUX_NUDGE_TYPE WOLFMUX_NUDGE_LEAD_IDLE WOLFMUX_NUDGE_COLLISION_CHECK
-WOLFMUX_INBOX_APPROVAL_TYPE WOLFMUX_INBOX_APPROVAL_GRACE WOLFMUX_INBOX_STALL_NOTIFY"
+WOLFMUX_NUDGE_TYPE WOLFMUX_NUDGE_LEAD_IDLE WOLFMUX_NUDGE_COLLISION_CHECK WOLFMUX_HUMAN_PANE_TYPING
+WOLFMUX_INBOX_APPROVAL_TYPE WOLFMUX_INBOX_APPROVAL_GRACE WOLFMUX_INBOX_STALL_NOTIFY WOLFMUX_HUMAN"
 
 # Credential, endpoint, provider and model overrides understood by Claude Code.
 # Any of these, inherited by accident, can move traffic off the Claude subscription.

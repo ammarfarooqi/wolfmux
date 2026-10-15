@@ -74,6 +74,11 @@
 # May a lead found further teams (teamctl start <model> --team <new> --handover <bead>)?
 # You are notified every time one does.
 #WOLFMUX_LEAD_TEAMS=on
+# The orphan steward: the team whose LEAD may bring back a team YOU founded while that
+# team's lead is not running (teamctl restart lead, teamctl stop <role>; nothing else).
+# The default of the orphan-steward policy, for every project that does not set its own
+# (`teamctl policy orphan-steward <team>|off`, yours alone to change). Default off.
+#WOLFMUX_ORPHAN_STEWARD=communication-management
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
 # How workers' branches are named, for every team that does not set its own
@@ -139,32 +144,46 @@
 # A `[wolfmux] …` notice is always FILED in the role's inbox (the 📨 count, `prefix N`,
 # and the agent's own hooks). This says who ALSO gets it typed into their pane, which is
 # the only channel that reaches an agent sitting idle.
-#   detached-lead (default)  workers, plus the lead's pane whenever that pane is quiet
+#   detached-lead (default)  workers, plus the lead's pane while nobody is attached
 #   workers                  workers only; the lead's pane is never typed into
 #   off                      nobody, ever, not even a Codex pane
-#   all                      everybody, whatever you are in the middle of
+#   all                      everybody (but see WOLFMUX_HUMAN_PANE_TYPING just below)
 #WOLFMUX_NUDGE_TYPE=workers
-# How quiet the LEAD's pane has to be first, in seconds: no keystroke in it for this long.
-# Default 300. It is your own conversation, so this is the knob that decides between "a
-# notice in the middle of my sentence" and "an idle lead that waits". Only the keystroke
-# check uses it; a half-typed line or copy mode is busy at any setting.
+# A pane YOU are watching: the lead's pane while you are attached to the team, and any
+# pane on your screen. The default of the human-pane-typing policy (teamctl policy shows it).
+#   off (default)  never typed into, whatever WOLFMUX_NUDGE_TYPE says. The agent gets the
+#                  notice from its own hooks when its turn ends or when you prompt it. The
+#                  price: an IDLE lead you are attached to is woken by its own loop or by
+#                  you, not by a notice.
+#   idle           the v1.16.1 rule: typed in once that pane has been quiet (next setting)
+#WOLFMUX_HUMAN_PANE_TYPING=idle
+# Under idle only: how quiet the LEAD's pane has to be first, in seconds, with no keystroke
+# in it for this long. Default 300. Only the keystroke check uses it; a half-typed line or
+# copy mode is busy at any setting.
 #WOLFMUX_NUDGE_LEAD_IDLE=300
 # 0 brings back the pre-v1.14.0 blind typing: no check for a half-typed line at all.
 # For a pane whose TUI draws a placeholder that reads as typing and so never gets notices.
 #WOLFMUX_NUDGE_COLLISION_CHECK=0
 
-# A permission request holds a WORKER until the lead answers, so it is the one notice that
-# can still reach your conversation on purpose.
+# A permission request holds a WORKER until the lead answers, so under
+# WOLFMUX_HUMAN_PANE_TYPING=idle it is the one notice that can still reach your
+# conversation on purpose.
 #   grace (default)  typed in after WOLFMUX_INBOX_APPROVAL_GRACE if still pending
 #   never            left to the badge
 #   always           typed at once
-# WOLFMUX_NUDGE_TYPE=off outranks all three.
+# WOLFMUX_NUDGE_TYPE=off and WOLFMUX_HUMAN_PANE_TYPING=off (the default) outrank all three.
 #WOLFMUX_INBOX_APPROVAL_TYPE=never
 # Seconds a pending request waits before it is typed in after all (default 20).
 #WOLFMUX_INBOX_APPROVAL_GRACE=20
 # One desktop notification, at most per role every two minutes, when a notice could not
-# reach its agent. off leaves it to the 📨 count (WOLFMUX_NOTIFY=off also covers it).
+# reach its agent. off: no banner; the agent still gets the notice from its own hooks, and
+# teamctl inbox lists it (WOLFMUX_NOTIFY=off also covers it).
 #WOLFMUX_INBOX_STALL_NOTIFY=off
+
+# Your own name in Beads. Agents write to you with bd create ... -t message -a human; the
+# 📨 number next to the wolf counts those still unread, and prefix N (or a click on the
+# number) opens them. Letters, digits, '.', '_' and '-'; anything else means human.
+#WOLFMUX_HUMAN=human
 
 # What the keys fable, opus, sonnet and haiku mean.
 #   latest (default)  the newest model of that family Claude Code serves your account. teamctl
