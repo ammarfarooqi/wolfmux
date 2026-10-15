@@ -394,7 +394,10 @@ there by whoever needs it.
   `off`). That is your lead pane while you are attached to the team, quiet or not, and
   whatever pane is on your screen, a worker's included. If tmux cannot say who is
   watching, the answer is "you are". Such a notice is filed only, and the agent gets it
-  from its own hooks. The price: an **idle** lead you are attached to is not woken by a
+  from its own hooks. In such a pane the turn-end hook stays silent too (Claude Code
+  prints what a `Stop` hook says, as "Stop hook error"), so the notices arrive with the
+  next prompt: yours, or the agent's own loop's, which is a prompt as well and shows you
+  nothing. The price: an **idle** lead you are attached to is not woken by a
   notice; its own loop wakes it (the communication lead runs one every 20 minutes), or you
   do by prompting it. `teamctl policy human-pane-typing idle` brings back the v1.16.1
   rule: typed in once the pane is quiet, no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE`
