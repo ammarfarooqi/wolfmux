@@ -66,15 +66,16 @@ trap cleanup EXIT
 # What each one answers is a file under $RECLAIM_STUB, so a check sets up the world it needs
 # and reads back exactly what teamctl asked (bd.log, gh.log).
 #   bd.mode / gh.mode   ok (default) | fail | hang | garbage
-#                       bd only: noworkspace | array | oldbd
-#   tasks/<assignee>.json   one bead; `bd list` prints all of them, the way the real one does
+#                       bd only: noworkspace | wrapped | oldbd
+#   tasks/<name>.json   one bead each; `bd list` prints all of them, `bd query` the ones its
+#                       expression selects
 #   prs/<branch, / as _>.json   what `gh pr list --head <branch>` prints ([] when absent)
 #
-# The stub bd answers in the two shapes the real one was measured to give (bd 1.3.0,
-# 2026-10-14): a bare array from a plain `bd list --json`, and the same list wrapped as
-# {"issues": [...], "meta": {...}} as soon as --brief or --skip-labels is passed. Mode
-# `array` gives the bare array whatever the flags, and `oldbd` is a bd that does not know
-# those two flags at all.
+# `bd query` answers the way the real one was measured to (bd 1.3.0, 2026-10-15): a bare
+# array; `assignee="x"` is an exact match, OR'd names select any of them, `type!=message`
+# leaves messages out, closed beads come only with --all, and --limit cuts the list. Mode
+# `wrapped` gives the {"issues": [...]} shape `bd list --brief` prints, and `oldbd` is a bd
+# from before `bd query` existed.
 export RECLAIM_STUB="$WORK/stub"
 /bin/mkdir -p "$RECLAIM_STUB/bin" "$RECLAIM_STUB/tasks" "$RECLAIM_STUB/prs" "$RECLAIM_STUB/beads"
 /bin/cat >"$RECLAIM_STUB/bin/bd" <<'EOF'
@@ -98,12 +99,42 @@ case "${1:-}" in
     for arg in "$@"; do
       case "$arg" in --brief | --skip-labels) wrapped=1 ;; esac
     done
-    if [ "$mode" = "oldbd" ] && [ "$wrapped" -eq 1 ]; then echo "Error: unknown flag: --brief" >&2; exit 1; fi
-    [ "$mode" != "array" ] || wrapped=0
     if [ "$wrapped" -eq 1 ]; then
       jq -s '{issues: ., meta: {count: length, skip_labels: true}, schema_version: 1}' "$RECLAIM_STUB"/tasks/*.json 2>/dev/null || echo '{"issues": [], "meta": {"count": 0}, "schema_version": 1}'
     else
       jq -s . "$RECLAIM_STUB"/tasks/*.json 2>/dev/null || echo "[]"
+    fi
+    ;;
+  query)
+    echo "warning: beads.role not configured (GH#2950)." >&2
+    case "$mode" in
+      fail) echo "bd: the database is locked" >&2; exit 3 ;;
+      hang) exec /bin/sleep 30 ;;
+      garbage) echo "this is not JSON"; exit 0 ;;
+      noworkspace) echo "Error: no beads database found" >&2; exit 1 ;;
+      oldbd) echo 'Error: unknown command "query" for "bd"' >&2; exit 1 ;;
+    esac
+    expr="${2:-}" all=0 limit=50 nomsg=0
+    shift 2
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --all | -a) all=1 ;;
+        --limit | -n) limit="${2:-50}"; shift ;;
+      esac
+      shift
+    done
+    case "$expr" in *'type!=message'*) nomsg=1 ;; esac
+    names="$(printf '%s' "$expr" | grep -o 'assignee="[^"]*"' | sed -e 's/^assignee="//' -e 's/"$//')"
+    list="$(jq -s --arg names "$names" --argjson all "$all" --argjson nomsg "$nomsg" --argjson limit "$limit" '
+      ($names | split("\n") | map(select(. != ""))) as $n
+      | map(select(.assignee as $a | any($n[]; . == $a)))
+      | map(select($all == 1 or (.status // "open") != "closed"))
+      | map(select($nomsg == 0 or (.issue_type // "task") != "message"))
+      | if $limit > 0 then .[:$limit] else . end' "$RECLAIM_STUB"/tasks/*.json 2>/dev/null || echo "[]")"
+    if [ "$mode" = "wrapped" ]; then
+      printf '%s' "$list" | jq '{issues: ., meta: {count: length}, schema_version: 1}'
+    else
+      printf '%s\n' "$list"
     fi
     ;;
 esac
@@ -133,6 +164,8 @@ bd_mode() { printf '%s\n' "$1" >"$RECLAIM_STUB/bd.mode"; }
 gh_mode() { printf '%s\n' "$1" >"$RECLAIM_STUB/gh.mode"; }
 # task <assignee> <status> — the one task that assignee has, in that status
 task() { printf '{"id":"demo-%s","title":"the work of %s","status":"%s","issue_type":"task","assignee":"%s"}\n' "$1" "$1" "$2" "$1" >"$RECLAIM_STUB/tasks/$1.json"; }
+# message <assignee> — an unread message to that assignee
+message() { printf '{"id":"demo-msg-%s","title":"a note for %s","status":"open","issue_type":"message","assignee":"%s"}\n' "$1" "$1" "$1" >"$RECLAIM_STUB/tasks/$1.message.json"; }
 # open_pr <branch> <number>
 open_pr() { printf '[{"number":%s}]\n' "$2" >"$RECLAIM_STUB/prs/$(printf '%s' "$1" | tr '/' '_').json"; }
 
@@ -341,17 +374,32 @@ check "a lane with no task at all is kept: whether its work is done has no answe
 # Two lanes above already show that a lane is judged by its OWN tasks: `notask` stays although
 # sixteen other lanes have a closed task, and `done1` goes although `taskopen` has an open one.
 check "Beads is asked for closed tasks as well as open ones: a closed task is what says a lane is done" \
-  'grep "^bd list " "$RECLAIM_STUB/bd.log" | grep -q -- "--all"'
+  'grep "^bd query " "$RECLAIM_STUB/bd.log" | grep -q -- "--all"'
 # What a question costs: 4 to 33 seconds each on the machine this was written on, under load.
-# So Beads is asked once for the whole project, never once per lane.
+# So Beads is asked once for the whole team, never once per lane.
 check "Beads is asked ONCE per run, however many lanes there are to judge" \
-  ': >"$RECLAIM_STUB/bd.log"; teamctl reclaim --dry-run >/dev/null 2>&1; [ "$(grep -c "^bd list " "$RECLAIM_STUB/bd.log")" = "1" ]'
-# The real bd wraps its list in an object as soon as --brief or --skip-labels is passed, and
-# prints a bare array without them. The stub does the same; both have to be read.
-check "the answer is read in both shapes bd gives it: the wrapped list and the bare array" \
-  'verdict done1 | grep -q "task closed (demo-done1)" && grep "^bd list " "$RECLAIM_STUB/bd.log" | tail -1 | grep -q -- "--brief" && bd_mode array && out="$(verdict done1)"; bd_mode ok; printf "%s" "$out" | grep -q "task closed (demo-done1)"'
-check "a bd too old to know --brief is asked once more without it, and its answer is used" \
-  'bd_mode oldbd; : >"$RECLAIM_STUB/bd.log"; out="$(verdict done1)"; bd_mode ok; printf "%s" "$out" | grep -q "^yes: .*task closed (demo-done1)" && [ "$(grep -c "^bd list " "$RECLAIM_STUB/bd.log")" = "2" ]'
+  ': >"$RECLAIM_STUB/bd.log"; teamctl reclaim --dry-run >/dev/null 2>&1; [ "$(grep -c "^bd query " "$RECLAIM_STUB/bd.log")" = "1" ]'
+# v1.19.0 asked for every bead in the store on every `teamctl stop`: 1,465 beads to find a
+# dozen. Every bd call holds the store's one lock while it runs, so a big question is every
+# other agent waiting. The question names the team's worker lanes and nothing else.
+check "the question names this team's worker lanes, by their Beads names, and asks for nothing else" \
+  ': >"$RECLAIM_STUB/bd.log"; verdict done1 >/dev/null; q="$(grep "^bd query " "$RECLAIM_STUB/bd.log" | tail -1)"; printf "%s" "$q" | grep -q "assignee=\"done1\"" && printf "%s" "$q" | grep -q "assignee=\"taskopen\"" && printf "%s" "$q" | grep -q "type!=message" && ! printf "%s" "$q" | grep -q "assignee=\"lead\""'
+check "it is never the whole store: no bd list, and no question without a limit" \
+  'grep -q "^bd query " "$RECLAIM_STUB/bd.log" && ! grep -q "^bd list " "$RECLAIM_STUB/bd.log" && ! grep "^bd query " "$RECLAIM_STUB/bd.log" | grep -q -- "--limit 0"'
+check "CONTROL: the stub bd selects by name, so a lane's answer comes from the question and not from a dump" \
+  'bd query "assignee=\"done1\"" --all --json 2>/dev/null | jq -e "length == 1 and .[0].id == \"demo-done1\"" >/dev/null && bd query "assignee=\"done\"" --all --json 2>/dev/null | jq -e "length == 0" >/dev/null'
+check "an unread message to a lane neither holds it nor counts as its task" \
+  'message done1; out="$(verdict done1)"; /bin/rm -f "$RECLAIM_STUB/tasks/done1.message.json"; printf "%s" "$out" | grep -q "^yes: .*task closed (demo-done1)"'
+check "a wrapped answer ({\"issues\": [...]}) is read as well as the bare array bd query prints" \
+  'bd_mode wrapped; out="$(verdict done1)"; bd_mode ok; printf "%s" "$out" | grep -q "^yes: .*task closed (demo-done1)"'
+# The limit is what keeps a misread question from turning into a dump. An answer that reaches
+# it may have left an open task out, so it is "cannot tell", like any other non-answer.
+check "an answer cut at the limit keeps the lane: an open task could be past the cut" \
+  '[ "$(verdict done1 "RECLAIM_BEADS_LIMIT=1")" = "no: cannot ask Beads (its answer stopped at 1 beads, and an open task could be past that)" ]'
+check "a lane that was not named in the question is kept, not judged on an answer that left it out" \
+  '[ "$(verdict done1 "reclaim_beads_load; RECLAIM_BEADS_WHO=")" = "no: Beads was not asked about done1 in this run" ]'
+check "a bd from before bd query existed keeps the lane, and says so in bd's own words" \
+  'bd_mode oldbd; out="$(verdict done1)"; bd_mode ok; [ "$out" = "no: cannot ask Beads (bd failed, exit 1: Error: unknown command \"query\" for \"bd\")" ]'
 # The reason carries bd's own last line: its warnings come first, what stopped it comes last.
 check "when bd fails, the lane is kept and the reason says what bd said" \
   'bd_mode fail; out="$(verdict done1)"; bd_mode ok; [ "$out" = "no: cannot ask Beads (bd failed, exit 3: bd: the database is locked)" ]'
@@ -363,7 +411,7 @@ check "when bd says there is no database, the lane is kept, with bd's own words"
 # called at all. The control is the line before it in the log — bd WAS called a moment ago,
 # with the workspace there.
 check "a project with no Beads workspace is kept without bd being asked at all" \
-  'verdict done1 >/dev/null; n="$(grep -c "^bd list " "$RECLAIM_STUB/bd.log")"; [ "$n" -ge 1 ] && /bin/mv "$PROJECT/.beads" "$PROJECT/.beads.off" && out="$(verdict done1)"; /bin/mv "$PROJECT/.beads.off" "$PROJECT/.beads"; printf "%s" "$out" | grep -q "^no: cannot ask Beads (no Beads workspace in " && [ "$(grep -c "^bd list " "$RECLAIM_STUB/bd.log")" = "$n" ]'
+  'verdict done1 >/dev/null; n="$(grep -c "^bd query " "$RECLAIM_STUB/bd.log")"; [ "$n" -ge 1 ] && /bin/mv "$PROJECT/.beads" "$PROJECT/.beads.off" && out="$(verdict done1)"; /bin/mv "$PROJECT/.beads.off" "$PROJECT/.beads"; printf "%s" "$out" | grep -q "^no: cannot ask Beads (no Beads workspace in " && [ "$(grep -c "^bd query " "$RECLAIM_STUB/bd.log")" = "$n" ]'
 check "and a workspace kept somewhere else is found through BEADS_DIR" \
   '/bin/mv "$PROJECT/.beads" "$PROJECT/.beads.off" && out="$(BEADS_DIR="$RECLAIM_STUB/beads" verdict done1)"; /bin/mv "$PROJECT/.beads.off" "$PROJECT/.beads"; printf "%s" "$out" | grep -q "^yes: .*task closed (demo-done1)"'
 check "when bd is not installed at all, the lane is kept" \
@@ -736,7 +784,7 @@ LOCK_DIR="$(lib_eval "printf %s \"\$STATE_DIR\"")/.lock"
 /bin/mkdir -p "$WORK/lockbin"
 /bin/cat >"$WORK/lockbin/bd" <<EOF
 #!/bin/bash
-if [ "\${1:-}" = "list" ] && /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
+if [ "\${1:-}" = "query" ] && /bin/mkdir "$LOCK_DIR" 2>/dev/null; then
   /bin/sleep 120 >/dev/null 2>&1 &
   echo \$! >"$LOCK_DIR/pid"
 fi
@@ -805,7 +853,10 @@ check "a lead is refused with 77, told why, and told what it may run instead" \
   'out="$(TEAM_ROLE=lead teamctl reclaim --all-teams --dry-run 2>&1)"; rc=$?; [ "$rc" -eq 77 ] && printf "%s" "$out" | grep -q "machine owner.s alone to run" && printf "%s" "$out" | grep -q "teamctl reclaim for your own team"'
 check "the refusal holds for the real run as well, and nothing is touched by it" \
   'TEAM_ROLE=lead teamctl reclaim --all-teams >/dev/null 2>&1; [ $? -eq 77 ] && [ -f "$FAR/far.txt" ]'
+: >"$RECLAIM_STUB/bd.log"
 ALL="$(teamctl reclaim --all-teams --dry-run 2>&1)"
+check "each team is asked once, about its own lanes: second's question names second.far and second.lost, and no bare name" \
+  'q="$(grep "^bd query " "$RECLAIM_STUB/bd.log" | grep "assignee=\"second.far\"")"; [ "$(printf "%s\n" "$q" | grep -c "^bd query ")" = "1" ] && printf "%s" "$q" | grep -q "assignee=\"second.lost\"" && ! printf "%s" "$q" | grep -qE "assignee=\"[^\".]*\"" && ! grep "^bd query " "$RECLAIM_STUB/bd.log" | grep -v "second.far" | grep -q "assignee=\"second\."'
 check "the dry run reports every team of the machine under its project, and deletes nothing" \
   'printf "%s" "$ALL" | grep -q "^PROJECT " && printf "%s" "$ALL" | grep -q "^  TEAM second" && printf "%s" "$ALL" | grep -qE "^    far +[0-9.]+ (KB|MB|GB) +would remove: $FAR_BR was at $FAR_TIP" && [ -f "$FAR/far.txt" ]'
 check "a named team's lane is judged by its full name in Beads, second.far, not by the bare role" \
