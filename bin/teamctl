@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -36,8 +36,16 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          With one team you never need it. teamctl status shows them all; teamctl teams is the short list.
     teamctl start fable --team review               a second team, named by you, with its own session
     teamctl start fable --team next --handover <bead-id>    (a lead may do this too) the new lead starts by reading that bead
-         A team whose lead is not running is orphaned (teamctl teams). Then the lead that founded it may recover or clean it up,
-         as you may: teamctl restart lead --team <name> --continue · stop · remove · destroy --team <name> --purge. You are told.
+         A team whose lead is not running is orphaned (teamctl teams says why, and what it holds). Then the lead that founded it
+         may recover or clean it up, as you may: teamctl restart lead --team <name> --continue · stop · remove · finish ·
+         destroy --team <name> --purge. You are told.
+    teamctl finish [--dry-run]                      (the lead, or you) the team is DONE: park every lane, take every lane that
+                                                      passes the reclaim gates, and when no lane is left and no task of the team
+                                                      is open, take the team too: records, state directory, session. Something
+                                                      still holding it: the session ends, the team stays, teamctl teams says why,
+                                                      and teamctl reclaim --all-teams finishes it once nothing holds it. Only
+                                                      finish ever takes a team: a lead that stopped, crashed or was destroyed
+                                                      never counts. Transcripts are never deleted. --dry-run: anyone may look
   Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you,
          and start/restart/stop/remove/destroy for the founder of a team whose lead is not running)
     teamctl start <fable|astra|any model> [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads|--skip-beads]
@@ -266,6 +274,7 @@ main() {
     destroy) cmd_destroy "$@" ;;
     prune) cmd_prune "$@" ;;
     reclaim) cmd_reclaim "$@" ;;
+    finish) cmd_finish "$@" ;;
     keep) cmd_keep "$@" ;;
     bar) cmd_bar "$@" ;;
     heavy) cmd_heavy "$@" ;;
