@@ -54,7 +54,7 @@ tests/smoke.sh                 # 5 to 7 minutes, 352 checks, isolated from any r
 tests/disk.sh                  # ~3 minutes, 175 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~2 minutes, 61 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/inbox.sh                 # ~4 minutes, 107 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while he is working in it
-tests/human-inbox-keys.sh      # ~1 minute, 73 checks, its own tmux server (HOME emptied) and pty: prefix N/O open their popups; the popup's key parser, drain, log and "closed: <reason>"
+tests/human-inbox-keys.sh      # ~35 seconds, 73 checks, its own tmux server (HOME emptied) and pty: prefix N/O open their popups; the popup's key parser, drain, log and "closed: <reason>"
 tests/providers.sh             # the provider table and the config allowlist, 141 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment

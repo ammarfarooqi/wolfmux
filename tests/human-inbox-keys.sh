@@ -57,6 +57,7 @@ check() { # <description> <command string>
 }
 cleanup() {
   tmx kill-server >/dev/null 2>&1
+  /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$WOLFMUX_TMUX_SOCKET"
   [ -n "${KEEP:-}" ] && echo "kept $WORK" || /bin/rm -rf "$WORK"
 }
 trap cleanup EXIT
