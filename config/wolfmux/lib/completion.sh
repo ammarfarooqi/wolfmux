@@ -147,6 +147,7 @@ complete_first_word() {
   complete_emit "$prefix" stop "<role>: close a pane; worktree, branch and record stay"
   complete_emit "$prefix" remove "<role>...: take stopped workers off the books"
   complete_emit "$prefix" restart "<role>: run an agent again, fresh or with --continue"
+  complete_emit "$prefix" model "<role> <model>: what an agent starts on next; --now switches it when safe"
   complete_emit "$prefix" destroy "end the team; --purge deletes it from disk"
   complete_emit "$prefix" prune "take the build output of every parked lane of the team"
   complete_emit "$prefix" reclaim "take every finished parked lane off the books: worktree, branch, record"
@@ -191,7 +192,8 @@ complete_options() {
   case "$cmd" in
     start) options="--no-attach --continue --handover --ticket --init-beads --skip-beads --lead-permissions --worker-permissions --worker-spawn --resume" ;;
     spawn) options="--base --from-worktree --branch --ticket --repo --no-kickoff --resume --link-node-modules" ;;
-    restart) options="--continue --resume" ;;
+    restart) options="--continue --resume --model" ;;
+    model) options="--now" ;;
     remove) options="--force --yes" ;;
     destroy) options="--worktrees --purge --force --keep-transcripts --yes" ;;
     prune) options="--dry-run --keep-node-modules --all-teams" ;;
@@ -316,7 +318,7 @@ cmd_complete() {
         fi
         ;;
       --team=*) COMPLETE_TEAM="${w#--team=}" ;;
-      --base | --branch | --repo | --from-worktree | --handover | --ticket | --id | --lines | -n | --lead-permissions | --worker-permissions | --worker-spawn | --resume | --timeout)
+      --base | --branch | --repo | --from-worktree | --handover | --ticket | --id | --lines | -n | --lead-permissions | --worker-permissions | --worker-spawn | --resume | --timeout | --model)
         # The option's value may stand after it, or be the word under the cursor.
         [ $((i + 1)) -lt $((count - 1)) ] && i=$((i + 1))
         ;;
@@ -339,6 +341,15 @@ cmd_complete() {
       ;;
   esac
   case "$prev" in
+    --model)
+      case "$cur" in
+        -*) ;;
+        *)
+          complete_models "$cur"
+          exit 0
+          ;;
+      esac
+      ;;
     --team | -T | --base | --branch | --repo | --from-worktree | --lead-permissions | --worker-permissions | --worker-spawn)
       case "$cur" in
         -*) ;;
@@ -383,6 +394,12 @@ cmd_complete() {
         stop | restart | capture | log | focus | diff | nudge | inbox | notices)
           [ "$position" -eq 0 ] && complete_roles "$cur"
           ;;
+        model)
+          case "$position" in
+            0) complete_roles "$cur" ;;
+            1) complete_models "$cur" ;;
+          esac
+          ;;
         remove)
           complete_roles "$cur" workers-only
           ;;
@@ -406,7 +423,14 @@ cmd_complete() {
                 complete_emit "$cur" "$key"
               done
               ;;
-            1) complete_policy_values "$cur" "${pos[0]}" ;;
+            1)
+              if [ "${pos[0]}" = "lead-model" ]; then
+                complete_models "$cur"
+                complete_emit "$cur" default
+              else
+                complete_policy_values "$cur" "${pos[0]}"
+              fi
+              ;;
           esac
           ;;
         layout)

@@ -79,6 +79,11 @@
 # The default of the orphan-steward policy, for every project that does not set its own
 # (`teamctl policy orphan-steward <team>|off`, yours alone to change). Default off.
 #WOLFMUX_ORPHAN_STEWARD=communication-management
+# The model a NEW team's lead starts on when `teamctl start` names none. The default of the
+# lead-model policy (`teamctl policy lead-model <model>|default`, yours alone to change).
+# Leads run Opus; Fable only when asked for: `teamctl start fable`, or for a running team
+# `teamctl model lead fable [--now]`. A team that had a lead keeps that lead's own model.
+#WOLFMUX_LEAD_MODEL=opus
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
 # How workers' branches are named, for every team that does not set its own

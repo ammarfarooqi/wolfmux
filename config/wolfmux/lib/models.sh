@@ -448,6 +448,40 @@ EOF
   return 0
 }
 
+# models_turn_idle <transcript> — 0 when the agent is between turns: the last line of its transcript that is
+# about a turn ends one (Claude Code's `system` turn_duration line, or an answer that stopped with end_turn or
+# stop_sequence), and the file has been quiet for WOLFMUX_MODEL_NOW_QUIET seconds (default 10). A prompt, a tool
+# result or an answer that asked for a tool after that is a turn under way. What a typed slash command writes
+# (/model among them: <command-name>, <local-command-stdout>, isMeta) is not a turn. Read on 2026-10-16 from
+# Claude Code transcripts of this machine: an idle agent ends in turn_duration. Everything else, a transcript
+# that cannot be read included, is "busy" (MT_TURN says which): a restart ends a turn that is running.
+models_turn_idle() {
+  local last quiet="${WOLFMUX_MODEL_NOW_QUIET:-10}" written
+  MT_TURN="unknown"
+  [ -n "${1:-}" ] && [ -r "$1" ] || return 1
+  case "$quiet" in "" | *[!0123456789]*) quiet=10 ;; esac
+  last="$(tail -n 200 "$1" 2>/dev/null | "$JQ_BIN" -R -r '
+    fromjson? | objects |
+    if .type == "system" and .subtype == "turn_duration" then "ended"
+    elif .type == "assistant" then
+      (if ((.message.stop_reason // "") as $s | $s == "end_turn" or $s == "stop_sequence") then "ended" else "running" end)
+    elif .type == "user" then
+      (if .isMeta == true then empty
+       elif ((.message.content | type) == "string" and
+             (.message.content | test("^\\s*<(command-name|command-message|command-args|local-command-stdout|local-command-stderr)>"))) then empty
+       else "running" end)
+    else empty end' 2>/dev/null | tail -n 1)" || last=""
+  MT_TURN="${last:-unknown}"
+  [ "$last" = "ended" ] || return 1
+  written="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || printf 0)"
+  case "$written" in "" | *[!0123456789]*) written=0 ;; esac
+  if [ $(($(date +%s) - written)) -lt "$quiet" ]; then
+    MT_TURN="written in the last ${quiet}s"
+    return 1
+  fi
+  return 0
+}
+
 # models_window_of <id> — sets MW_CONTEXT: the context window Claude Code declared for exactly
 # that id, or "" when nobody said. Never the window of another model: a share of the wrong
 # number is worse than no share. Where it looks, in this order:
