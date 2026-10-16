@@ -873,7 +873,7 @@ check "WOLFMUX_NUDGE_TYPE=off: not even a worker is typed into, and it is still 
 detach_client
 
 echo "== the popup key, and the session option the two tmux format strings need"
-check "tmux: prefix N is bound, and to a popup that runs the inbox" 'tmx list-keys -T prefix 2>/dev/null | grep -E "^bind-key +-T prefix +N " | grep -q "display-popup"'
+check "tmux: prefix N is bound, and to a popup (via run-shell and teamctl _popup, v1.20.1) that runs the inbox" 'tmx list-keys -T prefix 2>/dev/null | grep -E "^bind-key +-T prefix +N " | grep -q "run-shell -b .* _popup "'
 check "tmux: prefix I was left alone, so a sourced ~/.tmux.conf keeps it" '! tmx list-keys -T prefix 2>/dev/null | grep -qE "^bind-key +-T prefix +I .*inbox"'
 check "tmux: prefix T still re-tiles, so the key that was there already is untouched" 'tmx list-keys -T prefix 2>/dev/null | grep -qE "^bind-key +-T prefix +T +select-layout"'
 check "tmux: the session knows where teamctl is, so the badge and the popup can run it" '[ -x "$(tmx show-options -t "=$SESSION:" -qv @wolfmux_teamctl)" ]'
@@ -882,7 +882,7 @@ check "tmux: status-left calls the badge" 'tmx show-options -gqv status-left | g
 check "tmux: prefix N opens the human's messages, not the pane notices" 'tmx list-keys -T prefix 2>/dev/null | grep -E "^bind-key +-T prefix +N " | grep -q "_human-inbox\"$"'
 check "tmux: the badge is wrapped in the inbox range, and the rest of status-left is the left range again" 'tmx show-options -gqv status-left | grep -qF "#[range=user|inbox]#(" && tmx show-options -gqv status-left | grep -qF "#[norange range=left]"'
 MOUSE_BINDING="$(tmx list-keys -T root 2>/dev/null | grep -E "^bind-key +-T root +MouseDown1Status ")"
-check "tmux: a click opens the messages popup only on the inbox range" 'printf "%s" "$MOUSE_BINDING" | grep -qF "if-shell -F \"#{==:#{mouse_status_range},inbox}\" { display-popup" && printf "%s" "$MOUSE_BINDING" | grep -qF "_human-inbox"'
+check "tmux: a click opens the messages popup only on the inbox range" 'printf "%s" "$MOUSE_BINDING" | grep -qF "if-shell -F \"#{==:#{mouse_status_range},inbox}\" { run-shell -b" && printf "%s" "$MOUSE_BINDING" | grep -qF " _popup " && printf "%s" "$MOUSE_BINDING" | grep -qF "_human-inbox"'
 check "tmux: every other status click still does tmux's default, switch-client -t =" 'printf "%s" "$MOUSE_BINDING" | grep -qE "\} \{ switch-client -t = \}$"'
 echo "== the badge END TO END: the shipped status-left really runs it, and its output draws"
 # Three things are needed together and all three were learned the hard way: a REAL pty

@@ -1058,6 +1058,31 @@ EOF
 }
 
 # --- the popup -----------------------------------------------------------------
+# cmd_popup — internal (`teamctl _popup <socket> <client> <dir> <height> <command>...`):
+# opens `teamctl <command>...` in a popup on one client of one server. What prefix N,
+# prefix O and a click on the 📨 number run, through `run-shell -b` (tmux.conf, "popups"):
+# tmux 3.7c does not expand formats in display-popup's shell-command, so a binding that
+# put them there ran `"#{?@wolfmux_teamctl,…}"` as a program and closed at once (v1.20.1).
+# run-shell expands them; this passes the values on as tmux argv, so neither a shell nor
+# a format stands between them and the command.
+#   <dir>     the popup's working directory; "" leaves it to tmux
+#   <height>  of the popup, 70% or a number of lines; the width is always 90%
+# teamctl takes --team off the command line before any command sees it; it is put back on
+# the popup's command here.
+cmd_popup() {
+  local socket="${1:-}" client="${2:-}" dir="${3:-}" height="${4:-}" args
+  [ "$#" -ge 5 ] && [ -n "$socket" ] || die_usage "usage: teamctl _popup <socket> <client> <dir> <height> <command>..."
+  case "$height" in "" | *[!0-9%]*) die_usage "_popup: the height is a number or a percentage, not '$height'" ;; esac
+  shift 4
+  [ -n "$TMUX_BIN" ] || die "tmux not found (run: teamctl doctor)"
+  args=(display-popup -E -w 90% -h "$height")
+  [ -z "$client" ] || args+=(-c "$client")
+  [ -z "$dir" ] || args+=(-d "$dir")
+  args+=("$TEAMCTL_SELF")
+  [ -z "${WOLFMUX_TEAM_ARG:-}" ] || args+=(--team "$WOLFMUX_TEAM_ARG")
+  exec "$TMUX_BIN" -S "$socket" "${args[@]}" "$@"
+}
+
 # cmd_human_inbox — internal (`teamctl _human-inbox`): what prefix N and a click on the
 # status-bar number open. It draws the index at once, then makes its ONE bd call, rewrites
 # the index and draws again. Plain bash and tput: this machine has no fzf.
@@ -1067,6 +1092,18 @@ EOF
 # A mark-read runs as the human (BEADS_ACTOR=$WOLFMUX_HUMAN): bd refuses to close a bead
 # assigned to somebody other than the actor. --print skips the screen and the keys and
 # prints the refreshed list, for scripts and tests.
+#
+# v1.20.1. On Ammar's iTerm2 the popup closed the moment it opened ("it just flickers"),
+# while it stayed open on a nested tmux client, and nothing said why. What differs is the
+# client terminal: iTerm2 gets focus reports and extended keys, and a terminal's reports
+# and replies can reach the program in a popup. The popup was reading one byte at a time,
+# so any of those bytes could be taken for q, Esc, r or a. Three things answer it:
+#   · the log, $PROJECT_STATE/human-inbox-popup.log: each popup's start, every group of
+#     input bytes in hex with what it was taken as, and why it closed (_hi_log)
+#   · input is read as whole groups and whole escape sequences (_hi_take, _hi_parse): a
+#     focus report, a key release or a terminal's reply is ignored as a whole
+#   · a close that is not q or Esc says why on screen and waits for a key (_hi_end), even
+#     one before the list is drawn: -E closes a popup the instant its command exits
 cmd_human_inbox() {
   local print=0
   while [ "$#" -gt 0 ]; do
@@ -1076,6 +1113,13 @@ cmd_human_inbox() {
     esac
     shift
   done
+  if [ "$print" -eq 0 ]; then
+    # Until the project is known the log is the machine's; a die in load_project is logged
+    # and shown there (_hi_on_exit).
+    HI_T0="$SECONDS" HI_ENDED="" HI_LOG=""
+    [ ! -d "$WOLFMUX_DATA/state" ] || HI_LOG="$WOLFMUX_DATA/state/human-inbox-popup.log"
+    trap '_hi_on_exit main' EXIT
+  fi
   require_tools
   load_project any
   if [ "$print" -eq 1 ]; then
@@ -1087,11 +1131,37 @@ cmd_human_inbox() {
     )
     return 0
   fi
+  HI_LOG=""
+  [ ! -d "$PROJECT_STATE" ] || HI_LOG="$PROJECT_STATE/human-inbox-popup.log"
   (
+    # A subshell does not inherit the trap; its own catches a crash inside the loop.
+    trap '_hi_on_exit ui' EXIT
     set +eu
     _hi_ui
   ) || true
+  HI_ENDED=1
+  trap 'teamctl_on_exit' EXIT
   return 0
+}
+
+# _hi_on_exit main|ui — the popup's EXIT trap. An end that _hi_end did not already explain
+# (a die before the list was drawn, a crash in the loop) is explained here, and held. A
+# hangup or a TERM is tmux closing the popup: there is nobody left to tell. main also does
+# teamctl's own exit work, which this trap replaced.
+_hi_on_exit() {
+  local rc=$?
+  set +eu
+  if [ -z "$HI_ENDED" ]; then
+    case "$rc" in
+      129 | 143) _hi_end "signal $((rc - 128))" quiet ;;
+      130) _hi_end "key Ctrl-C" key ;;
+      *) _hi_end "teamctl stopped (exit $rc)" error ;;
+    esac
+  fi
+  if [ "$1" = main ]; then
+    (exit "$rc")
+    teamctl_on_exit
+  fi
 }
 
 # _hi_load — the index into HI_ID HI_FROM HI_SUBJ HI_AT, HI_N rows
@@ -1149,10 +1219,25 @@ _hi_print_plain() {
   done
 }
 
+# _hi_size — the popup's size into HI_LINES and HI_COLS. stty asks the terminal on stdin;
+# tput inside $( ) has a pipe for stdout and said 80x24 whatever the popup's size (a
+# 120-column popup drew 80 columns, seen in the v1.20.1 log). tput is the fallback.
+_hi_size() {
+  local s
+  s="$(/bin/stty size 2>/dev/null)" || s=""
+  # shellcheck disable=SC2086
+  set -- $s
+  if [ "$#" -eq 2 ] && [ "$1" -gt 0 ] 2>/dev/null && [ "$2" -gt 0 ] 2>/dev/null; then
+    HI_LINES="$1" HI_COLS="$2"
+    return 0
+  fi
+  HI_COLS="$(tput cols 2>/dev/null)" HI_LINES="$(tput lines 2>/dev/null)"
+}
+
 _hi_draw() {
   local cols lines rows width i now
-  cols="$(tput cols 2>/dev/null)"
-  lines="$(tput lines 2>/dev/null)"
+  _hi_size
+  cols="$HI_COLS" lines="$HI_LINES"
   case "$cols" in "" | *[!0-9]*) cols=80 ;; esac
   case "$lines" in "" | *[!0-9]*) lines=24 ;; esac
   rows=$((lines - 6))
@@ -1192,61 +1277,541 @@ _hi_close() {
   return 1
 }
 
-_hi_key() {
-  local key="$1" rest yn
-  case "$key" in
-    $'\e')
-      rest=""
-      # bash 3.2 has no fractional read timeout: a lone Esc closes after a second, an
-      # arrow key's rest of sequence is already there and returns at once.
-      IFS= read -rsn2 -t 1 rest || true
-      case "$rest" in
-        '[A' | OA) HI_SEL=$((HI_SEL - 1)) ;;
-        '[B' | OB) HI_SEL=$((HI_SEL + 1)) ;;
-        '') return 1 ;;
-      esac
-      ;;
-    q | Q) return 1 ;;
-    k) HI_SEL=$((HI_SEL - 1)) ;;
-    j) HI_SEL=$((HI_SEL + 1)) ;;
-    [1-9]) [ "$key" -gt "$HI_N" ] || HI_SEL=$((key - 1)) ;;
-    '')
-      [ "$HI_N" -gt 0 ] || return 0
-      if [ -z "$BD_BIN" ]; then
-        HI_STATUS="bd is not installed"
-        return 0
-      fi
-      tput cnorm 2>/dev/null
-      (cd "$ROOT" && "$BD_BIN" show "${HI_ID[HI_SEL]}" 2>&1) | less -R
-      tput civis 2>/dev/null
-      ;;
-    r | R)
-      [ "$HI_N" -gt 0 ] || return 0
-      _hi_close "${HI_ID[HI_SEL]}" && HI_STATUS="marked read"
-      ;;
-    a | A)
-      [ "$HI_N" -gt 0 ] || return 0
-      HI_STATUS="Mark all $HI_N read? [y/n] "
-      _hi_draw
-      HI_STATUS=""
-      IFS= read -rsn1 yn || yn=n
-      case "$yn" in
-        y | Y) _hi_close "${HI_ID[@]}" && HI_STATUS="marked all read" ;;
-      esac
-      ;;
-  esac
-  [ "$HI_SEL" -ge 0 ] || HI_SEL=0
+# --- the popup's log (v1.20.1) -------------------------------------------------------------
+# One line per event, so the next "it flickers" comes with its cause:
+#   2026-10-16T05:40:01Z [4242] start: v1.20.1 team=communication-management TERM=tmux-256color tty=/dev/ttys012 size=122x38 stdin-tty=yes stdout-tty=yes
+#   2026-10-16T05:40:01Z [4242] in 1b 5b 49 = focus in -> dropped at start
+#   2026-10-16T05:40:03Z [4242] in 1b 5b 42 = down -> select 2
+#   2026-10-16T05:40:03Z [4242] in 1b 5b 3f 36 32 3b 34 63 = terminal reply CSI ?62;4c -> ignored
+#   2026-10-16T05:40:04Z [4242] in 71 = q -> close
+#   2026-10-16T05:40:04Z [4242] exit: key q (after 3s)
+# The number in brackets tells one popup's lines from another's. Kept to its last 150 lines
+# once it passes 200. Writing it can never stop the popup: every failure is swallowed, the
+# failure to open the file included (2>/dev/null comes first so that it covers the >>).
+_hi_log() {
+  [ -n "${HI_LOG:-}" ] || return 0
+  printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$$" "$*" 2>/dev/null >>"$HI_LOG" || true
+}
+
+_hi_log_trim() {
+  local n
+  [ -n "${HI_LOG:-}" ] && [ -f "$HI_LOG" ] || return 0
+  n="$(/usr/bin/wc -l <"$HI_LOG" 2>/dev/null)" || return 0
+  n="${n//[!0-9]/}"
+  [ -n "$n" ] && [ "$n" -gt 200 ] || return 0
+  /usr/bin/tail -n 150 "$HI_LOG" 2>/dev/null >"$HI_LOG.tmp.$$" && /bin/mv -f "$HI_LOG.tmp.$$" "$HI_LOG" 2>/dev/null
+  /bin/rm -f "$HI_LOG.tmp.$$" 2>/dev/null
   return 0
 }
 
+# _hi_log_in <what it did> — the group just read, what it was taken as, what came of it
+_hi_log_in() {
+  local w s=""
+  for w in "${HI_WHY[@]}"; do s="${s:+$s, }$w"; done
+  _hi_log "in $HI_HEX = ${s:-nothing} -> $1"
+}
+
+# --- the popup's input (v1.20.1) -----------------------------------------------------------
+# Input is read in GROUPS: the bytes that arrive together (a terminal tty in non-canonical
+# mode with VMIN 1 and VTIME 1 hands over the first byte and whatever follows it within
+# 0.1 s). A key is one group; a terminal's reply or report is one group too, so it can be
+# recognised and dropped whole. Bytes travel as two-digit hex, which bash can hold whatever
+# they are: a NUL, a newline or half a sequence included.
+#
+# Not a terminal (a pipe: the tests' printf 'jrq' | …) there is no "arrived together" to go
+# by, so a group is one byte, which is how a pipe was read before.
+
+_hi_tty_raw() {
+  HI_STTY=""
+  [ "$HI_TTY" -eq 1 ] || return 0
+  if HI_STTY="$(/bin/stty -g 2>/dev/null)" && /bin/stty -icanon -echo -isig -ixon min 1 time 1 2>/dev/null; then
+    return 0
+  fi
+  _hi_log "stty failed: reading the terminal one byte at a time"
+  HI_STTY="" HI_TTY=0
+}
+
+_hi_tty_restore() {
+  [ -z "${HI_STTY:-}" ] || /bin/stty "$HI_STTY" 2>/dev/null
+  tput cnorm 2>/dev/null
+  return 0
+}
+
+# _hi_dd <bytes> — one read(2) of at most <bytes> from stdin, as hex, into HI_HEX
+_hi_dd() {
+  local h
+  h="$(/bin/dd bs="$1" count=1 2>/dev/null | /usr/bin/od -An -v -tx1 2>/dev/null)"
+  # shellcheck disable=SC2086 # split into the hex words on purpose
+  set -- $h
+  HI_HEX="$*"
+}
+
+# _hi_read wait|more|drain — one group into HI_HEX. wait: until a byte comes (nothing then
+# means input has ended). more: what comes within 0.3 s, maybe nothing. drain: what is
+# already there, without waiting. 1 when nothing was read.
+_hi_read() {
+  local all="" n=0
+  HI_HEX=""
+  if [ "$HI_TTY" -eq 1 ]; then
+    case "$1" in
+      wait) _hi_dd 1024 ;;
+      more)
+        /bin/stty min 0 time 3 2>/dev/null
+        _hi_dd 1024
+        /bin/stty min 1 time 1 2>/dev/null
+        ;;
+      drain)
+        /bin/stty min 0 time 0 2>/dev/null
+        while [ "$n" -lt 64 ]; do
+          _hi_dd 1024
+          [ -n "$HI_HEX" ] || break
+          all="${all:+$all }$HI_HEX"
+          n=$((n + 1))
+        done
+        /bin/stty min 1 time 1 2>/dev/null
+        HI_HEX="$all"
+        ;;
+    esac
+  elif [ "$1" != drain ]; then
+    _hi_dd 1
+  fi
+  [ -n "$HI_HEX" ]
+}
+
+# _hi_take — the next group, whole. A group that stops inside an escape sequence, or on a
+# lone Esc, gets up to three more reads of 0.3 s each before it is taken as it is: tmux
+# writes a sequence it forwards in one go, but a slow link may not. Parsed: HI_TOK, HI_WHY.
+# 1 when input has ended.
+_hi_take() {
+  local all tries=0
+  _hi_read wait || return 1
+  all="$HI_HEX"
+  # shellcheck disable=SC2086
+  _hi_parse $all
+  while [ "$HI_PARTIAL" -eq 1 ] && [ "$tries" -lt 3 ]; do
+    tries=$((tries + 1))
+    _hi_read more || break
+    all="$all $HI_HEX"
+    # shellcheck disable=SC2086
+    _hi_parse $all
+  done
+  HI_HEX="$all"
+  return 0
+}
+
+# _hi_drain <when> — drop what is already waiting, and log it: bytes that arrived before
+# the list was on screen were not typed at it.
+_hi_drain() {
+  _hi_read drain || return 0
+  # shellcheck disable=SC2086
+  _hi_parse $HI_HEX
+  _hi_log_in "dropped $1"
+}
+
+# The printable ASCII characters, 32 to 126, for turning a byte into its character without
+# a subshell.
+_HI_ASCII=" !\"#\$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijklmnopqrstuvwxyz{|}~"
+
+# _hi_unit <token> <description> — one unit of the group parsed
+_hi_unit() {
+  HI_TOK[${#HI_TOK[@]}]="$1"
+  HI_WHY[${#HI_WHY[@]}]="$2"
+}
+
+# _hi_parse <hex byte>... — the key parser. Cuts one group into units, a whole escape
+# sequence being one unit, and gives each a token (HI_TOK) and a description for the log
+# (HI_WHY). The tokens:
+#   up down enter esc ctrl-c char:<c> ignore
+# Escape sequences are read to their end: CSI to its final byte (0x40-0x7E), SS3 as
+# ESC O and one byte, OSC, DCS, APC, PM and SOS to BEL or ESC \. Of those, arrows (any
+# form, any modifier), CSI-u keys (ESC[113u) and xterm modifyOtherKeys keys (ESC[27;1;113~)
+# are keys; focus reports, key releases, mouse reports and every reply a terminal sends are
+# not. HI_PARTIAL=1 when the group ends inside a sequence or on a lone ESC: the caller
+# reads on and asks again, and takes the best guess given here if nothing more comes.
+_hi_parse() {
+  local n=$# i=0 j c d p e kind
+  local -a b
+  HI_TOK=() HI_WHY=() HI_PARTIAL=0
+  for c in "$@"; do b[${#b[@]}]=$((16#$c)); done
+  while [ "$i" -lt "$n" ]; do
+    c="${b[i]}"
+    if [ "$c" -ne 27 ]; then
+      i=$((i + 1))
+      if [ "$c" -eq 13 ] || [ "$c" -eq 10 ]; then
+        _hi_unit enter Enter
+      elif [ "$c" -eq 3 ]; then
+        _hi_unit ctrl-c Ctrl-C
+      elif [ "$c" -ge 32 ] && [ "$c" -le 126 ]; then
+        p="${_HI_ASCII:$((c - 32)):1}"
+        _hi_unit "char:$p" "$p"
+      elif [ "$c" -eq 127 ] || [ "$c" -eq 8 ]; then
+        _hi_unit ignore Backspace
+      elif [ "$c" -lt 32 ]; then
+        _hi_unit ignore "control byte $c"
+      else
+        # a UTF-8 character: its lead byte and continuation bytes are one unit
+        while [ "$i" -lt "$n" ] && [ "${b[i]}" -ge 128 ] && [ "${b[i]}" -lt 192 ]; do i=$((i + 1)); done
+        _hi_unit ignore "non-ASCII"
+      fi
+      continue
+    fi
+    if [ $((i + 1)) -ge "$n" ]; then
+      HI_PARTIAL=1
+      _hi_unit esc Esc
+      i=$((i + 1))
+      continue
+    fi
+    d="${b[i + 1]}"
+    case "$d" in
+      91) # CSI: parameter bytes, intermediate bytes, one final byte
+        p="" j=$((i + 2))
+        while [ "$j" -lt "$n" ] && [ "${b[j]}" -ge 48 ] && [ "${b[j]}" -le 63 ]; do
+          p="$p${_HI_ASCII:$((b[j] - 32)):1}"
+          j=$((j + 1))
+        done
+        while [ "$j" -lt "$n" ] && [ "${b[j]}" -ge 32 ] && [ "${b[j]}" -le 47 ]; do
+          p="$p${_HI_ASCII:$((b[j] - 32)):1}"
+          j=$((j + 1))
+        done
+        if [ "$j" -ge "$n" ]; then
+          HI_PARTIAL=1
+          _hi_unit ignore "incomplete CSI $p"
+          i="$n"
+        elif [ "${b[j]}" -ge 64 ] && [ "${b[j]}" -le 126 ]; then
+          _hi_csi "$p" "${_HI_ASCII:$((b[j] - 32)):1}"
+          i=$((j + 1))
+        else
+          _hi_unit ignore "broken CSI $p"
+          i="$j"
+        fi
+        ;;
+      79) # SS3: ESC O and one byte
+        if [ $((i + 2)) -ge "$n" ]; then
+          HI_PARTIAL=1
+          _hi_unit ignore "incomplete SS3"
+          i="$n"
+        else
+          case "${b[i + 2]}" in
+            65) _hi_unit up "SS3 up" ;;
+            66) _hi_unit down "SS3 down" ;;
+            77) _hi_unit enter "SS3 Enter" ;;
+            *) _hi_unit ignore "SS3 key" ;;
+          esac
+          i=$((i + 3))
+        fi
+        ;;
+      93 | 80 | 95 | 94 | 88) # OSC ] DCS P APC _ PM ^ SOS X: a string, to BEL or ST (ESC \)
+        case "$d" in 93) kind=OSC ;; 80) kind=DCS ;; 95) kind=APC ;; 94) kind=PM ;; *) kind=SOS ;; esac
+        j=$((i + 2)) e=""
+        while [ "$j" -lt "$n" ]; do
+          if [ "${b[j]}" -eq 7 ]; then
+            e=$((j + 1))
+            break
+          fi
+          if [ "${b[j]}" -eq 27 ]; then
+            if [ $((j + 1)) -ge "$n" ]; then break; fi # ESC \ cut in two: read on
+            if [ "${b[j + 1]}" -eq 92 ]; then e=$((j + 2)); else e="$j"; fi
+            break
+          fi
+          j=$((j + 1))
+        done
+        if [ -z "$e" ]; then
+          HI_PARTIAL=1
+          _hi_unit ignore "incomplete $kind string"
+          i="$n"
+        else
+          _hi_unit ignore "$kind string (a terminal's reply)"
+          i="$e"
+        fi
+        ;;
+      27) # ESC ESC: the first one is an Esc key of its own
+        _hi_unit esc Esc
+        i=$((i + 1))
+        ;;
+      *)
+        _hi_unit ignore "Alt+key"
+        i=$((i + 2))
+        ;;
+    esac
+  done
+}
+
+# _hi_csi <parameter and intermediate bytes> <final byte> — one whole CSI sequence
+_hi_csi() {
+  local p="$1" f="$2" code mods ev rest
+  case "$p" in
+    '<'*)
+      _hi_unit ignore "mouse report"
+      return
+      ;;
+    '?'* | '>'* | '='*)
+      # a private parameter: device attributes (c), mode and status reports (y, n),
+      # keyboard-protocol flags (u). Every one is a terminal answering, never a key.
+      _hi_unit ignore "terminal reply CSI $p$f"
+      return
+      ;;
+  esac
+  case "$f" in
+    I | O)
+      if [ -z "$p" ]; then
+        if [ "$f" = I ]; then _hi_unit ignore "focus in"; else _hi_unit ignore "focus out"; fi
+        return
+      fi
+      ;;
+    A | B)
+      case "$p" in
+        "" | 1 | "1;"*)
+          if [ "$f" = A ]; then _hi_unit up up; else _hi_unit down down; fi
+          return
+          ;;
+      esac
+      ;;
+    u)
+      # CSI-u: code[:alternates] ; modifiers[:event] ; text
+      code="${p%%;*}" rest=""
+      case "$p" in *";"*) rest="${p#*;}" ;; esac
+      mods="${rest%%;*}" ev=1
+      case "$mods" in *:*)
+        ev="${mods#*:}"
+        mods="${mods%%:*}"
+        ;;
+      esac
+      _hi_csi_key "${code%%:*}" "${mods:-1}" "$ev" "CSI-u"
+      return
+      ;;
+    '~')
+      case "$p" in
+        "27;"*";"*)
+          # xterm modifyOtherKeys: 27 ; modifiers ; code
+          rest="${p#27;}"
+          mods="${rest%%;*}" code="${rest#*;}"
+          _hi_csi_key "${code%%;*}" "$mods" 1 "modifyOtherKeys"
+          return
+          ;;
+      esac
+      _hi_unit ignore "function key CSI $p~"
+      return
+      ;;
+  esac
+  _hi_unit ignore "CSI $p$f"
+}
+
+# _hi_csi_key <code> <modifiers> <event> <form> — a key that came as CSI-u or
+# modifyOtherKeys. A release (event 3) is not a key press. Shift, Caps Lock and Num Lock
+# do not make another key of it; any other modifier does, and that key is not ours, save
+# Ctrl-C.
+_hi_csi_key() {
+  local code="$1" mods="$2" ev="$3" form="$4" m c
+  for c in "$code" "$mods" "$ev"; do
+    case "$c" in "" | *[!0-9]* | ?????????*)
+      _hi_unit ignore "$form, unreadable"
+      return
+      ;;
+    esac
+  done
+  if [ "$ev" -eq 3 ]; then
+    _hi_unit ignore "$form key release"
+    return
+  fi
+  m=$(((mods - 1) & ~(1 | 64 | 128)))
+  if [ "$code" -eq 99 ] && [ "$m" -eq 4 ]; then
+    _hi_unit ctrl-c "$form Ctrl-C"
+    return
+  fi
+  if [ "$m" -ne 0 ]; then
+    _hi_unit ignore "$form key $code with modifiers $mods"
+    return
+  fi
+  case "$code" in
+    13) _hi_unit enter "$form Enter" ;;
+    27) _hi_unit esc "$form Esc" ;;
+    *)
+      if [ "$code" -ge 32 ] && [ "$code" -le 126 ]; then
+        # Shift on a letter: the capital
+        if [ $(((mods - 1) & 1)) -eq 1 ] && [ "$code" -ge 97 ] && [ "$code" -le 122 ]; then code=$((code - 32)); fi
+        c="${_HI_ASCII:$((code - 32)):1}"
+        _hi_unit "char:$c" "$form $c"
+      else
+        _hi_unit ignore "$form key $code"
+      fi
+      ;;
+  esac
+}
+
+# --- the popup's keys --------------------------------------------------------------------
+# _hi_act — what the group just parsed does. Moving counts wherever it is in a group. q and
+# Esc close only when the group holds nothing else, and r, a and Enter count only as the
+# ONE unit of their group: a letter that arrives glued to other bytes is far likelier part
+# of something a terminal sent than a key somebody pressed. HI_DID says what came of it;
+# 1 when the popup is to close (HI_CLOSE: key, or eof when input ended at the y/n question).
+_hi_act() {
+  local m=${#HI_TOK[@]} t closers=0 moved=0 alone=0
+  HI_DID="ignored"
+  [ "$m" -gt 0 ] || return 0
+  for t in "${HI_TOK[@]}"; do
+    case "$t" in
+      esc | ctrl-c | char:q | char:Q) closers=$((closers + 1)) ;;
+      enter | char:r | char:R | char:a | char:A) alone=1 ;;
+    esac
+  done
+  if [ "$closers" -eq "$m" ]; then
+    HI_DID="close" HI_CLOSE=key HI_CLOSE_KEY="${HI_WHY[0]}"
+    return 1
+  fi
+  if [ "$m" -eq 1 ]; then
+    case "${HI_TOK[0]}" in
+      char:r | char:R)
+        _hi_mark_one
+        return 0
+        ;;
+      char:a | char:A)
+        _hi_mark_all
+        return
+        ;;
+      enter)
+        _hi_open
+        return 0
+        ;;
+    esac
+  fi
+  for t in "${HI_TOK[@]}"; do
+    case "$t" in
+      up | char:k) HI_SEL=$((HI_SEL - 1)) moved=1 ;;
+      down | char:j) HI_SEL=$((HI_SEL + 1)) moved=1 ;;
+      char:[1-9]) if [ "${t#char:}" -le "$HI_N" ]; then HI_SEL=$((${t#char:} - 1)) moved=1; fi ;;
+    esac
+  done
+  [ "$HI_SEL" -lt "$HI_N" ] || HI_SEL=$((HI_N - 1))
+  [ "$HI_SEL" -ge 0 ] || HI_SEL=0
+  if [ "$moved" -eq 1 ]; then
+    HI_DID="select $((HI_SEL + 1))"
+  elif [ "$closers" -gt 0 ] || [ "$alone" -eq 1 ]; then
+    HI_DID="ignored (q, Esc, r, a and Enter count only on their own)"
+  fi
+  return 0
+}
+
+_hi_mark_one() {
+  local id
+  [ "$HI_N" -gt 0 ] || {
+    HI_DID="nothing to mark"
+    return 0
+  }
+  id="${HI_ID[HI_SEL]}"
+  if _hi_close "$id"; then
+    HI_STATUS="marked read" HI_DID="marked $id read"
+  else
+    HI_DID="$HI_STATUS"
+  fi
+}
+
+# _hi_mark_all — asks y/n. Groups with nothing but ignored units in them (a focus report)
+# are no answer; the first group with anything else is, and only a lone y is a yes.
+_hi_mark_all() {
+  local t real
+  [ "$HI_N" -gt 0 ] || {
+    HI_DID="nothing to mark"
+    return 0
+  }
+  _hi_log_in "asks y/n"
+  HI_LOGGED=1
+  HI_STATUS="Mark all $HI_N read? [y/n] "
+  _hi_draw
+  HI_STATUS=""
+  while :; do
+    if ! _hi_take; then
+      HI_CLOSE=eof
+      _hi_log "input ended at the y/n question"
+      return 1
+    fi
+    real=0
+    for t in "${HI_TOK[@]}"; do [ "$t" = ignore ] || real=1; done
+    [ "$real" -eq 0 ] || break
+    _hi_log_in "ignored (still asking y/n)"
+  done
+  if [ "${#HI_TOK[@]}" -eq 1 ] && { [ "${HI_TOK[0]}" = char:y ] || [ "${HI_TOK[0]}" = char:Y ]; }; then
+    if _hi_close "${HI_ID[@]}"; then
+      HI_STATUS="marked all read"
+      _hi_log_in "marked all read"
+    else
+      _hi_log_in "$HI_STATUS"
+    fi
+  else
+    _hi_log_in "no: nothing marked"
+  fi
+  return 0
+}
+
+_hi_open() {
+  [ "$HI_N" -gt 0 ] || return 0
+  if [ -z "$BD_BIN" ]; then
+    HI_STATUS="bd is not installed" HI_DID="bd is not installed"
+    return 0
+  fi
+  HI_DID="opened ${HI_ID[HI_SEL]}"
+  # less wants the terminal as it was, and gives it back that way
+  [ -z "${HI_STTY:-}" ] || /bin/stty "$HI_STTY" 2>/dev/null
+  tput cnorm 2>/dev/null
+  (cd "$ROOT" && "$BD_BIN" show "${HI_ID[HI_SEL]}" 2>&1) | less -R
+  tput civis 2>/dev/null
+  [ -z "${HI_STTY:-}" ] || /bin/stty -icanon -echo -isig -ixon min 1 time 1 2>/dev/null
+  return 0
+}
+
+# _hi_end <reason> key|quiet|eof|error — the one way the popup ends. A key (q, Esc) or a
+# signal (tmux closing it) ends it at once. Anything else is not something the human did,
+# so it says why on screen and holds (_hi_hold), and a popup that "flickers" becomes one
+# that says what happened.
+_hi_end() {
+  HI_ENDED=1
+  _hi_log "exit: $1 (after $((SECONDS - ${HI_T0:-$SECONDS}))s)"
+  case "$2" in
+    key | quiet) ;;
+    *) [ ! -t 1 ] || _hi_hold "$1" "$2" ;;
+  esac
+  _hi_tty_restore
+}
+
+# _hi_hold <reason> <kind> — the reason, then up to WOLFMUX_HI_HOLD (10) seconds for a key.
+# Input that has ended is not read again (every read would return at once): it waits.
+_hi_hold() {
+  local hold="${WOLFMUX_HI_HOLD:-10}" end saved t key=0
+  case "$hold" in "" | *[!0-9]*) hold=10 ;; esac
+  [ "$hold" -le 25 ] || hold=25
+  printf '\n %sclosed: %s%s\n %sthis closes in %ss, or press a key%s' \
+    "${HI_BOLD:-}" "$1" "${HI_OFF:-}" "${HI_DIM:-}" "$hold" "${HI_OFF:-}" 2>/dev/null
+  end=$((SECONDS + hold))
+  if [ "$2" != eof ] && [ -t 0 ] && saved="$(/bin/stty -g 2>/dev/null)"; then
+    while [ "$SECONDS" -lt "$end" ]; do
+      /bin/stty -icanon -echo -isig min 0 time $(((end - SECONDS) * 10)) 2>/dev/null
+      _hi_dd 1024
+      [ -n "$HI_HEX" ] || break
+      # shellcheck disable=SC2086
+      _hi_parse $HI_HEX
+      for t in "${HI_TOK[@]}"; do [ "$t" = ignore ] || key=1; done
+      [ "$key" -eq 0 ] || break
+    done
+    /bin/stty "$saved" 2>/dev/null
+  fi
+  [ "$key" -eq 1 ] || [ "$SECONDS" -ge "$end" ] || sleep $((end - SECONDS))
+}
+
 _hi_ui() {
-  local key
+  local in_tty=no out_tty=no
   # The subject is cut by characters, which bash counts only under a UTF-8 locale; a
   # popup gets the tmux server's environment, which may have none.
   [ -n "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ] || export LC_CTYPE=en_US.UTF-8
   HI_CLEAR="$(tput clear 2>/dev/null)" HI_BOLD="$(tput bold 2>/dev/null)" HI_REV="$(tput rev 2>/dev/null)"
   HI_DIM="$(tput dim 2>/dev/null)" HI_OFF="$(tput sgr0 2>/dev/null)"
-  HI_SEL=0 HI_TOP=0 HI_STATUS="refreshing from Beads…"
+  HI_SEL=0 HI_TOP=0 HI_STATUS="refreshing from Beads…" HI_TTY=0 HI_CLOSE="" HI_CLOSE_KEY=""
+  [ ! -t 0 ] || HI_TTY=1 in_tty=yes
+  [ ! -t 1 ] || out_tty=yes # here, not inside a $( ), where stdout is always a pipe
+  _hi_size
+  _hi_log_trim
+  _hi_log "start: v$WOLFMUX_VERSION team=${TEAM:-} TERM=${TERM:-} tty=$(tty 2>/dev/null) size=${HI_COLS}x${HI_LINES}" \
+    "stdin-tty=$in_tty stdout-tty=$out_tty"
+  _hi_tty_raw
+  _hi_drain "at start"
   tput civis 2>/dev/null
   _hi_load
   _hi_draw
@@ -1254,14 +1819,23 @@ _hi_ui() {
     HI_STATUS=""
   else
     HI_STATUS="could not refresh from Beads; this is the list as last seen"
+    _hi_log "refresh from Beads failed"
   fi
   _hi_load
   _hi_draw
-  while IFS= read -rsn1 key; do
-    HI_STATUS=""
-    _hi_key "$key" || break
+  _hi_drain "after drawing"
+  while :; do
+    if ! _hi_take; then
+      _hi_end "input ended" eof
+      return 0
+    fi
+    HI_STATUS="" HI_LOGGED=0
+    if ! _hi_act; then
+      [ "$HI_LOGGED" -eq 1 ] || _hi_log_in "$HI_DID"
+      if [ "$HI_CLOSE" = key ]; then _hi_end "key $HI_CLOSE_KEY" key; else _hi_end "input ended" eof; fi
+      return 0
+    fi
+    [ "$HI_LOGGED" -eq 1 ] || _hi_log_in "$HI_DID"
     _hi_draw
   done
-  tput cnorm 2>/dev/null
-  return 0
 }

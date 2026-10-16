@@ -29,7 +29,7 @@ and a reviewer who assumes it will mis-read the three that do not:
 
 | Mechanism | Suites |
 |-----------|--------|
-| `export WOLFMUX_HOME="$REPO/config/wolfmux"` at the top | `smoke` `disk` `dashboard` `inbox` `nudge-typing` `providers` |
+| `export WOLFMUX_HOME="$REPO/config/wolfmux"` at the top | `smoke` `disk` `dashboard` `inbox` `nudge-typing` `providers` `human-inbox-keys` |
 | sets it per command, on the one call that needs the dispatcher (`teamctl _complete`); everything else is read straight out of `$REPO` | `docs` |
 | sources the library itself: `. "$REPO/config/wolfmux/lib/provider-env.sh"` — no dispatcher involved, so nothing to point | `credential-routing` |
 | `export HOME="$WORK/home"`, run the repo's own `install.sh` into it, then drive `$HOME/bin/teamctl` — the branch is tested through its installer | `migration` `permissions` |
@@ -54,6 +54,7 @@ tests/smoke.sh                 # 5 to 7 minutes, 352 checks, isolated from any r
 tests/disk.sh                  # ~3 minutes, 175 checks, its own tmux server and state
 tests/nudge-typing.sh          # ~2 minutes, 61 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/inbox.sh                 # ~4 minutes, 107 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while he is working in it
+tests/human-inbox-keys.sh      # ~1 minute, 73 checks, its own tmux server (HOME emptied) and pty: prefix N/O open their popups; the popup's key parser, drain, log and "closed: <reason>"
 tests/providers.sh             # the provider table and the config allowlist, 141 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment
