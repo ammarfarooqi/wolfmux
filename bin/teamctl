@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -279,6 +279,7 @@ main() {
     prune) cmd_prune "$@" ;;
     reclaim) cmd_reclaim "$@" ;;
     finish) cmd_finish "$@" ;;
+    restore) cmd_restore "$@" ;;
     keep) cmd_keep "$@" ;;
     bar) cmd_bar "$@" ;;
     heavy) cmd_heavy "$@" ;;
