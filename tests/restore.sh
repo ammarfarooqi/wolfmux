@@ -140,18 +140,29 @@ selection() {
   done
 }
 resume_order() {
-  team a; team b codex; team c claude ''; snapshot a b c
+  team a; team b codex ''; team c claude ''; snapshot a b c
   run_restore --yes --no-tabs
-  printf '%s\n' '--team a restart lead --resume sid-a' 'ready a' '--team a nudge lead --id test-abc' '--team b restart lead --continue' 'ready b' '--team b nudge lead --id test-abc' '--team c restart lead --continue' 'ready c' '--team c nudge lead --id test-abc' >"$RESTORE_TEST/expected"
+  printf '%s\n' '--team a restart lead --resume sid-a' 'ready a' '--team a nudge lead --id test-abc' '--team b restart lead --continue' 'ready b' '--team b nudge lead --id test-abc' >"$RESTORE_TEST/expected"
   cmp "$RESTORE_TEST/expected" "$RESTORE_TEST/actions"
-  has "$RESTORE_TEST/out" 'no stored conversation id'
+  [ "$(grep -c 'skip c ' "$RESTORE_TEST/out")" = 2 ]
+  has "$RESTORE_TEST/out" "no stored conversation id: --continue could open another lead's conversation"
+  has "$RESTORE_TEST/out" 'teamctl restart lead --team c --resume <session-id>'
   has "$RESTORE_TEST/out" 'Codex: --continue'
-  [ "$(wc -l <"$RESTORE_TEST/beads" | tr -d ' ')" = 3 ]
-  for name in a b c; do
+  [ "$(wc -l <"$RESTORE_TEST/beads" | tr -d ' ')" = 2 ]
+  for name in a b; do
     has "$RESTORE_TEST/beads" "-t message -a $name.lead"
     jq -e '.type == "restore" and .by == "operator"' "$WOLFMUX_DATA/state/$TEST_KEY/teams/$name/events.jsonl"
   done
-  [ "$(jq -s 'length' "$WOLFMUX_DATA/state/restore.log")" = 3 ]
+  [ "$(jq -s 'length' "$WOLFMUX_DATA/state/restore.log")" = 2 ]
+}
+missing_id_skip() {
+  team a claude ''; snapshot a
+  run_restore --yes
+  [ "$(grep -c 'skip a ' "$RESTORE_TEST/out")" = 2 ]
+  has "$RESTORE_TEST/out" 'teamctl restart lead --team a --resume <session-id>'
+  [ ! -f "$RESTORE_TEST/actions" ]
+  [ ! -f "$RESTORE_TEST/beads" ]
+  [ ! -f "$WOLFMUX_DATA/state/restore.log" ]
 }
 wait_record() {
   team a; team b; snapshot a b
@@ -432,7 +443,7 @@ if [ "${1:-}" = --case ]; then
 fi
 
 passed=0 failed=0
-for name in selection resume_order wait_record missing_transcript busy_memory busy_load room_recovers limit_report limit_model limit_stale worker_refused other_lead_refused dry_worker steward tabs_order tabs_attached tabs_failure tabs_not_running no_tabs idempotent confirm_abort confirm_eof confirm_enter restart_failure beads_failure snapshot_content snapshot_rollover record_rejects_stale policy_validation record_pretty record_space_path attach_space_path limit_model_wait limit_model_failure config_roundtrip limit_model_busy snapshot_minute steward_foreign_project cli_dispatch; do
+for name in selection resume_order missing_id_skip wait_record missing_transcript busy_memory busy_load room_recovers limit_report limit_model limit_stale worker_refused other_lead_refused dry_worker steward tabs_order tabs_attached tabs_failure tabs_not_running no_tabs idempotent confirm_abort confirm_eof confirm_enter restart_failure beads_failure snapshot_content snapshot_rollover record_rejects_stale policy_validation record_pretty record_space_path attach_space_path limit_model_wait limit_model_failure config_roundtrip limit_model_busy snapshot_minute steward_foreign_project cli_dispatch; do
   output="$(mktemp "${TMPDIR:-/tmp}/restore-check.XXXXXX")"
   if bash "$0" --case "$name" >"$output" 2>&1; then
     passed=$((passed + 1)); printf '  pass  %s\n' "$name"
