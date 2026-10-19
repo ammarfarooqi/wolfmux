@@ -433,6 +433,21 @@ nothing global points anywhere.
 
 ## Documentation
 
+After a reboot or crash, run `teamctl restore [--dry-run] [--yes] [--no-tabs]` from your
+own terminal. It shows the teams it will restore and asks once (Enter continues). It
+brings back their leads one at a time, sends each a Beads message and a nudge, then
+opens their iTerm2 tabs in the saved order. `--dry-run` only shows the plan; `--yes`
+skips confirmation; `--no-tabs` leaves attaching to you. Already running leads,
+deliberately stopped teams and removed teams are skipped. Workers stay parked.
+
+The status bar saves the running teams once a minute while a client is attached.
+Restore waits for memory and load to settle before each start. If iTerm2 is unavailable
+or Automation is refused, it prints the attach commands. Anyone may preview the plan;
+only you, or the orphan steward for teams you founded in its project, may run it.
+Policy `restore-on-limit` defaults to `report`: a lead blocked on a usage limit is
+listed. Set `teamctl policy restore-on-limit opus` to restart it on that model instead.
+The global default is `WOLFMUX_RESTORE_ON_LIMIT` in the config file. No login item is installed.
+
 | Read this | To learn |
 |-----------|----------|
 | [docs/GOALS.md](docs/GOALS.md) | what this is for, the hard constraints, the non-goals |

@@ -52,10 +52,12 @@ printf '%s\n' "$*" >>"$RESTORE_TEST/actions"
 team="$2"; shift 2
 [ "$1" = restart ] || exit 0
 [ ! -f "$RESTORE_TEST/fail-restart" ] || exit 9
+if [ -f "$RESTORE_TEST/fail-model" ] && [ "${3:-}" = --model ]; then exit 8; fi
 dir="$WOLFMUX_DATA/state/$TEST_KEY/teams/$team"
 sid=$("$REAL_JQ" -r '.session_id // ""' "$dir/agents/lead.json")
 [ -n "$sid" ] || sid="found-$team"
 touch "$RESTORE_TEST/up/$team"
+rm -f "$WOLFMUX_CLAUDE_SESSIONS/$TEST_PID.json" "$RESTORE_TEST/polls"
 "$REAL_JQ" -cn --arg sid "$sid" --arg tmux "$team:0" '{sessionId:$sid,tmux:$tmux}' >"$RESTORE_TEST/record"
 if [ ! -f "$RESTORE_TEST/defer" ]; then
   cp "$RESTORE_TEST/record" "$WOLFMUX_CLAUDE_SESSIONS/$TEST_PID.json"
@@ -89,7 +91,7 @@ exec "$REAL_JQ" "$@"
 STUB
   chmod +x "$RESTORE_TEST/bin/"*
   export PATH="$RESTORE_TEST/bin:$PATH"
-  for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore brand; do
+  for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore brand inbox; do
     . "$WOLFMUX_HOME/lib/$module.sh"
   done
   TEAMCTL_SELF="$REPO/bin/teamctl"
@@ -101,7 +103,7 @@ team() {
   local name="$1" family="${2:-claude}" sid="${3-sid-$1}" founder="${4:-operator}" dir
   dir="$WOLFMUX_DATA/state/$TEST_KEY/teams/$name"
   mkdir -p "$dir/agents"
-  jq -cn --arg root "$TEST_ROOT" --arg session "$name" --arg founder "$founder" '{root:$root,session:$session,founder:$founder}' >"$dir/meta.json"
+  jq -n --arg root "$TEST_ROOT" --arg session "$name" --arg founder "$founder" '{root:$root,session:$session,founder:$founder}' >"$dir/meta.json"
   jq -cn --arg sid "$sid" --arg family "$family" --arg founder "$founder" --arg root "$TEST_ROOT" '{role:"lead",model:"fable",label:"Fable",family:$family,session_id:$sid,spawned_by:$founder,workdir:$root}' >"$dir/agents/lead.json"
   [ -z "$sid" ] || touch "$WOLFMUX_CLAUDE_PROJECTS/test/$sid.jsonl"
 }
@@ -336,6 +338,52 @@ policy_validation() {
   policy_valid restore-on-limit opus
   if policy_valid restore-on-limit nonsense; then return 1; fi
 }
+record_pretty() {
+  local marker="$RESTORE_TEST/marker"
+  touch -t 200001010000 "$marker"
+  jq -n '{sessionId:"sid-a",tmux:"a:0"}' >"$WOLFMUX_CLAUDE_SESSIONS/$TEST_PID.json"
+  [ "$(_restore_session_record sid-a a "$marker")" = sid-a ]
+  [ "$(_restore_session_record '' a "$marker")" = sid-a ]
+}
+record_space_path() {
+  local marker="$RESTORE_TEST/marker"
+  WOLFMUX_CLAUDE_SESSIONS="$RESTORE_TEST/sessions with spaces"
+  mkdir -p "$WOLFMUX_CLAUDE_SESSIONS"
+  touch -t 200001010000 "$marker"
+  printf '{"sessionId":"sid-a"}\n' >"$WOLFMUX_CLAUDE_SESSIONS/$TEST_PID.json"
+  [ "$(_restore_session_record sid-a a "$marker")" = sid-a ]
+}
+attach_space_path() {
+  TEAMCTL_SELF="$RESTORE_TEST/bin/team ctl"
+  cat >"$TEAMCTL_SELF" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >"$RESTORE_TEST/attach-args"
+STUB
+  chmod +x "$TEAMCTL_SELF"
+  eval "$(_restore_cmd_text "$TEST_ROOT" a)"
+  has "$RESTORE_TEST/attach-args" '--team a attach'
+}
+limit_model_wait() {
+  team a; snapshot a; touch "$RESTORE_TEST/limit" "$RESTORE_TEST/defer"
+  WOLFMUX_RESTORE_ON_LIMIT=opus RESTORE_UP_MAX=5 RESTORE_POLL=1
+  run_restore --yes
+  [ "$(grep -c '^ready a$' "$RESTORE_TEST/actions")" = 2 ]
+  [ "$(sed -n '5p' "$RESTORE_TEST/actions")" = 'ready a' ]
+}
+limit_model_failure() {
+  team a; snapshot a; touch "$RESTORE_TEST/limit" "$RESTORE_TEST/fail-model"
+  WOLFMUX_RESTORE_ON_LIMIT=opus
+  run_restore --yes --no-tabs
+  has "$RESTORE_TEST/out" 'the move to opus failed: exit 8'
+  absent "$RESTORE_TEST/out" 'policy restore-on-limit is report'
+}
+config_roundtrip() {
+  mkdir -p "$RESTORE_TEST/config"
+  echo WOLFMUX_RESTORE_ON_LIMIT=opus >"$RESTORE_TEST/config/config"
+  unset WOLFMUX_RESTORE_ON_LIMIT
+  WOLFMUX_HOME="$RESTORE_TEST/config" wolfmux_load_config
+  [ "$(policy_get restore-on-limit)" = opus ]
+}
 
 if [ "${1:-}" = --case ]; then
   set -e
@@ -345,7 +393,7 @@ if [ "${1:-}" = --case ]; then
 fi
 
 passed=0 failed=0
-for name in selection resume_order wait_record missing_transcript busy_memory busy_load room_recovers limit_report limit_model limit_stale worker_refused other_lead_refused dry_worker steward tabs_order tabs_attached tabs_failure tabs_not_running no_tabs idempotent confirm_abort confirm_eof confirm_enter restart_failure beads_failure snapshot_content snapshot_rollover record_rejects_stale policy_validation; do
+for name in selection resume_order wait_record missing_transcript busy_memory busy_load room_recovers limit_report limit_model limit_stale worker_refused other_lead_refused dry_worker steward tabs_order tabs_attached tabs_failure tabs_not_running no_tabs idempotent confirm_abort confirm_eof confirm_enter restart_failure beads_failure snapshot_content snapshot_rollover record_rejects_stale policy_validation record_pretty record_space_path attach_space_path limit_model_wait limit_model_failure config_roundtrip; do
   output="$(mktemp "${TMPDIR:-/tmp}/restore-check.XXXXXX")"
   if bash "$0" --case "$name" >"$output" 2>&1; then
     passed=$((passed + 1)); printf '  pass  %s\n' "$name"

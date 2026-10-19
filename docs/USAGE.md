@@ -640,6 +640,36 @@ worker can never found one.
 
 ### When the lead of a founded team is gone
 
+After a reboot, `teamctl restore [--dry-run] [--yes] [--no-tabs]` brings back the teams
+that were running at the last status-bar snapshot. Run it from your own terminal.
+It prints the plan and asks once: Enter continues, anything else aborts. `--dry-run`
+shows the plan without changes, `--yes` skips the question, and `--no-tabs` skips iTerm2.
+
+Only leads restart. Claude resumes its stored conversation when the transcript exists;
+Codex uses `--continue`. A missing id uses `--continue` and is reported, since the newest
+conversation in a shared folder may belong to another lead. A missing transcript is also
+reported. Leads already up, teams ended deliberately since the snapshot, and removed
+teams are skipped. An orphan absent from the snapshot stays down. Running restore again
+after an interruption skips the leads already back.
+
+Restarts happen one at a time, waiting for the session record or 90 seconds with a live
+pane. Under 25% free memory or load over 20, restore waits up to ten minutes and reports
+teams it could not start. Each restored lead gets a Beads message and one nudge. Tabs
+open afterward in the saved order, skipping sessions already attached. If iTerm2 is not
+running or Automation fails, the report prints attach commands to run yourself.
+
+The status bar saves `~/.wolfmux/state/running.json` at most once a minute while a client
+is attached. After a server change it keeps the previous view in `running.prev.json`,
+so attaching one team after a crash does not erase the other teams. Restore records its
+actions in `~/.wolfmux/state/restore.log` and each team's event log. The orphan steward
+may restore only human-founded teams in its own project; restart also writes its steward
+ledger. Other agents get exit 77, but anyone may use `--dry-run`.
+
+`teamctl policy restore-on-limit report` is the default: a usage limit in a newly restored
+lead's transcript is reported. `teamctl policy restore-on-limit opus` asks for one restart
+on that model with the same conversation. `WOLFMUX_RESTORE_ON_LIMIT` supplies the global
+default. Restore installs no login item; you choose when to run it.
+
 A founded team whose lead died (a session restart, a reboot, a lead that is finished) has
 nobody to manage it. `teamctl teams` marks it `orphaned` and says who may act on it: you,
 and the lead that founded it. The founder does not need you for this:
