@@ -301,7 +301,7 @@ agent_set_model() {
 # (status, teams, restart, start), never on a timer; and never under somebody else's project lock: the next read
 # does it then. Sets MR_HOW to record (and MR_MARK to nothing) when it adopted, as the record now says that.
 agent_adopt_live() {
-  local role="$1" key id seen at family took=0
+  local role="$1" key id seen at recorded_at family took=0
   [ "${MR_HOW:-}" = "transcript" ] || return 0
   seen="$MR_ID" at="${2:-}"
   key="$(reg_field "$role" model 2>/dev/null || true)"
@@ -310,6 +310,11 @@ agent_adopt_live() {
   family="$MP_FAMILY"
   models_is_alias "$family" || return 0
   id="$(reg_field "$role" model_id 2>/dev/null || true)"
+  recorded_at="$(reg_field "$role" model_at 2>/dev/null || true)"
+  # The resolver can display an answer whose age is unknown. Persisting a change needs
+  # proof that it followed this start. Missing ids or times, and answers in the same
+  # second as the start, cannot prove that; keep them as transcript evidence only.
+  [ -n "$id" ] && _models_before "$recorded_at" "$at" || return 0
   if [ "$family" = "$key" ]; then
     # The key is right already (a `teamctl model` the agent has not been restarted for, then /model to that very
     # family). What runs is on record only when the recorded id is of another family.
@@ -324,6 +329,7 @@ agent_adopt_live() {
   fi
   # Under the lock the record is read again: a restart may have rewritten it since MR_* were worked out.
   if [ "$(reg_field "$role" model 2>/dev/null || true)" = "$key" ] && [ "$(reg_field "$role" model_id 2>/dev/null || true)" = "$id" ] &&
+    [ "$(reg_field "$role" model_at 2>/dev/null || true)" = "$recorded_at" ] &&
     model_info "$family"; then
     agent_set_model "$role" "$family"
     models_label_of "$seen"
