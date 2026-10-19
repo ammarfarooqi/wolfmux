@@ -346,7 +346,10 @@ The status bar saves the running set once a minute while a client is attached, i
 Restore starts only leads from those snapshots, one at a time. Already running leads,
 teams ended deliberately since the snapshot, and removed teams are skipped. Workers
 stay parked. Claude resumes its stored id when its transcript exists; Codex uses
-`--continue`. Missing ids or transcripts are reported with the fallback used.
+`--continue`. Claude leads with no stored id are skipped: `--continue` could open
+another lead's conversation. The plan and final report show the command to run by hand:
+`teamctl restart lead --team <name> --resume <session-id>`. A stored id with no transcript
+is reported and starts fresh under that same id.
 
 Before each start, restore waits for at least 25% free memory and load at most 20,
 giving up after ten minutes. It waits for the lead's session record or 90 seconds with

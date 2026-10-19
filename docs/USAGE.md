@@ -646,9 +646,11 @@ It prints the plan and asks once: Enter continues, anything else aborts. `--dry-
 shows the plan without changes, `--yes` skips the question, and `--no-tabs` skips iTerm2.
 
 Only leads restart. Claude resumes its stored conversation when the transcript exists;
-Codex uses `--continue`. A missing id uses `--continue` and is reported, since the newest
-conversation in a shared folder may belong to another lead. A missing transcript is also
-reported. Leads already up, teams ended deliberately since the snapshot, and removed
+Codex uses `--continue`. A Claude lead with no stored id is skipped, since `--continue`
+could open another lead's conversation in the shared folder. The plan and final report
+show how to bring it back by hand: `teamctl restart lead --team <name> --resume <session-id>`.
+An id with no transcript is reported and starts fresh under that same id.
+Leads already up, teams ended deliberately since the snapshot, and removed
 teams are skipped. An orphan absent from the snapshot stays down. Running restore again
 after an interruption skips the leads already back.
 

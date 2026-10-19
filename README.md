@@ -439,6 +439,8 @@ brings back their leads one at a time, sends each a Beads message and a nudge, t
 opens their iTerm2 tabs in the saved order. `--dry-run` only shows the plan; `--yes`
 skips confirmation; `--no-tabs` leaves attaching to you. Already running leads,
 deliberately stopped teams and removed teams are skipped. Workers stay parked.
+Claude leads without a stored conversation id are also skipped, with a command to
+resume the right conversation by hand. Codex still uses `--continue`.
 
 The status bar saves the running teams once a minute while a client is attached.
 Restore waits for memory and load to settle before each start. If iTerm2 is unavailable

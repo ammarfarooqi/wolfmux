@@ -257,7 +257,7 @@ _restore_end_ts() {
 }
 
 # restore_verdict <seen> — what to do with the loaded team. Sets RV (restore | up | ended | gone |
-# notyours), RV_WHY (the reason a skip prints), RV_HOW (resume | continue), RV_SID, RV_FAMILY,
+# notyours | missingid), RV_WHY (the reason a skip prints), RV_HOW (resume | continue), RV_SID, RV_FAMILY,
 # RV_NOTE (what the report must say about how it comes back).
 restore_verdict() {
   local seen="$1" end founder
@@ -298,7 +298,7 @@ restore_verdict() {
   if [ "$RV_FAMILY" = "codex" ]; then
     RV_HOW="continue" RV_SID="" RV_NOTE="Codex: --continue (it has no stored id)"
   elif [ -z "$RV_SID" ]; then
-    RV_HOW="continue" RV_NOTE="no stored conversation id: --continue resumes the newest one in its folder, which may be another lead's"
+    RV="missingid" RV_WHY="no stored conversation id: --continue could open another lead's conversation. Bring it back by hand: teamctl restart lead --team $TEAM --resume <session-id>"
   elif [ -z "$(session_transcript "$RV_SID" "$(reg_field "$WOLFMUX_LEAD_ROLE" workdir 2>/dev/null || true)")" ]; then
     RV_HOW="continue" RV_NOTE="conversation $RV_SID has no transcript here: it starts fresh under the same id"
   else
@@ -583,7 +583,7 @@ cmd_restore() {
 
   say "$WOLFMUX_LEAD_MARK restore: the teams that were running${RS_WHEN:+ when the last server was last seen ($(_finish_when "$RS_WHEN"))}"
   if [ "$n" -eq 0 ]; then
-    say "  nothing to restore: every team of the snapshot is running, or was ended on purpose, or is gone."
+    say "  nothing to restore: no team in the snapshot can be started automatically."
   else
     say "  will restore $n team(s), one at a time:"
     for ((i = 0; i < n; i++)); do
@@ -767,6 +767,7 @@ cmd_restore() {
   say ""
   say "$WOLFMUX_LEAD_MARK restore: ${#R_TEAM[@]} of $n team(s) brought back"
   for ((i = 0; i < ${#R_TEAM[@]}; i++)); do say "  restored ${R_TEAM[$i]}"; done
+  for ((i = 0; i < ${#SKIPS[@]}; i++)); do say "  skip ${SKIPS[$i]}"; done
   for ((i = 0; i < ${#NOTES[@]}; i++)); do say "  note ${NOTES[$i]}"; done
   for ((i = 0; i < ${#MOVED[@]}; i++)); do say "  moved ${MOVED[$i]}"; done
   if [ "${#LIMITS[@]}" -gt 0 ]; then
