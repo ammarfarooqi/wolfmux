@@ -19,7 +19,8 @@ records the choice and explains why the switch waits. `teamctl restart <role> --
 Changing between Claude and Codex requires a fresh conversation. A later answer from
 another Claude family is adopted into the record on a `status`, `teams`, or `restart`
 read. Typing `/model` also changes the default in `~/.claude/settings.json` for every new
-Claude session on the Mac; `teamctl model --now` does not touch that file.
+Claude session on the Mac unless its launch explicitly selects another model, as Wolfmux
+does with `--model`. `teamctl model --now` does not touch that file.
 
 Two tools, two jobs:
 

@@ -751,7 +751,8 @@ second restarts immediately. A later answer from another Claude family is adopte
 the record on a `status`, `teams`, or `restart` read when the project lock is available.
 Adoption needs an existing model id and an answer newer than the last recorded change.
 Typing `/model` in Claude also writes `"model"` into `~/.claude/settings.json`, affecting
-every new Claude session on the Mac. `teamctl model --now` leaves that file alone.
+the default for new Claude sessions on the Mac. An explicit model choice overrides it;
+Wolfmux supplies `--model` when launching an agent. `teamctl model --now` leaves that file alone.
 
 An Opus team can take on an Astra teammate for one review (`teamctl spawn fe-review astra`),
 an Astra team a Sonnet one (`teamctl spawn summary sonnet`), any team a Kimi one

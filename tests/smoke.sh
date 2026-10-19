@@ -327,7 +327,7 @@ plant "$PAID_TEAM_DIR/agents" lead lead deepseek "DeepSeek V4" metered
 check "metered: a metered lead shows its \$ in its own team, and --json says metered" 'teamctl status --team paid | grep -q "🐺 lead .*DeepSeek V4\\$ " && teamctl status --json --team paid | jq -e ".agents[0].billing == \"metered\""'
 /bin/rm -rf "$PAID_TEAM_DIR"
 check "providers: teamctl help, the usage line and the unknown-model error list every provider key" '(
-  # No model is valid for start now; an unknown model must still be a usage error.
+  # Omitting the model is valid for start; an unknown model must still be a usage error.
   start_error="$(teamctl start nosuchmodel 2>&1)"
   [ $? -eq 64 ] || exit 1
   for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do

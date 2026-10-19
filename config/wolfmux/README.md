@@ -90,8 +90,9 @@ records the choice and explains that it switches at the next restart. `restart -
 also records the choice; omit `--continue` and `--resume` when changing CLI families.
 
 Typing `/model` in a Claude pane also writes `"model"` into `~/.claude/settings.json`,
-so every new Claude session on the Mac starts on it. `teamctl model --now` does not touch
-that file. A later answer from another Claude family is adopted into the agent's record
+so new Claude sessions on the Mac use it unless they explicitly select another model.
+Wolfmux supplies `--model`, so its launches keep their selected model. `teamctl model --now`
+does not touch that file. A later answer from another Claude family is adopted into the agent's record
 on the next `status`, `teams`, or `restart` read, so a restart keeps that choice. Adoption
 waits for the next read if the project lock is busy; it needs an existing model id and an
 answer newer than the recorded model change.
