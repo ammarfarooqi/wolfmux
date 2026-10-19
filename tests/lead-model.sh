@@ -234,6 +234,29 @@ check "an answer from BEFORE the record's start is not adopted (a --continue sti
 check "another version of the same family is not adopted (Claude Code may serve an earlier one)" \
   'teamctl spawn l4 opus --no-kickoff >/dev/null 2>&1 && answer claude-opus-5 "$(later)" >"$(transcript_of l4)" &&
    [ "$(field l4 model)" = opus ] && [ "$(record l4 | jq -r .model_id)" = claude-opus-5-5 ]'
+# Showing what a transcript says is useful even when its age is unknown. Changing the
+# next launch needs evidence that the answer followed the recorded start.
+L3_FILE="$(ls -d "$WOLFMUX_DATA"/state/*/agents/l3.json)"
+L3_T="$(transcript_of l3)"
+record l3 >"$WORK/l3-original.json"
+unproven_change() { # <record filter> <answer time>: a status read must leave the record alone
+  jq "$1" "$WORK/l3-original.json" >"$L3_FILE"
+  /bin/cp "$L3_FILE" "$WORK/l3-before.json"
+  answer claude-opus-5-5 "$2" >"$L3_T"
+  teamctl status --json >/dev/null 2>&1 && /usr/bin/cmp -s "$WORK/l3-before.json" "$L3_FILE"
+}
+check "a legacy record with no model id is displayed from the transcript, not adopted" \
+  'unproven_change "del(.model_id)" "$(later)"'
+check "a record with no model time is not rewritten from another family in its transcript" \
+  'unproven_change "del(.model_at)" "$(later)"'
+check "an answer with no timestamp is not adopted" \
+  'unproven_change "." ""'
+check "an answer with an invalid timestamp is not adopted" \
+  'unproven_change "." "unknown"'
+check "an answer in the same second as the recorded start cannot prove a later model change" \
+  'unproven_change "." "$(jq -r .model_at "$WORK/l3-original.json")"'
+/bin/cp "$WORK/l3-original.json" "$L3_FILE"
+answer claude-fable-5-1 "2020-01-01T00:00:00.000Z" >"$L3_T"
 LEAD_T="$(transcript_of lead)"
 answer claude-fable-5-1 "$(later)" >"$LEAD_T"
 check "teamctl teams adopts it for a lead: the lead's record now says fable, and a restart of the lead keeps Fable" \
