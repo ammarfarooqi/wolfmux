@@ -326,7 +326,17 @@ PAID_TEAM_DIR="$(dirname "$METER_AGENTS")/teams/paid"
 plant "$PAID_TEAM_DIR/agents" lead lead deepseek "DeepSeek V4" metered
 check "metered: a metered lead shows its \$ in its own team, and --json says metered" 'teamctl status --team paid | grep -q "🐺 lead .*DeepSeek V4\\$ " && teamctl status --json --team paid | jq -e ".agents[0].billing == \"metered\""'
 /bin/rm -rf "$PAID_TEAM_DIR"
-check "providers: teamctl help, the usage line and the unknown-model error list every provider key" 'for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do teamctl help | grep -qF -- "$k" || exit 1; teamctl spawn 2>&1 | grep -qF -- "$k" || exit 1; teamctl spawn x nosuchmodel 2>&1 | grep -qF -- "$k" || exit 1; teamctl start 2>&1 | grep -qF -- "$k" || exit 1; done'
+check "providers: teamctl help, the usage line and the unknown-model error list every provider key" '(
+  # No model is valid for start now; an unknown model must still be a usage error.
+  start_error="$(teamctl start nosuchmodel 2>&1)"
+  [ $? -eq 64 ] || exit 1
+  for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do
+    teamctl help | grep -qF -- "$k" || exit 1
+    teamctl spawn 2>&1 | grep -qF -- "$k" || exit 1
+    teamctl spawn x nosuchmodel 2>&1 | grep -qF -- "$k" || exit 1
+    printf "%s" "$start_error" | grep -qF -- "$k" || exit 1
+  done
+)'
 for role in kimi-w mm-w qw-w hint-k hint-s meter-1 meter-2; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
 
 echo "== the wolf (cosmetic: it may never break a command)"
