@@ -2,6 +2,8 @@
 # Restore only scratch teams. All external actions are recorded by stand-ins;
 # the snapshot pane list also has a check against a throwaway tmux server.
 set -u
+for restore_env in $(compgen -v WOLFMUX_); do unset "$restore_env"; done
+unset TEAM_ROLE BEADS_ACTOR TMUX TMUX_PANE BEADS_DIR
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 
 fixture() {
@@ -50,7 +52,11 @@ STUB
 printf '%s\n' "$*" >>"$RESTORE_TEST/actions"
 [ "$1" = --team ] || exit 93
 team="$2"; shift 2
-[ "$1" = restart ] || exit 0
+if [ "$1" = nudge ]; then
+  [ ! -f "$RESTORE_TEST/busy-after-nudge" ] || echo 24 >"$RESTORE_TEST/free"
+  exit 0
+fi
+[ "$1" = restart ] || exit 94
 [ ! -f "$RESTORE_TEST/fail-restart" ] || exit 9
 if [ -f "$RESTORE_TEST/fail-model" ] && [ "${3:-}" = --model ]; then exit 8; fi
 dir="$WOLFMUX_DATA/state/$TEST_KEY/teams/$team"
@@ -384,6 +390,39 @@ config_roundtrip() {
   WOLFMUX_HOME="$RESTORE_TEST/config" wolfmux_load_config
   [ "$(policy_get restore-on-limit)" = opus ]
 }
+limit_model_busy() {
+  team a; snapshot a; touch "$RESTORE_TEST/limit" "$RESTORE_TEST/busy-after-nudge"
+  WOLFMUX_RESTORE_ON_LIMIT=opus
+  run_restore --yes --no-tabs
+  [ "$(grep -c ' restart ' "$RESTORE_TEST/actions")" = 1 ]
+  has "$RESTORE_TEST/out" 'memory free 24%'
+}
+snapshot_minute() {
+  team a
+  echo '123 100|10|a' >"$RESTORE_TEST/clients"
+  now_epoch() { echo "${TEST_NOW:-100}"; }
+  TEST_NOW=100; restore_snapshot_tick 'a|lead|%1|0|42'
+  TEST_NOW=159; restore_snapshot_tick ''
+  "$REAL_JQ" -e '.epoch == 100 and (.teams | length) == 1' "$WOLFMUX_DATA/state/running.json"
+  TEST_NOW=160; restore_snapshot_tick ''
+  "$REAL_JQ" -e '.epoch == 160 and (.teams | length) == 0' "$WOLFMUX_DATA/state/running.json"
+}
+steward_foreign_project() {
+  team a
+  export TEAM_ROLE=lead WOLFMUX_TEAM=comms WOLFMUX_ORPHAN_STEWARD=comms
+  restore_who
+  mkdir -p "$WOLFMUX_DATA/state/foreign/teams"
+  cp -R "$WOLFMUX_DATA/state/$TEST_KEY/teams/a" "$WOLFMUX_DATA/state/foreign/teams/a"
+  restore_project foreign "$TEST_ROOT" a
+  restore_verdict '2026-01-01T00:00:00Z'
+  [ "$RV" = notyours ] && [[ "$RV_WHY" = 'another project:'* ]]
+}
+cli_dispatch() {
+  team a; snapshot a
+  "$REPO/bin/teamctl" restore --yes --no-tabs >"$RESTORE_TEST/out" 2>&1
+  has "$RESTORE_TEST/out" '1 of 1 team(s) brought back'
+  has "$RESTORE_TEST/actions" '--team a restart lead --resume sid-a'
+}
 
 if [ "${1:-}" = --case ]; then
   set -e
@@ -393,7 +432,7 @@ if [ "${1:-}" = --case ]; then
 fi
 
 passed=0 failed=0
-for name in selection resume_order wait_record missing_transcript busy_memory busy_load room_recovers limit_report limit_model limit_stale worker_refused other_lead_refused dry_worker steward tabs_order tabs_attached tabs_failure tabs_not_running no_tabs idempotent confirm_abort confirm_eof confirm_enter restart_failure beads_failure snapshot_content snapshot_rollover record_rejects_stale policy_validation record_pretty record_space_path attach_space_path limit_model_wait limit_model_failure config_roundtrip; do
+for name in selection resume_order wait_record missing_transcript busy_memory busy_load room_recovers limit_report limit_model limit_stale worker_refused other_lead_refused dry_worker steward tabs_order tabs_attached tabs_failure tabs_not_running no_tabs idempotent confirm_abort confirm_eof confirm_enter restart_failure beads_failure snapshot_content snapshot_rollover record_rejects_stale policy_validation record_pretty record_space_path attach_space_path limit_model_wait limit_model_failure config_roundtrip limit_model_busy snapshot_minute steward_foreign_project cli_dispatch; do
   output="$(mktemp "${TMPDIR:-/tmp}/restore-check.XXXXXX")"
   if bash "$0" --case "$name" >"$output" 2>&1; then
     passed=$((passed + 1)); printf '  pass  %s\n' "$name"

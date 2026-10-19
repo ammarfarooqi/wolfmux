@@ -638,7 +638,7 @@ manage the new team while that team's lead runs. `teamctl policy lead-teams off`
 founding teams to yourself. A lead can never take over a team that already has a lead; a
 worker can never found one.
 
-### When the lead of a founded team is gone
+### After a reboot
 
 After a reboot, `teamctl restore [--dry-run] [--yes] [--no-tabs]` brings back the teams
 that were running at the last status-bar snapshot. Run it from your own terminal.
@@ -669,6 +669,8 @@ ledger. Other agents get exit 77, but anyone may use `--dry-run`.
 lead's transcript is reported. `teamctl policy restore-on-limit opus` asks for one restart
 on that model with the same conversation. `WOLFMUX_RESTORE_ON_LIMIT` supplies the global
 default. Restore installs no login item; you choose when to run it.
+
+### When the lead of a founded team is gone
 
 A founded team whose lead died (a session restart, a reboot, a lead that is finished) has
 nobody to manage it. `teamctl teams` marks it `orphaned` and says who may act on it: you,

@@ -334,7 +334,7 @@ Each act is written to `~/.wolfmux/state/<project>/steward.jsonl` first (an act 
 be written is not done), you are told, and the event log names the steward. An agent cannot set
 the key (exit 77), and a name that is not a team of the project is refused.
 
-## Deleting a team
+## After a reboot
 
 After a reboot or crash, run `teamctl restore [--dry-run] [--yes] [--no-tabs]` from your
 own terminal. The plan lists the teams and the reasons for skips. Enter confirms once;
@@ -361,6 +361,8 @@ Policy `restore-on-limit` accepts `report` (default) or a model key. Set
 its transcript reports a usage limit. With `report`, it is listed for you to handle.
 `WOLFMUX_RESTORE_ON_LIMIT=report` in the config file sets the default for teams that
 have not set the policy.
+
+## Deleting a team
 
 ```bash
 teamctl teams                              # DISK shows what each team takes

@@ -431,7 +431,7 @@ nothing global points anywhere.
 | `tools/` | `wolf-art.py` (the one pixel drawing behind the terminal wolf, the logo and the hero) and `flow-diagrams.py` (the sequence diagrams); only needed to change the artwork |
 | `docs/` | the documentation below, and `docs/diagrams/` |
 
-## Documentation
+## After a reboot
 
 After a reboot or crash, run `teamctl restore [--dry-run] [--yes] [--no-tabs]` from your
 own terminal. It shows the teams it will restore and asks once (Enter continues). It
@@ -447,6 +447,8 @@ only you, or the orphan steward for teams you founded in its project, may run it
 Policy `restore-on-limit` defaults to `report`: a lead blocked on a usage limit is
 listed. Set `teamctl policy restore-on-limit opus` to restart it on that model instead.
 The global default is `WOLFMUX_RESTORE_ON_LIMIT` in the config file. No login item is installed.
+
+## Documentation
 
 | Read this | To learn |
 |-----------|----------|
