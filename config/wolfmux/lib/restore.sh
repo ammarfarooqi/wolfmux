@@ -374,21 +374,21 @@ restore_room() {
 # Prints its sessionId. A record left by a CLI that died in the crash is older than the marker,
 # and its pid is gone or someone else's: neither passes.
 _restore_session_record() {
-  local sid="$1" session="$2" marker="$3" dir f pid pattern
+  local sid="$1" session="$2" marker="$3" dir f pid found
   dir="$(restore_sessions_dir)"
   [ -d "$dir" ] || return 1
-  if [ -n "$sid" ]; then pattern="\"sessionId\":\"$sid\""; else pattern="\"tmux\":\"$session:"; fi
-  for f in $(grep -l -F "$pattern" "$dir"/*.json 2>/dev/null); do
+  for f in "$dir"/*.json; do
     [ "$f" -nt "$marker" ] || continue
     pid="${f##*/}"
     pid="${pid%.json}"
     case "$pid" in "" | *[!0-9]*) continue ;; esac
     kill -0 "$pid" 2>/dev/null || continue
-    if [ -n "$sid" ]; then
-      printf '%s\n' "$sid"
-    else
-      sed -n 's/.*"sessionId":"\([^"]*\)".*/\1/p' "$f" | head -n 1
-    fi
+    # Parse JSON rather than its spacing, and keep each pathname intact.
+    found="$("$JQ_BIN" -er --arg sid "$sid" --arg session "$session:" '
+      select(if $sid != "" then .sessionId == $sid
+             else (.tmux // "" | startswith($session)) end)
+      | .sessionId | strings | select(. != "")' "$f" 2>/dev/null)" || continue
+    printf '%s\n' "$found"
     return 0
   done
   return 1
@@ -458,7 +458,7 @@ restore_log() {
 _restore_cmd_text() {
   local self="teamctl"
   [ "$(command -v teamctl 2>/dev/null || true)" = "$TEAMCTL_SELF" ] || self="$TEAMCTL_SELF"
-  printf 'cd %q && %s --team %q attach\n' "$1" "$self" "$2"
+  printf 'cd %q && %q --team %q attach\n' "$1" "$self" "$2"
 }
 
 # _restore_as_string <text> — an AppleScript string literal
@@ -712,14 +712,32 @@ cmd_restore() {
     say ""
     say "  ${R_TEAM[$i]}: $limit"
     say "    restarting its lead on $policy (policy restore-on-limit)"
+    if [ "$busy" -eq 1 ] || ! restore_room; then
+      busy=1
+      LIMITS+=("${R_TEAM[$i]}: $limit (not moved to $policy: the machine stayed busy, $RESTORE_BUSY)")
+      restore_log "${R_KEY[$i]}" "${R_TEAM[$i]}" "restart --model $policy" "not started: busy"
+      continue
+    fi
+    marker="$(mktemp "${TMPDIR:-/tmp}/wolfmux-restore.XXXXXX" 2>/dev/null)" || marker=""
+    sleep 1
     rc=0
     out="$(_restore_in "${R_ROOT[$i]}" "${R_TEAM[$i]}" restart "$WOLFMUX_LEAD_ROLE" --model "$policy" --resume "${R_SID[$i]}" 2>&1)" || rc=$?
     [ -z "$out" ] || printf '%s\n' "$out" | sed -e '/^$/d' -e 's/^/    /'
     if [ "$rc" -ne 0 ]; then
+      [ -z "$marker" ] || /bin/rm -f "$marker"
       LIMITS+=("${R_TEAM[$i]}: $limit (the move to $policy failed: exit $rc)")
       restore_log "${R_KEY[$i]}" "${R_TEAM[$i]}" "restart --model $policy" "failed: exit $rc"
       continue
     fi
+    rc=0
+    restore_wait_up "$(reg_field "$WOLFMUX_LEAD_ROLE" family 2>/dev/null || true)" "${R_SID[$i]}" "${marker:-/dev/null}" || rc=$?
+    [ -z "$marker" ] || /bin/rm -f "$marker"
+    if [ "$rc" -eq 2 ]; then
+      LIMITS+=("${R_TEAM[$i]}: $limit (the move to $policy failed: its pane exited)")
+      restore_log "${R_KEY[$i]}" "${R_TEAM[$i]}" "restart --model $policy" "failed: the pane exited"
+      continue
+    fi
+    [ "$rc" -eq 0 ] || say "    up: its pane runs (${RESTORE_UP_MAX}s passed after the model change)"
     EVENT_BY="$RESTORE_BY" event_log restore "$WOLFMUX_LEAD_ROLE" "model $policy after: $limit" 2>/dev/null || true
     restore_log "${R_KEY[$i]}" "${R_TEAM[$i]}" "restart --model $policy" "done"
     restore_tell "${R_ROOT[$i]}" "${R_TEAM[$i]}" "Moved to $policy: the ${R_LABEL[$i]:-model} limit was reached" \
@@ -752,7 +770,7 @@ cmd_restore() {
   for ((i = 0; i < ${#NOTES[@]}; i++)); do say "  note ${NOTES[$i]}"; done
   for ((i = 0; i < ${#MOVED[@]}; i++)); do say "  moved ${MOVED[$i]}"; done
   if [ "${#LIMITS[@]}" -gt 0 ]; then
-    say "  blocked on a model limit (policy restore-on-limit is report, so nothing was changed):"
+    say "  blocked on a model limit (see each team's result):"
     for ((i = 0; i < ${#LIMITS[@]}; i++)); do say "    ${LIMITS[$i]}"; done
   fi
   for ((i = 0; i < ${#FAILS[@]}; i++)); do say "  NOT restored ${FAILS[$i]}"; done
