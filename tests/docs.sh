@@ -67,11 +67,13 @@ public_commands() {
 
 # options_of <function> — the long options its argument loop accepts, one case label per
 # line. The spellings on one label are synonyms ("--names|--name-only"): naming one is enough.
+# A label that immediately calls die_usage rejects that option; it is not an offered flag.
 options_of() {
   /bin/cat "$LIB"/*.sh | /usr/bin/awk -v fn="$1" '
     $0 ~ "^" fn "\\(\\) \\{" { inside = 1; next }
     inside && /^}/ { exit }
     inside && /^ +[^()$"#]*--[a-z][^()$"#]*\)/ {
+      if ($0 ~ /\) *die_usage /) next
       labels = $0; sub(/\).*/, "", labels)
       count = split(labels, label, /[ |]+/)
       group = ""
