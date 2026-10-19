@@ -316,6 +316,7 @@ main() {
     _inbox-stop) cmd_inbox_stop "$@" ;;
     _inbox-prompt) cmd_inbox_prompt "$@" ;;
     _human-inbox) cmd_human_inbox "$@" ;;
+    _popup) cmd_popup "$@" ;;
     _human-inbox-hook) cmd_human_inbox_hook "$@" ;;
     _open-team) cmd_open_team "$@" ;;
     _guard) cmd_guard "$@" ;;

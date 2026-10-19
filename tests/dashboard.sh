@@ -501,7 +501,7 @@ check "the view changes nothing: no team is stopped, started or removed by it" \
 
 echo "== the key that opens it, and how tmux.conf finds teamctl"
 check "the tmux configuration binds prefix O to the popup" \
-  'grep -Eq "^bind O display-popup -E .*dashboard" "$REPO/config/wolfmux/tmux.conf"'
+  'grep -Eq "^bind O run-shell -b .* _popup .*dashboard" "$REPO/config/wolfmux/tmux.conf"'
 check "status-right carries the segment" \
   'grep -q "_overview-badge" "$REPO/config/wolfmux/tmux.conf"'
 check "the other lane's status-left and status-interval are left alone" \
