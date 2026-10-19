@@ -255,6 +255,18 @@ check "an answer with an invalid timestamp is not adopted" \
   'unproven_change "." "unknown"'
 check "an answer in the same second as the recorded start cannot prove a later model change" \
   'unproven_change "." "$(jq -r .model_at "$WORK/l3-original.json")"'
+check "a date-shaped timestamp with trailing garbage is not adopted" \
+  'unproven_change "." "2099-01-01T00:00:00garbageZ"'
+check "an out-of-range month is not adopted" \
+  'unproven_change "." "2099-99-01T00:00:00Z"'
+check "an out-of-range hour is not adopted" \
+  'unproven_change "." "2099-01-01T25:00:00Z"'
+check "February 29 in a non-leap century is not adopted" \
+  'unproven_change "." "2100-02-29T00:00:00Z"'
+/bin/cp "$WORK/l3-original.json" "$L3_FILE"
+answer claude-opus-5-5 "2400-02-29T00:00:00.123Z" >"$L3_T"
+check "a later answer on a valid leap day is adopted, including fractional seconds" \
+  '[ "$(field l3 model)" = opus ] && [ "$(record l3 | jq -r .model_at)" = "2400-02-29T00:00:00.123Z" ]'
 /bin/cp "$WORK/l3-original.json" "$L3_FILE"
 answer claude-fable-5-1 "2020-01-01T00:00:00.000Z" >"$L3_T"
 LEAD_T="$(transcript_of lead)"
