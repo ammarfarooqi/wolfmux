@@ -69,7 +69,15 @@ EOF
 #!/bin/bash
 echo 'System-wide memory free percentage: 80%'
 EOF
-/bin/chmod 755 "$FAKE/bd" "$FAKE/memory_pressure"
+/bin/cat >"$FAKE/codex" <<'EOF'
+#!/bin/bash
+marker="$FAKE/restore-${WOLFMUX_TEAM:-}"
+if [ -f "$marker" ]; then
+  jq -cn --args '$ARGS.positional' -- "$@" >>"$marker.codex-argv"
+fi
+exec "$STUB_AGENT" "$@"
+EOF
+/bin/chmod 755 "$FAKE/bd" "$FAKE/memory_pressure" "$FAKE/codex"
 export PATH="$FAKE:$PATH"
 echo "claude-fable-5-1" >"$FAKE/answers/fable"
 echo "claude-opus-5-5" >"$FAKE/answers/opus"
@@ -78,7 +86,7 @@ echo "claude-haiku-5-5" >"$FAKE/answers/haiku"
 export STUB_AGENT="$REPO/tests/stub-agent"
 export WOLFMUX_LAUNCHER_FABLE="$FAKE/claude" WOLFMUX_LAUNCHER_OPUS="$FAKE/claude"
 export WOLFMUX_LAUNCHER_SONNET="$FAKE/claude" WOLFMUX_LAUNCHER_HAIKU="$FAKE/claude"
-export WOLFMUX_LAUNCHER_ASTRA="$REPO/tests/stub-agent" WOLFMUX_LAUNCHER_CLAUDE="$REPO/tests/stub-agent"
+export WOLFMUX_LAUNCHER_ASTRA="$FAKE/codex" WOLFMUX_LAUNCHER_CLAUDE="$REPO/tests/stub-agent"
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH WOLFMUX_METERED TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL WOLFMUX_EXTRA_SETTINGS
 unset WOLFMUX_FABLE_MODEL WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL WOLFMUX_MODEL_POLICY CLAUDE_CONFIG_DIR
@@ -335,7 +343,8 @@ restore_real_limit() (
   export WOLFMUX_RESTORE_LOAD=1 WOLFMUX_RESTORE_WAIT_MAX=0
   export WOLFMUX_RESTORE_UP_MAX=10 WOLFMUX_RESTORE_POLL=1 WOLFMUX_RESTORE_LIMIT_WAIT=0
   teamctl start fable --team "$team" --no-attach --skip-beads >/dev/null 2>&1 || return 1
-  state="$(ls -d "$WOLFMUX_DATA"/state/*)"
+  meta="$(ls "$WOLFMUX_DATA"/state/*/teams/"$team"/meta.json)" || return 1
+  state="${meta%/teams/$team/meta.json}"
   sid="$(record lead "$team" | jq -er .session_id)" || return 1
   session="$(jq -er .session "$state/teams/$team/meta.json")" || return 1
   [ "$(field lead model "$team")" = fable ] || return 1
@@ -350,7 +359,7 @@ restore_real_limit() (
               family:"claude",label:"Fable",session_id:$sid,founder:"operator"}]}' \
     >"$WOLFMUX_DATA/state/running.json" || return 1
   tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$session" || return 1
-  teamctl policy restore-on-limit "$target" >/dev/null 2>&1 || return 1
+  teamctl policy restore-on-limit "$target" --team "$team" >/dev/null 2>&1 || return 1
   teamctl restore --yes --no-tabs >"$WORK/restore-$team.out" 2>&1 || return 1
   # Both real restarts must preserve the stored conversation. Only the Opus
   # move may launch a second CLI; Codex must be refused before any launch.
@@ -359,14 +368,17 @@ restore_real_limit() (
     all(.[]; index("--resume") as $i | $i != null and .[$i + 1] == $sid) and
     .[0][(.[0] | index("--model")) + 1] == "claude-fable-5-1"' "$argv" || return 1
   [ "$(record lead "$team" | jq -r .session_id)" = "$sid" ] || return 1
+  [ ! -f "$FAKE/restore-$team.codex-argv" ] || return 1
   if [ "$target" = opus ]; then
     jq -se 'length == 2 and .[1][(.[1] | index("--model")) + 1] == "claude-opus-5-5"' "$argv" &&
       [ "$(field lead model "$team")" = opus ] &&
+      [ "$(record lead "$team" | jq -r .model_id)" = claude-opus-5-5 ] &&
       jq -se --arg team "$team" 'any(.[]; .team == $team and .what == "restart --model opus" and .result == "done")' "$WOLFMUX_DATA/state/restore.log" &&
       grep -q "^  moved $team: to opus$" "$WORK/restore-$team.out"
   else
     jq -se 'length == 1' "$argv" &&
       [ "$(field lead model "$team")" = fable ] &&
+      [ "$(record lead "$team" | jq -r .model_id)" = claude-fable-5-1 ] &&
       jq -se --arg team "$team" 'any(.[]; .team == $team and .what == "restart --model astra" and .result == "failed: exit 64")' "$WOLFMUX_DATA/state/restore.log" &&
       grep -q "$team: .*the move to astra failed: exit 64" "$WORK/restore-$team.out" &&
       ! grep -q "^  moved $team:" "$WORK/restore-$team.out"
