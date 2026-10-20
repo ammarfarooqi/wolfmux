@@ -1,7 +1,8 @@
 #!/bin/bash
 # beads.sh — the thin seam between teamctl and Beads (bd).
 #
-# Beads owns tasks and messages. teamctl never writes a bead. The glue here is (1) making
+# Beads owns tasks and messages. Restore writes a message to each restored lead; other
+# lifecycle commands leave messages to the caller. The glue here is (1) making
 # sure a Beads workspace exists before a team starts and (2) two tiny event hooks that turn
 # "a bead needs <role>" into a tmux pane notification through `teamctl nudge`.
 #

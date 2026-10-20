@@ -52,10 +52,16 @@
 #                                           project, so it is kept in a file of the project's own
 #                                           (project_policy_file), not in one team's meta.json. Only
 #                                           you may set it, never an agent (require_operator).
+#   restore-on-limit    report | <model>    DEFAULT report. What `teamctl restore` does with a lead
+#                                           that comes back to a used-up model limit ("You've
+#                                           reached your Fable limit"): report = name it at the end
+#                                           and change nothing; a model (opus, sonnet, claude:<id>…) =
+#                                           restart that lead on it, through `teamctl restart --model`
+#                                           (lib/restore.sh)
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing orphan-steward"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing orphan-steward restore-on-limit"
 
 policy_default() {
   case "$1" in
@@ -73,8 +79,25 @@ policy_default() {
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     human-pane-typing) printf '%s\n' "${WOLFMUX_HUMAN_PANE_TYPING:-off}" ;;
     orphan-steward) printf '%s\n' "${WOLFMUX_ORPHAN_STEWARD:-off}" ;;
+    restore-on-limit) printf '%s\n' "${WOLFMUX_RESTORE_ON_LIMIT:-report}" ;;
     *) return 1 ;;
   esac
+}
+
+# restore_on_limit_valid <value> — report, or a model `teamctl start` would take: a fixed key
+# (opus, sonnet…) or <prefix>:<model-id> where the key list allows one (claude:<model-id>…)
+restore_on_limit_valid() {
+  local key
+  [ "$1" = "report" ] && return 0
+  for key in $WOLFMUX_MODEL_KEYS; do
+    case "$key" in
+      *":<model-id>")
+        case "$1" in "${key%%:*}":?*) valid_model_id "${1#*:}" && return 0 ;; esac
+        ;;
+      *) [ "$1" = "$key" ] && return 0 ;;
+    esac
+  done
+  return 1
 }
 
 policy_valid() { # <key> <value>
@@ -86,6 +109,10 @@ policy_valid() { # <key> <value>
   # A team's name, or off. Whether that team exists is asked where it is set (cmd_policy).
   if [ "$1" = "orphan-steward" ]; then
     [ "$2" = "off" ] || valid_team_name "$2"
+    return
+  fi
+  if [ "$1" = "restore-on-limit" ]; then
+    restore_on_limit_valid "$2"
     return
   fi
   case "$1:$2" in
@@ -124,6 +151,7 @@ policy_choices() {
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
     orphan-steward) printf 'a team of this project, or off\n' ;;
+    restore-on-limit) printf 'report, or a model (opus, sonnet, claude:<model-id>, ...)\n' ;;
   esac
 }
 
@@ -191,6 +219,9 @@ policy_get() {
   elif [ "$key" = "orphan-steward" ]; then
     # Unreadable means nobody but you and a team's founder may act on a team: no steward.
     printf 'off\n'
+  elif [ "$key" = "restore-on-limit" ]; then
+    # Unreadable means restore changes no lead's model: it reports, as by default.
+    printf 'report\n'
   else
     printf 'ask\n'
   fi
@@ -483,6 +514,8 @@ cmd_policy() {
     say "                      Yours alone to change, from your own terminal. Who is typed into at all: WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE"
     say "  orphan-steward      $(policy_get orphan-steward)       (<team>|off)      for the whole project: the team whose lead may restart the lead of a team"
     say "                      you founded, or stop its agents, while that lead is not running. Nothing else. Yours alone to change."
+    say "  restore-on-limit    $(policy_get restore-on-limit)    (report|<model>)  teamctl restore and a lead that comes back to a used-up model limit:"
+    say "                      report = name it at the end, change nothing · a model (opus…) = restart that lead on it"
     say ""
     say "change:  teamctl policy <key> <value>     permission changes apply at the next start/restart of an agent"
     return 0

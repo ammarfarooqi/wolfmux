@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -40,6 +40,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          may recover or clean it up, as you may: teamctl restart lead --team <name> --continue · stop · remove · finish ·
          destroy --team <name> --purge. You are told.
          A team YOU founded: the lead of the team policy orphan-steward names may restart its lead and stop its agents, no more.
+    teamctl restore [--dry-run] [--yes] [--no-tabs]   after a reboot: bring back the leads that were running, one at a time,
+                                                      then their iTerm2 tabs. Skips deliberate stops. Enter confirms once;
+                                                      --yes skips the question, --no-tabs skips tabs. Anyone may --dry-run;
+                                                      otherwise the human, or the orphan steward for human-founded teams.
     teamctl finish [--dry-run]                      (the lead, or you) the team is DONE: park every lane, take every lane that
                                                       passes the reclaim gates, and when no lane is left and no task of the team
                                                       is open, take the team too: records, state directory, session. Something
@@ -107,6 +111,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
                                                       orphan-steward <team>|off (for the whole project: whose lead may restart or
                                                       stop a team you founded while its lead is not running. Yours alone: 77)
+                                                      restore-on-limit report|<model> (default report: name a model to restart
+                                                      a restored lead on it when its transcript reports a usage limit)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
@@ -279,6 +285,7 @@ main() {
     prune) cmd_prune "$@" ;;
     reclaim) cmd_reclaim "$@" ;;
     finish) cmd_finish "$@" ;;
+    restore) cmd_restore "$@" ;;
     keep) cmd_keep "$@" ;;
     bar) cmd_bar "$@" ;;
     heavy) cmd_heavy "$@" ;;

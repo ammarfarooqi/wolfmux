@@ -676,6 +676,9 @@ dash_badge_line() {
   # No tmux, no truth about what is running, and "0run" would be a lie: say nothing.
   [ -n "$TMUX_BIN" ] || return 1
   panes="$(dash_panes)"
+  # The running set `teamctl restore` brings back after a reboot (lib/restore.sh), from the panes
+  # already in hand: at most once a minute, and otherwise one `date` and one `read`.
+  restore_snapshot_tick "$panes" >/dev/null 2>&1 || true
   sessions="$(dash_sessions "$panes")"
   for key in "$WOLFMUX_DATA"/state/*/; do
     [ -d "$key" ] && [ -r "$key" ] || continue

@@ -334,6 +334,37 @@ Each act is written to `~/.wolfmux/state/<project>/steward.jsonl` first (an act 
 be written is not done), you are told, and the event log names the steward. An agent cannot set
 the key (exit 77), and a name that is not a team of the project is refused.
 
+## After a reboot
+
+After a reboot or crash, run `teamctl restore [--dry-run] [--yes] [--no-tabs]` from your
+own terminal. The plan lists the teams and the reasons for skips. Enter confirms once;
+`--yes` skips the question. `--dry-run` changes nothing and anyone may use it. Only you,
+or the orphan steward for human-founded teams in its project, may restore teams.
+
+The status bar saves the running set once a minute while a client is attached, in
+`~/.wolfmux/state/running.json`. A new server keeps the old view as `running.prev.json`.
+Restore starts only leads from those snapshots, one at a time. Already running leads,
+teams ended deliberately since the snapshot, and removed teams are skipped. Workers
+stay parked. Claude resumes its stored id when its transcript exists; Codex uses
+`--continue`. Claude leads with no stored id are skipped: `--continue` could open
+another lead's conversation. The plan and final report show the command to run by hand:
+`teamctl restart lead --team <name> --resume <session-id>`. A stored id with no transcript
+is reported and starts fresh under that same id.
+
+Before each start, restore waits for at least 25% free memory and load at most 20,
+giving up after ten minutes. It waits for the lead's session record or 90 seconds with
+a live pane, then sends a Beads message and a nudge. Finally it opens iTerm2 tabs in
+the saved order, skipping attached sessions. `--no-tabs` skips opening tabs; missing
+iTerm2 or refused Automation prints attach commands. A second run skips leads already
+up. Actions go into the team event log and `~/.wolfmux/state/restore.log`; a steward's
+restart also goes into its ledger. No login item is installed.
+
+Policy `restore-on-limit` accepts `report` (default) or a model key. Set
+`teamctl policy restore-on-limit opus` to restart a restored lead on that model when
+its transcript reports a usage limit. With `report`, it is listed for you to handle.
+`WOLFMUX_RESTORE_ON_LIMIT=report` in the config file sets the default for teams that
+have not set the policy.
+
 ## Deleting a team
 
 ```bash

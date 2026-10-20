@@ -79,6 +79,9 @@
 # The default of the orphan-steward policy, for every project that does not set its own
 # (`teamctl policy orphan-steward <team>|off`, yours alone to change). Default off.
 #WOLFMUX_ORPHAN_STEWARD=communication-management
+# After `teamctl restore`, report a usage limit by default. A model key such as opus
+# asks restore to restart that lead on it. Per-team override: policy restore-on-limit.
+#WOLFMUX_RESTORE_ON_LIMIT=report
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
 # How workers' branches are named, for every team that does not set its own

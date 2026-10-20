@@ -13,6 +13,8 @@ Two tools, two jobs:
 Your identity is in the environment: `TEAM_ROLE` (also exported as `BEADS_ACTOR`, so
 Beads records who created or changed what). Check it first: `echo $TEAM_ROLE`.
 
+After a reboot, the human runs `teamctl restore` to bring back the teams and their tabs.
+
 ## One manager
 
 The agent whose `TEAM_ROLE` is `lead` is the **only manager**. It plans, assigns,
