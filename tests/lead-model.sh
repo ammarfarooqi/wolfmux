@@ -107,12 +107,13 @@ as_agent() { # <team> <role> <teamctl args…>: what that agent's own pane runs,
 passed=0
 failed=0
 check() { # <description> <command string>
-  if eval "$2" >/dev/null 2>&1; then
+  if eval "$2" >"$WORK/check.out" 2>&1; then
     passed=$((passed + 1))
     printf '  pass  %s\n' "$1"
   else
     failed=$((failed + 1))
     printf '  FAIL  %s\n' "$1"
+    cat "$WORK/check.out"
   fi
 }
 cleanup() {
@@ -345,22 +346,29 @@ restore_real_limit() (
   teamctl start fable --team "$team" --no-attach --skip-beads >/dev/null 2>&1 || return 1
   meta="$(ls "$WOLFMUX_DATA"/state/*/teams/"$team"/meta.json)" || return 1
   state="${meta%/teams/$team/meta.json}"
+  root="$(jq -er .root "$meta")" || return 1
   sid="$(record lead "$team" | jq -er .session_id)" || return 1
   session="$(jq -er .session "$state/teams/$team/meta.json")" || return 1
   [ "$(field lead model "$team")" = fable ] || return 1
-  transcript="$WOLFMUX_CLAUDE_PROJECTS/$(printf '%s' "$PROJECT" | sed 's|[^A-Za-z0-9]|-|g')/$sid.jsonl"
+  transcript="$WOLFMUX_CLAUDE_PROJECTS/$(printf '%s' "$root" | sed 's|[^A-Za-z0-9]|-|g')/$sid.jsonl"
   /bin/mkdir -p "$(dirname "$transcript")" || return 1
   : >"$transcript"
   printf '%s\n' "$transcript" >"$FAKE/restore-$team"
   # Simulate a crash, not a deliberate stop: the record and snapshot survive.
-  jq -cn --arg key "${state##*/}" --arg team "$team" --arg root "$PROJECT" --arg session "$session" --arg sid "$sid" \
+  # Use the recorded root, as the real snapshot does. On macOS the temporary
+  # path may spell /var while the project's canonical root spells /private/var.
+  jq -cn --arg key "${state##*/}" --arg team "$team" --arg root "$root" --arg session "$session" --arg sid "$sid" \
     '{epoch:100,ts:"2026-01-01T00:00:00Z",server:"old-server 1",tabs:[],
       teams:[{key:$key,team:$team,root:$root,session:$session,model:"fable",
               family:"claude",label:"Fable",session_id:$sid,founder:"operator"}]}' \
     >"$WOLFMUX_DATA/state/running.json" || return 1
   tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$session" || return 1
   teamctl policy restore-on-limit "$target" --team "$team" >/dev/null 2>&1 || return 1
-  teamctl restore --yes --no-tabs >"$WORK/restore-$team.out" 2>&1 || return 1
+  if ! teamctl restore --yes --no-tabs >"$WORK/restore-$team.out" 2>&1; then
+    cat "$WORK/restore-$team.out"
+    return 1
+  fi
+  cat "$WORK/restore-$team.out"
   # Both real restarts must preserve the stored conversation. Only the Opus
   # move may launch a second CLI; Codex must be refused before any launch.
   argv="$FAKE/restore-$team.argv"
