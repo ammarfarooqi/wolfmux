@@ -252,6 +252,97 @@ lead_restore() {
   if [ "${#fields[@]}" -gt 0 ]; then reg_set "$WOLFMUX_LEAD_ROLE" "${fields[@]}"; fi
 }
 
+# lead_default_model — what `teamctl start` with no model starts the lead on: the loaded team's lead's recorded model
+# (its record, after a /model typed into its pane has been adopted; else the one meta.json kept when a plain
+# `teamctl destroy` took the record), and for a team that never had a lead, policy lead-model (default opus).
+lead_default_model() {
+  local model=""
+  if reg_exists "$WOLFMUX_LEAD_ROLE" 2>/dev/null; then
+    agent_model "$WOLFMUX_LEAD_ROLE"
+    agent_adopt_live "$WOLFMUX_LEAD_ROLE" "${MT_MODEL_AT:-}"
+    model="$(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || true)"
+  fi
+  [ -n "$model" ] || model="$(meta_get lead_model 2>/dev/null || true)"
+  [ -n "$model" ] || model="$(policy_get lead-model)"
+  printf '%s\n' "$model"
+}
+
+# --- which model an agent is started with ------------------------------------------------
+# An agent's record holds two things about its model. `model` (and launcher, family, billing, which follow from it)
+# is the key its NEXT start uses: teamctl start, restart, and the restore lane's restore. model_id, label, model_at,
+# model_source and model_context describe the start that is RUNNING; a restart writes them anew from `model`. They
+# differ only between a `teamctl model` and the restart that carries it out, and that is the point: status goes on
+# naming the model the pane really runs until it runs another one.
+
+# agent_set_model <role> <model-key> [running|all] — record <model-key> as what <role> starts on next. "running"
+# (the default) leaves the running start's description alone; "all" writes it too, for an agent with no pane.
+# model_info must have been run for <model-key>, in THIS shell, just before: its MODEL_* are what is written.
+agent_set_model() {
+  local launcher
+  launcher="$(launcher_path "$2")" || die "unknown model '$2' (known: $WOLFMUX_MODEL_KEYS)"
+  [ -x "$launcher" ] || die "launcher missing or not executable: $launcher  (run: teamctl doctor)"
+  reg_set "$1" model "$2" launcher "$launcher" family "$MODEL_FAMILY" billing "$MODEL_BILLING"
+  if [ "${3:-running}" = "all" ]; then
+    reg_set "$1" model_id "$MODEL_ID" model_source "$MODEL_SOURCE" model_context "$MODEL_CONTEXT" \
+      model_at "$(if [ -n "$MODEL_ID" ]; then now_iso; fi)" label "$MODEL_LABEL"
+  fi
+  if [ "$1" = "$WOLFMUX_LEAD_ROLE" ]; then meta_put lead_model "$2"; fi
+}
+
+# agent_adopt_live <role> <seen-at> — the record follows a /model typed into the agent's pane. Nothing tells teamctl
+# about one: the agent's transcript does, and the one resolver (models_running) reads it. Call this right after
+# agent_model or agent_context has set MR_* for <role>; <seen-at> is the time of the answer it read (MT_MODEL_AT,
+# CTX_MODEL_AT). When its last answer names a
+# model of another of the four families (fable, opus, sonnet, haiku) than the record, written after the record's
+# start, the record takes that family as its key and that id as what runs. So the next restart, start or restore
+# brings the agent back on the model it was moved to, not on the one it was started with. Logged as a "model"
+# event. Only a family change, never a version: Claude Code can serve an earlier version of the family it was
+# asked for, and the key already names that family. Lazily, from the reads that have the answer at hand
+# (status, teams, restart, start), never on a timer; and never under somebody else's project lock: the next read
+# does it then. Sets MR_HOW to record (and MR_MARK to nothing) when it adopted, as the record now says that.
+agent_adopt_live() {
+  local role="$1" key id seen at recorded_at family took=0
+  [ "${MR_HOW:-}" = "transcript" ] || return 0
+  seen="$MR_ID" at="${2:-}"
+  key="$(reg_field "$role" model 2>/dev/null || true)"
+  models_is_alias "$key" || return 0
+  models_parse "$seen" || return 0
+  family="$MP_FAMILY"
+  models_is_alias "$family" || return 0
+  id="$(reg_field "$role" model_id 2>/dev/null || true)"
+  recorded_at="$(reg_field "$role" model_at 2>/dev/null || true)"
+  # The resolver can display an answer whose age is unknown. Persisting a change needs
+  # proof that it followed this start. Missing ids or times, and answers in the same
+  # second as the start, cannot prove that; keep them as transcript evidence only.
+  [ -n "$id" ] && _models_before "$recorded_at" "$at" || return 0
+  if [ "$family" = "$key" ]; then
+    # The key is right already (a `teamctl model` the agent has not been restarted for, then /model to that very
+    # family). What runs is on record only when the recorded id is of another family.
+    [ -n "$id" ] && models_parse "$id" && [ "$MP_FAMILY" != "$family" ] || return 0
+  fi
+  if [ -z "${LOCK_HELD:-}" ]; then
+    /bin/mkdir "$STATE_DIR/.lock" 2>/dev/null || return 0
+    printf '%s\n' "$$" >"$STATE_DIR/.lock/pid"
+    LOCK_HELD="$STATE_DIR/.lock"
+    trap 'teamctl_on_exit' EXIT
+    took=1
+  fi
+  # Under the lock the record is read again: a restart may have rewritten it since MR_* were worked out.
+  if [ "$(reg_field "$role" model 2>/dev/null || true)" = "$key" ] && [ "$(reg_field "$role" model_id 2>/dev/null || true)" = "$id" ] &&
+    [ "$(reg_field "$role" model_at 2>/dev/null || true)" = "$recorded_at" ] &&
+    model_info "$family"; then
+    agent_set_model "$role" "$family"
+    models_label_of "$seen"
+    models_window_of "$seen"
+    reg_set "$role" model_id "$seen" model_source "its transcript: /model typed in its pane (adopted $(now_iso))" \
+      model_context "$MW_CONTEXT" model_at "${at:-$(now_iso)}" label "$MODELS_LABEL"
+    event_log model "$role" "adopted $family from its transcript: its last answer ($seen, ${at:-no time}) is not the $key on record (${id:-no id})"
+    MR_HOW="record" MR_MARK=""
+  fi
+  if [ "$took" -eq 1 ]; then lock_release; fi
+  return 0
+}
+
 # --- teamctl start <fable|astra> ------------------------------------------------
 cmd_start() {
   local model="" attach=1 beads="ask" pane branch opt_lead="" opt_worker="" opt_spawn="" resume=0 role stopped="" previous previous_model="" previous_session="" previous_kept="" handover="" founder="operator" ticket="" pin=""
@@ -296,13 +387,18 @@ cmd_start() {
     esac
     shift
   done
-  [ -n "$model" ] && model_info "$model" ||
-    die_usage "usage: teamctl start <fable|astra|…> [--no-attach] [--continue] [--resume <session-id>] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]   (models: $WOLFMUX_MODEL_KEYS)"
-  require_metered_ok
+  [ -z "$model" ] || model_info "$model" ||
+    die_usage "usage: teamctl start [<opus|fable|astra|…>] [--no-attach] [--continue] [--resume <session-id>] [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]   (models: $WOLFMUX_MODEL_KEYS)"
   require_tools
   # start never guesses between teams: the one you name, else the first one.
   WOLFMUX_TEAM_ARG="${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
   load_project
+  # No model named: a team that has a lead comes back on that lead's recorded model, a new one on policy lead-model.
+  if [ -z "$model" ]; then
+    model="$(lead_default_model)"
+    model_info "$model" || die "the lead's model '$model' is not one teamctl knows (known: $WOLFMUX_MODEL_KEYS). Name one: teamctl start <model>"
+  fi
+  require_metered_ok
   require_pin "$pin" "$MODEL_FAMILY" "$WOLFMUX_LEAD_ROLE"
   founder="$(start_permitted)" || exit 77
   # An agent acting on a team it did not found today is a founder bringing one back: it is announced and logged as that.
@@ -1041,13 +1137,15 @@ cmd_stop() {
 # machine restarted) and the records remain. Restarting the lead is starting the team again, as
 # the model that led it; a worker needs that session first, and is told the exact commands.
 restart_without_session() {
-  local role="$1" resume="$2" pin="${3:-}" model team_flag="" continue_flag="" start_args
-  model="$(reg_field "$WOLFMUX_LEAD_ROLE" model 2>/dev/null || true)"
+  local role="$1" resume="$2" pin="${3:-}" model team_flag="" continue_flag="" model_flag="" start_args
+  # The lead comes back on the model you name (restart --model), else on its recorded one (lead_default_model).
+  model="${4:-$(lead_default_model)}"
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then team_flag=" --team $TEAM"; fi
   if [ "$resume" -eq 1 ]; then continue_flag=" --continue"; fi
   if [ -n "$pin" ]; then continue_flag=" --resume $pin"; fi
+  if [ -n "${4:-}" ]; then model_flag=" --model $4"; fi
   if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
-    die "team '$TEAM' has no session (it was ended, or the machine restarted). Bring the lead back in its last conversation: teamctl start ${model:-<fable|astra>}$team_flag --continue   then: teamctl restart $role$team_flag$continue_flag"
+    die "team '$TEAM' has no session (it was ended, or the machine restarted). Bring the lead back in its last conversation: teamctl start $(lead_default_model)$team_flag --continue   then: teamctl restart $role$team_flag$model_flag$continue_flag"
   fi
   info "team '$TEAM' has no session (it was ended, or the machine restarted); starting it again."
   start_args=("$model")
@@ -1065,13 +1163,19 @@ restart_without_session() {
 # restart_undone <role> <its id before> <the team's kept id before> <message>: no pane came of a restart, so
 # the conversation it had is the one on record again (for the lead, in the team's meta too), and it ends.
 restart_undone() {
+  # A restart --model had already recorded the new model: the record it had is put back whole.
+  if [ -n "${RESTART_PREV_RECORD:-}" ]; then
+    printf '%s\n' "$RESTART_PREV_RECORD" | reg_put "$1"
+    if [ "$1" = "$WOLFMUX_LEAD_ROLE" ]; then meta_put lead_model "$RESTART_PREV_LEAD_MODEL"; fi
+  fi
   reg_set "$1" session_id "$2"
   if [ "$1" = "$WOLFMUX_LEAD_ROLE" ]; then meta_put lead_session "$3"; fi
   die "$4"
 }
 
 cmd_restart() {
-  local role="" resume=0 pin="" pane workdir target conversation was_session was_kept model
+  local role="" resume=0 pin="" pane workdir target conversation was_session was_kept model new_model="" family on=""
+  RESTART_PREV_RECORD="" RESTART_PREV_LEAD_MODEL=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --continue) resume=1 ;;
@@ -1082,33 +1186,67 @@ cmd_restart() {
         resume=1
         shift
         ;;
+      --model)
+        [ "$#" -ge 2 ] || die_usage "--model needs the model to restart on (models: $WOLFMUX_MODEL_KEYS)"
+        model_info "$2" || die_usage "--model: unknown model '$2' (known: $WOLFMUX_MODEL_KEYS)"
+        new_model="$2"
+        shift
+        ;;
       -*) die_usage "unknown option for restart: $1" ;;
       *) role="$1" ;;
     esac
     shift
   done
   require_role_arg "$role"
+  if [ -n "$new_model" ]; then
+    model_info "$new_model"
+    require_metered_ok
+  fi
   require_tools
   load_project
   reg_exists "$role" || die "no such agent: $role  (see: teamctl status)"
-  require_pin "$pin" "$(reg_field "$role" family)" "$role"
+  family="$(reg_field "$role" family)"
+  if [ -n "$new_model" ]; then
+    model_info "$new_model"
+    # A conversation belongs to the CLI that held it: Claude Code cannot reopen a Codex one, nor Codex a Claude one.
+    if [ "$resume" -eq 1 ] && [ "$MODEL_FAMILY" != "$family" ]; then
+      die_usage "--model $new_model: a $family conversation cannot be continued on a $MODEL_FAMILY model. Restart it fresh (no --continue or --resume), with a handover in Beads"
+    fi
+    family="$MODEL_FAMILY"
+  else
+    # No model named: the recorded one, after a /model typed into its pane has been adopted (agent_adopt_live).
+    agent_model "$role"
+    agent_adopt_live "$role" "${MT_MODEL_AT:-}"
+  fi
+  require_pin "$pin" "$family" "$role"
   workdir="$(reg_field "$role" workdir)"
   [ -d "$workdir" ] || die "cannot restart '$role': its working directory is gone ($workdir)"
   SESSION="$(session_name_for_project)"
   if ! tm_session_exists "$SESSION"; then
-    restart_without_session "$role" "$resume" "$pin"
+    restart_without_session "$role" "$resume" "$pin" "$new_model"
     return
   fi
   require_manager restart "$role"
-  model="$(reg_field "$role" model)"
+  model="${new_model:-$(reg_field "$role" model)}"
   models_refresh "$model" # fable/opus/sonnet/haiku: a restart is how an agent moves to a newer model
   lock_acquire
+  # restart --model: that model is recorded first, as what this agent starts on from now on (the restore lane's
+  # restore-on-limit uses it). It is put back if no pane comes of the restart (restart_undone).
+  if [ -n "$new_model" ] && [ "$new_model" != "$(reg_field "$role" model)" ]; then
+    RESTART_PREV_RECORD="$(reg_get "$role")"
+    RESTART_PREV_LEAD_MODEL="$(meta_get lead_model 2>/dev/null || true)"
+    model_info "$new_model"
+    agent_set_model "$role" "$new_model"
+    on=" on $new_model"
+  fi
   # A restart picks up the current policy.
   reg_set "$role" permissions "$(effective_permissions "$(reg_field "$role" kind)" "$(reg_field "$role" family)")"
-  # ... and what its alias means today, which is what this pane is started with (run_agent passes
-  # model_id as --model). A record from before ids were recorded gets one here.
-  if models_is_alias "$model" && model_info "$model"; then
-    reg_set "$role" model_id "$MODEL_ID" model_source "$MODEL_SOURCE" model_context "$MODEL_CONTEXT" model_at "$(now_iso)" label "$MODEL_LABEL"
+  # ... and what its model means today, which is what this pane is started with (run_agent passes
+  # model_id as --model). A record from before ids were recorded gets one here. Every key, not only the four
+  # aliases: after a `teamctl model` the running start's id is another key's, and must not be passed on.
+  if model_info "$model"; then
+    reg_set "$role" model_id "$MODEL_ID" model_source "$MODEL_SOURCE" model_context "$MODEL_CONTEXT" \
+      model_at "$(if [ -n "$MODEL_ID" ]; then now_iso; fi)" label "$MODEL_LABEL"
   fi
   # Which conversation this pane comes back in: the one you named, the one it had, or a new
   # one. Codex has no id to store; it resumes its own last conversation. The pane reads the id as it
@@ -1137,14 +1275,114 @@ cmd_restart() {
   layout_apply
   if [ "$resume" -eq 1 ]; then
     conversation="$(reg_field "$role" session_id)"
-    event_log restart "$role" "continue ${conversation:-newest}"
-    say "restarted: $role in pane $pane (continuing ${conversation:-its previous conversation})"
+    event_log restart "$role" "continue ${conversation:-newest}$on"
+    say "restarted: $role in pane $pane$on (continuing ${conversation:-its previous conversation})"
   else
-    event_log restart "$role" fresh
-    say "restarted: $role in pane $pane"
+    event_log restart "$role" "fresh$on"
+    say "restarted: $role in pane $pane$on"
   fi
   lock_release
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then founder_announce restarted; else founder_announce "restarted $role of"; fi
+}
+
+# --- teamctl model <role> <model> [--now] ---------------------------------------------------------------------
+# Changes what <role> starts on: its next start, restart or restore (agent_set_model). With --now the running agent
+# is switched as well, but only when that is safe, and then by a resume-restart (`teamctl restart <role> --resume
+# <its id>` on the new model): the conversation goes on, and nothing outside this agent changes. Typing /model into
+# its pane would switch it too and is not offered: Claude Code then writes that model into ~/.claude/settings.json,
+# the default of EVERY new Claude Code session on this Mac, not of this agent alone (seen on 2026-10-16).
+# Safe means all of: the agent runs; on the same CLI (a Claude conversation cannot go on in Codex); with its own
+# conversation id on record; between turns (models_turn_idle: a restart ends a turn that is running); and no human
+# at its pane (_notice_pane_busy: the v1.20.0 rule for a pane a human is watching, then a keystroke, a half-typed
+# line, copy mode). Anything else: the model is recorded only, the reason is said, and it switches at the next
+# restart. Who may run it: whoever may restart that agent (require_manager).
+cmd_model() {
+  local role="" model="" now=0 old old_family state="stopped" pane="" running_id session_id transcript why="" scope="" running_label
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --now) now=1 ;;
+      --type) die_usage "--type is not offered: /model typed into a pane writes that model into ~/.claude/settings.json, the default of every new Claude Code session on this Mac. --now switches by a resume-restart instead, which changes this agent only" ;;
+      -*) die_usage "unknown option for model: $1" ;;
+      *)
+        if [ -z "$role" ]; then
+          role="$1"
+        elif [ -z "$model" ]; then
+          model="$1"
+        else
+          die_usage "usage: teamctl model <role> <model> [--now]"
+        fi
+        ;;
+    esac
+    shift
+  done
+  [ -n "$role" ] && [ -n "$model" ] || die_usage "usage: teamctl model <role> <model> [--now]   (models: $WOLFMUX_MODEL_KEYS)"
+  require_role_arg "$role"
+  model_info "$model" || die_usage "unknown model '$model' (known: $WOLFMUX_MODEL_KEYS)"
+  require_metered_ok
+  require_tools
+  load_project
+  reg_exists "$role" || die "no such agent: $role  (see: teamctl status)"
+  require_manager model "$role"
+  if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then scope=" --team $TEAM"; fi
+  SESSION="$(session_name_for_project)"
+  if tm_session_exists "$SESSION"; then
+    pane="$(tm_pane_for_role "$SESSION" "$role" 2>/dev/null || true)"
+    if [ "$(tm_pane_state "$pane")" = "running" ]; then state="running"; fi
+  fi
+  # What it runs now, by the one resolver; a /model typed into its pane is on record first (agent_adopt_live).
+  agent_model "$role"
+  agent_adopt_live "$role" "${MT_MODEL_AT:-}"
+  running_label="${MR_LABEL:-$(agent_label "$role")}"
+  old="$(reg_field "$role" model)"
+  old_family="$(reg_field "$role" family)"
+  running_id="$(reg_field "$role" model_id)"
+  models_refresh "$model" # what an alias means today, as spawn and restart ask: at most one probe a day
+  model_info "$model"
+  # Nothing to do: that key on record, and the pane (if any) already on that model.
+  if [ "$old" = "$model" ]; then
+    if [ "$state" != "running" ] ||
+      { models_is_alias "$model" && models_parse "$running_id" && [ "$MP_FAMILY" = "$model" ]; } ||
+      { ! models_is_alias "$model" && [ "$running_id" = "$MODEL_ID" ]; }; then
+      say "$role: already on $model ($running_label). Nothing to change."
+      return 0
+    fi
+  fi
+  lock_acquire
+  if [ "$state" = "running" ]; then agent_set_model "$role" "$model"; else agent_set_model "$role" "$model" all; fi
+  event_log model "$role" "recorded $model (was $old)"
+  lock_release
+  if [ "$state" != "running" ]; then
+    say "recorded: $role starts on $MODEL_LABEL ($model) from its next start: teamctl restart $role$scope --continue"
+    return 0
+  fi
+  if [ "$now" -eq 0 ]; then
+    say "recorded: $role runs $running_label until its next restart, then $MODEL_LABEL ($model)."
+    say "  switch it now (keeps its conversation; only when it is between turns and nobody is at its pane): teamctl model $role $model$scope --now"
+    return 0
+  fi
+  session_id="$(reg_field "$role" session_id)"
+  if [ "$old_family" != "$MODEL_FAMILY" ]; then
+    why="a $old_family conversation cannot go on in a $MODEL_FAMILY model"
+  elif [ "$MODEL_FAMILY" != "claude" ]; then
+    why="whether a Codex agent is between turns cannot be read"
+  elif [ -z "$session_id" ]; then
+    why="it has no conversation id on record to reopen"
+  else
+    transcript="$(session_transcript "$session_id" "$(reg_field "$role" workdir)" 2>/dev/null || true)"
+    if ! models_turn_idle "$transcript"; then
+      why="it is not between turns ($MT_TURN)"
+    elif _notice_pane_busy "$role" "$pane"; then
+      why="$TM_BUSY_REASON"
+    fi
+  fi
+  if [ -n "$why" ]; then
+    event_log model "$role" "not switched now: $why"
+    say "recorded, not switched now: $why."
+    say "  $role runs $running_label until then; it switches at its next restart: teamctl restart $role$scope --continue"
+    return 0
+  fi
+  info "switching $role now by a resume-restart on $model: conversation $session_id goes on, and ~/.claude/settings.json is not touched."
+  cmd_restart "$role" --resume "$session_id"
 }
 
 # --- teamctl destroy [--worktrees] [--yes] --------------------------------------------------

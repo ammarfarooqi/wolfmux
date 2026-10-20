@@ -448,6 +448,40 @@ EOF
   return 0
 }
 
+# models_turn_idle <transcript> — 0 when the agent is between turns: the last line of its transcript that is
+# about a turn ends one (Claude Code's `system` turn_duration line, or an answer that stopped with end_turn or
+# stop_sequence), and the file has been quiet for WOLFMUX_MODEL_NOW_QUIET seconds (default 10). A prompt, a tool
+# result or an answer that asked for a tool after that is a turn under way. What a typed slash command writes
+# (/model among them: <command-name>, <local-command-stdout>, isMeta) is not a turn. Read on 2026-10-16 from
+# Claude Code transcripts of this machine: an idle agent ends in turn_duration. Everything else, a transcript
+# that cannot be read included, is "busy" (MT_TURN says which): a restart ends a turn that is running.
+models_turn_idle() {
+  local last quiet="${WOLFMUX_MODEL_NOW_QUIET:-10}" written
+  MT_TURN="unknown"
+  [ -n "${1:-}" ] && [ -r "$1" ] || return 1
+  case "$quiet" in "" | *[!0123456789]*) quiet=10 ;; esac
+  last="$(tail -n 200 "$1" 2>/dev/null | "$JQ_BIN" -R -r '
+    fromjson? | objects |
+    if .type == "system" and .subtype == "turn_duration" then "ended"
+    elif .type == "assistant" then
+      (if ((.message.stop_reason // "") as $s | $s == "end_turn" or $s == "stop_sequence") then "ended" else "running" end)
+    elif .type == "user" then
+      (if .isMeta == true then empty
+       elif ((.message.content | type) == "string" and
+             (.message.content | test("^\\s*<(command-name|command-message|command-args|local-command-stdout|local-command-stderr)>"))) then empty
+       else "running" end)
+    else empty end' 2>/dev/null | tail -n 1)" || last=""
+  MT_TURN="${last:-unknown}"
+  [ "$last" = "ended" ] || return 1
+  written="$(stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || printf 0)"
+  case "$written" in "" | *[!0123456789]*) written=0 ;; esac
+  if [ $(($(date +%s) - written)) -lt "$quiet" ]; then
+    MT_TURN="written in the last ${quiet}s"
+    return 1
+  fi
+  return 0
+}
+
 # models_window_of <id> — sets MW_CONTEXT: the context window Claude Code declared for exactly
 # that id, or "" when nobody said. Never the window of another model: a share of the wrong
 # number is worse than no share. Where it looks, in this order:
@@ -487,13 +521,29 @@ _models_same() {
   [ "$MP_FAMILY" = "$family" ] && [ "$MP_MAJOR" = "$major" ] && [ "$MP_MINOR" = "$minor" ]
 }
 
+# _models_time_valid <time>: a real UTC date and time, with optional fractional seconds.
+# Use shell builtins: status compares these for each agent, without starting a date parser.
+_models_time_valid() {
+  local stamp="${1:-}" year month day days=31
+  local pattern='^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]([.][0-9]+)?Z$'
+  [[ "$stamp" =~ $pattern ]] || return 1
+  year=$((10#${stamp:0:4})) month=$((10#${stamp:5:2})) day=$((10#${stamp:8:2}))
+  case "$month" in
+    2)
+      days=28
+      if (( year % 400 == 0 || (year % 4 == 0 && year % 100 != 0) )); then days=29; fi
+      ;;
+    4 | 6 | 9 | 11) days=30 ;;
+  esac
+  (( day <= days ))
+}
+
 # _models_before <transcript time> <record time> — true only when both are UTC times of the
 # shape 2026-10-13T09:00:00[.123]Z and the first is the earlier one, to the second. Anything
 # else proves nothing, and is not "before".
 _models_before() {
   local a="${1:-}" b="${2:-}" LC_ALL=C
-  case "$a" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z) ;; *) return 1 ;; esac
-  case "$b" in [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*Z) ;; *) return 1 ;; esac
+  _models_time_valid "$a" && _models_time_valid "$b" || return 1
   [[ "${a:0:19}" < "${b:0:19}" ]]
 }
 

@@ -326,7 +326,17 @@ PAID_TEAM_DIR="$(dirname "$METER_AGENTS")/teams/paid"
 plant "$PAID_TEAM_DIR/agents" lead lead deepseek "DeepSeek V4" metered
 check "metered: a metered lead shows its \$ in its own team, and --json says metered" 'teamctl status --team paid | grep -q "🐺 lead .*DeepSeek V4\\$ " && teamctl status --json --team paid | jq -e ".agents[0].billing == \"metered\""'
 /bin/rm -rf "$PAID_TEAM_DIR"
-check "providers: teamctl help, the usage line and the unknown-model error list every provider key" 'for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do teamctl help | grep -qF -- "$k" || exit 1; teamctl spawn 2>&1 | grep -qF -- "$k" || exit 1; teamctl spawn x nosuchmodel 2>&1 | grep -qF -- "$k" || exit 1; teamctl start 2>&1 | grep -qF -- "$k" || exit 1; done'
+check "providers: teamctl help, the usage line and the unknown-model error list every provider key" '(
+  # Omitting the model is valid for start; an unknown model must still be a usage error.
+  start_error="$(teamctl start nosuchmodel 2>&1)"
+  [ $? -eq 64 ] || exit 1
+  for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do
+    teamctl help | grep -qF -- "$k" || exit 1
+    teamctl spawn 2>&1 | grep -qF -- "$k" || exit 1
+    teamctl spawn x nosuchmodel 2>&1 | grep -qF -- "$k" || exit 1
+    printf "%s" "$start_error" | grep -qF -- "$k" || exit 1
+  done
+)'
 for role in kimi-w mm-w qw-w hint-k hint-s meter-1 meter-2; do teamctl stop "$role" >/dev/null 2>&1; teamctl remove "$role" --yes >/dev/null 2>&1; done
 
 echo "== the wolf (cosmetic: it may never break a command)"
@@ -413,7 +423,9 @@ sh() { jq -cn --arg c "$1" '{command: $c}'; }
 all() { local want="$1" tool="$2" input; shift 2; for input in "$@"; do [ "$(guard "$tool" "$input")" = "$want" ] || { echo "expected $want: $tool $input" >&2; return 1; }; done; }
 check "guard: every worker has it, the lead does not" 'teamctl capture backend --all | grep -q "STUB guard=true" && teamctl capture qa --all | grep -q "STUB guard=true"'
 check "guard: a worker may change files in its own worktree (absolute, relative, new) and in temporary directories" 'all allow Write "$(file "$OWN_TREE/src/new/file.ts")" "$(file "src/app.ts")" "$(file "/tmp/scratch.txt")" && all allow Edit "$(file "$OWN_TREE/README.md")"'
-check "guard: it may not change the lead's checkout, a teammate's worktree, or climb out with .." 'all deny Write "$(file "$ROOT_REAL/README.md")" "$(file "$QA_TREE/README.md")" "$(file "../$(basename "$QA_TREE")/x.ts")" "$(file "$HOME/.zshrc")" && all deny Edit "$(file "$ROOT_REAL/src/x.ts")"'
+# HOME may itself be temporary, where writes are allowed. This synthetic path is
+# outside temporary directories; the hook checks it without writing anything there.
+check "guard: it may not change the lead's checkout, a teammate's worktree, or climb out with .." 'all deny Write "$(file "$ROOT_REAL/README.md")" "$(file "$QA_TREE/README.md")" "$(file "../$(basename "$QA_TREE")/x.ts")" "$(file "/wolfmux-test-outside-$$/.zshrc")" && all deny Edit "$(file "$ROOT_REAL/src/x.ts")"'
 check "guard: it may read the lead's checkout, never a teammate's work in progress or teamctl's state" 'all allow Read "$(file "$ROOT_REAL/README.md")" "$(file "$OWN_TREE/README.md")" && all deny Read "$(file "$QA_TREE/README.md")" "$(file "$WOLFMUX_DATA/state")" && all deny Grep "$(search "$QA_TREE")"'
 check "guard: ordinary shell work passes" 'all allow Bash "$(sh "npm test")" "$(sh "git status && git add -A && git commit -m wip")" "$(sh "git checkout -- src/app.ts")" "$(sh "git push -u origin HEAD")" "$(sh "cat $ROOT_REAL/.env.example")" "$(sh "cp $ROOT_REAL/.env .")" "$(sh "teamctl status")" "$(sh "bd list --assignee backend --status open --include-infra")" "$(sh "git rebase main")"'
 check "guard: shell commands that reach into other worktrees or write into the lead's checkout are refused" 'all deny Bash "$(sh "cat $QA_TREE/secret.txt")" "$(sh "cat $(cd "$QA_TREE" && pwd -P)/secret.txt")" "$(sh "cd $ROOT_REAL && git commit -am x")" "$(sh "git -C $ROOT_REAL reset --hard")" "$(sh "rm -rf $ROOT_REAL/src")" "$(sh "cp fix.ts $ROOT_REAL/src/")" "$(sh "echo x > $ROOT_REAL/notes.txt")"'

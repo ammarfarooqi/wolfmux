@@ -8,10 +8,10 @@ complete session and lists every command.
 
 ```bash
 cd ~/code/shop
-teamctl start fable              # or: teamctl start astra
+teamctl start                    # a new lead runs Opus; or name a model: teamctl start astra
 ```
 
-You are now attached to a tmux session with one pane, `lead · Fable 5.1`. Tell the
+You are now attached to a tmux session with one pane, the Opus lead. Tell the
 lead what you want, for example *"Add password reset. Backend and frontend in
 parallel, QA afterwards."* The lead then works like this (you can type the same
 commands yourself at any time):
@@ -69,7 +69,7 @@ teamctl destroy --worktrees          # later: drops clean worktrees and fully me
 
 ```bash
 teamctl start astra                       # the first team ("default")
-teamctl start fable --team review         # a second one, named by you, in its own tmux session
+teamctl start --team review               # a second one, named by you, in its own tmux session; defaults to Opus
 teamctl spawn fe-check sonnet --team review
 teamctl status                            # every team: TEAM, its 🐺 lead, its 🐶 teammates
 teamctl teams                             # the short list
@@ -638,6 +638,40 @@ manage the new team while that team's lead runs. `teamctl policy lead-teams off`
 founding teams to yourself. A lead can never take over a team that already has a lead; a
 worker can never found one.
 
+### After a reboot
+
+After a reboot, `teamctl restore [--dry-run] [--yes] [--no-tabs]` brings back the teams
+that were running at the last status-bar snapshot. Run it from your own terminal.
+It prints the plan and asks once: Enter continues, anything else aborts. `--dry-run`
+shows the plan without changes, `--yes` skips the question, and `--no-tabs` skips iTerm2.
+
+Only leads restart. Claude resumes its stored conversation when the transcript exists;
+Codex uses `--continue`. A Claude lead with no stored id is skipped, since `--continue`
+could open another lead's conversation in the shared folder. The plan and final report
+show how to bring it back by hand: `teamctl restart lead --team <name> --resume <session-id>`.
+An id with no transcript is reported and starts fresh under that same id.
+Leads already up, teams ended deliberately since the snapshot, and removed
+teams are skipped. An orphan absent from the snapshot stays down. Running restore again
+after an interruption skips the leads already back.
+
+Restarts happen one at a time, waiting for the session record or 90 seconds with a live
+pane. Under 25% free memory or load over 20, restore waits up to ten minutes and reports
+teams it could not start. Each restored lead gets a Beads message and one nudge. Tabs
+open afterward in the saved order, skipping sessions already attached. If iTerm2 is not
+running or Automation fails, the report prints attach commands to run yourself.
+
+The status bar saves `~/.wolfmux/state/running.json` at most once a minute while a client
+is attached. After a server change it keeps the previous view in `running.prev.json`,
+so attaching one team after a crash does not erase the other teams. Restore records its
+actions in `~/.wolfmux/state/restore.log` and each team's event log. The orphan steward
+may restore only human-founded teams in its own project; restart also writes its steward
+ledger. Other agents get exit 77, but anyone may use `--dry-run`.
+
+`teamctl policy restore-on-limit report` is the default: a usage limit in a newly restored
+lead's transcript is reported. `teamctl policy restore-on-limit opus` asks for one restart
+on that model with the same conversation. `WOLFMUX_RESTORE_ON_LIMIT` supplies the global
+default. Restore installs no login item; you choose when to run it.
+
 ### When the lead of a founded team is gone
 
 A founded team whose lead died (a session restart, a reboot, a lead that is finished) has
@@ -652,7 +686,7 @@ teamctl remove tidy --team review --force --yes          # take a stopped teamma
 teamctl destroy --team review --purge --force            # or delete the whole team
 ```
 
-That is `restart`, `stop`, `remove` and `destroy` in every form, and `teamctl start <model>
+That is `restart`, `model`, `stop`, `remove` and `destroy` in every form, and `teamctl start <model>
 --team review --continue`; never `policy`, `approve` or `deny`. It holds only while the
 team's lead is not running (its pane exited or is gone, or there is no tmux session at all);
 while that lead runs, the founder is refused (exit 77) and told so. Every time the founder
@@ -669,7 +703,8 @@ teamctl policy orphan-steward communication-management    # or WOLFMUX_ORPHAN_ST
 ```
 
 Its lead, and nobody else in that team, may then run `teamctl restart lead --team <name>`
-(also `--continue` and `--resume <id>`) and `teamctl stop <role> --team <name>` on a team you
+(also `--continue` and `--resume <id>`), `teamctl model lead <model> --team <name>`, and
+`teamctl stop <role> --team <name>` on a team you
 founded whose lead is not running. Nothing else: not `remove`, `destroy`, `start`, `policy`,
 `approve`, `deny` or `spawn`, and nothing on a team another lead founded. Each act is written
 to `~/.wolfmux/state/<project>/steward.jsonl` before it happens (no line, no act), you get a
@@ -682,7 +717,7 @@ human" where it says "you" to you.
 
 | Command | Does |
 |---------|------|
-| `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. `--ticket` sets the team's default ticket key ([branch names](#branch-names-that-fit-your-repository)). Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's own conversation (the id stored with it), `--resume` reopens the one you name ([which conversation comes back](#finding-the-manager-and-being-told-when-someone-finishes)). With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
+| `teamctl start [<model>] [--team <name>] [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. No model named: keep an existing lead's recorded model, or use policy `lead-model` for a new lead (default Opus). Fable only when asked: `teamctl start fable`. `--ticket` sets the team's default ticket key ([branch names](#branch-names-that-fit-your-repository)). Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's own conversation (the id stored with it), `--resume` reopens the one you name ([which conversation comes back](#finding-the-manager-and-being-told-when-someone-finishes)). With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
 | `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `browser-writes` (ask\|allow, DEFAULT ask: allow writes an explicit `permissions.allow` rule for `mcp__claude-in-chrome__*` into every agent's settings — lead and workers alike — so a Chrome write resolves before Claude Code's auto-mode classifier runs on it), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)), `human-pane-typing` (off\|idle, DEFAULT off: never type a notice into a pane you are watching; only you may change it), `orphan-steward` (a team of the project, or off; DEFAULT off; one value for the whole project: whose lead may restart or stop a team you founded while its lead is not running; only you may change it: [the orphan steward](#when-the-lead-of-a-founded-team-is-gone)), `disk-guard` (refuse\|warn\|off), `disk-min-gb` (a whole number of GB, 0 = no limit), `link-node-modules` (on\|off), `auto-prune` (on\|off, DEFAULT on: sweep a lane's build output as soon as the lane is parked — `teamctl keep <role>` protects one lane), `auto-reclaim` (on\|off, DEFAULT on: take a parked lane off the books by itself once its task is closed and its work is all in main — `teamctl keep <role>` protects one lane; a value that is neither on nor off counts as off: [a finished lane](#a-finished-lane-takes-itself-off-the-books)) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
@@ -694,7 +729,9 @@ human" where it says "you" to you.
 | `teamctl keep [<role> [on\|off]]` | never sweep that lane's build output, and never reclaim the lane, automatically — for a checkout that is expensive to rebuild, or a worker you mean to restart. `prune` and `reclaim` honour it too; with no role it lists what is protected ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
 | `teamctl bar [--explain]` | the one line tmux shows in `status-right`; `--explain` is the legend naming every field of it ([the segment in the status bar](#the-segment-in-the-status-bar)) |
 | `teamctl heavy [--timeout <seconds>] [--quiet] <command>...` | run a heavy thing — a test gate, a measurement, a long build — holding the machine's heavy lock, so nothing else heavy runs beside it and no lane is swept while it does. Returns the **command's** exit status, not the wrapper's, and says what it waited for. `--timeout`: give up after that many seconds (exit 75) rather than wait; `--quiet`: say nothing about waiting. One voice about the lock: `lockf`'s own "already locked" line is silenced, the command's own output is not. An exit 75 that is the command's own is reported as the command's, not as the lock timing out. Prefer it to `lockf` by hand ([disk](#disk-what-a-lane-costs-and-how-it-is-given-back)) |
-| `teamctl restart <role> [--continue] [--resume <session-id>]` | same worktree and branch; `--continue` resumes that agent's own conversation, `--resume` the one you name. Without either it starts a new one |
+| `teamctl restart <role> [--model <model>] [--continue] [--resume <session-id>]` | same worktree and branch, on its recorded model; `--model` records and uses a different model. `--continue` resumes that agent's own conversation, `--resume` the one you name; both require the same CLI family. Without either it starts a new one |
+| `teamctl model <role> <model> [--team <name>] [--now]` | record the model for the next start, restart or restore. `--now` also switches a Claude agent by a resume-restart when it is between turns, has a recorded conversation id, and nobody is at its pane. An unsafe switch waits until the next restart, with a reason printed. Same model keys as `spawn` |
+| `teamctl policy lead-model <model>\|default` | only the human may set this project-wide default for new leads. Default Opus, or `WOLFMUX_LEAD_MODEL` when set; `default` returns to that config value. Existing teams keep their lead's model |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | for debugging: the pane notices filed for a role, oldest first. Default: the lead of this team. They are not counted in the status bar (the `📨` number is your unread Beads messages); reading them does not change whether the agent has had them. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model (the one it runs, as `teamctl models` says it; `*` = its last answer names that model and its record does not vouch for it, `?` = nobody can name it), running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
@@ -713,7 +750,7 @@ human" where it says "you" to you.
 | `teamctl models [--json] [--refresh]` | what `fable`, `opus`, `sonnet` and `haiku` mean today (alias, model id, label, where the id came from), and the model each running agent runs, with where that is known from: `record` (its record names it, and no later answer of its says otherwise) or `transcript` (its last answer names it, and its record does not). `status`, `teams` and the dashboard show the same answer. `--refresh` asks Claude Code again now; otherwise it is asked at most once a day per alias, when an agent starts (`WOLFMUX_MODEL_POLICY`) |
 
 Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.
-`start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
+`start`, `stop`, `restart`, `model`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
 are reserved for the lead of that team and for you; `spawn` too unless `worker-spawn` is on.
 A worker gets exit 77. `--team <name>` goes with any command, before or after it.
 `teamctl send|inbox|broadcast|task` print the `bd` equivalents.
@@ -733,7 +770,25 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
 | `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` | any other model id of that provider (GLM is not pinnable) | the same plan, or the same metered account |
 
-A Fable team can take on an Astra teammate for one review (`teamctl spawn fe-review astra`),
+New leads run Opus unless you name another model or set `teamctl policy lead-model <model>`.
+Existing leads keep their recorded model on start, restart and restore. For example, the
+human chose Fable for deployment-manager's lead:
+
+```bash
+teamctl model lead fable --team deployment-manager
+```
+
+This records a choice for that team; it is not a built-in exception. To change a lead and
+keep its conversation, use `teamctl model lead opus --now`, or explicitly restart it with
+`teamctl restart lead --model opus --continue`. The first switches only when safe; the
+second restarts immediately. A later answer from another Claude family is adopted into
+the record on a `status`, `teams`, or `restart` read when the project lock is available.
+Adoption needs an existing model id and an answer newer than the last recorded change.
+Typing `/model` in Claude also writes `"model"` into `~/.claude/settings.json`, affecting
+the default for new Claude sessions on the Mac. An explicit model choice overrides it;
+Wolfmux supplies `--model` when launching an agent. `teamctl model --now` leaves that file alone.
+
+An Opus team can take on an Astra teammate for one review (`teamctl spawn fe-review astra`),
 an Astra team a Sonnet one (`teamctl spawn summary sonnet`), any team a Kimi one
 (`teamctl spawn docs2 kimi`); tell the lead, or run it
 yourself. Every teammate gets its own worktree and branch and the same Beads inbox. What
@@ -799,7 +854,7 @@ worker to ask the lead. `teamctl policy worker-isolation off` turns it off for a
 
 **Closing and coming back.** Quitting an agent's CLI leaves its pane on screen (so you can
 read its last output); quitting all of them leaves a window of finished panes. `teamctl start
-<fable|astra>` deals with both: if only the lead had exited it comes back in its place and the
+[<model>]` deals with both: if only the lead had exited it comes back in its place and the
 workers are not touched; if everyone had exited, the old window is cleared and a new session
 starts. Workers from before are listed as stopped, with their worktrees — `teamctl restart
 <role> --continue` brings one back with its conversation. `teamctl start … --continue` does

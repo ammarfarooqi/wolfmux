@@ -3,6 +3,25 @@
 One **lead** and any number of **workers** share one repository. Every agent runs in
 its own tmux pane. The protocol is the same whichever model plays which role.
 
+New leads run Opus by default; Fable is used only when asked for (`teamctl start fable`).
+With no model named, `teamctl start` keeps an existing lead's recorded model. Restart and
+restore use that record too. Only the human may change the project-wide default with
+`teamctl policy lead-model <model>|default`; `default` uses `WOLFMUX_LEAD_MODEL`, or `opus`
+when unset. For example, the human chose to keep deployment-manager's lead on Fable with
+`teamctl model lead fable --team deployment-manager`. That is a team choice, not a rule
+built into the code.
+
+`teamctl model <role> <model> [--team <name>] [--now]` records the model for the next start,
+restart or restore. `--now` also switches a Claude agent by a resume-restart when it is
+between turns, has a conversation id on record, and nobody is at its pane; otherwise it
+records the choice and explains why the switch waits. `teamctl restart <role> --model
+<model> --continue` or `--resume <id>` restarts on that model with the same conversation.
+Changing between Claude and Codex requires a fresh conversation. A later answer from
+another Claude family is adopted into the record on a `status`, `teams`, or `restart`
+read. Typing `/model` also changes the default in `~/.claude/settings.json` for every new
+Claude session on the Mac unless its launch explicitly selects another model, as Wolfmux
+does with `--model`. `teamctl model --now` does not touch that file.
+
 Two tools, two jobs:
 
 | Tool | Owns | Never use it for |
@@ -12,6 +31,8 @@ Two tools, two jobs:
 
 Your identity is in the environment: `TEAM_ROLE` (also exported as `BEADS_ACTOR`, so
 Beads records who created or changed what). Check it first: `echo $TEAM_ROLE`.
+
+After a reboot, the human runs `teamctl restore` to bring back the teams and their tabs.
 
 ## One manager
 
@@ -25,18 +46,19 @@ lead — including a worker that was spawned by another worker.
   teammates. Those teammates would treat *you* as their manager and ask *you* for
   permission, outside the team's view. Teammates are created only with
   `teamctl spawn`. (Ordinary in-process subagents for searching or reading are fine.)
-- `teamctl start`, `stop`, `restart`, `destroy`, `policy`, `approve` and `deny` are
+- `teamctl start`, `stop`, `restart`, `model`, `destroy`, `policy`, `approve` and `deny` are
   reserved for the lead. `teamctl spawn` is too, unless the session header above says
   worker spawning is ON; then a worker may spawn a helper, and the lead is told
   automatically. If it is OFF and you need a helper, message the lead.
 - A lead that founded a team does not manage it while that team's lead runs. When that lead
   is not running (`teamctl teams` shows the team as `orphaned`), the founder, and only the
-  founder, may `teamctl restart lead --team <name> --continue`, `stop`, `remove` and
+  founder, may `teamctl restart lead --team <name> --continue`, `model`, `stop`, `remove` and
   `destroy --team <name> --purge`; the human is told each time. Not `policy`, `approve`, `deny`.
 - A team the human founded has no founding lead. The human may name one team the **orphan
   steward** (`teamctl policy orphan-steward <team>`; only the human can set it). That team's lead, and
   nobody else in it, may then run `teamctl restart lead --team <name>` (with `--continue` or
-  `--resume <id>`) and `teamctl stop <role> --team <name>` on a team the human founded, while
+  `--resume <id>`), `teamctl model lead <model> --team <name>`, and
+  `teamctl stop <role> --team <name>` on a team the human founded, while
   its lead is not running. Nothing else: not `remove`, `destroy`, `start`, `policy`, `approve`,
   `deny` or `spawn`. The human is told each time.
 

@@ -4,15 +4,14 @@ One lead plus any number of teammates, every agent visible in its own tmux pane.
 default seats run on the three subscriptions (Claude, ChatGPT/Codex, Z.ai), with no API
 keys anywhere. Other Anthropic-compatible providers (Kimi, MiniMax, Qwen, and the metered
 Moonshot platform and DeepSeek) are one Keychain key each away and stay off until you add
-it. The usual cast is below (Fable
-**or** Astra leads, GLM workers implement), but any model key can sit in either seat, and a
+it. The usual cast is below (Opus leads, GLM workers implement), but any model key can sit in either seat, and a
 project can have several teams.
 
 ```
                      LEAD  (pick one)
-          claude-fable            codex-astra
+          claude-opus             codex-astra
           Claude Code             Codex CLI
-          Fable 5.1               GPT-6 Astra
+          Opus                    GPT-6 Astra
           Claude subscription     ChatGPT/Codex subscription
                  └──────────┬──────────┘
         teamctl  = tmux panes · models · worktrees · lifecycle
@@ -45,11 +44,11 @@ teamctl doctor        # must show no "!! WARNING !!" lines; says which providers
 teamctl doctor --probe   # optional: asks each endpoint whether it accepts the key you stored (nothing is billed)
 ```
 
-## Starting with Fable
+## Starting with Opus
 
 ```bash
 cd ~/code/your-project
-teamctl start fable
+teamctl start                     # a new lead runs Opus
 ```
 
 ## Starting with Astra
@@ -65,6 +64,46 @@ git hooks, no AGENTS.md/CLAUDE.md changes. Use `--init-beads` to skip the questi
 or run your own `bd init` flavour first.
 
 `Ctrl-b d` detaches; the team keeps running. `teamctl attach` comes back.
+
+## Choosing a lead's model
+
+New leads run Opus by default. Fable is used when asked for: `teamctl start fable`.
+With no model named, `teamctl start` brings an existing team back on its lead's recorded
+model, including the model kept after a plain `destroy`. Restart and restore use that
+record too. The human can set the default for new leads across this project:
+
+```bash
+teamctl policy lead-model opus
+teamctl policy lead-model default    # use WOLFMUX_LEAD_MODEL, or opus when unset
+teamctl model lead opus              # record what this lead should use at its next restart
+teamctl model lead opus --now        # also switch now, when safe, keeping its conversation
+teamctl restart lead --model opus --continue
+teamctl restart lead --model opus --resume <session-id>
+```
+
+`teamctl model <role> <model> [--team <name>] [--now]` accepts the same model keys as
+`spawn`. It is allowed for whoever may restart that agent. With `--now`, a Claude agent
+must be between turns, have a conversation id on record, and have no human watching or
+typing in its pane. It switches by restarting with that id on the new model. A change
+between Claude and Codex cannot keep the conversation. If a switch is unsafe, the command
+records the choice and explains that it switches at the next restart. `restart --model`
+also records the choice; omit `--continue` and `--resume` when changing CLI families.
+
+Typing `/model` in a Claude pane also writes `"model"` into `~/.claude/settings.json`,
+so new Claude sessions on the Mac use it unless they explicitly select another model.
+Wolfmux supplies `--model`, so its launches keep their selected model. `teamctl model --now`
+does not touch that file. A later answer from another Claude family is adopted into the agent's record
+on the next `status`, `teams`, or `restart` read, so a restart keeps that choice. Adoption
+waits for the next read if the project lock is busy; it needs an existing model id and an
+answer newer than the recorded model change.
+
+For example, the human chose to keep deployment-manager's lead on Fable:
+
+```bash
+teamctl model lead fable --team deployment-manager
+```
+
+That is a choice for that team, not a built-in exception to the Opus default.
 
 ## Spawning workers
 
@@ -106,7 +145,7 @@ id and every spawn warns.
 Which model an agent runs is one answer, shown the same by `status`, `teams`, the dashboard,
 `models` and `doctor`: the id on its record, or the model its transcript names when the record
 has no id (started before v1.18.0) or its last answer came from another model. A table marks
-the second case with a `*`. The context share is of that model's own window; an unknown model
+an unrecorded answer with a `*`; an adopted family change is now on record. The context share is of that model's own window; an unknown model
 or an unknown window shows tokens and no percentage.
 
 ```bash
@@ -162,7 +201,7 @@ The same keys work for `teamctl start <model>`: any of them can lead.
 
 ## One manager, permissions, spawning
 
-The lead is the only manager of its team. `start`, `stop`, `restart`, `remove`, `destroy`,
+The lead is the only manager of its team. `start`, `stop`, `restart`, `model`, `remove`, `destroy`,
 `approve`, `deny` and changing the `policy` work for the lead and for you at your own
 terminal; a worker that tries them is refused (exit 77). Everybody may look: `teamctl policy`
 without arguments, `status`, `approvals`.
@@ -319,7 +358,7 @@ it is cooperative: a lead can change its own team's policy.
 When the lead of a founded team is not running (a session restart, a reboot, a lead that is
 finished), `teamctl teams` marks the team `orphaned` and says who may act on it: you, and its
 founder. The founder may then bring it back or clean it up without you:
-`teamctl restart lead --team <name> --continue`, `teamctl stop`, `teamctl remove` and
+`teamctl restart lead --team <name> --continue`, `teamctl model`, `teamctl stop`, `teamctl remove` and
 `teamctl destroy --team <name> --purge`, or `teamctl start <model> --team <name> --continue`.
 You are told each time, and the event log records it with the founder's Beads name. It never
 includes `policy`, `approve` or `deny`, and it ends the moment that team's lead runs again.
@@ -328,11 +367,43 @@ A team YOU started has no founding lead, so no agent may bring it back. To let o
 **orphan steward** once, from your own terminal: `teamctl policy orphan-steward
 communication-management` (or `WOLFMUX_ORPHAN_STEWARD` in the config file; `off` ends it). The
 lead of that team, and nobody else in it, may then run `teamctl restart lead --team <name>`
-(also `--continue` and `--resume <id>`) and `teamctl stop <role> --team <name>` on a team you
+(also `--continue` and `--resume <id>`), `teamctl model lead <model> --team <name>`, and
+`teamctl stop <role> --team <name>` on a team you
 founded whose lead is not running. Nothing else, and nothing on a team another lead founded.
 Each act is written to `~/.wolfmux/state/<project>/steward.jsonl` first (an act whose line cannot
 be written is not done), you are told, and the event log names the steward. An agent cannot set
 the key (exit 77), and a name that is not a team of the project is refused.
+
+## After a reboot
+
+After a reboot or crash, run `teamctl restore [--dry-run] [--yes] [--no-tabs]` from your
+own terminal. The plan lists the teams and the reasons for skips. Enter confirms once;
+`--yes` skips the question. `--dry-run` changes nothing and anyone may use it. Only you,
+or the orphan steward for human-founded teams in its project, may restore teams.
+
+The status bar saves the running set once a minute while a client is attached, in
+`~/.wolfmux/state/running.json`. A new server keeps the old view as `running.prev.json`.
+Restore starts only leads from those snapshots, one at a time. Already running leads,
+teams ended deliberately since the snapshot, and removed teams are skipped. Workers
+stay parked. Claude resumes its stored id when its transcript exists; Codex uses
+`--continue`. Claude leads with no stored id are skipped: `--continue` could open
+another lead's conversation. The plan and final report show the command to run by hand:
+`teamctl restart lead --team <name> --resume <session-id>`. A stored id with no transcript
+is reported and starts fresh under that same id.
+
+Before each start, restore waits for at least 25% free memory and load at most 20,
+giving up after ten minutes. It waits for the lead's session record or 90 seconds with
+a live pane, then sends a Beads message and a nudge. Finally it opens iTerm2 tabs in
+the saved order, skipping attached sessions. `--no-tabs` skips opening tabs; missing
+iTerm2 or refused Automation prints attach commands. A second run skips leads already
+up. Actions go into the team event log and `~/.wolfmux/state/restore.log`; a steward's
+restart also goes into its ledger. No login item is installed.
+
+Policy `restore-on-limit` accepts `report` (default) or a model key. Set
+`teamctl policy restore-on-limit opus` to restart a restored lead on that model when
+its transcript reports a usage limit. With `report`, it is listed for you to handle.
+`WOLFMUX_RESTORE_ON_LIMIT=report` in the config file sets the default for teams that
+have not set the policy.
 
 ## Deleting a team
 
@@ -757,6 +828,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_KIMI_CONTEXT` · `WOLFMUX_MOONSHOT_CONTEXT` · `WOLFMUX_DEEPSEEK_CONTEXT` · `WOLFMUX_MINIMAX_CONTEXT` · `WOLFMUX_QWEN_CONTEXT` | the table value | a number: the context window that provider's workers declare to Claude Code |
 | `WOLFMUX_KIMI_MODEL` · `WOLFMUX_MOONSHOT_MODEL` · `WOLFMUX_DEEPSEEK_MODEL` · `WOLFMUX_MINIMAX_MODEL` · `WOLFMUX_QWEN_MODEL` · `WOLFMUX_KIMI_FAST_MODEL` · `WOLFMUX_MOONSHOT_FAST_MODEL` · `WOLFMUX_DEEPSEEK_FAST_MODEL` · `WOLFMUX_MINIMAX_FAST_MODEL` · `WOLFMUX_QWEN_FAST_MODEL` | the ids in `lib/providers.sh` | model pins per provider, for when a vendor changes its ids. GLM is not pinnable |
 | `WOLFMUX_MODEL_POLICY` | `latest` | what `fable`, `opus`, `sonnet` and `haiku` mean: `latest` asks Claude Code (once a day per alias, when an agent starts) for the newest model of that family; `pinned` keeps the built-in ids. `teamctl models` shows both and where each id came from |
+| `WOLFMUX_LEAD_MODEL` | `opus` | the default model for a new lead when `teamctl start` names none. The human can override it per project with `teamctl policy lead-model <model>`; `default` returns to this config value. Existing teams keep their lead's recorded model |
 | `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | unset (the newest model; astra: `gpt-6-astra`) | a pin: that key always means this model id, under either policy, and is never probed |
 
 ## How subscription separation works

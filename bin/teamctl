@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard doctor brand notify inbox layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -40,6 +40,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          may recover or clean it up, as you may: teamctl restart lead --team <name> --continue · stop · remove · finish ·
          destroy --team <name> --purge. You are told.
          A team YOU founded: the lead of the team policy orphan-steward names may restart its lead and stop its agents, no more.
+    teamctl restore [--dry-run] [--yes] [--no-tabs]   after a reboot: bring back the leads that were running, one at a time,
+                                                      then their iTerm2 tabs. Skips deliberate stops. Enter confirms once;
+                                                      --yes skips the question, --no-tabs skips tabs. Anyone may --dry-run;
+                                                      otherwise the human, or the orphan steward for human-founded teams.
     teamctl finish [--dry-run]                      (the lead, or you) the team is DONE: park every lane, take every lane that
                                                       passes the reclaim gates, and when no lane is left and no task of the team
                                                       is open, take the team too: records, state directory, session. Something
@@ -47,11 +51,19 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       and teamctl reclaim --all-teams finishes it once nothing holds it. Only
                                                       finish ever takes a team: a lead that stopped, crashed or was destroyed
                                                       never counts. Transcripts are never deleted. --dry-run: anyone may look
-  Lead  (the only manager of its team; start/stop/restart/remove/destroy/policy/approve/deny are reserved for it and for you,
-         and start/restart/stop/remove/destroy for the founder of a team whose lead is not running)
-    teamctl start <fable|astra|any model> [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads|--skip-beads]
+  Lead  (the only manager of its team; start/stop/restart/model/remove/destroy/policy/approve/deny are reserved for it and for you,
+         and start/restart/model/stop/remove/destroy for the founder of a team whose lead is not running)
+         Leads run Opus; Fable only when a lead needs more than Opus gives: teamctl model lead fable [--now]
+    teamctl start [<model>] [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads|--skip-beads]
                   [--lead-permissions skip|ask] [--worker-permissions skip|lead|ask] [--worker-spawn on|off]
+                  no model: a new team's lead runs Opus (policy lead-model); a team that had a lead, that lead's model.
+                  Fable only when asked for: teamctl start fable
                   --continue reopens this agent's own conversation (its stored id); --resume names one instead
+    teamctl model <role> <model> [--now]          what <role> starts on from its next start, restart or restore.
+                                                      --now: switch it at once by a resume-restart (same conversation),
+                                                      only when it is between turns and nobody is at its pane; otherwise
+                                                      recorded only. A /model typed into a pane is adopted as its record
+                                                      too, but writes ~/.claude/settings.json for every new session
                   --ticket: the team's default ticket key, for a branch template that asks for one
   Workers
     teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> | --from-worktree <role>] [--no-kickoff] [--resume <session-id>] [--link-node-modules]
@@ -77,7 +89,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       lane's work is all in main, then it is reclaimed (see Disk)
     teamctl remove <role>... [--force] [--yes]        take a stopped worker off the books (worktree, branch,
                                                       record); --force discards work that is nowhere else
-    teamctl restart <role> [--continue] [--resume <session-id>]    its own conversation, or the one you name
+    teamctl restart <role> [--continue] [--resume <session-id>] [--model <model>]    its own conversation, or the one you name;
+                                                      on its recorded model, or the one --model records
                                                       (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
@@ -107,6 +120,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
                                                       orphan-steward <team>|off (for the whole project: whose lead may restart or
                                                       stop a team you founded while its lead is not running. Yours alone: 77)
+                                                      lead-model <model>|default (for the whole project: what a NEW lead starts
+                                                      on; default opus. Yours alone: 77)
+                                                      restore-on-limit report|<model> (default report: name a model to restart
+                                                      a restored lead on it when its transcript reports a usage limit)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
@@ -275,10 +292,12 @@ main() {
     stop) cmd_stop "$@" ;;
     remove) cmd_remove "$@" ;;
     restart) cmd_restart "$@" ;;
+    model) cmd_model "$@" ;;
     destroy) cmd_destroy "$@" ;;
     prune) cmd_prune "$@" ;;
     reclaim) cmd_reclaim "$@" ;;
     finish) cmd_finish "$@" ;;
+    restore) cmd_restore "$@" ;;
     keep) cmd_keep "$@" ;;
     bar) cmd_bar "$@" ;;
     heavy) cmd_heavy "$@" ;;
