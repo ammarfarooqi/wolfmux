@@ -39,6 +39,12 @@ _status_rows() { # emits one JSON object per agent
     session_id="$(reg_field "$role" session_id)" # its own conversation: what --continue reopens, and what CONTEXT reads
     recorded_id="$(reg_field "$role" model_id)"
     agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)" "$recorded_id" "$(reg_field "$role" model_at)"
+    # A /model typed into its pane: the record follows, so its next restart keeps that model (agent_adopt_live).
+    if [ "$MR_HOW" = "transcript" ]; then
+      agent_adopt_live "$role" "$CTX_MODEL_AT"
+      model="$(reg_field "$role" model)"
+      recorded_id="$(reg_field "$role" model_id)"
+    fi
     if [ -n "$CTX_TOKENS" ]; then
       cctx="$(ctx_display "$CTX_TOKENS" "$CTX_WINDOW")"
     else
@@ -275,6 +281,7 @@ _teams_facts() {
   if reg_exists "$WOLFMUX_LEAD_ROLE" 2>/dev/null; then
     # The lead's model, by the resolver status and teamctl models use (lib/models.sh)
     agent_model "$WOLFMUX_LEAD_ROLE"
+    agent_adopt_live "$WOLFMUX_LEAD_ROLE" "${MT_MODEL_AT:-}" # a /model typed into its pane goes on record
     TEAMS_LEAD="$MR_LABEL" TEAMS_LEAD_MARK="$MR_MARK" TEAMS_LEAD_ID="$MR_ID" TEAMS_LEAD_FROM="$MR_HOW"
   fi
   TEAMS_COUNT="$(reg_list | wc -l | tr -d ' ')"

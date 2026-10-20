@@ -52,6 +52,11 @@
 #                                           project, so it is kept in a file of the project's own
 #                                           (project_policy_file), not in one team's meta.json. Only
 #                                           you may set it, never an agent (require_operator).
+#   lead-model          <model> | default   DEFAULT opus (WOLFMUX_LEAD_MODEL). The model a NEW lead gets from
+#                                           `teamctl start` when no model is named. Fable only when asked for:
+#                                           `teamctl start fable`, or `teamctl model lead fable` for a running
+#                                           team. A team that has a lead keeps that lead's own recorded model.
+#                                           For the whole project, kept beside orphan-steward; yours alone.
 #   restore-on-limit    report | <model>    DEFAULT report. What `teamctl restore` does with a lead
 #                                           that comes back to a used-up model limit ("You've
 #                                           reached your Fable limit"): report = name it at the end
@@ -61,7 +66,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing orphan-steward restore-on-limit"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing orphan-steward lead-model restore-on-limit"
 
 policy_default() {
   case "$1" in
@@ -79,6 +84,7 @@ policy_default() {
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     human-pane-typing) printf '%s\n' "${WOLFMUX_HUMAN_PANE_TYPING:-off}" ;;
     orphan-steward) printf '%s\n' "${WOLFMUX_ORPHAN_STEWARD:-off}" ;;
+    lead-model) printf '%s\n' "${WOLFMUX_LEAD_MODEL:-opus}" ;;
     restore-on-limit) printf '%s\n' "${WOLFMUX_RESTORE_ON_LIMIT:-report}" ;;
     *) return 1 ;;
   esac
@@ -109,6 +115,12 @@ policy_valid() { # <key> <value>
   # A team's name, or off. Whether that team exists is asked where it is set (cmd_policy).
   if [ "$1" = "orphan-steward" ]; then
     [ "$2" = "off" ] || valid_team_name "$2"
+    return
+  fi
+  # Any model a lead can be started on (teamctl start <model>), as the resolver reads it. In a subshell: model_info
+  # sets the MODEL_* of whoever calls it, and asking whether a value is valid must change nothing.
+  if [ "$1" = "lead-model" ]; then
+    [ -n "$2" ] && (model_info "$2") >/dev/null 2>&1
     return
   fi
   if [ "$1" = "restore-on-limit" ]; then
@@ -151,11 +163,13 @@ policy_choices() {
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
     orphan-steward) printf 'a team of this project, or off\n' ;;
+    lead-model) printf 'a model (opus, fable, sonnet, haiku, astra, …), or default\n' ;;
     restore-on-limit) printf 'report, or a model (opus, sonnet, claude:<model-id>, ...)\n' ;;
   esac
 }
 
-# The one key that belongs to the project, not to a team: it names a team of the project. In a team's
+# The keys that belong to the project, not to a team: orphan-steward names a team of the project, and lead-model is
+# what a team that does not exist yet starts on, so no team's meta.json can hold it. In a team's
 # meta.json it would be read by that team only, and the default team's goes with `teamctl destroy --purge`.
 project_policy_file() { printf '%s/policy.json\n' "$PROJECT_STATE"; }
 
@@ -175,8 +189,8 @@ project_policy_put() { # <field> <value>
 # to the safe side (ask / off) instead of silently widening what agents may do.
 policy_get() {
   local key="$1" value
-  if [ "$key" = "orphan-steward" ]; then
-    value="$(project_policy_get policy_orphan_steward 2>/dev/null || true)"
+  if [ "$key" = "orphan-steward" ] || [ "$key" = "lead-model" ]; then
+    value="$(project_policy_get "policy_${key//-/_}" 2>/dev/null || true)"
   else
     value="$(meta_get "policy_${key//-/_}" 2>/dev/null || true)"
   fi
@@ -219,6 +233,9 @@ policy_get() {
   elif [ "$key" = "orphan-steward" ]; then
     # Unreadable means nobody but you and a team's founder may act on a team: no steward.
     printf 'off\n'
+  elif [ "$key" = "lead-model" ]; then
+    # A model nobody can start a lead on (a typo in the config file) is the built-in default, not a refused start.
+    printf 'opus\n'
   elif [ "$key" = "restore-on-limit" ]; then
     # Unreadable means restore changes no lead's model: it reports, as by default.
     printf 'report\n'
@@ -240,9 +257,14 @@ policy_set() { # <key> <value>
     meta_put policy_branch_template "$2"
     return 0
   fi
+  # lead-model default: back to the config file's value, or opus. Stored as nothing at all, as branch-template is.
+  if [ "$1" = "lead-model" ] && [ "$2" = "default" ]; then
+    project_policy_put policy_lead_model ""
+    return 0
+  fi
   policy_valid "$1" "$2" || die_usage "$1 must be one of: $(policy_choices "$1")"
-  if [ "$1" = "orphan-steward" ]; then
-    project_policy_put policy_orphan_steward "$2"
+  if [ "$1" = "orphan-steward" ] || [ "$1" = "lead-model" ]; then
+    project_policy_put "policy_${1//-/_}" "$2"
     return 0
   fi
   meta_put "policy_${1//-/_}" "$2"
@@ -310,7 +332,7 @@ is_manager() {
 # all) nobody would be left to restart, stop or delete the team, so its founder may: restart, stop,
 # remove and destroy, and start --continue. Never policy, approve or deny. The founder is the Beads
 # identity in the lead's spawned_by ("lead", "review.lead"), written when the team was started.
-FOUNDER_COMMANDS="restart stop remove destroy finish"
+FOUNDER_COMMANDS="restart stop remove destroy finish model"
 
 # caller_identity: what the calling agent is called in Beads ("lead", "review.backend"); empty for you
 caller_identity() {
@@ -389,10 +411,11 @@ is_steward() {
   [ "$(team_founder)" = "operator" ]
 }
 
-# steward_command <command> <role>: one of the steward's two: restart of the lead, stop of any agent
+# steward_command <command> <role>: one of the steward's two: restart of the lead, stop of any agent. `teamctl model`
+# goes with restart: it chooses what that restart starts the lead on, and its --now IS a restart.
 steward_command() {
   case "$1" in
-    restart) [ "${2:-}" = "$WOLFMUX_LEAD_ROLE" ] ;;
+    restart | model) [ "${2:-}" = "$WOLFMUX_LEAD_ROLE" ] ;;
     stop) [ -n "${2:-}" ] ;;
     *) return 1 ;;
   esac
@@ -485,8 +508,8 @@ policy_summary() {
 cmd_policy() {
   local key="${1:-}" value="${2:-}" template teams
   require_tools
-  # orphan-steward is the project's, not a team's: it is set without naming a team.
-  if [ "$key" = "orphan-steward" ]; then load_project any; else load_project; fi
+  # orphan-steward and lead-model are the project's, not a team's: they are set without naming a team.
+  if [ "$key" = "orphan-steward" ] || [ "$key" = "lead-model" ]; then load_project any; else load_project; fi
   if [ -z "$key" ]; then
     say "policy for $(short_path "$ROOT")"
     say "  lead-permissions    $(policy_get lead-permissions)    (skip|ask)"
@@ -514,6 +537,9 @@ cmd_policy() {
     say "                      Yours alone to change, from your own terminal. Who is typed into at all: WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE"
     say "  orphan-steward      $(policy_get orphan-steward)       (<team>|off)      for the whole project: the team whose lead may restart the lead of a team"
     say "                      you founded, or stop its agents, while that lead is not running. Nothing else. Yours alone to change."
+    say "  lead-model          $(policy_get lead-model)      (<model>|default) for the whole project: what a NEW lead starts on when"
+    say "                      teamctl start names no model. Fable only when asked: teamctl start fable · teamctl model lead fable."
+    say "                      A running team's lead keeps its own recorded model (teamctl model). Yours alone to change."
     say "  restore-on-limit    $(policy_get restore-on-limit)    (report|<model>)  teamctl restore and a lead that comes back to a used-up model limit:"
     say "                      report = name it at the end, change nothing · a model (opus…) = restart that lead on it"
     say ""
@@ -544,6 +570,19 @@ cmd_policy() {
     policy_set "$key" "$value"
     event_log policy "" "$key=$value"
     say "policy: $key = $value   (for the whole project)"
+    return 0
+  fi
+  # What every new lead of the project runs on is the human's call, as orphan-steward is: one team's lead would be
+  # choosing the model of leads that are not its own.
+  if [ "$key" = "lead-model" ]; then
+    require_operator "policy lead-model" "every team of this project (the model each new lead starts on)" \
+      "teamctl model lead <model> changes your own team's lead, at its next restart (or --now)"
+    if [ "$value" != "default" ]; then
+      policy_valid "$key" "$value" || die_usage "lead-model must be $(policy_choices "$key") (known: $WOLFMUX_MODEL_KEYS)"
+    fi
+    policy_set "$key" "$value"
+    event_log policy "" "$key=$value"
+    say "policy: lead-model = $(policy_get lead-model)   (for the whole project: what a new lead starts on; a running lead keeps its own: teamctl model lead <model>)"
     return 0
   fi
   require_manager policy
