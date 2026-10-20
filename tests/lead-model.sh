@@ -21,6 +21,7 @@ export WOLFMUX_BIN_DIR="$REPO/bin"
 export WOLFMUX_DATA="$WORK/data"
 export WOLFMUX_TMUX_SOCKET="wolfmux-test-leadmodel-$$" WOLFMUX_LEGACY_SOCKET="wolfmux-test-leadmodel-old-$$"
 export WOLFMUX_CLAUDE_PROJECTS="$WORK/claude-projects" WOLFMUX_CODEX_SESSIONS="$WORK/codex-sessions"
+export WOLFMUX_CLAUDE_SESSIONS="$WORK/claude-sessions"
 FAKE="$WORK/fake"
 export FAKE
 /bin/mkdir -p "$FAKE/answers" "$WOLFMUX_CLAUDE_PROJECTS"
@@ -37,9 +38,39 @@ if [ "${1:-}" = "-p" ]; then
   printf '{"type":"result","subtype":"success","is_error":false,"result":"ok","modelUsage":{"%s":{"inputTokens":2,"contextWindow":1000000}}}\n' "$(cat "$FAKE/answers/$model")"
   exit 0
 fi
+# Restore's integration cases record the actual launch arguments and supply the
+# session record and limit error that the real Claude CLI would write.
+model="" resumed="" prev=""
+for arg in "$@"; do
+  if [ "$prev" = "--model" ]; then model="$arg"; fi
+  if [ "$prev" = "--resume" ]; then resumed="$arg"; fi
+  prev="$arg"
+done
+marker="$FAKE/restore-${WOLFMUX_TEAM:-}"
+if [ -n "$resumed" ] && [ -f "$marker" ]; then
+  jq -cn --args '$ARGS.positional' -- "$@" >>"$marker.argv"
+  if [ "$model" = claude-fable-5-1 ]; then
+    IFS= read -r transcript <"$marker"
+    jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{timestamp:$ts,isApiErrorMessage:true,message:{content:[{type:"text",text:"You have reached your Fable limit"}]}}' >>"$transcript"
+  fi
+  mkdir -p "$WOLFMUX_CLAUDE_SESSIONS"
+  jq -cn --arg sid "$resumed" '{sessionId:$sid}' >"$WOLFMUX_CLAUDE_SESSIONS/$$.json"
+fi
 exec "$STUB_AGENT" "$@"
 EOF
 /bin/chmod 755 "$FAKE/claude"
+# Restore sends a Beads message and a real teamctl nudge. Keep the message local.
+/bin/cat >"$FAKE/bd" <<'EOF'
+#!/bin/bash
+case "$1" in create) echo test-restore ;; *) echo '[]' ;; esac
+EOF
+/bin/cat >"$FAKE/memory_pressure" <<'EOF'
+#!/bin/bash
+echo 'System-wide memory free percentage: 80%'
+EOF
+/bin/chmod 755 "$FAKE/bd" "$FAKE/memory_pressure"
+export PATH="$FAKE:$PATH"
 echo "claude-fable-5-1" >"$FAKE/answers/fable"
 echo "claude-opus-5-5" >"$FAKE/answers/opus"
 echo "claude-sonnet-5-5" >"$FAKE/answers/sonnet"
@@ -293,6 +324,58 @@ tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$(tmux -L "$WOLFMUX_TMUX_SOCKET
 teamctl restart lead --team fab --model opus >/dev/null 2>&1
 check "restart lead --model opus on a team with no session: the team comes back with an Opus lead" \
   '[ "$(record lead fab | jq -r .model)" = opus ] && [ "$(record lead fab | jq -r .model_id)" = claude-opus-5-5 ]'
+
+echo "== restore-on-limit through the real restart --model"
+# Catch lost --model/--resume arguments, a model record that is not updated,
+# a false success report, and a cross-CLI move that bypasses restart's refusal.
+restore_real_limit() (
+  target="$1" team="limit-$1"
+  export WOLFMUX_RESTORE_TEAMCTL="$REPO/bin/teamctl"
+  export WOLFMUX_MEMORY_PRESSURE="$FAKE/memory_pressure"
+  export WOLFMUX_RESTORE_LOAD=1 WOLFMUX_RESTORE_WAIT_MAX=0
+  export WOLFMUX_RESTORE_UP_MAX=10 WOLFMUX_RESTORE_POLL=1 WOLFMUX_RESTORE_LIMIT_WAIT=0
+  teamctl start fable --team "$team" --no-attach --skip-beads >/dev/null 2>&1 || return 1
+  state="$(ls -d "$WOLFMUX_DATA"/state/*)"
+  sid="$(record lead "$team" | jq -er .session_id)" || return 1
+  session="$(jq -er .session "$state/teams/$team/meta.json")" || return 1
+  [ "$(field lead model "$team")" = fable ] || return 1
+  transcript="$WOLFMUX_CLAUDE_PROJECTS/$(printf '%s' "$PROJECT" | sed 's|[^A-Za-z0-9]|-|g')/$sid.jsonl"
+  /bin/mkdir -p "$(dirname "$transcript")" || return 1
+  : >"$transcript"
+  printf '%s\n' "$transcript" >"$FAKE/restore-$team"
+  # Simulate a crash, not a deliberate stop: the record and snapshot survive.
+  jq -cn --arg key "${state##*/}" --arg team "$team" --arg root "$PROJECT" --arg session "$session" --arg sid "$sid" \
+    '{epoch:100,ts:"2026-01-01T00:00:00Z",server:"old-server 1",tabs:[],
+      teams:[{key:$key,team:$team,root:$root,session:$session,model:"fable",
+              family:"claude",label:"Fable",session_id:$sid,founder:"operator"}]}' \
+    >"$WOLFMUX_DATA/state/running.json" || return 1
+  tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$session" || return 1
+  teamctl policy restore-on-limit "$target" >/dev/null 2>&1 || return 1
+  teamctl restore --yes --no-tabs >"$WORK/restore-$team.out" 2>&1 || return 1
+  # Both real restarts must preserve the stored conversation. Only the Opus
+  # move may launch a second CLI; Codex must be refused before any launch.
+  argv="$FAKE/restore-$team.argv"
+  jq -se --arg sid "$sid" '
+    all(.[]; index("--resume") as $i | $i != null and .[$i + 1] == $sid) and
+    .[0][(.[0] | index("--model")) + 1] == "claude-fable-5-1"' "$argv" || return 1
+  [ "$(record lead "$team" | jq -r .session_id)" = "$sid" ] || return 1
+  if [ "$target" = opus ]; then
+    jq -se 'length == 2 and .[1][(.[1] | index("--model")) + 1] == "claude-opus-5-5"' "$argv" &&
+      [ "$(field lead model "$team")" = opus ] &&
+      jq -se --arg team "$team" 'any(.[]; .team == $team and .what == "restart --model opus" and .result == "done")' "$WOLFMUX_DATA/state/restore.log" &&
+      grep -q "^  moved $team: to opus$" "$WORK/restore-$team.out"
+  else
+    jq -se 'length == 1' "$argv" &&
+      [ "$(field lead model "$team")" = fable ] &&
+      jq -se --arg team "$team" 'any(.[]; .team == $team and .what == "restart --model astra" and .result == "failed: exit 64")' "$WOLFMUX_DATA/state/restore.log" &&
+      grep -q "$team: .*the move to astra failed: exit 64" "$WORK/restore-$team.out" &&
+      ! grep -q "^  moved $team:" "$WORK/restore-$team.out"
+  fi
+)
+check "restore-on-limit opus resumes the lead on Opus and reports the completed move" \
+  'restore_real_limit opus'
+check "restore-on-limit astra reports real restart exit 64 and leaves the Claude lead on Fable" \
+  'restore_real_limit astra'
 
 echo
 echo "lead-model: $passed passed, $failed failed"
