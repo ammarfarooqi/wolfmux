@@ -842,6 +842,10 @@ teamctl remove scribe --team review --force --yes >/dev/null 2>&1
 check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "-a review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
 check "teams: a notification finds the right team by identity" 'teamctl nudge review.backend --id abc-9 && sleep 1 && teamctl capture backend --team review -n 12 | grep -q "Beads update for review.backend (abc-9)" && ! teamctl capture backend --team default -n 12 | grep -q "abc-9"'
 check "teams: a lead manages its own team only (exit 77 for another team)" 'TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend --team default; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"stopped\"" && teamctl status --json --team default | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"running\""'
+# The permission hook runs inside the agent, in its pane, and a stopped agent asks nothing (the
+# pane proof): review's backend runs again before it asks.
+teamctl restart backend --team review >/dev/null 2>&1
+sleep 2
 (TEAM_ROLE=backend WOLFMUX_TEAM=review "$REPO/tests/in-pane" _permission-hook <"$WORK/hook-in.json" >"$WORK/hook-review.out" 2>/dev/null) &
 sleep 3
 check "teams: a permission request in a named team is filed with, and announced to, its own lead" 'teamctl approvals --team review | grep -q "A1 .*backend .*pending" && teamctl capture lead --team review -n 12 | grep -q "Permission request A1 from backend" && ! teamctl approvals --team default | grep -q "^A[0-9].* pending "'
