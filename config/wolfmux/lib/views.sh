@@ -254,9 +254,9 @@ _status_team_text() {
     fi
   done
   if [ -n "$repo_col" ]; then
-    printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" REPO BRANCH AHEAD DIRTY CONTEXT WORKDIR
+    printf '     %-*s %-14s %-12s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" REPO BRANCH AHEAD DIRTY CONTEXT WORKDIR
   else
-    printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
+    printf '     %-*s %-14s %-12s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
   fi
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
   # A metered agent is marked with a $ after its label (every token it uses is billed), and a
@@ -275,9 +275,9 @@ _status_team_text() {
         printf '    %s %-*s' "$WOLFMUX_WORKER_MARK" "$width" "$role"
       fi
       if [ -n "$repo_col" ]; then
-        printf ' %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+        printf ' %-14s %-12s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
       else
-        printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+        printf ' %-14s %-12s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
       fi
       # A parked lane that could not be taken off the books says what it holds and why, right
       # under its own row: space nobody can see is the complaint this line answers. A parked
