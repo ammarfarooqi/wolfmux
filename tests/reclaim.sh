@@ -477,8 +477,12 @@ check "a worker may look, because looking is not changing" \
 # The MESSAGE, not just the status: an unknown command exits 64 as well.
 check "an unknown option is a usage error that names the real usage" \
   'out="$(teamctl reclaim --nonsense 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q -- "teamctl reclaim \[--team <name>\] \[--all-teams\] \[--dry-run\]"'
+# The asker is the worker that still runs: a parked worker's claim proves nothing (no pane), and
+# would be refused by the pane proof before the lead's guard is ever asked.
 check "a worker cannot run it for real: it is the lead's call (exit 77, and nothing is touched)" \
-  'out="$(TEAM_ROLE=done1 teamctl reclaim 2>&1)"; [ $? -eq 77 ] && printf "%s" "$out" | grep -q "teamctl reclaim. is reserved for the lead" && [ -d "$(dir_of done1)" ]'
+  'out="$(TEAM_ROLE=running teamctl reclaim 2>&1)"; [ $? -eq 77 ] && printf "%s" "$out" | grep -q "teamctl reclaim. is reserved for the lead" && [ -d "$(dir_of done1)" ]'
+check "and a parked worker's claim is not proven at all: also 77, and nothing is touched" \
+  'out="$(TEAM_ROLE=done1 teamctl reclaim 2>&1)"; [ $? -eq 77 ] && printf "%s" "$out" | grep -q "does not run in its pane" && [ -d "$(dir_of done1)" ]'
 
 echo "== teamctl reclaim: the lanes that pass go, and every sha is said before anything is deleted"
 GONE="done1 squashed picked fresh buildonly localmain"
@@ -850,10 +854,12 @@ task second.lost closed
 task far in_progress
 teamctl stop far --team second >/dev/null 2>&1
 teamctl stop lost --team second >/dev/null 2>&1
+# The lead that asks is second's, the one lead still running here: proven, so the refusal below is
+# the operator-only guard and not the pane proof.
 check "a lead is refused with 77, told why, and told what it may run instead" \
-  'out="$(TEAM_ROLE=lead teamctl reclaim --all-teams --dry-run 2>&1)"; rc=$?; [ "$rc" -eq 77 ] && printf "%s" "$out" | grep -q "machine owner.s alone to run" && printf "%s" "$out" | grep -q "teamctl reclaim for your own team"'
+  'out="$(TEAM_ROLE=lead WOLFMUX_TEAM=second teamctl reclaim --all-teams --dry-run 2>&1)"; rc=$?; [ "$rc" -eq 77 ] && printf "%s" "$out" | grep -q "machine owner.s alone to run" && printf "%s" "$out" | grep -q "teamctl reclaim for your own team"'
 check "the refusal holds for the real run as well, and nothing is touched by it" \
-  'TEAM_ROLE=lead teamctl reclaim --all-teams >/dev/null 2>&1; [ $? -eq 77 ] && [ -f "$FAR/far.txt" ]'
+  'out="$(TEAM_ROLE=lead WOLFMUX_TEAM=second teamctl reclaim --all-teams 2>&1)"; [ $? -eq 77 ] && printf "%s" "$out" | grep -q "machine owner.s alone to run" && [ -f "$FAR/far.txt" ]'
 : >"$RECLAIM_STUB/bd.log"
 ALL="$(teamctl reclaim --all-teams --dry-run 2>&1)"
 check "each team is asked once, about its own lanes: second's question names second.far and second.lost, and no bare name" \
