@@ -14,8 +14,58 @@ _billing_of() {
   printf '%s\n' "$billing"
 }
 
+# --- Claude's agent view in an agent's pane --------------------------------------------------
+# /bg sends a Claude conversation to the background: Claude Code turns the pane's own process
+# into its agent view (`claude agents`), and the conversation goes on as a background chat of
+# Claude's daemon, outside the pane. That is how the comms lead's identity leaked on 2026-10-19
+# (lib/common.sh identity_in_own_pane). The pane looks alive to tmux, but no agent works in it.
+
+# agent_view_roles <session> — the roles, one per line, whose pane's own process is Claude's
+# agent view: a word whose last path part is `claude`, then the word `agents`. One tmux read
+# for every pane of the session and ONE ps call for all of their processes.
+agent_view_roles() {
+  local panes pids
+  panes="$(tmx list-panes -s -t "=$1" -F '#{@ai_role} #{pane_pid}' 2>/dev/null | awk 'NF == 2 && $2 ~ /^[0-9]+$/')" || panes=""
+  [ -n "$panes" ] || return 0
+  pids="$(printf '%s\n' "$panes" | awk '{ printf "%s%s", sep, $2; sep = "," }')"
+  { printf '%s\n--\n' "$panes"; "$WOLFMUX_PS_BIN" -o pid=,command= -p "$pids" 2>/dev/null || true; } | awk '
+    !listed && $0 == "--" { listed = 1; next }
+    !listed { role[$2] = $1; next }
+    ($1 in role) {
+      for (i = 2; i < NF; i++) {
+        n = split($i, part, "/")
+        if (part[n] == "claude" && $(i + 1) == "agents") { print role[$1]; break }
+      }
+    }'
+}
+
+# agent_view_continued_in <session id> <workdir> — the id of the background chat the agent's
+# conversation went on in: the LAST "continued-in" line of its transcript (field
+# continuedInSessionId). Only the tail is read: a transcript can be hundreds of MB.
+agent_view_continued_in() {
+  local file id
+  file="$(session_transcript "${1:-}" "${2:-}" 2>/dev/null || true)"
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  # The id is matched, not parsed: the first line of the tail is usually cut, and a line that
+  # does not parse must not hide the id it carries.
+  id="$(tail -c 65536 "$file" 2>/dev/null | grep -E '"type": ?"continued-in"' | tail -1 |
+    grep -oE '"continuedInSessionId": ?"[0-9A-Fa-f-]+"' | tail -1 | grep -oE '[0-9A-Fa-f-]{36}' || true)"
+  if valid_session_id "$id"; then printf '%s\n' "$id"; fi
+}
+
+# agent_view_hint <continued-in id or empty> — the line under a backgrounded agent's row
+agent_view_hint() {
+  if [ -n "${1:-}" ]; then
+    printf "this pane runs Claude's agent view; its conversation continued in %s as a background chat\n" "$1"
+  else
+    printf "this pane runs Claude's agent view; its conversation continued as a background chat (its transcript names none)\n"
+  fi
+}
+
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir model cctx repo session_id recorded_id label
+  local role kind pane state branch ahead dirty workdir model cctx repo session_id recorded_id label view_roles=" " continued
+  # Which panes run Claude's agent view: asked once for the whole team, not once per agent.
+  if [ -n "$SESSION_LIVE" ]; then view_roles=" $(agent_view_roles "$SESSION" | tr '\n' ' ')"; fi
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
     reg_exists "$role" || continue
     kind="$(reg_field "$role" kind)"
@@ -37,6 +87,16 @@ _status_rows() { # emits one JSON object per agent
     dirty="$(wt_dirty_count "$workdir")"
     model="$(reg_field "$role" model)"
     session_id="$(reg_field "$role" session_id)" # its own conversation: what --continue reopens, and what CONTEXT reads
+    # A live pane whose process is Claude's agent view: backgrounded, and where the chat went.
+    continued=""
+    if [ "$state" = "running" ]; then
+      case "$view_roles" in
+        *" $role "*)
+          state="backgrounded"
+          continued="$(agent_view_continued_in "$session_id" "$workdir")"
+          ;;
+      esac
+    fi
     recorded_id="$(reg_field "$role" model_id)"
     agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)" "$recorded_id" "$(reg_field "$role" model_at)"
     # A /model typed into its pane: the record follows, so its next restart keeps that model (agent_adopt_live).
@@ -68,9 +128,10 @@ _status_rows() { # emits one JSON object per agent
       --arg model_id "$MR_ID" --arg recorded_id "$recorded_id" --arg known_from "$MR_HOW" --arg mark "$MR_MARK" \
       --arg model_source "$(reg_field "$role" model_source)" \
       --arg hw "$(reg_field "$role" hold_why)" --arg hk "$(reg_field "$role" hold_kb)" --arg ha "$(reg_field "$role" hold_at)" \
+      --arg continued "$continued" --arg hint "$(if [ "$state" = "backgrounded" ]; then agent_view_hint "$continued"; fi)" \
       '{role: $role, kind: $kind, model: $model, label: $label, label_mark: $mark, family: $family, billing: $billing, state: $state, pane: $pane,
         keep_build: (if $keep == "on" then "on" else "off" end),
-        holding: (if $kind == "worker" and $state != "running" and $hw != "" then
+        holding: (if $kind == "worker" and $state != "running" and $state != "backgrounded" and $hw != "" then
                     {kb: (($hk | tonumber?) // null), reason: $hw,
                      checked_at: ((($ha | tonumber?) // null) | if . == null then null else todate end),
                      checked_epoch: (($ha | tonumber?) // null)}
@@ -82,7 +143,8 @@ _status_rows() { # emits one JSON object per agent
         session_id: $session_id,
         branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir, repo: $repo,
         context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
-        context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}'
+        context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}
+        + (if $state == "backgrounded" then {hint: $hint, continued_in: (if $continued == "" then null else $continued end)} else {} end)'
   done
 }
 
@@ -192,9 +254,9 @@ _status_team_text() {
     fi
   done
   if [ -n "$repo_col" ]; then
-    printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" REPO BRANCH AHEAD DIRTY CONTEXT WORKDIR
+    printf '     %-*s %-14s %-12s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" REPO BRANCH AHEAD DIRTY CONTEXT WORKDIR
   else
-    printf '     %-*s %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
+    printf '     %-*s %-14s %-12s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
   fi
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
   # A metered agent is marked with a $ after its label (every token it uses is billed), and a
@@ -204,23 +266,26 @@ _status_team_text() {
   # ctx_display). A stopped worker's line is the reuse-or-respawn signal.
   # The three hold fields come last, and the reason last of all: it is the one free text in
   # the row, and `read` gives whatever is left to its final variable.
-  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + .label_mark + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // ""),
+  printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + .label_mark + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // ""), (.continued_in // ""),
       ((.holding.kb // "") | tostring), ((.holding.checked_epoch // "") | tostring), (.holding.reason // "")] | join("|")' |
-    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo hold_kb hold_epoch hold_why; do
+    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo continued hold_kb hold_epoch hold_why; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
       else
         printf '    %s %-*s' "$WOLFMUX_WORKER_MARK" "$width" "$role"
       fi
       if [ -n "$repo_col" ]; then
-        printf ' %-14s %-11s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+        printf ' %-14s %-12s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
       else
-        printf ' %-14s %-11s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+        printf ' %-14s %-12s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
       fi
       # A parked lane that could not be taken off the books says what it holds and why, right
       # under its own row: space nobody can see is the complaint this line answers. A parked
       # lane nobody has asked yet says that instead of saying nothing.
-      if [ "$kind" = "worker" ] && [ "$state" != "running" ] && [ -d "$workdir" ]; then
+      # A backgrounded agent (Claude's agent view in its pane) says where its conversation went.
+      if [ "$state" = "backgrounded" ]; then
+        printf '        %s\n' "$(agent_view_hint "$continued")"
+      elif [ "$kind" = "worker" ] && [ "$state" != "running" ] && [ -d "$workdir" ]; then
         if [ -n "$hold_why" ]; then
           printf '        holding %s: %s%s\n' "$(human_size "${hold_kb:-0}")" "$hold_why" "$(_hold_age "$hold_epoch")"
         else

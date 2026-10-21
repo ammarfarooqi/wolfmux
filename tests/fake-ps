@@ -1,0 +1,63 @@
+#!/bin/bash
+# fake-ps — a stand-in for /bin/ps, for the suites (WOLFMUX_PS_BIN=tests/fake-ps).
+#
+# teamctl asks ps four things, and this answers exactly those four:
+#   ps -axo pid=,ppid=               the pane proof (lib/common.sh identity_pid_in_tree)
+#   ps -o pid=,command= -p <a,b,…>   is a pane's process Claude's agent view? (teamctl status)
+#   ps -axo pid=,command=            is a Claude daemon running? (teamctl doctor)
+#   ps eww -o command= -p <pid>      that daemon's environment (teamctl doctor)
+# Anything else goes to the real /bin/ps.
+#
+#   WOLFMUX_FAKE_PS_GRAFT="<pid>:<parent> …"  extra parent links, added after the real table:
+#       the walk keeps the LAST parent it reads for a pid, so "$$:<pane pid>" puts the test shell,
+#       and everything it runs, inside that pane.
+#   WOLFMUX_FAKE_PS_TABLE=<file>               invented processes, one per line, tab-separated:
+#       <pid> <ppid> <command> [<environment, as ps eww prints it>]
+#     While it is set, the two machine-wide listings and every environment come from this file
+#     ONLY: a suite never sees the machine's real processes, and never reads a real environment.
+set -u
+real=/bin/ps
+table="${WOLFMUX_FAKE_PS_TABLE:-}"
+
+rows() { # the invented processes, as "pid<TAB>ppid<TAB>command<TAB>env"
+  [ -n "$table" ] && [ -r "$table" ] || return 0
+  awk -F'\t' 'NF >= 3 && $1 ~ /^[0-9]+$/' "$table"
+}
+field_of() { # <pid> <field number>
+  rows | awk -F'\t' -v pid="$1" -v f="$2" '$1 == pid { print $f; found = 1; exit } END { exit !found }'
+}
+
+case "$*" in
+  "-axo pid=,ppid=")
+    "$real" -axo pid=,ppid=
+    rows | awk -F'\t' '{ print $1, $2 }'
+    for link in ${WOLFMUX_FAKE_PS_GRAFT:-}; do printf '%s %s\n' "${link%%:*}" "${link#*:}"; done
+    ;;
+  "-axo pid=,command=")
+    if [ -n "$table" ]; then
+      rows | awk -F'\t' '{ print $1, $3 }'
+    else
+      "$real" -axo pid=,command=
+    fi
+    ;;
+  "-o pid=,command= -p "*)
+    for pid in $(printf '%s' "$4" | tr ',' ' '); do
+      if command="$(field_of "$pid" 3)"; then
+        printf '%s %s\n' "$pid" "$command"
+      else
+        "$real" -o pid=,command= -p "$pid" 2>/dev/null
+      fi
+    done
+    ;;
+  "eww -o command= -p "*)
+    if command="$(field_of "$5" 3)"; then
+      printf '%s %s\n' "$command" "$(field_of "$5" 4 || true)"
+    elif [ -z "$table" ]; then
+      "$real" eww -o command= -p "$5"
+    else
+      exit 1
+    fi
+    ;;
+  *) exec "$real" "$@" ;;
+esac
+exit 0

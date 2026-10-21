@@ -1,0 +1,29 @@
+#!/bin/bash
+# in-pane — run bin/teamctl the way an agent runs it: from inside its own pane.
+#
+# Since the pane proof (lib/common.sh identity_in_own_pane), TEAM_ROLE alone is a claim and not
+# an identity: a process is an agent only while it runs inside that agent's pane, which tmux
+# shows as TMUX and TMUX_PANE in its environment and as the pane's process among its ancestors.
+# A suite that runs `TEAM_ROLE=qa teamctl …` from its own shell has none of that, so this shim
+# adds it: when TEAM_ROLE is set and TMUX_PANE is not, it looks up that role's live pane in team
+# WOLFMUX_TEAM (default: the first team) on the suite's own tmux server (WOLFMUX_TMUX_SOCKET),
+# exports TMUX and TMUX_PANE, and grafts itself under the pane's process with tests/fake-ps.
+# exec keeps the pid, so teamctl is the grafted process. No such pane (the agent is stopped):
+# it runs unchanged, and teamctl treats the claim as unproven, as it would in real life.
+# Without TEAM_ROLE it changes nothing: that is you, at your own terminal.
+set -u
+here="$(cd "$(dirname "$0")" && pwd -P)"
+if [ -n "${TEAM_ROLE:-}" ] && [ -z "${TMUX_PANE:-}" ] && [ -n "${WOLFMUX_TMUX_SOCKET:-}" ]; then
+  line="$(tmux -L "$WOLFMUX_TMUX_SOCKET" list-panes -a -F '#{@ai_role}|#{@wolfmux_team}|#{pane_id}|#{pane_pid}|#{socket_path}|#{pane_dead}' 2>/dev/null |
+    awk -F'|' -v role="$TEAM_ROLE" -v team="${WOLFMUX_TEAM:-default}" '
+      $1 == role && $6 != "1" && ($2 == team || ($2 == "" && team == "default")) { print; exit }')"
+  if [ -n "$line" ]; then
+    IFS='|' read -r _ _ pane pid socket _ <<EOF
+$line
+EOF
+    export TMUX="$socket,0,0" TMUX_PANE="$pane" WOLFMUX_PS_BIN="$here/fake-ps"
+    export WOLFMUX_FAKE_PS_GRAFT="${WOLFMUX_FAKE_PS_GRAFT:+$WOLFMUX_FAKE_PS_GRAFT }$$:$pid"
+  fi
+fi
+# the same spelling as the suites' $REPO/bin/teamctl: teamctl writes its own path into hooks
+exec "$(cd "$here/.." && pwd -P)/bin/teamctl" "$@"

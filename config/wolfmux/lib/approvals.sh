@@ -157,6 +157,12 @@ cmd_permission_hook() {
   team_paths "$team"
   [ -d "$STATE_DIR" ] || exit 0
   SESSION="$(session_name_for_project)"
+  # The pane proof (lib/common.sh): a chat that only inherited this worker's environment files no
+  # request in its name and makes the lead decide nothing. No answer: Claude Code asks as it would.
+  if ! identity_in_own_pane "$role" "$SESSION"; then
+    identity_refused_log "$role" "$IDENTITY_WHY"
+    exit 0
+  fi
   # Nobody to ask: do not make the worker wait for a lead that is not there.
   [ "$(tm_pane_state "$(tm_pane_for_role "$SESSION" "$WOLFMUX_LEAD_ROLE")")" = "running" ] || exit 0
 
