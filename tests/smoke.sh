@@ -32,7 +32,9 @@ export ECC_DISABLED_HOOKS="post:example" # a hook the user already disables; tea
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH WOLFMUX_METERED TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL WOLFMUX_EXTRA_SETTINGS
 unset WOLFMUX_FABLE_MODEL WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL WOLFMUX_MODEL_POLICY # an agent's pins
-teamctl() { "$REPO/bin/teamctl" "$@"; }
+# An agent's command runs from its own pane (tests/in-pane: the pane proof, lib/common.sh
+# identity_in_own_pane); without TEAM_ROLE the shim changes nothing.
+teamctl() { "$REPO/tests/in-pane" "$@"; }
 # transcripts_of <dir> — where the CLIs put the transcripts of an agent that ran there
 transcripts_of() { printf '%s/%s\n' "$WOLFMUX_CLAUDE_PROJECTS" "$(cd "$1" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"; }
 # The real CLI writes a conversation's transcript once something was said in it; it refuses to resume an id
@@ -366,7 +368,7 @@ echo "== desktop notifications that lead back to the team"
 FAKE_OSA="$WORK/fake-osascript"
 printf '#!/bin/bash\nprintf "%%s\\n" "$@" >"%s"\n' "$WORK/osa.args" >"$FAKE_OSA"
 /bin/chmod 755 "$FAKE_OSA"
-notify() { WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" _notify; }
+notify() { WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/tests/in-pane" _notify; }
 check "notify: every Claude agent gets the Stop hook; the plugin notifier is silenced, the user's own entry kept" 'teamctl capture backend --all | grep -q "STUB notify={\"stop\":true,\"notify\":true,\"silenced\":\"post:example,stop:desktop-notify\"}"'
 check "notify: goes to the attached terminal as OSC 9 — first line, markdown dropped" 'printf "%s" "{\"last_assistant_message\":\"\\n**Done:** built \`x\`\\nsecond line\"}" | TEAM_ROLE=backend WOLFMUX_NOTIFY_TTY="$WORK/tty1" notify && [ "$(/bin/cat "$WORK/tty1")" = "$(printf "\033]9;🐶 backend: Done: built x\007")" ]'
 check "notify: the manager is marked with the wolf" 'printf "%s" "{\"last_assistant_message\":\"merged\"}" | TEAM_ROLE=lead WOLFMUX_NOTIFY_TTY="$WORK/tty2" notify && grep -q "🐺 lead: merged" "$WORK/tty2"'
@@ -380,7 +382,7 @@ FAKE_OPEN="$WORK/fake-open"
 printf '#!/bin/bash\nprintf "%%s\\n" "$@" >>"%s"\n' "$WORK/open.args" >"$FAKE_OPEN"
 /bin/chmod 755 "$FAKE_OPEN"
 PROJECT_REAL="$(cd "$PROJECT" && pwd -P)" # git reports the physical path (/private/var/… on macOS)
-detached() { WOLFMUX_NOTIFIER_APP="$FAKE_APP" WOLFMUX_OPEN_BIN="$FAKE_OPEN" WOLFMUX_OSASCRIPT="$FAKE_OSA" WOLFMUX_TERMINAL=iterm "$REPO/bin/teamctl" "$@"; }
+detached() { WOLFMUX_NOTIFIER_APP="$FAKE_APP" WOLFMUX_OPEN_BIN="$FAKE_OPEN" WOLFMUX_OSASCRIPT="$FAKE_OSA" WOLFMUX_TERMINAL=iterm "$REPO/tests/in-pane" "$@"; }
 /bin/rm -f "$WORK/osa.args" "$WORK/open.args"
 check "notify: nobody attached -> the message is handed to Wolfmux.app, not to osascript" 'printf "%s" "{\"last_assistant_message\":\"merged the cart API\"}" | TEAM_ROLE=lead detached _notify && grep -q "Wolfmux.app$" "$WORK/open.args" && [ ! -e "$WORK/osa.args" ] && [ "$(sed -n 1p "$WOLFMUX_DATA/notify/last")" = "$PROJECT_REAL" ]'
 check "notify: the app fetches its message exactly once (so its next start is a click)" '[ "$(detached _notify-pending | head -1)" = "🐺 lead: merged the cart API" ] && [ -z "$(detached _notify-pending)" ]'
@@ -413,7 +415,7 @@ ROOT_REAL="$(cd "$PROJECT" && pwd -P)"
 guard() {
   local answer
   answer="$(jq -cn --arg tool "$1" --argjson input "$2" --arg cwd "$OWN_TREE" '{hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $input, cwd: $cwd}' |
-    TEAM_ROLE=backend WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$OWN_TREE" WOLFMUX_BRANCH="$OWN_BRANCH" "$REPO/bin/teamctl" _guard)"
+    TEAM_ROLE=backend WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$OWN_TREE" WOLFMUX_BRANCH="$OWN_BRANCH" "$REPO/tests/in-pane" _guard)"
   if printf '%s' "$answer" | jq -e '.hookSpecificOutput.permissionDecision == "deny" and (.hookSpecificOutput.permissionDecisionReason | length > 20)' >/dev/null 2>&1; then echo deny; else echo "allow${answer:+ (unexpected output)}"; fi
 }
 file() { jq -cn --arg p "$1" '{file_path: $p}'; }
@@ -434,7 +436,7 @@ check "guard: words are not commands — prose in quotes and heredocs never trig
 check "guard: a quoted PATH is still a path" 'all deny Bash "$(sh "cd \"$ROOT_REAL\" && ls")" "$(sh "cat \"$QA_TREE/notes.md\"")" "$(sh "rm -rf \"$ROOT_REAL/src\"")" && all deny Read "$(file "$OWN_TREE/nope/../../$(basename "$QA_TREE")/x")"'
 mcp() { jq -cn --arg p "$1" '{path: $p, content: "text that mentions tmux and git checkout main"}'; }
 check "guard: MCP tools are held to the same lanes" '[ "$(guard mcp__filesystem__write_file "$(mcp "$ROOT_REAL/README.md")")" = deny ] && [ "$(guard mcp__filesystem__read_file "$(mcp "$QA_TREE/README.md")")" = deny ] && [ "$(guard mcp__filesystem__write_file "$(mcp "$OWN_TREE/README.md")")" = allow ] && [ "$(guard mcp__filesystem__read_file "$(mcp "$ROOT_REAL/README.md")")" = allow ] && [ "$(guard mcp__github__create_issue "$(jq -cn "{title: \"x\", body: \"see /etc/hosts and tmux\"}")")" = allow ]'
-check "guard: the lead is not guarded, and an agent it cannot place is allowed (fails open)" '[ -z "$(file "$QA_TREE/x" | as_write | TEAM_ROLE=lead WOLFMUX_WORKTREE="$OWN_TREE" "$REPO/bin/teamctl" _guard)" ] && [ -z "$(file "$QA_TREE/x" | as_write | TEAM_ROLE=backend "$REPO/bin/teamctl" _guard)" ]'
+check "guard: the lead is not guarded, and an agent it cannot place is allowed (fails open)" '[ -z "$(file "$QA_TREE/x" | as_write | TEAM_ROLE=lead WOLFMUX_WORKTREE="$OWN_TREE" "$REPO/tests/in-pane" _guard)" ] && [ -z "$(file "$QA_TREE/x" | as_write | TEAM_ROLE=backend "$REPO/tests/in-pane" _guard)" ]'
 teamctl policy worker-isolation off >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
 sleep 2
@@ -550,7 +552,7 @@ check "lead mode: no answer -> no decision, so the worker's own prompt appears" 
 for entry in "$REPO"/config/wolfmux/*; do [ "$(basename "$entry")" = "config" ] || /bin/ln -s "$entry" "$WORK/home-with-config/"; done
 printf 'WOLFMUX_APPROVAL_TIMEOUT=2\n' >"$WORK/home-with-config/config"
 printf '%s' "$HOOK_IN" >"$WORK/hook-in.json"
-WOLFMUX_HOME="$WORK/home-with-config" TEAM_ROLE=qa "$REPO/bin/teamctl" _permission-hook <"$WORK/hook-in.json" >/dev/null 2>&1 &
+WOLFMUX_HOME="$WORK/home-with-config" TEAM_ROLE=qa "$REPO/tests/in-pane" _permission-hook <"$WORK/hook-in.json" >/dev/null 2>&1 &
 CONFIG_HOOK_PID=$!
 sleep 6
 check "lead mode: the waiting time is also read from the config file" 'grep -l "no decision within 2s" "$WOLFMUX_DATA"/state/*/approvals/A4.json'
@@ -840,7 +842,7 @@ teamctl remove scribe --team review --force --yes >/dev/null 2>&1
 check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "-a review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
 check "teams: a notification finds the right team by identity" 'teamctl nudge review.backend --id abc-9 && sleep 1 && teamctl capture backend --team review -n 12 | grep -q "Beads update for review.backend (abc-9)" && ! teamctl capture backend --team default -n 12 | grep -q "abc-9"'
 check "teams: a lead manages its own team only (exit 77 for another team)" 'TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend --team default; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"stopped\"" && teamctl status --json --team default | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"running\""'
-(TEAM_ROLE=backend WOLFMUX_TEAM=review "$REPO/bin/teamctl" _permission-hook <"$WORK/hook-in.json" >"$WORK/hook-review.out" 2>/dev/null) &
+(TEAM_ROLE=backend WOLFMUX_TEAM=review "$REPO/tests/in-pane" _permission-hook <"$WORK/hook-in.json" >"$WORK/hook-review.out" 2>/dev/null) &
 sleep 3
 check "teams: a permission request in a named team is filed with, and announced to, its own lead" 'teamctl approvals --team review | grep -q "A1 .*backend .*pending" && teamctl capture lead --team review -n 12 | grep -q "Permission request A1 from backend" && ! teamctl approvals --team default | grep -q "^A[0-9].* pending "'
 check "teams: another team's lead cannot decide it (exit 77); its own lead can, and the worker's CLI receives allow" 'TEAM_ROLE=lead WOLFMUX_TEAM=default teamctl approve A1 --team review; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl approve A1 && sleep 2 && jq -e ".hookSpecificOutput.decision.behavior == \"allow\"" "$WORK/hook-review.out"'
@@ -861,10 +863,10 @@ if [ "$HAVE_BD" -eq 1 ]; then
   check "teams: teams talk to each other through Beads, in both directions" '[ "$(teamctl capture lead --team review --all | grep -c "Beads update for review.lead")" -ge 2 ] && teamctl capture lead --team default --all | grep -q "Beads update for lead "'
 fi
 check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "-a <team>.lead"'
-as_lead() { TEAM_ROLE=lead WOLFMUX_TEAM=default WOLFMUX_NOTIFY_TTY="$WORK/tty-newteam" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" "$@"; }
+as_lead() { TEAM_ROLE=lead WOLFMUX_TEAM=default WOLFMUX_NOTIFY_TTY="$WORK/tty-newteam" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/tests/in-pane" "$@"; }
 check "teams: a lead can found a fresh team and hand work over to it" 'as_lead start fable --team fresh --no-attach --skip-beads --handover abc-77 && sleep 2 && teamctl status --json --team fresh | jq -e ".session_running and .agents[0].spawned_by == \"lead\"" && teamctl capture lead --team fresh --all | grep -q "STUB lastarg=.*abc-77"'
 check "teams: you are told when an agent founds a team" 'grep -q "started team .fresh." "$WORK/tty-newteam"'
-check "teams: a lead cannot take over a team that already has a lead, and a worker cannot found one (exit 77)" 'as_lead start fable --team review --no-attach --skip-beads; [ $? -eq 77 ] && { TEAM_ROLE=backend WOLFMUX_TEAM=default "$REPO/bin/teamctl" start fable --team sneaky --no-attach --skip-beads; [ $? -eq 77 ]; } && ! teamctl teams | grep -q "^sneaky "'
+check "teams: a lead cannot take over a team that already has a lead, and a worker cannot found one (exit 77)" 'as_lead start fable --team review --no-attach --skip-beads; [ $? -eq 77 ] && { TEAM_ROLE=backend WOLFMUX_TEAM=default "$REPO/tests/in-pane" start fable --team sneaky --no-attach --skip-beads; [ $? -eq 77 ]; } && ! teamctl teams | grep -q "^sneaky "'
 teamctl policy lead-teams off --team default >/dev/null 2>&1
 check "teams: teamctl policy lead-teams off keeps founding teams to you" 'as_lead start fable --team another --no-attach --skip-beads; [ $? -eq 77 ] && ! teamctl teams | grep -q "^another "'
 teamctl policy lead-teams on --team default >/dev/null 2>&1
@@ -989,7 +991,7 @@ echo "== a lead recovers and cleans up a team it founded (issue #2)"
 as_agent() { # <team> <role> <teamctl args…>: what that agent's own pane runs (a pane exports both variables)
   local team="$1" role="$2"
   shift 2
-  TEAM_ROLE="$role" WOLFMUX_TEAM="$team" WOLFMUX_NOTIFY_TTY="$WORK/tty-founder" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" "$@"
+  TEAM_ROLE="$role" WOLFMUX_TEAM="$team" WOLFMUX_NOTIFY_TTY="$WORK/tty-founder" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/tests/in-pane" "$@"
 }
 lead_pane_of() { teamctl status --json --team "$1" | jq -r '.agents[] | select(.role == "lead") | .pane'; }
 # refused_for "<team> <role>" <yes|no> <command>...: each is refused with exit 77 (on team child); yes/no: with the founder's hint or without it
@@ -1154,7 +1156,7 @@ plant_branch mine made-by-teamctl 1
 plant_branch theirs legacy-keep 0
 plant_branch older ai/old-style
 check "branch names: only a branch teamctl created is ever deleted, whatever it is called; a record from before the field keeps the old ai/ rule, and a branch teamctl did not make is named and left alone" 'out="$(teamctl remove mine theirs older --team naming --yes 2>&1)"; ! git rev-parse -q --verify refs/heads/made-by-teamctl >/dev/null && git rev-parse -q --verify refs/heads/legacy-keep >/dev/null && ! git rev-parse -q --verify refs/heads/ai/old-style >/dev/null && printf "%s" "$out" | grep -q "legacy-keep"'
-check "branch names: the guard holds a worker to its own branch whatever that branch is called" 'ans="$(jq -cn --arg c "git checkout main" --arg d "$SAM_TREE" "{hook_event_name: \"PreToolUse\", tool_name: \"Bash\", tool_input: {command: \$c}, cwd: \$d}" | TEAM_ROLE=sam WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$SAM_TREE" WOLFMUX_BRANCH=feature-AFD-1844-sam "$REPO/bin/teamctl" _guard)"; printf "%s" "$ans" | jq -e ".hookSpecificOutput.permissionDecision == \"deny\"" >/dev/null && printf "%s" "$ans" | grep -q "feature-AFD-1844-sam"'
+check "branch names: the guard holds a worker to its own branch whatever that branch is called" 'ans="$(jq -cn --arg c "git checkout main" --arg d "$SAM_TREE" "{hook_event_name: \"PreToolUse\", tool_name: \"Bash\", tool_input: {command: \$c}, cwd: \$d}" | TEAM_ROLE=sam WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$SAM_TREE" WOLFMUX_BRANCH=feature-AFD-1844-sam "$REPO/tests/in-pane" _guard)"; printf "%s" "$ans" | jq -e ".hookSpecificOutput.permissionDecision == \"deny\"" >/dev/null && printf "%s" "$ans" | grep -q "feature-AFD-1844-sam"'
 teamctl destroy --team naming --purge --force >/dev/null 2>&1
 teamctl destroy --team ticketed --purge --force >/dev/null 2>&1
 
@@ -1177,7 +1179,7 @@ check "cross-repo: --repo refuses a path that is no directory, no git repository
 guard_srv() { # <tool> <json tool_input> — the guard's answer for the cross-repo worker
   local answer
   answer="$(jq -cn --arg tool "$1" --argjson input "$2" --arg cwd "$SRV_TREE" '{hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $input, cwd: $cwd}' |
-    TEAM_ROLE=srv WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$SRV_TREE" WOLFMUX_BRANCH="$SRV_BRANCH" WOLFMUX_REPO="$SIBLING_REAL" "$REPO/bin/teamctl" _guard)"
+    TEAM_ROLE=srv WOLFMUX_ROOT="$ROOT_REAL" WOLFMUX_WORKTREE="$SRV_TREE" WOLFMUX_BRANCH="$SRV_BRANCH" WOLFMUX_REPO="$SIBLING_REAL" "$REPO/tests/in-pane" _guard)"
   if [ -z "$answer" ]; then printf 'allow\n'; else printf '%s' "$answer" | jq -r '.hookSpecificOutput.permissionDecision // "allow"'; fi
 }
 at() { jq -cn --arg p "$1" '{file_path: $p}'; }

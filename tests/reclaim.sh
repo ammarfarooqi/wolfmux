@@ -37,7 +37,8 @@ unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
 unset WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES WOLFMUX_AUTO_PRUNE WOLFMUX_HEAVY_LOCK
 unset WOLFMUX_AUTO_RECLAIM
-teamctl() { "$REPO/bin/teamctl" "$@"; }
+# An agent's command runs from its own pane (tests/in-pane: the pane proof); without TEAM_ROLE the shim changes nothing.
+teamctl() { "$REPO/tests/in-pane" "$@"; }
 
 passed=0
 failed=0

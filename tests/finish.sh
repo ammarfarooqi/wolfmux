@@ -33,7 +33,8 @@ unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
 unset WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES WOLFMUX_AUTO_PRUNE WOLFMUX_HEAVY_LOCK
 unset WOLFMUX_AUTO_RECLAIM BEADS_DIR
-teamctl() { "$REPO/bin/teamctl" "$@"; }
+# An agent's command runs from its own pane (tests/in-pane: the pane proof); without TEAM_ROLE the shim changes nothing.
+teamctl() { "$REPO/tests/in-pane" "$@"; }
 tmuxt() { tmux -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
 
 passed=0
@@ -205,7 +206,7 @@ team_with() {
 as_lead() {
   local team="$1"
   shift
-  TEAM_ROLE=lead WOLFMUX_TEAM="$team" "$REPO/bin/teamctl" "$@"
+  TEAM_ROLE=lead WOLFMUX_TEAM="$team" "$REPO/tests/in-pane" "$@"
 }
 LEDGER="$WOLFMUX_DATA/state/reclaimed.jsonl"
 end_of() { jq -r ".$2 // empty" "$(state_of "$1")/lead-end.json" 2>/dev/null; }
@@ -368,7 +369,7 @@ INSIDE_STATE="$(state_of inside)"
 INSIDE_SESSION="$(session_of inside)"
 # A plain `teamctl destroy` run this way gets the hangup at kill-session, and everything after
 # that line may never run. finish kills its own session as the very LAST act.
-tmuxt split-window -d -t "=$INSIDE_SESSION:" "cd \"$PROJECT\" && TEAM_ROLE=lead WOLFMUX_TEAM=inside \"$REPO/bin/teamctl\" finish --team inside >\"$WORK/inside.out\" 2>&1"
+tmuxt split-window -d -t "=$INSIDE_SESSION:" "cd \"$PROJECT\" && env -u TMUX_PANE TEAM_ROLE=lead WOLFMUX_TEAM=inside WOLFMUX_TMUX_SOCKET=\"$WOLFMUX_TMUX_SOCKET\" \"$REPO/tests/in-pane\" finish --team inside >\"$WORK/inside.out\" 2>&1"
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do has_session "$INSIDE_SESSION" || break; sleep 1; done
 sleep 1
 check "the session is gone, and so is everything finish had to do before it" \

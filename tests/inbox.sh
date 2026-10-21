@@ -130,16 +130,30 @@ state_of() { awk -F'\t' -v n="$2" 'NR == n { print $3 }' "$(inbox_file "$1")" 2>
 # inbox_count_new_of <role> — notices this ONE role has that the human has not expanded
 # (the badge itself counts the whole team, which is what the human wants to see)
 inbox_count_new_of() { awk -F'\t' 'NF >= 4 && substr($3, 1, 1) == "n" { n++ } END { print n + 0 }' "$(inbox_file "$1")" 2>/dev/null; }
-# A hook runs with the agent's own environment, in the agent's own directory.
+# A hook runs with the agent's own environment, in the agent's own directory, IN the agent's
+# own pane: tmux put TMUX and TMUX_PANE into the pane's processes, Claude Code hands its
+# environment to hooks, and the pane's process is one of the hook's ancestors. That last part
+# is the pane proof (lib/common.sh identity_in_own_pane). Here the stub agent is not the hook's
+# parent, so tests/fake-ps grafts this test shell under the pane's process.
+pane_of_role() { tmx list-panes -s -t "$SESSION" -F '#{@ai_role} #{pane_id}' 2>/dev/null | awk -v r="$1" '$1 == r { print $2; exit }'; }
 hook() { # <role> <_inbox-stop|_inbox-prompt>
-  (cd "$PROJECT" && TEAM_ROLE="$1" WOLFMUX_TEAM=default teamctl "$2" </dev/null 2>/dev/null)
+  hook_in "$(pane_of_role "$1")" "$1" "$2"
 }
-# hook_in <pane> <role> <hook> — the hook as the agent IN that pane runs it: tmux put TMUX
-# and TMUX_PANE into the pane's processes, and Claude Code hands its environment to hooks.
-# (hook above has neither, so the Stop hook finds the pane by role, from the team record.)
+# hook_in <pane> <role> <hook> — the hook as the agent IN that pane runs it. The fixture itself
+# asks the real tmux, so a check that breaks tmux on PATH breaks only the hook's own reads.
+REAL_TMUX="$(command -v tmux)"
 hook_in() {
-  (cd "$PROJECT" && TMUX="$(tmx display-message -p -t "$1" '#{socket_path}'),0,0" TMUX_PANE="$1" \
+  local pid socket
+  pid="$("$REAL_TMUX" -L "$WOLFMUX_TMUX_SOCKET" display-message -p -t "$1" '#{pane_pid}' 2>/dev/null)"
+  socket="$("$REAL_TMUX" -L "$WOLFMUX_TMUX_SOCKET" display-message -p -t "$1" '#{socket_path}' 2>/dev/null)"
+  (cd "$PROJECT" && TMUX="$socket,0,0" TMUX_PANE="$1" \
+    WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_GRAFT="$$:$pid" \
     TEAM_ROLE="$2" WOLFMUX_TEAM=default teamctl "$3" </dev/null 2>/dev/null)
+}
+# hook_bare <role> <hook> — the same hook with the agent's environment and no pane at all: a
+# background chat of Claude's daemon that inherited it (2026-10-19). It must be given nothing.
+hook_bare() {
+  (cd "$PROJECT" && TEAM_ROLE="$1" WOLFMUX_TEAM=default BEADS_ACTOR="$1" teamctl "$2" </dev/null 2>/dev/null)
 }
 # delivered_of <role> <text> <true|false> — has the agent been given the notice naming text?
 delivered_of() {
@@ -350,15 +364,15 @@ SILENT_BEFORE="$(stop_silent_events)"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id silent-lead-1 >/dev/null 2>&1
 hook lead _inbox-stop >"$WORK/silent-lead.out"
 SILENT_LEAD_STATUS=$?
-check "watched lead pane (found by role): the Stop hook exits 0 and prints NOTHING" '[ "$SILENT_LEAD_STATUS" -eq 0 ] && [ ! -s "$WORK/silent-lead.out" ]'
+check "watched lead pane: the Stop hook exits 0 and prints NOTHING" '[ "$SILENT_LEAD_STATUS" -eq 0 ] && [ ! -s "$WORK/silent-lead.out" ]'
 check "watched lead pane: the notice is still undelivered, waiting for the next prompt" 'delivered_of lead silent-lead-1 false'
 check "watched lead pane: one event line says why, and the cooldown stamp is left alone" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "next prompt (human-pane-typing=off: a client is attached" && [ ! -e "$INBOX/.stop.lead" ]'
-check "watched lead pane (found through TMUX_PANE): silent as well" '[ -z "$(hook_in "$LEAD_PANE" lead _inbox-stop)" ] && delivered_of lead silent-lead-1 false'
+check "watched lead pane (TMUX_PANE named directly): silent as well" '[ -z "$(hook_in "$LEAD_PANE" lead _inbox-stop)" ] && delivered_of lead silent-lead-1 false'
 PROMPT_SILENT="$(hook lead _inbox-prompt)"
 check "watched lead pane: the next prompt hands it over and marks it delivered" 'printf "%s" "$PROMPT_SILENT" | grep -q "silent-lead-1" && printf "%s" "$PROMPT_SILENT" | grep -q "bd list --assignee lead" && delivered_of lead silent-lead-1 true'
 check "watched lead pane: after that the Stop hook has nothing left to say" '[ -z "$(hook lead _inbox-stop)" ]'
 WOLFMUX_NUDGE_TYPE=off teamctl nudge qa --id silent-qa-1 >/dev/null 2>&1
-check "watched worker pane (the client shows qa): silent, by TMUX_PANE and by role" '[ -z "$(hook_in "$PANE" qa _inbox-stop)" ] && [ -z "$(hook qa _inbox-stop)" ] && delivered_of qa silent-qa-1 false && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "an attached client is showing this pane"'
+check "watched worker pane (the client shows qa): silent, both ways the fixture runs it" '[ -z "$(hook_in "$PANE" qa _inbox-stop)" ] && [ -z "$(hook qa _inbox-stop)" ] && delivered_of qa silent-qa-1 false && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "an attached client is showing this pane"'
 check "watched worker pane: qa's next prompt hands it over" 'hook_in "$PANE" qa _inbox-prompt | grep -q "silent-qa-1" && delivered_of qa silent-qa-1 true'
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id silent-aux-1 >/dev/null 2>&1
 AUX_STOP="$(hook_in "$AUX_PANE" aux _inbox-stop)"
@@ -373,16 +387,20 @@ check "a tmux error on who is watching: read as watched, so silent, and the noti
 check "a tmux error: and the same hook with tmux answering blocks as before" 'hook_in "$AUX_PANE" aux _inbox-stop | jq -r .reason | grep -q "tmuxerr-1" && delivered_of aux tmuxerr-1 true'
 /bin/rm -f "$INBOX/.stop.aux"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id lookup-1 >/dev/null 2>&1
+# The pane proof reads the pane once (display-message). When that read fails, the hook cannot
+# tell whose pane it is: it is given nothing and nothing is taken. It never falls back to
+# looking the pane up by role (list-panes): that is how an inherited environment found the
+# real agent's pane.
 LOOKUP_OUT="$(
-  export PATH="$FAKE_TMUX_DIR:$PATH" FAKE_TMUX_FAIL=list-panes
-  hook aux _inbox-stop
+  export PATH="$FAKE_TMUX_DIR:$PATH" FAKE_TMUX_FAIL=display-message
+  hook_in "$AUX_PANE" aux _inbox-stop
 )"
-check "the pane cannot be found by role (tmux fails list-panes): fail closed, silent" '[ -z "$LOOKUP_OUT" ] && delivered_of aux lookup-1 false'
+check "the pane read fails (tmux fails display-message): no proof, silent, nothing taken" '[ -z "$LOOKUP_OUT" ] && delivered_of aux lookup-1 false'
 LOOKUP_OUT="$(
   export PATH="$FAKE_TMUX_DIR:$PATH" FAKE_TMUX_FAIL=list-panes
   hook_in "$AUX_PANE" aux _inbox-stop
 )"
-check "the same, but TMUX_PANE names the pane: it is found without the lookup, and blocks" 'printf "%s" "$LOOKUP_OUT" | jq -r .reason | grep -q "lookup-1" && delivered_of aux lookup-1 true'
+check "tmux fails list-panes: the hook never needs a lookup by role, and blocks" 'printf "%s" "$LOOKUP_OUT" | jq -r .reason | grep -q "lookup-1" && delivered_of aux lookup-1 true'
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id idle-stop-1 >/dev/null 2>&1
 IDLE_STOP="$(WOLFMUX_HUMAN_PANE_TYPING=idle hook lead _inbox-stop)"
 check "policy idle: the watched lead pane gets the block answer exactly as before" 'printf "%s" "$IDLE_STOP" | jq -e ".decision == \"block\"" && printf "%s" "$IDLE_STOP" | jq -r .reason | grep -q "idle-stop-1" && delivered_of lead idle-stop-1 true'
@@ -771,54 +789,58 @@ check "a human's pane: a tmux error, no tmux, or the error seam all read as watc
       *) return 1 ;;
     esac
   }
-  session_name_for_project() { printf 'team-from-record\n'; }
-  tm_pane_for_role() { printf '%%9\n'; }
   policy_get() { printf '%s\n' "$FAKE_POLICY"; }
-  INBOX_ROLE=qa FAKE_POLICY=off FAKE_SHOWN=""
-  # 1. TMUX_PANE, a pane of the team's server that carries this role: it, and its session
-  TMUX="/tmp/tmux-1/$WOLFMUX_TMUX_SOCKET,1,0" TMUX_PANE=%7 FAKE_READ="qa team-x"
-  _inbox_stop_pane
-  [ "$INBOX_PANE" = "%7" ] && [ "$SESSION" = "team-x" ] || exit 1
-  # 2. it carries another role, or none: the lookup by role decides
-  FAKE_READ="lead team-x"
-  _inbox_stop_pane
-  [ "$INBOX_PANE" = "%9" ] && [ "$SESSION" = "team-from-record" ] || exit 1
-  FAKE_READ=" team-x"
-  _inbox_stop_pane
-  [ "$INBOX_PANE" = "%9" ] || exit 1
-  # 3. a pane of ANOTHER tmux server is not even read
+  INBOX_ROLE=qa FAKE_POLICY=off FAKE_SHOWN="" SESSION=team-x
+  # The pane proof, one tmux read: "<pane pid>|<@ai_role>|<@wolfmux_team>|<session>". tests/fake-ps
+  # makes pid 4242 this shell's parent ($$ is the suite's shell here too).
+  export WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_GRAFT="$$:4242"
+  # 1. TMUX_PANE, a pane of the team's server, this role, this session, its process among our parents
+  TMUX="/tmp/tmux-1/$WOLFMUX_TMUX_SOCKET,1,0" TMUX_PANE=%7 FAKE_READ="4242|qa|default|team-x"
+  identity_in_own_pane qa team-x || exit 1
+  [ "$IDENTITY_PANE_ROLE" = "qa" ] && [ "$IDENTITY_SESSION" = "team-x" ] && [ "$IDENTITY_TEAM" = "default" ] || exit 1
+  [ "$(grep -c display-message "$CALLS")" = "1" ] || exit 1 # ONE read
+  # 2. another role's pane, no agent's pane, another session, another pane's process: no
+  FAKE_READ="4242|lead|default|team-x"
+  identity_in_own_pane qa team-x && exit 1
+  case "$IDENTITY_WHY" in *"lead's, not qa's"*) ;; *) exit 1 ;; esac
+  FAKE_READ="4242||default|team-x"
+  identity_in_own_pane qa team-x && exit 1
+  case "$IDENTITY_WHY" in *"no agent's pane"*) ;; *) exit 1 ;; esac
+  FAKE_READ="4242|qa|default|team-y"
+  identity_in_own_pane qa team-x && exit 1
+  case "$IDENTITY_WHY" in *"session team-y"*) ;; *) exit 1 ;; esac
+  FAKE_READ="4243|qa|default|team-x"
+  identity_in_own_pane qa team-x && exit 1
+  case "$IDENTITY_WHY" in *"not among its parents"*) ;; *) exit 1 ;; esac
+  # 3. a pane of ANOTHER tmux server is not even read, and neither is a missing TMUX_PANE
   : >"$CALLS"
-  TMUX="/tmp/tmux-1/default,1,0" FAKE_READ="qa team-x"
-  _inbox_stop_pane
-  [ "$INBOX_PANE" = "%9" ] && ! grep -q display-message "$CALLS" || exit 1
-  # 4. no TMUX_PANE at all: the lookup
+  TMUX="/tmp/tmux-1/default,1,0" FAKE_READ="4242|qa|default|team-x"
+  identity_in_own_pane qa team-x && exit 1
+  TMUX="/tmp/tmux-1/$WOLFMUX_TMUX_SOCKET,1,0"
   unset TMUX_PANE
-  _inbox_stop_pane
-  [ "$INBOX_PANE" = "%9" ] || exit 1
-  # 5. found and on nobody's screen: not watched, so the hook answers as it always did;
+  identity_in_own_pane qa team-x && exit 1
+  [ "$IDENTITY_WHY" = "no TMUX_PANE" ] && ! grep -q display-message "$CALLS" || exit 1
+  # 4. the proven pane on nobody's screen: not watched, so the hook answers as it always did;
   #    on a client's screen: watched
+  INBOX_PANE=%7
   FAKE_SHOWN="%3"
   _inbox_stop_watched && exit 1
-  FAKE_SHOWN="%9"
+  FAKE_SHOWN="%7"
   _inbox_stop_watched || exit 1
-  # 6. nothing can be found: no pane, no session, and that reads as WATCHED (fail closed),
-  #    for a worker and for the lead alike
-  session_name_for_project() { return 1; }
-  FAKE_SHOWN="%3"
-  _inbox_stop_pane
-  [ -z "$INBOX_PANE" ] && [ -z "$SESSION" ] || exit 1
+  # 5. no pane: that reads as WATCHED (fail closed), for a worker and for the lead alike
+  INBOX_PANE="" FAKE_SHOWN="%3"
   _inbox_stop_watched || exit 1
   INBOX_ROLE=lead
   _inbox_stop_watched || exit 1
-  # 7. policy idle: never watched, and tmux is not asked anything at all
+  # 6. policy idle: never watched, and tmux is not asked anything at all
   : >"$CALLS"
-  FAKE_POLICY=idle FAKE_SHOWN="%9"
+  FAKE_POLICY=idle FAKE_SHOWN="%7" INBOX_ROLE=qa INBOX_PANE=%7
   _inbox_stop_watched && exit 1
   [ ! -s "$CALLS" ] || exit 1
   exit 0
 ) >/dev/null 2>&1
 STOP_PANE_STATUS=$?
-check "the Stop hook's own pane: TMUX_PANE when it is this role's on this server, else by role; none found reads as watched; idle asks nothing" '[ "$STOP_PANE_STATUS" -eq 0 ]'
+check "the pane proof: this role's pane of this session on this server, its process among our parents, one read; no pane reads as watched; idle asks nothing" '[ "$STOP_PANE_STATUS" -eq 0 ]'
 (
   cd "$PROJECT" || exit 1
   # shellcheck disable=SC1090
@@ -1545,8 +1567,153 @@ check "settings delta (lead): at the default there is no permissions key at all,
 check "settings delta (worker): the same both ways round" '[ "$DEFAULT_QA_PERMKEY" = "false" ] && [ "$DEFAULT_QA_DOC" = "$(settings_doc_noperm qa)" ]'
 # The DRIFT, which the delta cannot see: if something else in that jq chain quietly changes
 # shape, BOTH documents change together and the delta still passes.
-check "settings drift (lead): the key set is exactly env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook and the inbox UserPromptSubmit hook" '[ "$DEFAULT_LEAD_KEYS" = "[\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
-check "settings drift (worker): exactly env, hooks and teammateMode, and exactly the guard, the notification hook and the two inbox hooks" '[ "$DEFAULT_QA_KEYS" = "[\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
+check "settings drift (lead): the key set is exactly disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook and the inbox UserPromptSubmit hook" '[ "$DEFAULT_LEAD_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
+check "settings drift (worker): exactly disableAgentView, env, hooks and teammateMode, and exactly the guard, the notification hook and the two inbox hooks" '[ "$DEFAULT_QA_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
+# rgi60 F5: Claude Code's agent view is off for every agent, by the setting AND by its
+# environment switch. With it on, /bg turned the comms lead's pane into the agent view, which
+# started Claude's daemon from inside the pane (2026-10-19).
+check "agent view off (lead and worker): disableAgentView is true and env.CLAUDE_CODE_DISABLE_AGENT_VIEW is \"1\"" '(for r in lead qa; do jq -e ".disableAgentView == true and .env.CLAUDE_CODE_DISABLE_AGENT_VIEW == \"1\"" "$(settings_of "$r")" || exit 1; done)'
+
+echo "== rgi60: an inherited identity is not an identity (the pane proof)"
+# 2026-10-19: the comms lead was sent to the background (/bg). Its pane became Claude's agent
+# view, the agent view started Claude's daemon from inside the pane, and every background chat
+# of that daemon had the lead's whole environment (TEAM_ROLE, WOLFMUX_TEAM, BEADS_ACTOR, TMUX,
+# TMUX_PANE). Three chats acted as the comms lead for two days. Their process tree was chat ->
+# `claude bg-pty-host` -> `claude daemon run` -> pid 1: the pane's process was not among their
+# parents. That tree is built here with tests/fake-ps: invented daemon processes, and this
+# suite's shell grafted under them, so every process it starts runs "in the daemon".
+LEAD_PANE="$(pane_of_role lead)"
+QA_PANE="$(pane_of_role qa)"
+DAEMON_TABLE="$WORK/daemon-ps"
+{
+  printf '%s\t%s\t%s\t%s\n' 71001 1 "/Users/x/.local/bin/claude daemon run" "TEAM_ROLE=lead WOLFMUX_TEAM=default"
+  printf '%s\t%s\t%s\n' 71002 71001 "/Users/x/.local/bin/claude bg-pty-host"
+} >"$DAEMON_TABLE"
+REAL_SOCKET="$("$REAL_TMUX" -L "$WOLFMUX_TMUX_SOCKET" display-message -p -t "$LEAD_PANE" '#{socket_path}')"
+# hook_daemon <role> <hook> — the hook in a background chat of that daemon: the agent's whole
+# environment, its TMUX_PANE too, and a process tree that never reaches the pane
+hook_daemon() {
+  (cd "$PROJECT" && TMUX="$REAL_SOCKET,0,0" TMUX_PANE="$(pane_of_role "$1")" TEAM_ROLE="$1" WOLFMUX_TEAM=default BEADS_ACTOR="$1" \
+    WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_TABLE="$DAEMON_TABLE" WOLFMUX_FAKE_PS_GRAFT="$$:71002" \
+    teamctl "$2" </dev/null 2>/dev/null)
+}
+# as_daemon_chat <command…> — teamctl itself, run from such a chat (stdout and stderr together)
+as_daemon_chat() {
+  (cd "$PROJECT" && TMUX="$REAL_SOCKET,0,0" TMUX_PANE="$LEAD_PANE" TEAM_ROLE=lead WOLFMUX_TEAM=default BEADS_ACTOR=lead \
+    WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_TABLE="$DAEMON_TABLE" WOLFMUX_FAKE_PS_GRAFT="$$:71002" \
+    teamctl "$@" </dev/null 2>&1)
+}
+# as_lead_in_pane <command…> — the same command from the lead's own pane
+as_lead_in_pane() {
+  (cd "$PROJECT" && TMUX="$REAL_SOCKET,0,0" TMUX_PANE="$LEAD_PANE" TEAM_ROLE=lead WOLFMUX_TEAM=default BEADS_ACTOR=lead \
+    WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_GRAFT="$$:$("$REAL_TMUX" -L "$WOLFMUX_TMUX_SOCKET" display-message -p -t "$LEAD_PANE" '#{pane_pid}')" \
+    teamctl "$@" </dev/null 2>&1)
+}
+NOT_YOU="[wolfmux] This chat is not running in default's lead pane, so it is NOT lead. Do not send Beads or run teamctl as that role, and ignore wolfmux notices. BEADS_ACTOR in this chat's environment is inherited, not yours."
+CLAIMS="this process claims lead but does not run in its pane (a background or inherited chat). Run teamctl from the agent's own pane, or from a plain Terminal as yourself."
+refused_events() { grep -c '"type":"identity-refused"' "$STATE_DIR/events.jsonl" 2>/dev/null || true; }
+teamctl inbox --all >/dev/null 2>&1
+/bin/rm -f "$STATE_DIR"/.identity-refused.* "$INBOX/.stop.lead" "$INBOX/.stop.qa"
+REFUSED_BEFORE="$(refused_events)"
+WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id idn-lead-1 >/dev/null 2>&1
+# case 2: the daemon's chat, then a chat with no pane at all
+DAEMON_PROMPT="$(hook_daemon lead _inbox-prompt)"
+DAEMON_STOP="$(hook_daemon lead _inbox-stop)"
+BARE_PROMPT="$(hook_bare lead _inbox-prompt)"
+BARE_STOP="$(hook_bare lead _inbox-stop)"
+check "daemon chat: _inbox-prompt hands over NOTHING and says, in the brief's words, that the chat is not the lead" '[ "$DAEMON_PROMPT" = "$NOT_YOU" ]'
+check "daemon chat: _inbox-stop prints nothing and blocks nothing" '[ -z "$DAEMON_STOP" ] && [ ! -e "$INBOX/.stop.lead" ]'
+check "no pane at all: the same line, on EVERY prompt (it may have forgotten after a compaction), and a silent Stop hook" '[ "$BARE_PROMPT" = "$NOT_YOU" ] && [ -z "$BARE_STOP" ]'
+check "nothing was taken from the inbox: the notice is still undelivered" 'delivered_of lead idn-lead-1 false'
+check "identity-refused: four refusals inside a minute log ONE line, naming the role and why" '[ "$(refused_events)" -eq $((REFUSED_BEFORE + 1)) ] && grep "\"type\":\"identity-refused\"" "$STATE_DIR/events.jsonl" | tail -1 | jq -e ".role == \"lead\" and .by == \"not-in-its-pane\" and (.detail | test(\"not among its parents\"))"'
+# case 3: another role's pane (qa's), really an ancestor, but the claim is lead
+OTHER_PROMPT="$(cd "$PROJECT" && TMUX="$REAL_SOCKET,0,0" TMUX_PANE="$QA_PANE" TEAM_ROLE=lead WOLFMUX_TEAM=default \
+  WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_GRAFT="$$:$("$REAL_TMUX" -L "$WOLFMUX_TMUX_SOCKET" display-message -p -t "$QA_PANE" '#{pane_pid}')" \
+  teamctl _inbox-prompt </dev/null 2>/dev/null)"
+check "TMUX_PANE of another role's pane: refused, the not-you line, nothing taken" '[ "$OTHER_PROMPT" = "$NOT_YOU" ] && delivered_of lead idn-lead-1 false'
+# the notification hook: no "lead: finished" on your screen from a chat that is not the lead
+NOTIFY_BEFORE="$(wc -c <"$WOLFMUX_NOTIFY_TTY" | tr -d ' ')"
+printf '%s' '{"last_assistant_message":"idn daemon chat finished"}' | (cd "$PROJECT" && TMUX="$REAL_SOCKET,0,0" TMUX_PANE="$LEAD_PANE" TEAM_ROLE=lead WOLFMUX_TEAM=default \
+  WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_TABLE="$DAEMON_TABLE" WOLFMUX_FAKE_PS_GRAFT="$$:71002" teamctl _notify >/dev/null 2>&1)
+check "daemon chat: the notification hook posts nothing" '[ "$(wc -c <"$WOLFMUX_NOTIFY_TTY" | tr -d " ")" = "$NOTIFY_BEFORE" ] && ! grep -rq "idn daemon chat" "$WOLFMUX_DATA/notify" 2>/dev/null'
+# case 1: the lead in its own pane gets it, as before
+IN_PANE_PROMPT="$(hook lead _inbox-prompt)"
+check "the lead in its own pane: the notice is handed over and marked delivered, and no not-you line" 'printf "%s" "$IN_PANE_PROMPT" | grep -q "idn-lead-1" && ! printf "%s" "$IN_PANE_PROMPT" | grep -q "is NOT" && delivered_of lead idn-lead-1 true'
+# case 4: what the daemon chat may and may not run
+IDN_POLICY_BEFORE="$(teamctl status --json | jq -c .policy)"
+for c in "stop qa" "spawn idn flash --no-kickoff" "policy worker-spawn on" "restart qa" "approve A1" "remove qa" "model qa flash" "finish" "start fable --no-attach --skip-beads"; do
+  # shellcheck disable=SC2086
+  out="$(as_daemon_chat $c)"
+  rc=$?
+  printf '%s\n' "$rc|$out" >"$WORK/idn-$(printf '%s' "$c" | tr -c 'a-z' '_').out"
+done
+check "daemon chat: stop, spawn, policy, restart, approve, remove, model, finish and start all refuse with exit 77 and the brief's sentence" '(for f in "$WORK"/idn-*.out; do grep -q "^77|" "$f" && grep -qF "$CLAIMS" "$f" || exit 1; done)'
+check "daemon chat: and nothing happened (qa still runs, no new role, the policy unchanged)" '[ "$(teamctl status --json | jq -r ".agents[] | select(.role == \"qa\") | .state")" = "running" ] && ! teamctl status --json | jq -e ".agents[] | select(.role == \"idn\")" && [ "$(teamctl status --json | jq -c .policy)" = "$IDN_POLICY_BEFORE" ]'
+check "daemon chat: status, teams, inbox, version and approvals still work (they only read)" 'as_daemon_chat status >/dev/null && as_daemon_chat teams >/dev/null && as_daemon_chat inbox lead --keep >/dev/null && as_daemon_chat version >/dev/null && as_daemon_chat approvals >/dev/null'
+check "daemon chat: status --json is still JSON" 'as_daemon_chat status --json | jq -e .agents'
+IN_PANE_APPROVE="$(as_lead_in_pane approve NOPE)"
+check "the lead in its own pane: past the identity gate (approve of an unknown id fails for THAT reason, not 77)" '! printf "%s" "$IN_PANE_APPROVE" | grep -qF "does not run in its pane" && printf "%s" "$IN_PANE_APPROVE" | grep -qi "NOPE"'
+# case 5: you, at your own terminal: unchanged
+OP_APPROVE="$(cd "$PROJECT" && teamctl approve NOPE 2>&1)"
+check "operator (no TEAM_ROLE, no TMUX_PANE): no claim, no refusal, and the hooks say nothing" '! printf "%s" "$OP_APPROVE" | grep -qF "does not run in its pane" && [ -z "$(cd "$PROJECT" && teamctl _inbox-prompt </dev/null 2>&1)" ]'
+# A pane you split for yourself in the team's window: on the team's server, but no agent's.
+OWN_PANE="$(tmx split-window -d -t "$LEAD_PANE" -P -F '#{pane_id}' 'sleep 600' 2>/dev/null)"
+OWN_APPROVE="$(cd "$PROJECT" && TMUX="$REAL_SOCKET,0,0" TMUX_PANE="$OWN_PANE" teamctl approve NOPE 2>&1)"
+check "operator in a pane of the team's window that is no agent's: still you" '[ -n "$OWN_PANE" ] && ! printf "%s" "$OWN_APPROVE" | grep -qF "does not run in its pane"'
+tmx kill-pane -t "$OWN_PANE" >/dev/null 2>&1
+# caller_role: a failed claim keeps its role. Empty would be YOU, who may do everything.
+CLAIMED_ROLE="$(cd "$PROJECT" && TEAM_ROLE=lead WOLFMUX_TEAM=default bash -c '
+  set -euo pipefail
+  for m in provider-env common registry tmuxctl policy; do . "$WOLFMUX_HOME/lib/$m.sh"; done
+  caller_role' 2>/dev/null)"
+check "caller_role: a claim that fails the proof is still that role, never empty (empty is you)" '[ "$CLAIMED_ROLE" = "lead" ]'
+# case 6: Claude's agent view in qa's pane. Its record's conversation went on in a background chat.
+QA_PID="$("$REAL_TMUX" -L "$WOLFMUX_TMUX_SOCKET" display-message -p -t "$QA_PANE" '#{pane_pid}')"
+QA_SID="$(teamctl status --json | jq -r '.agents[] | select(.role == "qa") | .session_id')"
+QA_WORKDIR="$(teamctl status --json | jq -r '.agents[] | select(.role == "qa") | .workdir')"
+VIEW_TABLE="$WORK/view-ps"
+printf '%s\t1\t/Users/x/.local/bin/claude agents\n' "$QA_PID" >"$VIEW_TABLE"
+VIEW_PROJECTS="$WORK/view-projects"
+VIEW_TDIR="$VIEW_PROJECTS/$(printf '%s' "$(cd "$QA_WORKDIR" && pwd -P)" | LC_ALL=C sed 's|[^A-Za-z0-9]|-|g')"
+/bin/mkdir -p "$VIEW_TDIR"
+CONT_ID="0f0e0d0c-1111-4222-8333-444455556666"
+{
+  printf '%s\n' '{"type":"user","message":{"content":"hello"}}'
+  printf '%s\n' '{"type":"continued-in","continuedInSessionId":"00000000-0000-4000-8000-000000000001"}'
+  # one 70 kB line: the earlier continued-in line is outside the 64 KiB tail teamctl reads
+  printf '{"type":"filler","text":"%s"}\n' "$(head -c 70000 /dev/zero | tr '\0' 'x')"
+  printf '%s\n' '{"type":"continued-in","continuedInSessionId":"'"$CONT_ID"'"}'
+} >"$VIEW_TDIR/$QA_SID.jsonl"
+view_status() { (cd "$PROJECT" && WOLFMUX_CLAUDE_PROJECTS="$VIEW_PROJECTS" WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_TABLE="$VIEW_TABLE" teamctl status "$@" 2>/dev/null); }
+VIEW_JSON="$(view_status --json)"
+VIEW_TEXT="$(view_status)"
+check "status --json: qa, whose pane runs Claude's agent view, is backgrounded, with the LAST continued-in id of its transcript" 'printf "%s" "$VIEW_JSON" | jq -e --arg id "$CONT_ID" ".agents[] | select(.role == \"qa\") | .state == \"backgrounded\" and .continued_in == \$id and (.hint | test(\"agent view\")) and .holding == null"'
+check "status --json: the lead's row is running and keeps its old shape (no hint, no continued_in)" 'printf "%s" "$VIEW_JSON" | jq -e ".agents[] | select(.role == \"lead\") | .state == \"running\" and (has(\"hint\") | not) and (has(\"continued_in\") | not)"'
+check "status (text): the backgrounded row and the hint line under it" 'printf "%s" "$VIEW_TEXT" | grep -q "qa .*backgrounded" && printf "%s" "$VIEW_TEXT" | grep -qF "this pane runs Claude'"'"'s agent view; its conversation continued in $CONT_ID as a background chat"'
+check "status without the fake table: qa is running again (nothing is remembered)" '[ "$(teamctl status --json | jq -r ".agents[] | select(.role == \"qa\") | .state")" = "running" ]'
+# case 7: doctor, on a fake daemon whose environment holds an identity AND secrets. Only the
+# section's own function: the whole doctor runs a real claude for `auth status`.
+DOCTOR_TABLE="$WORK/doctor-ps"
+{
+  printf '%s\t%s\t%s\t%s\n' 72001 1 '/Users/x/.local/bin/claude daemon run --spawned-by {"pid":4321,"kind":"agents"}' \
+    "HOME=/x/home SECRET_TOKEN=idn-secret-1 TEAM_ROLE=lead WOLFMUX_TEAM=communication-management BEADS_ACTOR=communication-management.lead ANTHROPIC_API_KEY=idn-secret-2 PATH=/bin"
+  printf '%s\t%s\t%s\t%s\n' 72002 1 "claude daemon run" "HOME=/y CLAUDE_CODE_OAUTH_TOKEN=idn-secret-3"
+  printf '%s\t%s\t%s\t%s\n' 72003 1 "/usr/bin/vim notes-about-claude-daemon-run.txt" "EDITOR=vim"
+} >"$DOCTOR_TABLE"
+doctor_daemons() { # <table>
+  (cd "$PROJECT" && WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_TABLE="$1" bash -c '
+    set -euo pipefail
+    for m in provider-env common registry tmuxctl worktree disk beads policy approvals agents views models doctor; do . "$WOLFMUX_HOME/lib/$m.sh"; done
+    DOC_WARN=0 DOC_FAIL=0
+    _doc_daemons
+    echo "warnings=$DOC_WARN"' 2>&1)
+}
+DOCTOR_OUT="$(doctor_daemons "$DOCTOR_TABLE")"
+check "doctor: the daemon with an identity is ONE warning naming it, its spawner pid and the fix" 'printf "%s" "$DOCTOR_OUT" | grep "pid 72001" | grep -F "TEAM_ROLE=lead" | grep -F "WOLFMUX_TEAM=communication-management" | grep -F "BEADS_ACTOR=communication-management.lead" | grep -F "started by pid 4321" | grep -F "claude stop <id>" | grep -qF "teamctl restart" && printf "%s" "$DOCTOR_OUT" | grep -q "^warnings=1$"'
+check "doctor: the daemon without one is ok, and a process that only MENTIONS the words is no daemon" 'printf "%s" "$DOCTOR_OUT" | grep -q "ok .*pid 72002 carries no wolfmux identity" && ! printf "%s" "$DOCTOR_OUT" | grep -q 72003'
+check "doctor: no other environment variable is ever printed (no token, no HOME, no PATH)" '! printf "%s" "$DOCTOR_OUT" | grep -qE "idn-secret|SECRET_TOKEN|ANTHROPIC_API_KEY|OAUTH|HOME=|PATH=|EDITOR"'
+: >"$WORK/empty-ps"
+check "doctor: no daemon at all is one ok line" 'doctor_daemons "$WORK/empty-ps" | grep -q "ok .*no Claude daemon running"'
 
 teamctl inbox --all >/dev/null 2>&1
 

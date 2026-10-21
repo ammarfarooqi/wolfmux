@@ -46,8 +46,10 @@ agent_view_continued_in() {
   local file id
   file="$(session_transcript "${1:-}" "${2:-}" 2>/dev/null || true)"
   [ -n "$file" ] && [ -f "$file" ] || return 0
+  # The id is matched, not parsed: the first line of the tail is usually cut, and a line that
+  # does not parse must not hide the id it carries.
   id="$(tail -c 65536 "$file" 2>/dev/null | grep -E '"type": ?"continued-in"' | tail -1 |
-    "$JQ_BIN" -r '.continuedInSessionId // empty' 2>/dev/null || true)"
+    grep -oE '"continuedInSessionId": ?"[0-9A-Fa-f-]+"' | tail -1 | grep -oE '[0-9A-Fa-f-]{36}' || true)"
   if valid_session_id "$id"; then printf '%s\n' "$id"; fi
 }
 
