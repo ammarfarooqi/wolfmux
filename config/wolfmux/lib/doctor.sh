@@ -602,6 +602,40 @@ EOF
   return 0
 }
 
+# _doc_daemons — Claude's daemon (`claude daemon run`) runs the background chats of /bg and of
+# the agent view. A daemon started from inside an agent's pane keeps that agent's environment,
+# and so does every chat it starts: on 2026-10-19 three chats acted as the comms lead that way
+# (lib/common.sh identity_in_own_pane). ONE ps call finds the daemons, and one more per daemon
+# reads its environment. Never a claude command (`claude daemon status` can start a daemon),
+# never a signal. Of the environment, only the three identity variables are printed: tokens
+# live there too.
+_doc_daemons() {
+  local pid env_line identity spawner found=0
+  _head "Claude's daemon (background chats)"
+  while read -r pid; do
+    case "$pid" in "" | *[!0-9]*) continue ;; esac
+    found=1
+    env_line="$("$WOLFMUX_PS_BIN" eww -o command= -p "$pid" 2>/dev/null || true)"
+    identity="$(printf '%s\n' "$env_line" | tr ' ' '\n' |
+      grep -E '^(TEAM_ROLE|WOLFMUX_TEAM|BEADS_ACTOR)=[A-Za-z0-9._/-]*$' | sort -u | tr '\n' ' ' | sed 's/ $//' || true)"
+    if ! printf '%s\n' "$identity" | grep -qE '(^| )(TEAM_ROLE|WOLFMUX_TEAM)='; then
+      _ok "Claude daemon pid $pid carries no wolfmux identity"
+      continue
+    fi
+    # Who started it: the pid in its --spawned-by JSON (the agent view of some pane, usually).
+    spawner="$(printf '%s\n' "$env_line" | sed -n 's/.*--spawned-by[= ]//p' | grep -oE '"pid" *: *[0-9]+' | head -1 | grep -oE '[0-9]+$' || true)"
+    _warn "Claude daemon pid $pid carries an agent's identity ($identity), started by pid ${spawner:-unknown}. Every background chat it starts claims that identity; wolfmux refuses them (not in the agent's pane), but they still run. Fix: stop each such chat with 'claude stop <id>', then bring the agent back in its pane: teamctl restart <role> [--team <team>] --resume <id>. teamctl never stops the daemon itself."
+  done <<EOF
+$("$WOLFMUX_PS_BIN" -axo pid=,command= 2>/dev/null | awk '{
+    for (i = 2; i + 2 <= NF; i++) {
+      n = split($i, part, "/")
+      if (part[n] == "claude" && $(i + 1) == "daemon" && $(i + 2) == "run") { print $1; break }
+    }
+  }')
+EOF
+  [ "$found" -eq 1 ] || _ok "no Claude daemon running"
+}
+
 cmd_doctor() {
   local p metered
   DOC_PROBE=0
@@ -627,6 +661,7 @@ cmd_doctor() {
   _doc_team
   _doc_policy
   _doc_models
+  _doc_daemons
   _head "Account-side settings no local tool can see — check them once"
   _note "claude.ai  > Settings > Usage: keep 'extra usage' OFF, or overage beyond the plan is metered."
   _note "chatgpt.com > Settings > Codex usage: do not buy or auto-refill credits if you want plan-only usage."
