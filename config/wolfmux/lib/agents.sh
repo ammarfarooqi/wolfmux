@@ -900,6 +900,11 @@ write_agent_settings() {
   # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh).
   # Everyone: notifications are teamctl's job inside a team (lib/notify.sh), and the
   #   notice inbox reaches the agent on Stop and on UserPromptSubmit (lib/inbox.sh).
+  # Everyone: Claude Code's agent view is off (disableAgentView, and its environment switch
+  #   CLAUDE_CODE_DISABLE_AGENT_VIEW). On 2026-10-19 the comms lead was sent to the background
+  #   (/bg); its pane became the agent view, which started Claude's daemon from inside the pane,
+  #   and every background chat of that daemon inherited the lead's identity. cmd_run_agent
+  #   exports the switch as well, for a CLI that reads only the environment.
   # Lead mode only: permission requests go to the lead.
   # Everyone, when the team's browser-writes policy says so (lib/policy.sh): an explicit
   # ALLOW rule for Chrome writes, so the permission check resolves before Claude Code's
@@ -910,7 +915,7 @@ write_agent_settings() {
     --arg inbox_stop "\"$TEAMCTL_SELF\" _inbox-stop" --arg inbox_prompt "\"$TEAMCTL_SELF\" _inbox-prompt" \
     --arg browser_allow "$(policy_get browser-writes)" '
     (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
-    * {env: {ECC_DISABLED_HOOKS: $silence}}
+    * {env: {ECC_DISABLED_HOOKS: $silence, CLAUDE_CODE_DISABLE_AGENT_VIEW: "1"}, disableAgentView: true}
     * {hooks: {
          Stop: (
            (if $notify_command != "" then [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}] else [] end)
@@ -949,6 +954,8 @@ cmd_run_agent() {
   WOLFMUX_TEAM="$TEAM"
   BEADS_ACTOR="$(team_identity "$TEAM" "$role")" # all teams of a project share its Beads
   export TEAM_ROLE="$role" BEADS_ACTOR WOLFMUX_TEAM
+  # No agent view, and so no Claude daemon started from this pane (write_agent_settings says why)
+  export CLAUDE_CODE_DISABLE_AGENT_VIEW=1
   if [ "$(reg_field "$role" kind)" = "worker" ]; then
     WOLFMUX_WORKTREE="$workdir" # what the worktree guard (lib/guard.sh) holds this agent to
     WOLFMUX_BRANCH="$(reg_field "$role" branch)"

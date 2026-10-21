@@ -445,7 +445,8 @@ review. Only the lead changes the main checkout.
 The lead is the only manager. Three mechanisms keep it that way:
 
 1. **Manager-only commands.** `caller_role` reads the `@ai_role` of the pane a command
-   runs in (falling back to `TEAM_ROLE`; empty means the human). `start`, `stop`,
+   runs in (falling back to `TEAM_ROLE`; empty means the human), and the pane proof
+   below checks that claim. `start`, `stop`,
    `restart`, `destroy`, `policy`, `approve` and `deny` require the lead or the human;
    `spawn` does too unless the `worker-spawn` policy is `on`.
 2. **No native teams inside workers.** `_run-agent` writes a per-agent settings file; for a worker it holds
@@ -464,6 +465,35 @@ The lead is the only manager. Three mechanisms keep it that way:
    answers `deny` with a reason for tool calls that leave the lane. File tools are
    resolved to real paths; shell commands are matched after every spelling of the known
    directories has been replaced by a token. See [ADR-0016](adr/0016-worktree-guard.md).
+
+5. **Identity is the pane.** An agent's identity lives in its environment (`TEAM_ROLE`,
+   `WOLFMUX_TEAM`, `BEADS_ACTOR`, `TMUX_PANE`), and everything the agent starts inherits
+   it. On 2026-10-19 the comms lead was sent to the background (`/bg`): Claude Code turned
+   its pane into the agent view, the agent view started Claude's daemon from inside the
+   pane, and every background chat of that daemon carried the lead's environment. Three
+   chats acted as the comms lead for two days. So a claim counts only with the **pane
+   proof** (`identity_in_own_pane`, `lib/common.sh`): `TMUX_PANE` is a pane of the team's
+   server, one tmux read shows that pane's `@ai_role` and session match, and the pane's
+   process is the caller or one of its ancestors (one `ps -axo pid=,ppid=`, walked in
+   awk). A daemon's chat runs under `claude daemon run`, whose parent is pid 1, so it fails.
+   - The inbox hooks (`_inbox-prompt`, `_inbox-stop`) and the notification hook
+     (`_notify`) give an unproven chat nothing, take nothing from its inbox and block
+     nothing. `_inbox-prompt` tells it, on every prompt, that it is NOT that agent. One
+     `identity-refused` line goes to the event log, at most once a minute per role.
+   - `caller_role` keeps an unproven claim (it never turns into the human), and every
+     check of who may act (`is_operator`, `is_manager`, `is_founder`, `is_steward`, so
+     every manager-only command, plus `start` and `restore`) refuses it with exit 77.
+     Read-only commands (`status`, `teams`, `dashboard`, `inbox`, `diff`, `capture`,
+     `doctor`, `version`) keep working for it.
+   - Prevention: every Claude agent runs with Claude Code's agent view off
+     (`disableAgentView: true` and `env.CLAUDE_CODE_DISABLE_AGENT_VIEW = "1"` in its
+     settings file, and `CLAUDE_CODE_DISABLE_AGENT_VIEW=1` in its environment), so `/bg`
+     cannot turn its pane into the agent view. A running agent gets this at its next
+     start or restart, not before.
+   - The tmux server never starts with an agent's identity (`tmx_boot` removes it), so a
+     pane you split for yourself, and tmux's own `run-shell` and `#()` commands, run as you.
+   Like the rest of this section it is a cooperative check, not a security boundary: every
+   agent is your macOS user.
 
 ### Permission modes
 
