@@ -63,7 +63,8 @@ EOF
 export PATH="$FAKE_BD:$PATH"
 : >"$BD_LOG"
 
-teamctl() { "$REPO/bin/teamctl" "$@"; }
+# An agent's command runs from its own pane (tests/in-pane: the pane proof); without TEAM_ROLE the shim changes nothing.
+teamctl() { "$REPO/tests/in-pane" "$@"; }
 tmx() { tmux -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
 
 passed=0

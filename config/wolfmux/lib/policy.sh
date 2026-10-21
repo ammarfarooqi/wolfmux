@@ -286,13 +286,58 @@ effective_permissions() {
 # caller_role — which agent is running this command. The pane it runs in decides;
 # TEAM_ROLE is the fallback outside tmux. Empty = you, at your own terminal.
 # A cooperative check, not a security boundary: every agent is your macOS user.
+#
+# The role is what the environment CLAIMS, and caller_resolve checks the claim with the pane
+# proof (identity_in_own_pane, lib/common.sh). A claim that fails it is still the role printed
+# here, never empty: empty is you, who may do everything, and a background chat that inherited
+# the comms lead's environment (2026-10-19) must not become you by failing the proof. Every
+# check of who may act (is_operator, is_manager, is_founder, is_steward, and through them
+# require_manager and require_operator) refuses such a caller with exit 77 instead
+# (caller_require_proven). What only reads (status, teams, dashboard, inbox, diff, capture,
+# doctor) asks none of them and keeps working for it.
 caller_role() {
-  local role=""
-  if [ -n "${TMUX_PANE:-}" ] && [ -n "$TMUX_BIN" ] && tm_inside_team_server; then
-    role="$(tmx display-message -p -t "$TMUX_PANE" '#{@ai_role}' 2>/dev/null || true)"
+  caller_resolve
+  printf '%s\n' "$CALLER_ROLE"
+}
+
+# caller_resolve — works out, once per process, who the caller claims to be and whether the claim
+# holds. CALLER_ROLE: the claimed role, empty for you. CALLER_TEAM: the claimed team.
+# CALLER_NOT_HERE: why the claim does not hold, empty when it does (or when there is no claim).
+# Call it in THIS shell before a $(caller_role): a substitution's subshell cannot keep the answer.
+caller_resolve() {
+  local proven=0 session=""
+  [ -z "${CALLER_RESOLVED:-}" ] || return 0
+  CALLER_RESOLVED=1 CALLER_ROLE="" CALLER_TEAM="" CALLER_NOT_HERE=""
+  # One tmux read and one ps for the pane this process says it runs in, whatever role that is.
+  if identity_in_own_pane ""; then proven=1; fi
+  CALLER_ROLE="$IDENTITY_PANE_ROLE"
+  [ -n "$CALLER_ROLE" ] || CALLER_ROLE="${TEAM_ROLE:-}"
+  CALLER_TEAM="$IDENTITY_TEAM"
+  [ -n "$CALLER_TEAM" ] || CALLER_TEAM="${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}"
+  [ -n "$CALLER_ROLE" ] || return 0 # nobody claims anything: you
+  if [ "$proven" -eq 0 ]; then
+    CALLER_NOT_HERE="$IDENTITY_WHY"
+    return 0
   fi
-  [ -n "$role" ] || role="${TEAM_ROLE:-}"
-  printf '%s\n' "$role"
+  # The pane is that agent's, and this process runs in it. It must also be its team's session in
+  # this project, as the records name it (not checked before a project is loaded: restore_who).
+  if [ -n "${PROJECT_STATE:-}" ]; then
+    session="$(team_paths "$CALLER_TEAM" && session_name_for_project 2>/dev/null)" || session=""
+    if [ -n "$session" ] && [ "$session" != "$IDENTITY_SESSION" ]; then
+      CALLER_NOT_HERE="pane $TMUX_PANE is in session $IDENTITY_SESSION, not the team's session $session"
+    fi
+  fi
+  return 0
+}
+
+# caller_require_proven — the refusal: exit 77 when this process claims an agent's identity and
+# does not run in that agent's pane (a background or inherited chat). Says nothing otherwise.
+# One identity-refused line goes to the event log, at most once a minute per role.
+caller_require_proven() {
+  caller_resolve
+  [ -n "$CALLER_NOT_HERE" ] || return 0
+  identity_refused_log "$CALLER_ROLE" "teamctl ${TEAMCTL_ARGS:-}: $CALLER_NOT_HERE"
+  die "this process claims $(team_identity "$CALLER_TEAM" "$CALLER_ROLE") but does not run in its pane (a background or inherited chat). Run teamctl from the agent's own pane, or from a plain Terminal as yourself. ('teamctl ${TEAMCTL_ARGS:-}' was not run: $CALLER_NOT_HERE)" 77
 }
 
 # is_operator — you, at your own terminal, and nobody else: caller_role is empty.
@@ -303,7 +348,19 @@ caller_role() {
 # team: `teamctl prune --all-teams` would sweep lanes of teams that lead does not manage, and
 # is_manager says 0 to it for the team it happens to be standing in. So the operator-only
 # commands ask this instead. Same cooperative check as caller_role, not a security boundary.
-is_operator() { [ -z "$(caller_role)" ]; }
+#
+# Like every check of who may act, it refuses a caller that fails the pane proof (exit 77). A
+# view that only wants to word a line for you or for an agent asks caller_is_you instead.
+is_operator() {
+  caller_require_proven
+  [ -z "$CALLER_ROLE" ]
+}
+
+# caller_is_you — 0 when nobody claims an agent's identity: for wording, never for permission
+caller_is_you() {
+  caller_resolve
+  [ -z "$CALLER_ROLE" ]
+}
 
 # require_operator <what was typed> <what it would reach> <what to run instead> — the same
 # shape of refusal as require_manager, exit 77, naming the command that IS the caller's.
@@ -319,6 +376,7 @@ require_operator() {
 # You manage every team. A lead manages its own team and no other.
 is_manager() {
   local role team
+  caller_require_proven
   role="$(caller_role)"
   [ -n "$role" ] || return 0
   [ "$role" = "$WOLFMUX_LEAD_ROLE" ] || return 1
@@ -371,6 +429,7 @@ team_orphaned() {
 # is_founder: the caller is a lead, and the lead that founded the loaded team
 is_founder() {
   local founder
+  caller_require_proven
   [ "$(caller_role)" = "$WOLFMUX_LEAD_ROLE" ] || return 1
   founder="$(team_founder)"
   [ "$founder" != "operator" ] && [ "$founder" = "$(caller_identity)" ]
@@ -403,6 +462,7 @@ orphan_steward() {
 # is_steward: the caller is the lead of the steward team, and the loaded team is another one, founded by you
 is_steward() {
   local steward own
+  caller_require_proven
   [ "$(caller_role)" = "$WOLFMUX_LEAD_ROLE" ] || return 1
   steward="$(orphan_steward)"
   [ -n "$steward" ] || return 1
@@ -488,7 +548,7 @@ require_manager() { # <command name> [<role>]
 # in an agent's pane it reads as that agent, so an agent is told "the human".
 team_orphaned_note() {
   local founder steward note="you"
-  is_operator || note="the human"
+  caller_is_you || note="the human" # wording only: teamctl status and teams must not refuse anybody
   founder="$(team_founder)"
   if [ "$founder" != "operator" ]; then
     note="$note, $founder (its founder)"

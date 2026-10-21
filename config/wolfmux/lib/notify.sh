@@ -200,7 +200,12 @@ cmd_notify() {
     input="$(/bin/cat 2>/dev/null || true)"
   fi
   [ -n "$JQ_BIN" ] || return 0
-  role="${TEAM_ROLE:-agent}"
+  # The pane proof, the same as the inbox hooks' (lib/inbox.sh _inbox_hook_ready): a chat that
+  # only inherited an agent's environment, such as a background chat of Claude's daemon, is not
+  # that agent, and "lead: finished" from it would be a lie on your screen. Nothing is posted.
+  _inbox_hook_ready || true
+  [ -n "${INBOX_PROVEN:-}" ] || return 0
+  role="$TEAM_ROLE"
   # "review/lead" in a named team, plain "lead" in the first one
   who="$role"
   if [ -n "${WOLFMUX_TEAM:-}" ] && [ "$WOLFMUX_TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then who="$WOLFMUX_TEAM/$role"; fi

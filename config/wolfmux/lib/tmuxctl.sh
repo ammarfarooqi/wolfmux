@@ -25,9 +25,17 @@ tm_adopt_legacy_server() {
 # tmx_boot — like tmx, for the one call that may have to START the server. The
 # server keeps the environment of whoever starts it and hands it to every pane,
 # so agent-session and provider variables are removed first.
+#
+# So is an agent's identity (WOLFMUX_AGENT_IDENTITY_VARS). A server that a lead starts (a
+# founder's `teamctl start`) would otherwise hand TEAM_ROLE=lead to every pane and every
+# run-shell, #() and popup child it runs: a pane you split for yourself would claim to be that
+# lead, and a run-shell child even carries the lead's old TMUX_PANE (measured on tmux 3.7c).
+# The pane proof (lib/common.sh identity_in_own_pane) refuses such a claim, so you would be
+# refused in your own pane. Agents lose nothing: _run-agent sets their identity itself.
+WOLFMUX_AGENT_IDENTITY_VARS="TEAM_ROLE BEADS_ACTOR WOLFMUX_TEAM WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_REPO WOLFMUX_MODEL TMUX_PANE"
 tmx_boot() {
   local unset_args=() name
-  for name in $WOLFMUX_CLAUDE_SESSION_VARS \
+  for name in $WOLFMUX_CLAUDE_SESSION_VARS $WOLFMUX_AGENT_IDENTITY_VARS \
     $(wolfmux_list_set_vars "$WOLFMUX_CLAUDE_PROVIDER_VARS" "$WOLFMUX_CLAUDE_PROVIDER_PREFIXES") \
     $(wolfmux_list_set_vars "$WOLFMUX_CODEX_PROVIDER_VARS" "$WOLFMUX_CODEX_PROVIDER_PREFIXES"); do
     unset_args+=(-u "$name")

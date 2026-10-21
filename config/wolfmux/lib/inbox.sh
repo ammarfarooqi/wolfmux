@@ -721,19 +721,52 @@ _inbox_approval_pending() {
 
 # _inbox_hook_ready — sets up the team paths for a hook, or 1 when there is nothing to
 # do. Never dies: load_project would, and an agent must not see a teamctl error.
+#
+# The pane proof (identity_in_own_pane, lib/common.sh): the hook hands notices only to a
+# process that runs inside this role's own pane of this team's session. A chat that merely
+# inherited the agent's environment (a background chat of Claude's daemon, 2026-10-19) is
+# given nothing, nothing is taken from the inbox for it and nothing is blocked; one
+# identity-refused line goes to the event log, at most once a minute. INBOX_NOT_HERE then
+# says why, and cmd_inbox_prompt tells that chat who it is not. No fallback that looks the
+# pane up by role: that is how an inherited environment found the real agent's pane.
+# Sets INBOX_PANE and SESSION (this agent's own pane and its team's session) when it says 0.
 _inbox_hook_ready() {
-  INBOX_ROLE="${TEAM_ROLE:-}"
+  local session="" ready=1
+  INBOX_ROLE="${TEAM_ROLE:-}" INBOX_NOT_HERE="" INBOX_PROVEN="" INBOX_PANE="" SESSION=""
   [ -n "$INBOX_ROLE" ] || return 1
   known_role_name "$INBOX_ROLE" || return 1
-  [ -n "$TMUX_BIN" ] && [ -n "$JQ_BIN" ] && [ -n "$GIT_BIN" ] || return 1
-  ROOT="$(resolve_root 2>/dev/null)" || return 1
-  PROJECT_KEY="$(project_key "$ROOT")" || return 1
-  PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
-  PROJECT_TREES="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
-  team_paths "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}"
-  [ -d "$STATE_DIR" ] || return 1
-  INBOX_IDENTITY="$(team_identity "$TEAM" "$INBOX_ROLE")"
+  INBOX_IDENTITY="$(team_identity "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$INBOX_ROLE")"
+  STATE_DIR=""
+  if [ -n "$TMUX_BIN" ] && [ -n "$JQ_BIN" ] && [ -n "$GIT_BIN" ] && ROOT="$(resolve_root 2>/dev/null)" &&
+    PROJECT_KEY="$(project_key "$ROOT")"; then
+    PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
+    PROJECT_TREES="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
+    team_paths "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}"
+    if [ -d "$STATE_DIR" ]; then
+      session="$(session_name_for_project 2>/dev/null || true)"
+    else
+      ready=0
+    fi
+  else
+    ready=0
+  fi
+  if ! identity_in_own_pane "$INBOX_ROLE" "$session"; then
+    INBOX_NOT_HERE="$IDENTITY_WHY"
+    identity_refused_log "$INBOX_ROLE" "$IDENTITY_WHY"
+    return 1
+  fi
+  INBOX_PROVEN=1 # this is the agent; whether there is anything to do is the next question
+  [ "$ready" -eq 1 ] || return 1
+  INBOX_PANE="$TMUX_PANE" SESSION="$IDENTITY_SESSION"
   return 0
+}
+
+# inbox_not_you — what a chat that failed the pane proof is told, on every prompt and not
+# once: after a compaction it may have forgotten. A UserPromptSubmit hook's stdout reaches
+# the model, not the human, so this is said to the chat alone.
+inbox_not_you() {
+  printf "[wolfmux] This chat is not running in %s's %s pane, so it is NOT %s. Do not send Beads or run teamctl as that role, and ignore wolfmux notices. BEADS_ACTOR in this chat's environment is inherited, not yours.\n" \
+    "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$INBOX_ROLE" "$INBOX_IDENTITY"
 }
 
 # inbox_hook_body <identity> <notices> — what the agent is told. The notices are the
@@ -810,31 +843,11 @@ cmd_inbox_stop() {
 # is watching this agent's pane (inbox_keep_off_human_pane, the question every typed path
 # asks). Fails CLOSED like that question: a pane or a session we cannot find reads as
 # watched, and the notices wait for the next prompt rather than land on a human's screen.
+#
+# The pane and the session are the ones _inbox_hook_ready proved: this agent's own.
 _inbox_stop_watched() {
   inbox_human_typing_off || return 1 # idle: today's answer, and no tmux read for it
-  _inbox_stop_pane
   inbox_keep_off_human_pane "$INBOX_ROLE" "$INBOX_PANE"
-}
-
-# _inbox_stop_pane — sets INBOX_PANE to this agent's own pane and SESSION to its team's
-# session; either may stay empty. $TMUX_PANE first: tmux exports it into every process of
-# the pane, and Claude Code hands its own environment to its hooks. It counts only when
-# it is a pane of the team's server and carries this role (@ai_role); one read gives the
-# session as well. Otherwise the pane is looked up by role, as `teamctl nudge` does.
-_inbox_stop_pane() {
-  local got
-  INBOX_PANE="" SESSION=""
-  if [ -n "${TMUX_PANE:-}" ] && tm_inside_team_server; then
-    got="$(tmx display-message -p -t "$TMUX_PANE" '#{@ai_role} #{session_name}' 2>/dev/null || true)"
-    if [ -n "$got" ] && [ "${got%% *}" = "$INBOX_ROLE" ] && [ -n "${got#* }" ]; then
-      INBOX_PANE="$TMUX_PANE" SESSION="${got#* }"
-      return 0
-    fi
-  fi
-  SESSION="$(session_name_for_project 2>/dev/null || true)"
-  [ -n "$SESSION" ] || return 0
-  INBOX_PANE="$(tm_pane_for_role "$SESSION" "$INBOX_ROLE" 2>/dev/null || true)"
-  return 0
 }
 
 # cmd_inbox_prompt — internal (`teamctl _inbox-prompt`): a Claude Code UserPromptSubmit
@@ -846,7 +859,10 @@ _inbox_stop_pane() {
 cmd_inbox_prompt() {
   local notices
   /bin/cat >/dev/null 2>&1 || true
-  _inbox_hook_ready || return 0
+  if ! _inbox_hook_ready; then
+    if [ -n "$INBOX_NOT_HERE" ]; then inbox_not_you || true; fi
+    return 0
+  fi
   [ "$(inbox_count_undelivered "$INBOX_ROLE")" != "0" ] || return 0
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0

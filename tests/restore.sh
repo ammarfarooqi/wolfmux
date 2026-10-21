@@ -33,6 +33,13 @@ case "$1" in
   display-message)
     if [ "${3:-}" != -t ]; then echo 'new-server 100'; exit 0; fi
     name="${4#%}"
+    # an agent's pane (in_pane below): "pid|role|team|session", answered in the asked format
+    if [ -f "$RESTORE_TEST/pane-$name" ]; then
+      IFS='|' read -r pid role team session <"$RESTORE_TEST/pane-$name"
+      printf '%s\n' "$5" | sed -e "s/#{pane_pid}/$pid/g" -e "s/#{@ai_role}/$role/g" \
+        -e "s/#{@wolfmux_team}/$team/g" -e "s/#{session_name}/$session/g"
+      exit 0
+    fi
     test -f "$RESTORE_TEST/up/$name" || exit 1
     if [ -f "$RESTORE_TEST/defer" ]; then
       count=$(cat "$RESTORE_TEST/polls" 2>/dev/null || echo 0)
@@ -120,6 +127,14 @@ snapshot() {
   done | jq -cs '{epoch:100,ts:"2026-01-01T00:00:00Z",server:"old-server 1",teams:.,tabs:(reverse | map({key,team,session}))}' >"$WOLFMUX_DATA/state/running.json"
 }
 run_restore() { cmd_restore "$@" >"$RESTORE_TEST/out" 2>&1; }
+# in_pane <role> <team> — this case runs as that agent, inside its own pane (the pane proof,
+# lib/common.sh identity_in_own_pane): TMUX names the suite's server, the stub tmux answers for
+# pane %77, and tests/fake-ps puts this shell under the pane's process, pid 4242.
+in_pane() {
+  export TEAM_ROLE="$1" WOLFMUX_TEAM="$2" TMUX="/x/$WOLFMUX_TMUX_SOCKET,1,0" TMUX_PANE=%77
+  printf '4242|%s|%s|team-%s\n' "$1" "$2" "$2" >"$RESTORE_TEST/pane-77"
+  export WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_GRAFT="$$:4242"
+}
 has() { grep -Fq -- "$2" "$1"; }
 absent() { ! grep -Fq -- "$2" "$1"; }
 actions() { cat "$RESTORE_TEST/actions"; }
@@ -221,14 +236,24 @@ limit_stale() {
   run_restore --yes --no-tabs
   absent "$RESTORE_TEST/out" 'blocked on a model limit'
 }
+# The askers below run in their own panes: the refusal is restore's own rule, not the pane proof.
 worker_refused() {
   team a; snapshot a
-  if (TEAM_ROLE=worker run_restore --yes --no-tabs); then return 1; else [ "$?" = 77 ]; fi
+  if (in_pane worker default; run_restore --yes --no-tabs); then return 1; else [ "$?" = 77 ]; fi
+  has "$RESTORE_TEST/out" "it is the human's to run"
   [ ! -f "$RESTORE_TEST/actions" ]
 }
 other_lead_refused() {
   team a; snapshot a
-  if (TEAM_ROLE=lead WOLFMUX_TEAM=other run_restore --yes); then return 1; else [ "$?" = 77 ]; fi
+  if (in_pane lead other; run_restore --yes); then return 1; else [ "$?" = 77 ]; fi
+  has "$RESTORE_TEST/out" "it is the human's to run"
+}
+# The steward's lead, but not in its pane (a chat that inherited its environment): restarts nothing.
+steward_unproven() {
+  team a; snapshot a
+  if (export TEAM_ROLE=lead WOLFMUX_TEAM=comms WOLFMUX_ORPHAN_STEWARD=comms; run_restore --yes --no-tabs); then return 1; else [ "$?" = 77 ]; fi
+  has "$RESTORE_TEST/out" 'does not run in its pane'
+  [ ! -f "$RESTORE_TEST/actions" ]
 }
 dry_worker() {
   team a; snapshot a; cp "$WOLFMUX_DATA/state/running.json" "$RESTORE_TEST/before"
@@ -240,7 +265,7 @@ dry_worker() {
 }
 steward() {
   team a; team b claude sid-b other.lead; snapshot a b
-  export TEAM_ROLE=lead WOLFMUX_TEAM=comms WOLFMUX_ORPHAN_STEWARD=comms
+  in_pane lead comms; export WOLFMUX_ORPHAN_STEWARD=comms
   run_restore --yes --no-tabs
   has "$RESTORE_TEST/actions" '--team a restart'
   absent "$RESTORE_TEST/actions" '--team b'
@@ -420,7 +445,7 @@ snapshot_minute() {
 }
 steward_foreign_project() {
   team a
-  export TEAM_ROLE=lead WOLFMUX_TEAM=comms WOLFMUX_ORPHAN_STEWARD=comms
+  in_pane lead comms; export WOLFMUX_ORPHAN_STEWARD=comms
   restore_who
   mkdir -p "$WOLFMUX_DATA/state/foreign/teams"
   cp -R "$WOLFMUX_DATA/state/$TEST_KEY/teams/a" "$WOLFMUX_DATA/state/foreign/teams/a"
@@ -443,7 +468,7 @@ if [ "${1:-}" = --case ]; then
 fi
 
 passed=0 failed=0
-for name in selection resume_order missing_id_skip wait_record missing_transcript busy_memory busy_load room_recovers limit_report limit_model limit_stale worker_refused other_lead_refused dry_worker steward tabs_order tabs_attached tabs_failure tabs_not_running no_tabs idempotent confirm_abort confirm_eof confirm_enter restart_failure beads_failure snapshot_content snapshot_rollover record_rejects_stale policy_validation record_pretty record_space_path attach_space_path limit_model_wait limit_model_failure config_roundtrip limit_model_busy snapshot_minute steward_foreign_project cli_dispatch; do
+for name in selection resume_order missing_id_skip wait_record missing_transcript busy_memory busy_load room_recovers limit_report limit_model limit_stale worker_refused other_lead_refused steward_unproven dry_worker steward tabs_order tabs_attached tabs_failure tabs_not_running no_tabs idempotent confirm_abort confirm_eof confirm_enter restart_failure beads_failure snapshot_content snapshot_rollover record_rejects_stale policy_validation record_pretty record_space_path attach_space_path limit_model_wait limit_model_failure config_roundtrip limit_model_busy snapshot_minute steward_foreign_project cli_dispatch; do
   output="$(mktemp "${TMPDIR:-/tmp}/restore-check.XXXXXX")"
   if bash "$0" --case "$name" >"$output" 2>&1; then
     passed=$((passed + 1)); printf '  pass  %s\n' "$name"

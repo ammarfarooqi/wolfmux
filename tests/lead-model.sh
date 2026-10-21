@@ -97,11 +97,12 @@ export WOLFMUX_NOTIFY=off WOLFMUX_SPLASH=off
 export WOLFMUX_INBOX_WATCHED="" WOLFMUX_MODEL_NOW_QUIET=0
 # The project has several teams below, so every command names one: the default team, unless the command names
 # another (the last --team wins).
-teamctl() { "$REPO/bin/teamctl" --team default "$@"; }
+# An agent's command runs from its own pane (tests/in-pane: the pane proof); without TEAM_ROLE the shim changes nothing.
+teamctl() { "$REPO/tests/in-pane" --team default "$@"; }
 as_agent() { # <team> <role> <teamctl args…>: what that agent's own pane runs, on the default team
   local team="$1" role="$2"
   shift 2
-  TEAM_ROLE="$role" WOLFMUX_TEAM="$team" "$REPO/bin/teamctl" --team default "$@"
+  TEAM_ROLE="$role" WOLFMUX_TEAM="$team" "$REPO/tests/in-pane" --team default "$@"
 }
 
 passed=0
