@@ -400,6 +400,8 @@ cmd_start() {
   fi
   require_metered_ok
   require_pin "$pin" "$MODEL_FAMILY" "$WOLFMUX_LEAD_ROLE"
+  # Here, in this shell: start_permitted runs in a substitution, where a refusal would only end the subshell.
+  caller_require_proven
   founder="$(start_permitted)" || exit 77
   # An agent acting on a team it did not found today is a founder bringing one back: it is announced and logged as that.
   if [ "$founder" != "operator" ]; then EVENT_BY="$founder"; fi

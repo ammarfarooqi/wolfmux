@@ -547,6 +547,9 @@ cmd_restore() {
     shift
   done
   require_tools
+  # A chat that inherited an agent's environment restarts nothing (lib/policy.sh caller_require_proven).
+  # It may still look: --dry-run only reads.
+  [ "$dry" -eq 1 ] || caller_require_proven
   restore_who
   if [ "$dry" -eq 0 ] && [ -z "$RESTORE_AS" ]; then
     die "'teamctl restore' restarts the leads of every team on this machine, so it is the human's to run, from their own terminal (and, for the teams the human founded, the orphan steward's: teamctl policy orphan-steward). You are '$RESTORE_BY'. What is yours: teamctl restore --dry-run shows the plan; to bring a team back, ask your lead or the human." 77

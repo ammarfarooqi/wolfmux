@@ -421,6 +421,102 @@ caller_team() {
   printf '%s\n' "$team"
 }
 
+# --- the pane proof: is this process really the agent it says it is? ----------------------
+# An agent's identity is its environment (TEAM_ROLE, WOLFMUX_TEAM, BEADS_ACTOR, TMUX_PANE), and
+# everything an agent starts inherits that environment. On 2026-10-19 the comms lead was sent to
+# the background (/bg): Claude Code turned its pane into the agent view, the agent view started
+# Claude's daemon from inside the pane, and every background chat the daemon started carried the
+# lead's whole environment. Three chats acted as the comms lead for two days. Their process tree
+# was chat -> `claude bg-pty-host` -> `claude daemon run` -> pid 1: the pane's own process was not
+# among their parents. That is the proof: a process is an agent only while it runs inside that
+# agent's pane, so the pane's process is the process itself or one of its ancestors.
+#
+# Like caller_role, this is a cooperative check and not a security boundary (every agent is your
+# macOS user). It stops a chat that inherited an identity by accident from acting on it.
+WOLFMUX_PS_BIN="${WOLFMUX_PS_BIN:-/bin/ps}" # test seam: tests/fake-ps
+
+# identity_pid_in_tree <pid> — 0 when <pid> is this process or one of its ancestors. ONE ps call
+# for the whole table, walked in awk, at most 64 hops, stopping at pid 1.
+identity_pid_in_tree() {
+  local table
+  case "${1:-}" in "" | *[!0-9]*) return 1 ;; esac
+  table="$("$WOLFMUX_PS_BIN" -axo pid=,ppid= 2>/dev/null)" || true
+  [ -n "$table" ] || return 1
+  printf '%s\n' "$table" | awk -v cur="$$" -v want="$1" '
+    NF >= 2 { parent[$1] = $2 }
+    END {
+      for (hop = 0; hop <= 64; hop++) {
+        if (cur + 0 == want + 0) exit 0
+        if (cur + 0 <= 1 || !(cur in parent)) exit 1
+        cur = parent[cur]
+      }
+      exit 1
+    }'
+}
+
+# identity_in_own_pane <role> [<session>] — 0 when this process runs inside <role>'s own pane:
+#   · $TMUX_PANE is set and is a pane of the team's tmux server (tm_inside_team_server),
+#   · ONE read of that pane gives its pid, its @ai_role and its session: the role matches (an
+#     empty <role>: whichever agent's pane it is, as long as it is one), and so does the
+#     session when one is given (the team's session),
+#   · and the pane's process is this process or one of its ancestors (identity_pid_in_tree).
+# Says why in IDENTITY_WHY when it answers 1. What the read found stays in IDENTITY_PANE_ROLE,
+# IDENTITY_SESSION and IDENTITY_TEAM (the session's @wolfmux_team), for a caller that needs it.
+identity_in_own_pane() {
+  local role="${1:-}" want_session="${2:-}" got pid
+  IDENTITY_WHY="" IDENTITY_PANE_ROLE="" IDENTITY_SESSION="" IDENTITY_TEAM=""
+  if [ -z "${TMUX_PANE:-}" ]; then
+    IDENTITY_WHY="no TMUX_PANE"
+    return 1
+  fi
+  if [ -z "$TMUX_BIN" ] || ! tm_inside_team_server; then
+    IDENTITY_WHY="TMUX_PANE $TMUX_PANE is not a pane of the team's tmux server"
+    return 1
+  fi
+  # "|" and not a tab: a tab is IFS white space, so an empty @ai_role would vanish and shift the
+  # rest. Role and team names cannot hold "|"; the session name, which can, comes last.
+  got="$(tmx display-message -p -t "$TMUX_PANE" '#{pane_pid}|#{@ai_role}|#{@wolfmux_team}|#{session_name}' 2>/dev/null || true)"
+  if [ -z "$got" ]; then
+    IDENTITY_WHY="pane $TMUX_PANE is gone"
+    return 1
+  fi
+  IFS='|' read -r pid IDENTITY_PANE_ROLE IDENTITY_TEAM IDENTITY_SESSION <<EOF
+$got
+EOF
+  if [ -z "$IDENTITY_PANE_ROLE" ]; then
+    IDENTITY_WHY="pane $TMUX_PANE is no agent's pane"
+    return 1
+  fi
+  if [ -n "$role" ] && [ "$IDENTITY_PANE_ROLE" != "$role" ]; then
+    IDENTITY_WHY="pane $TMUX_PANE is $IDENTITY_PANE_ROLE's, not $role's"
+    return 1
+  fi
+  if [ -n "$want_session" ] && [ "$IDENTITY_SESSION" != "$want_session" ]; then
+    IDENTITY_WHY="pane $TMUX_PANE is in session $IDENTITY_SESSION, not the team's session $want_session"
+    return 1
+  fi
+  if ! identity_pid_in_tree "$pid"; then
+    IDENTITY_WHY="this process does not run in pane $TMUX_PANE (pid ${pid:-?} is not among its parents)"
+    return 1
+  fi
+  return 0
+}
+
+# identity_refused_log <role> <reason> — one event_log line `identity-refused`, at most once a
+# minute per role (a stamp file in the team's state directory). Never fails. Needs STATE_DIR.
+identity_refused_log() {
+  local stamp last now
+  [ -n "${STATE_DIR:-}" ] && [ -d "$STATE_DIR" ] || return 0
+  stamp="$STATE_DIR/.identity-refused.$1"
+  now="$(now_epoch)"
+  last="$(/bin/cat "$stamp" 2>/dev/null || printf '0')"
+  case "$last" in "" | *[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge 60 ] || return 0
+  printf '%s\n' "$now" >"$stamp" 2>/dev/null || true
+  EVENT_BY="not-in-its-pane" event_log identity-refused "$1" "$2" 2>/dev/null || true
+  return 0
+}
+
 # load_project [any] — the repository, then the team. Which team: --team, else the caller's
 # own, else the only one there is. With several and none named, a command has to be told;
 # "any" is for the commands that can show all of them (TEAM stays empty).
