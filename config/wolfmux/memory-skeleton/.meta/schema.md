@@ -124,7 +124,8 @@ lock. The routine basis is `kept 7 days`: only those are pruned, after 7 days. A
 A rule-4 candidate is archived only when Jev answers archive with probability >= 0.7. Jev gets
 slug, region, keywords, importance, days since last_confirmed, days since last reference and
 the size in bytes, nothing else; every token that matches a people/ file name (or a part of it
-split on `-`) is replaced by `person`. `.meta/jev/<UTC>-<slug>.json` keeps what was sent and
+split on `-`), or holds such a part of 3 or more letters (`danasmith`), is replaced by
+`person`, accents folded first (`Renée` is `renee`). `.meta/jev/<UTC>-<slug>.json` keeps what was sent and
 what came back. Any error, or an answer of the wrong shape: the candidate goes to
 `.meta/digest-pending.md`; nothing moves. Errors are logged by type name only.
 

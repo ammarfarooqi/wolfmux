@@ -28,6 +28,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -504,20 +505,28 @@ def archive_entries(tree):
     return out
 
 
+def fold(text):
+    """Lower case with the accents taken off (NFKD, combining marks dropped): José is jose."""
+    decomposed = unicodedata.normalize("NFKD", text or "")
+    return "".join(c for c in decomposed if not unicodedata.combining(c)).lower()
+
+
 def people_tokens(tree):
-    """Every people/<slug> name and every part of it: what Jev must never see."""
+    """Every people/<slug> name and every part of it, accents folded: what Jev must never see."""
     out = set()
     for entry in region_entries(tree, ("people",)):
         for name in (entry.name, entry.get("name")):
-            for part in tokens(name):
+            for part in tokens(fold(name)):
                 if len(part) >= 2:
                     out.add(part)
     return out
 
 
 def mask(text, people):
-    parts = re.split(r"([^a-z0-9]+)", (text or "").lower())
-    return "".join("person" if part in people else part for part in parts)
+    """A token that is a name, or holds a name of 3 or more letters (danasmith), becomes person."""
+    inside = [name for name in people if len(name) >= 3]
+    parts = re.split(r"([^a-z0-9]+)", fold(text))
+    return "".join("person" if part in people or any(name in part for name in inside) else part for part in parts)
 
 
 # --- state ---------------------------------------------------------------------------------

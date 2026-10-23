@@ -602,6 +602,24 @@ topic "$T" stale-u "stale, u" 3 2026-09-01
 OUT="$(MEM_JEV_URL="http://127.0.0.1:9/v1/systemone" "$T/bin/mem" drain 2>&1)"
 check "Jev unreachable: only the exception's type name is logged, never its text" \
   'printf "%s" "$OUT" | grep -q "^digest topics/stale-u.md (rule 4; Jev failed: URLError; nothing moves)" && grep -q "rule 4: Jev failed (URLError)" "$T/.meta/drain.log" && grep -q "Jev failed: URLError$" "$T/.meta/digest-pending.md" && ! grep -rqi "refused" "$T/.meta/drain.log" "$T/.meta/digest-pending.md" "$T/.meta/jev" && [ -f "$T/topics/stale-u.md" ]'
+# Names hidden inside a longer token, and names with accents, are masked too.
+T="$WORK/drain-mask"
+fresh "$T"
+printf -- '---\nname: dana-smith\nregion: people\nkeywords: dana, smith\nsummary: Dana Smith runs design\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nDana.\n' >"$T/people/dana-smith.md"
+printf -- '---\nname: renee-dupont\nregion: people\nkeywords: renee\nsummary: Renée Dupont runs sales\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nRenée.\n' >"$T/people/renee-dupont.md"
+printf -- '---\nname: danasmith-notes\nregion: topics\nkeywords: Renée, DUPONT, danasmith, plans\nsummary: notes\nlinks:\nimportance: 3\nlast_confirmed: 2026-09-01\nstatus: live\n---\nNotes.\n' >"$T/topics/danasmith-notes.md"
+chmod 600 "$T"/*/*.md
+GOT_BEFORE="$(ls "$WORK/jev-got" | wc -l | tr -d ' ')"
+MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" drain >/dev/null 2>&1
+check "Jev never sees a name inside a longer token (danasmith) or with accents (Renée): both become person" \
+  'python3 -I - "$WORK/jev-got" "$GOT_BEFORE" <<'"'"'EOF'"'"'
+import glob, json, sys
+got = sorted(glob.glob(sys.argv[1] + "/*.json"))[int(sys.argv[2]):]
+state = json.loads(json.load(open(got[0]))["raw"])["state"]
+text = json.dumps(state).lower()
+sys.exit(not (len(got) == 1 and state["slug"] == "person-notes" and state["keywords"] == ["person", "person", "person", "plans"]
+              and not any(w in text for w in ("dana", "smith", "renee", "ren\\u00e9e", "dupont"))))
+EOF'
 
 echo "== backup and unarchive"
 T="$WORK/backup"
