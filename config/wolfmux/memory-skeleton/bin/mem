@@ -2033,9 +2033,9 @@ def half_moves(tree):
             continue
         live = tree.read(rel)
         archived = tree.read_or_none("archive/%s/ledger/%s" % (match.group(2), os.path.basename(rel)))
-        if live.strip() and archived and live in archived:
-            out.append("%s is also in archive/%s/ledger/ in full (a drain stopped before it removed the live file); "
-                       "delete %s" % (rel, match.group(2), rel))
+        if archived and already_archived(tree, rel, "archive/%s/ledger/%s" % (match.group(2), os.path.basename(rel))):
+            out.append("%s is also in archive/%s/ledger/ in full (a month present in both places: run drain to "
+                       "finish the move)" % (rel, match.group(2)))
         elif match.group(1) == "sweeps":
             both = [line for line in live.split(b"\n") if line in archived_sweeps]
             if both:
@@ -2050,13 +2050,38 @@ def half_moves(tree):
     return out
 
 
+def ledger_body(rel, data):
+    """A ledger month without the head mem wrote when it made the file: what a drain appends to
+    the archived copy of that month, so the archived file holds one head and no head line joins
+    the text of a decision block."""
+    match = LEDGER_FILE.match(os.path.basename(rel))
+    if match and match.group(1) in LEDGER_HEADS:
+        head = (LEDGER_HEADS[match.group(1)] % match.group(2)).encode("utf-8")
+        if data.startswith(head):
+            return data[len(head):]
+    return data
+
+
+def already_archived(tree, from_rel, to_rel):
+    """Whether a live ledger month's body is already in its archived copy, in full: a drain that
+    stopped after its append and before it removed the live file."""
+    archived = tree.read_or_none(to_rel)
+    body = ledger_body(from_rel, tree.read(from_rel))
+    return bool(archived) and bool(body.strip()) and body in archived
+
+
 def archive_move(tree, from_rel, to_rel, reason):
     src = tree.abs(from_rel)
     dest = tree.abs(to_rel)
     if os.path.exists(dest):
         if LEDGER_FILE.match(os.path.basename(to_rel)):
-            with open(src, "rb") as handle:
-                append_file(tree, to_rel, handle.read())
+            if already_archived(tree, from_rel, to_rel):
+                # Appending again would hold the month twice (a decision anchor twice): finish the move.
+                os.unlink(src)
+                index_add(tree, to_rel, from_rel, reason + " (already archived (half move finished))")
+                log(tree, "archive %s -> %s: already archived (half move finished): %s" % (from_rel, to_rel, reason))
+                return to_rel
+            append_file(tree, to_rel, ledger_body(from_rel, tree.read(from_rel)))
             os.unlink(src)
             index_add(tree, to_rel, from_rel, reason + " (appended to the archived month)")
             log(tree, "archive %s -> %s (appended): %s" % (from_rel, to_rel, reason))
@@ -2257,7 +2282,10 @@ def drain_moves(tree, args, when, dry):
     # rule 2: ledger months older than this one and the one before
     for rel, month in plan["ledger"]:
         to_rel = "archive/%s/ledger/%s" % (month, os.path.basename(rel))
-        print("%sarchive %s -> %s (rule 2: ledger month %s)" % (would, rel, to_rel, month))
+        if already_archived(tree, rel, to_rel):
+            print("%sremove %s: already archived (half move finished) in %s" % (would, rel, to_rel))
+        else:
+            print("%sarchive %s -> %s (rule 2: ledger month %s)" % (would, rel, to_rel, month))
         if not dry:
             archive_move(tree, rel, to_rel, "rule 2: ledger month %s is older than %s" % (month, previous_month(when)))
             moved += 1
@@ -2346,7 +2374,7 @@ def cmd_unarchive(tree, args):
             found = (number, match.group(2), match.group(3))
     if found is None:
         raise Refused("archive/index.md has no file named %s" % name)
-    number, to_rel, from_rel = found
+    _, to_rel, from_rel = found
     src, dest = tree.abs(to_rel), tree.abs(from_rel)
     if not os.path.exists(src):
         raise Refused("archive/index.md names %s but the file is gone" % to_rel)
@@ -2360,7 +2388,13 @@ def cmd_unarchive(tree, args):
         if entry.fields is not None:
             fields = dict(entry.fields, last_confirmed=now().date().isoformat())
             write_file(tree, from_rel, rewrite_header(entry.data, fields), expect=entry.data)
-    del lines[number]
+
+    def same_file(line):
+        match = INDEX_LINE.match(line)
+        return bool(match) and (match.group(2), match.group(3)) == (to_rel, from_rel)
+    # Every line for this file goes: a month archived twice (renamed, then appended) has two, and
+    # one left behind would read as an unarchive that stopped halfway.
+    lines = [line for line in lines if not same_file(line)]
     write_file(tree, "archive/index.md", "\n".join(lines).encode("utf-8"), expect=data)
     log(tree, "unarchive %s -> %s" % (to_rel, from_rel))
     print("unarchived %s -> %s" % (to_rel, from_rel))

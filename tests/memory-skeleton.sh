@@ -863,6 +863,36 @@ chmod 700 "$T"/archive/2026-0* "$T"/archive/2026-0*/ledger
 OUT="$("$T/bin/mem" check 2>&1)"
 check "check WARNs about each half move: a ledger month also archived in full, a sweep line both live and archived, an index line for a file unarchived halfway" \
   'printf "%s\n" "$OUT" | grep -q "^WARN .*ledger/sends-2026-08.md is also in archive/2026-08/ledger/ in full" && printf "%s\n" "$OUT" | grep -q "^WARN .*ledger/sweeps-2026-10.jsonl: 1 sweep line is also archived" && printf "%s\n" "$OUT" | grep -q "^WARN .*archive/index.md lists topics/back.md as archived at archive/2026-09/topics/back.md, which is gone"'
+# A drain after a half move finishes it: the live month goes and nothing is appended a second
+# time (a decision anchor stays unique).
+T="$WORK/half-drain"
+fresh "$T"
+MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" sent --to sam --channel c --ref r --subject "aug send" >/dev/null
+printf 'Aug decision.\n' | MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" decide --time 2026-08-05T09:00Z --source chat --slug aug >/dev/null
+/bin/mkdir -p "$T/archive/2026-08/ledger"
+chmod 700 "$T/archive/2026-08" "$T/archive/2026-08/ledger"
+/bin/cp -p "$T/ledger/sends-2026-08.md" "$T/ledger/decisions-2026-08.md" "$T/archive/2026-08/ledger/"
+WARNS="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" check)"
+DRAIN="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" drain --no-jev 2>&1)"
+AFTER="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" check)"
+check "check names a month present in both places and says to run drain; drain then removes the live file and appends nothing: one copy, one anchor, check clean" \
+  'for kind in sends decisions; do printf "%s\n" "$WARNS" | grep -q "^WARN .*ledger/$kind-2026-08.md is also in archive/2026-08/ledger/ in full (a month present in both places: run drain to finish the move)$" && printf "%s\n" "$DRAIN" | grep -qx "remove ledger/$kind-2026-08.md: already archived (half move finished) in archive/2026-08/ledger/$kind-2026-08.md" && [ ! -e "$T/ledger/$kind-2026-08.md" ] || exit 1; done; [ "$(grep -c "aug send" "$T/archive/2026-08/ledger/sends-2026-08.md")" -eq 1 ] && [ "$(grep -c "^## 2026-08-05T09:00Z$" "$T/archive/2026-08/ledger/decisions-2026-08.md")" -eq 1 ] && printf "%s\n" "$AFTER" | grep -qx "result: 0 problems, 0 warnings"'
+# A month archived twice (a drain renames it, a late write makes a new live file, the next drain
+# appends it) holds one head, and unarchive drops both of its index lines.
+T="$WORK/twice-archived"
+fresh "$T"
+MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" sent --to sam --channel c --ref r --subject "first send" >/dev/null
+printf 'First decision.\n' | MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" decide --time 2026-08-05T09:00Z --source chat --slug first >/dev/null
+MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" drain --no-jev >/dev/null 2>&1
+MEM_NOW=2026-08-06T09:00Z "$T/bin/mem" sent --to sam --channel c --ref r --subject "late send" >/dev/null
+printf 'Late decision.\n' | MEM_NOW=2026-08-06T09:00Z "$T/bin/mem" decide --time 2026-08-06T09:00Z --source chat --slug late >/dev/null
+MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" drain --no-jev >/dev/null 2>&1
+INDEX_BEFORE="$(grep -c " archive/2026-08/ledger/sends-2026-08.md from ledger/sends-2026-08.md: " "$T/archive/index.md")"
+HEADS="$(grep -c "^# Sends 2026-08$" "$T/archive/2026-08/ledger/sends-2026-08.md") $(grep -c "^# Decisions 2026-08$" "$T/archive/2026-08/ledger/decisions-2026-08.md")"
+MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" unarchive sends-2026-08 >/dev/null
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" check)"
+check "a month archived twice holds one head (sends and decisions); unarchive drops both index lines, the file is live with both sends, and check gives no WARN" \
+  '[ "$INDEX_BEFORE" -eq 2 ] && [ "$HEADS" = "1 1" ] && ! grep -q " from ledger/sends-2026-08.md: " "$T/archive/index.md" && grep -q "first send" "$T/ledger/sends-2026-08.md" && grep -q "late send" "$T/ledger/sends-2026-08.md" && printf "%s\n" "$OUT" | grep -qx "result: 0 problems, 0 warnings"'
 # Names hidden inside a longer token, and names with accents, are masked too.
 T="$WORK/drain-mask"
 fresh "$T"

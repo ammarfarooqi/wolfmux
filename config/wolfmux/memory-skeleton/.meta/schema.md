@@ -159,12 +159,18 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
 
 - `archive/index.md`: `- <date> <where it is now> from <where it was>: <reason>`.
 - `archive/YYYY-MM/<region>/<file>`, `archive/YYYY-MM/ledger/<file>`. A ledger month that is
-  archived again is appended to the archived copy.
+  archived again is appended to the archived copy without its head (`# Sends <month>` and the
+  line after it), so the archived month holds one head. A live month whose text (head aside)
+  is already in its archived copy in full is never appended again: drain removes the live
+  file and says `remove <file>: already archived (half move finished) in <archived path>`.
+- `unarchive` drops every index line for the file, not only the last: a month archived twice
+  has two.
 - Every move writes the new place first and removes the old one after (drain's archive of a
   file or a ledger month, rule 3's sweep lines, unarchive): a crash between the two leaves
   the data in both places, never in neither. `mem check` WARNs about each such half move: a
-  ledger month whose whole text is already in its archived copy, sweep lines both live and
-  archived, an index line for a file that is live again while its archived path is gone.
+  ledger month whose whole text is already in its archived copy ("a month present in both
+  places: run drain to finish the move"), sweep lines both live and archived, an index line
+  for a file that is live again while its archived path is gone.
 
 ## .meta/drain.log
 
@@ -323,4 +329,5 @@ reason, payload or the header mem would write hashes to a record of k words) is 
 "erased earlier: skipped", whatever its status was; its source and dest are not shown in
 the report, which is written into the tree. The pre-migration tar leaves out that row's
 source and every source file whose path or text names an erased subject; the report says
-how many.
+how many. A source file shared with a row that is not skipped (one file mapped twice) is left
+out too: privacy wins over the rollback, and the report counts it.
