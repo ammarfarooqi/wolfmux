@@ -114,8 +114,9 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
 One line per event, `<UTC second> <event>`: `backup .meta/backups/<name> sha256=<hex>
 basis=<retention basis>` (a tar rebuilt by erase adds `(rebuilt by erase)`), `prune ...`,
 `archive <from> -> <to>: <reason>`, `rule 1: ...`, `rule 3: ...`, `rule 4: ...` (Jev answers
-and failures), `unarchive <from> -> <to>`, `erase on the owner's word: subject sha256:<prefix>
-...` (never the subject itself), `purge on the owner's word: ...`.
+and failures), `unarchive <from> -> <to>`, `erase on the owner's word: erase id <8 hex> ...`
+(a random id that erase also prints; never the subject, never a hash of it),
+`purge on the owner's word: ...`.
 
 ## Backups
 
@@ -150,6 +151,8 @@ tree holds (a header field, a folder, a ledger label, a common word). What it do
 - a region or archive file, or a `.meta/jev/` audit file, that names it: removed whole;
 - a ledger, index or log line: replaced by `[erased <YYYY-MM-DD> on owner's word]`
   (`{"erased": "<YYYY-MM-DD> on owner's word"}` in a `.jsonl` file);
+- a `backup ... basis=` line in drain.log: never replaced whole; only its basis text becomes
+  the marker, so a tar kept on the owner's word stays non-routine and is never pruned;
 - a state entry: removed;
 - each backup tar under `.meta/backups/`: rebuilt the same way. Pre-migration tars under
   `~/.wolfmux/backups/` are listed, never changed.

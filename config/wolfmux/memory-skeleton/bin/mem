@@ -2234,8 +2234,10 @@ def names_subject(match, value, key=None):
     return any(match.search(text.casefold()) for text in ([key] if key is not None else []) + json_leaves(value))
 
 
-def erase_lines(data, match, marker, jsonl=False):
-    """(new bytes, numbers of the lines that held the subject)."""
+def erase_lines(data, match, marker, jsonl=False, drain_log=False):
+    """(new bytes, numbers of the lines that held the subject). In drain.log a `backup ... basis=`
+    line keeps its shape and only its basis text is erased: a tar kept on the owner's word must
+    keep a basis that is not routine, or the next backup would prune it."""
     text = data.decode("utf-8", "replace")
     lines = text.split("\n")
     hit = []
@@ -2246,8 +2248,13 @@ def erase_lines(data, match, marker, jsonl=False):
                 named = names_subject(match, json.loads(line))
             except ValueError:
                 pass
-        if named:
-            hit.append(number + 1)
+        if not named:
+            continue
+        hit.append(number + 1)
+        backup = BACKUP_LOG.match(line) if drain_log else None
+        if backup and not match.search(line[:backup.start(3)].casefold()):
+            lines[number] = line[:backup.start(3)] + "[erased %s]" % marker + line[backup.end(3):]
+        else:
             lines[number] = json.dumps({"erased": marker}) if jsonl else "[erased %s]" % marker
     return "\n".join(lines).encode("utf-8"), hit
 
@@ -2294,7 +2301,7 @@ def erase_plan(rel, data, match, marker):
             if not removed:
                 return None, data, []
             return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed]
-    new, hit = erase_lines(data, match, marker, rel.endswith(".jsonl"))
+    new, hit = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
     if not hit:
         return None, data, []
     return "edit", new, ["%s:%d" % (rel, n) for n in hit]
@@ -2366,10 +2373,13 @@ def cmd_erase(tree, args):
             lines += len(where)
     for rel, _ in tars:
         rebuild_tar(tree, rel, needle, marker)
-    log(tree, "erase on the owner's word: subject sha256:%s; %d files removed, %d lines and %d state entries erased, %d backups rebuilt"
-        % (sha256(subject.casefold().encode("utf-8"))[:12], files, lines, entries, len(tars)))
+    # A random id, never a hash of the subject: a hash would let anyone who guesses the name link it.
+    erase_id = os.urandom(4).hex()
+    log(tree, "erase on the owner's word: erase id %s; %d files removed, %d lines and %d state entries erased, %d backups rebuilt"
+        % (erase_id, files, lines, entries, len(tars)))
     run_check(tree, now())
-    print("erased: %d files, %d lines, %d state entries; %d backups rebuilt" % (files, lines, entries, len(tars)))
+    print("erased: %d files, %d lines, %d state entries; %d backups rebuilt (erase id %s in .meta/drain.log)"
+          % (files, lines, entries, len(tars), erase_id))
     return 0
 
 

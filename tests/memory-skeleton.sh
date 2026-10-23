@@ -677,6 +677,7 @@ printf 'Dana Smith decides the colours.' | "$T/bin/mem" decide --time 2026-10-02
 "$T/bin/mem" ask open --id colours --who "Dana Smith" --what "the colours" --waiting-on owner >/dev/null
 "$T/bin/mem" ask open --id zinc --who sam --what "zinc price" --waiting-on owner >/dev/null
 "$T/bin/mem" backup >/dev/null
+MEM_NOW=2026-10-22T09:00Z "$T/bin/mem" backup --note "kept on Dana Smith's word" >/dev/null
 /bin/mkdir -p "$HOME/.wolfmux/backups"
 ( cd "$T" && tar -cf "$HOME/.wolfmux/backups/memory-pre-migration-20261001T000000Z.tar" people/dana.md )
 HOME_TAR_SUM="$(tree_sum "$HOME/.wolfmux/backups")"
@@ -700,8 +701,14 @@ check "the state entry naming the subject is removed; the others stay" \
 check "the backup tar is rebuilt without the subject and keeps the rest" \
   'python3 -I -c "import sys,tarfile; t=tarfile.open(sys.argv[1]); n=t.getnames(); bad=[m.name for m in t.getmembers() if m.isfile() and b\"dana smith\" in t.extractfile(m).read().lower()]; sys.exit(bool(bad) or \"people/dana.md\" in n or \"topics/unrelated.md\" not in n)" "$T/.meta/backups/20261023T090000Z.tar"'
 check "nothing in the tree names the subject any more, drain.log included" '! grep -rqi "dana smith" "$T"'
-check "drain.log says what erase did, with a sha256 prefix of the subject, never the subject" \
-  'grep -q "erase on the owner'"'"'s word: subject sha256:[0-9a-f]\{12\}; 3 files removed" "$T/.meta/drain.log"'
+ERASE_ID="$(printf '%s\n' "$OUT" | sed -n 's/.*(erase id \([0-9a-f]\{8\}\) in .meta\/drain.log)$/\1/p')"
+SUBJECT_HASH="$(printf 'dana smith' | python3 -I -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:12])")"
+check "drain.log says what erase did under a random 8-hex erase id (the one erase printed), never the subject or its hash" \
+  '[ -n "$ERASE_ID" ] && grep -q "erase on the owner'"'"'s word: erase id $ERASE_ID; 3 files removed" "$T/.meta/drain.log" && ! grep -q "$SUBJECT_HASH" "$T/.meta/drain.log"'
+check "a backup kept on the owner's word keeps its drain.log line: only the basis text is erased, so it stays non-routine" \
+  'grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=\[erased 2026-10-23 on owner.s word\]$" "$T/.meta/drain.log" && grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=\[erased 2026-10-23 on owner.s word\] (rebuilt by erase)$" "$T/.meta/drain.log"'
+check "8 days on, backup pruning drops the routine tar and keeps the one kept on the owner's word" \
+  'MEM_NOW=2026-10-31T09:00Z "$T/bin/mem" backup >/dev/null && [ -f "$T/.meta/backups/20261022T090000Z.tar" ] && [ ! -e "$T/.meta/backups/20261023T090000Z.tar" ]'
 check "the pre-migration tar outside the tree is untouched" '[ "$HOME_TAR_SUM" = "$(tree_sum "$HOME/.wolfmux/backups")" ]'
 check "erase refuses a subject shorter than 3 characters" '! "$T/bin/mem" erase da --confirm 1'
 T="$WORK/erase-words"
