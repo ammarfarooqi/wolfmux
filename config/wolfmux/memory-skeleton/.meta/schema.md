@@ -208,8 +208,10 @@ The subject matches as a whole word (`tom` finds `Tom`, not `tomorrow` or `custo
 sides are normalised the same way: NFC, then the accent fold Jev masking uses, lower case
 (`José`, its decomposed form and `Jose` are one name), and the subject's words match across
 any run of space, `-`, `_` or `.` (`Tom Smith` finds `people/tom-smith.md` and
-`[[tom-smith]]`). A subject under 3 letters and digits, or a JSON literal (`true`, `false`,
-`null`, a number), is refused with exit 64. A path matches on its file stem only, never a folder name or an extension, and
+`[[tom-smith]]`). A subject under 3 letters and digits, or a literal once normalised (`true`,
+`false`, `null`, `none`, `nan`, `inf`, `infinity` in any case, or a number such as `12`,
+`-2.5` or `1_000`), is refused with exit 64. Only a JSON string can name the subject: a `true`
+value is never the text `True`. A path matches on its file stem only, never a folder name or an extension, and
 only for a file erase removes whole (below): mem's own files (drain.log, digest-pending.md,
 shared-folder, migrate reports) are edited line by line, never dropped for their name, and
 the words of their names (drain, digest, pending, folder, migrate, role, jev, log, schema,
@@ -239,7 +241,7 @@ field, a folder, a ledger label, a common word). What it does:
 - any other JSON file (a migrated archive copy): each value that names it becomes
   `[erased <YYYY-MM-DD> on owner's word]`, and the file stays valid JSON. A file that is one
   string has the subject replaced inside the string; a file that is one other scalar (a
-  number) is never edited and is listed as `left behind: <path> (value)`;
+  number, `true`) never names a subject and is never edited;
 - each backup tar under `.meta/backups/`: rebuilt the same way. Pre-migration tars under
   `~/.wolfmux/backups/` are listed, never changed; a `.sha256` list beside one whose path
   lines name the subject is listed as `left behind outside the tree: <path>`.

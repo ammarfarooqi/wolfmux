@@ -1089,6 +1089,12 @@ check "erase José finds plain Jose and the decomposed form (NFD), as Jev maskin
 SUM_BEFORE="$(tree_sum "$T")"
 check "erase refuses a JSON literal (true, null, 12) and a subject under 3 letters with exit 64, and changes nothing" \
   'for s in true null 12 "J.R"; do "$T/bin/mem" erase "$s" --confirm 1 >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+# A literal in another spelling is refused too, and only JSON strings are matched: str(True) is
+# never the subject True.
+"$T/bin/mem" set machine.ok true >/dev/null && "$T/bin/mem" set machine.off false >/dev/null
+SUM_BEFORE="$(tree_sum "$T")"
+check "erase True, FALSE, none, nan, inf and 1_000 (literals once normalised) exit 64 on a state file holding booleans; the booleans stay" \
+  'for s in True FALSE none nan inf 1_000; do "$T/bin/mem" erase "$s" --confirm 1 >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ] && python3 -I -c "import json, sys; m = json.load(open(sys.argv[1])); sys.exit(not (m[\"ok\"][\"line\"] is True and m[\"off\"][\"line\"] is False))" "$T/state/machine.json"'
 # JSON is decoded before erase matches it: names written as \u escapes (json.dumps without
 # ensure_ascii=False, as migrated files are), and keys at any depth (left behind, never erased).
 T="$WORK/erase-json"
@@ -1129,8 +1135,8 @@ LISTS="$("$TS/bin/mem" erase "José Ruiz")"
 check "a JSON file that is one string (the name escaped, or plain): the subject is replaced inside the string and the file stays valid JSON" \
   'printf "%s\n" "$LISTS" | grep -qx "line   archive/state/scalar.json (1 JSON value)" && printf "%s\n" "$LISTS" | grep -qx "line   archive/2026-09/plain.json (1 JSON value)" && python3 -I -c "import json, sys; a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2])); sys.exit(not (a.startswith(\"[erased 2026-10-23 on owner\") and a.endswith(\"s word] is the contact\") and b.startswith(\"ask [erased 2026-10-23 on owner\") and b.endswith(\"s word] first\")))" "$TS/archive/state/scalar.json" "$TS/archive/2026-09/plain.json"'
 OUT="$("$TS/bin/mem" erase nan --confirm 1 2>&1)"; RC=$?
-check "a JSON file that is another scalar (NaN, read as nan) is never edited: listed as left behind (value), still JSON" \
-  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-09/number.json (value)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject; recorded so that mem migrate skips it" && [ "$(cat "$TS/archive/2026-09/number.json")" = NaN ]'
+check "a JSON file that is another scalar (NaN) is never edited: only strings name a subject, and nan is refused as a literal (exit 64)" \
+  '[ "$RC" -eq 64 ] && printf "%s\n" "$OUT" | grep -q "is a literal (true, false, null, none, nan, inf or a number)" && [ "$(cat "$TS/archive/2026-09/number.json")" = NaN ] && [ "$(grep -c . "$TS/.meta/erased")" -eq 1 ]'
 "$T/bin/mem" backup >/dev/null
 LIST="$("$T/bin/mem" erase "José Ruiz")"
 check "erase finds a name stored only as \\u00e9 escapes (never as é on disk) in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \

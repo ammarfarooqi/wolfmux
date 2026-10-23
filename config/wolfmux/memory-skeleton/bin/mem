@@ -2521,7 +2521,8 @@ class Subject(object):
 
 def json_hits(match, value):
     """(a value names the subject, a key names it), at any depth of a decoded JSON value. Decoded,
-    so a name written as \\u escapes (json.dumps without ensure_ascii=False) is found as well."""
+    so a name written as \\u escapes (json.dumps without ensure_ascii=False) is found as well.
+    Only a string value can name it: a true is never the text True."""
     if isinstance(value, dict):
         found = [json_hits(match, child) for child in value.values()]
         keyed = any(match.search(str(key)) for key in value)
@@ -2529,11 +2530,11 @@ def json_hits(match, value):
     if isinstance(value, list):
         found = [json_hits(match, child) for child in value]
         return any(v for v, _ in found), any(k for _, k in found)
-    return value is not None and bool(match.search(str(value))), False
+    return isinstance(value, str) and bool(match.search(value)), False
 
 
 def redact_json(value, match, marker):
-    """(value with every scalar that names the subject replaced by the marker, how many were)."""
+    """(value with every string that names the subject replaced by the marker, how many were)."""
     if isinstance(value, (dict, list)):
         pairs = value.items() if isinstance(value, dict) else enumerate(value)
         out, count = ({} if isinstance(value, dict) else []), 0
@@ -2545,7 +2546,7 @@ def redact_json(value, match, marker):
             else:
                 out.append(new)
         return out, count
-    if value is not None and match.search(str(value)):
+    if isinstance(value, str) and match.search(value):
         return "[erased %s]" % marker, 1
     return value, 0
 
@@ -2683,9 +2684,7 @@ def erase_plan(rel, data, match, marker):
     if isinstance(value, (list, dict)):  # any other JSON: the values are erased in place, the file stays JSON
         new, count = redact_json(value, match, marker)
         return "edit", dump_json(new), ["%s (%d JSON value%s)" % (rel, count, "" if count == 1 else "s")], left
-    if value is not MISSING:  # one JSON scalar: a string is edited inside and stays JSON; any other stays
-        if not isinstance(value, str):
-            return None, data, [], left + ["%s (value)" % rel]
+    if value is not MISSING:  # one JSON string (no other scalar names a subject): edited inside, stays JSON
         new = match.sub(value, "[erased %s]" % marker)
         return "edit", dump_json("[erased %s]" % marker if match.search(new) else new), ["%s (1 JSON value)" % rel], left
     ledger = LEDGER_FILE.match(os.path.basename(rel))
@@ -2697,6 +2696,10 @@ def erase_plan(rel, data, match, marker):
     if not hit:
         return None, data, [], left
     return "edit", new, ["%s:%d" % (rel, n) for n in hit], left
+
+
+# Subjects that are literals once normalised (the words joined by one space): refused like JSON's.
+ERASE_LITERALS = ("true", "false", "null", "none", "nan", "inf", "infinity")
 
 
 # The schema and the tool ship with mem and are not memory: erase never edits them, live or in a tar.
@@ -2776,10 +2779,16 @@ def cmd_erase(tree, args):
         literal = json.loads(subject)
     except ValueError:
         literal = subject
-    if not isinstance(literal, str):  # true would take every state entry that holds a true
-        raise Refused("%r is a JSON literal (true, false, null or a number): it matches values, not a person or "
-                      "thing" % subject, code=EXIT_USAGE)
     needle = erase_matcher(subject)
+    try:
+        float(erase_norm(subject).strip())
+        number = True
+    except ValueError:
+        number = False
+    # true would take every state entry that holds a true; True, FALSE, none, nan and 1_000 too
+    if not isinstance(literal, str) or number or " ".join(needle.words) in ERASE_LITERALS:
+        raise Refused("%r is a literal (true, false, null, none, nan, inf or a number): it matches values, not a "
+                      "person or thing" % subject, code=EXIT_USAGE)
     if len("".join(needle.words)) < 3:
         raise Refused("the subject must be at least 3 characters (letters and digits), or it matches everything",
                       code=EXIT_USAGE)
