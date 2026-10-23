@@ -21,7 +21,7 @@ PURGE_MEMORY=0
 for arg in "$@"; do
   case "$arg" in
     --purge) PURGE=1 ;;
-    --purge-memory) PURGE=1 PURGE_MEMORY=1 ;;
+    --purge-memory) PURGE_MEMORY=1 ;;
     -h | --help)
       sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
@@ -32,6 +32,11 @@ for arg in "$@"; do
       ;;
   esac
 done
+# Deleting a lead's private notes takes both words: --purge-memory never brings --purge in by itself.
+if [ "$PURGE_MEMORY" -eq 1 ] && [ "$PURGE" -ne 1 ]; then
+  echo "uninstall.sh: --purge-memory goes with --purge (nothing was removed): ./uninstall.sh --purge --purge-memory" >&2
+  exit 64
+fi
 
 note() { printf '  %s\n' "$*"; }
 backup() {

@@ -610,7 +610,7 @@ cmd_policy() {
     say "                      A running team's lead keeps its own recorded model (teamctl model). Yours alone to change."
     say "  team-memory         $(policy_get team-memory)       (<team>|off)      for the whole project: the one team whose lead keeps a private memory"
     say "                      folder (teamctl memory status). Yours alone to turn on; that lead may turn it off. Nothing is ever deleted by it."
-    say "  restore-on-limit   $(policy_get restore-on-limit)    (report|<model>)  teamctl restore and a lead that comes back to a used-up model limit:"
+    say "  restore-on-limit    $(policy_get restore-on-limit)    (report|<model>)  teamctl restore and a lead that comes back to a used-up model limit:"
     say "                      report = name it at the end, change nothing · a model (opus…) = restart that lead on it"
     say ""
     say "change:  teamctl policy <key> <value>     permission changes apply at the next start/restart of an agent"
