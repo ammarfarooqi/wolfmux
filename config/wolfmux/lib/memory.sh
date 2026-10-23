@@ -6,7 +6,8 @@
 #   · has ~/.wolfmux/memory/<project-key>/<team>/ as Claude Code's autoMemoryDirectory
 #     (write_agent_settings), so the MEMORY.md there is loaded at every start of it,
 #   · finds a "## Team memory" block at the end of its system prompt (build_role_prompt): the
-#     folder, the privacy rule, the shared project memory folder, and core/card.md,
+#     folder, the privacy rule, the shared project memory folder and the boot line. Never the card
+#     or anything else from the folder: a system prompt is not private (memory_prompt_block says why),
 #   · is started with a first prompt that runs `<folder>/bin/mem boot` (cmd_run_agent), at every
 #     launch: fresh, --continue, --resume and restore alike.
 # Everybody else is kept out of it: the worktree guard refuses a worker's tool call that names the
@@ -14,16 +15,17 @@
 #
 # Enabling is yours alone (require_operator): which conversation may keep notes that no team sees
 # is a decision about your own work. Disabling only narrows, so the memory team's own lead may do it
-# too. Neither deletes anything; the folder goes only with `teamctl destroy --purge --memory`, after
-# you type the team's name, or with `uninstall.sh --purge --purge-memory`.
+# too. Neither deletes anything; the folder goes only with `teamctl destroy --purge --memory`, which
+# is yours alone too (the pane proof, require_operator), or with `uninstall.sh --purge --purge-memory`.
+# `memory check` and `memory path` are yours and that lead's (memory_may_disable): check runs
+# `mem check`, which writes and names notes, and path is the folder handed to a script.
 #
 # The folder's contents (bin/mem, the templates, the schema) are the memory skeleton, installed to
 # ~/.config/wolfmux/memory-skeleton/ and copied once by `enable`. teamctl calls only `mem init`,
-# `mem boot` and `mem check`, and reads only core/card.md: nothing else crosses that line.
+# `mem boot` and `mem check`, and reads nothing in the folder but file sizes: nothing else crosses
+# that line.
 
 MEMORY_INDEX_CAP=25000 # bytes of MEMORY.md that Claude Code's auto memory loads
-MEMORY_CARD_CAP=4000   # bytes of core/card.md the prompt block carries
-MEMORY_BLOCK_CAP=6000  # bytes of the whole block, card included
 
 # memory_team — the team policy team-memory names, empty when it is off. Needs the project loaded.
 memory_team() {
@@ -37,12 +39,19 @@ memory_dir_for() { printf '%s/memory/%s/%s\n' "$WOLFMUX_DATA" "$PROJECT_KEY" "$1
 
 # memory_lead_dir <role> — prints the folder, status 0, when <role> of the loaded team is the lead of
 # the memory team; prints nothing, status 1, for everybody else. The one question every caller asks.
+# Two more conditions, so that a memory is never handed to a lead you did not start:
+#   · you founded the team (team_founder): after `destroy --purge` or `finish`, another lead may start
+#     a team of the same name, and its lead is not the one you gave the memory to;
+#   · the folder holds an executable bin/mem: a missing or hand-edited folder is not a memory.
 memory_lead_dir() {
-  local team
+  local team dir
   [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
   team="$(memory_team)"
   [ -n "$team" ] && [ "$team" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ] || return 1
-  memory_dir_for "$team"
+  [ "$(team_founder)" = "operator" ] || return 1
+  dir="$(memory_dir_for "$team")"
+  [ -x "$dir/bin/mem" ] || return 1
+  printf '%s\n' "$dir"
 }
 
 # project_memory_dir — Claude Code's own memory of this repository, which every session in it shares:
@@ -65,56 +74,25 @@ memory_bytes() {
   if [ -f "$1" ]; then /usr/bin/wc -c <"$1" | /usr/bin/tr -d ' '; else printf '0\n'; fi
 }
 
-# memory_card <file> <cap> — the card, at most <cap> bytes, cut at the end of a line so that no
-# character is cut in half (whether it was cut: memory_bytes against <cap>)
-memory_card() {
-  local file="$1" cap="$2" last
-  [ -f "$file" ] || return 0
-  if [ "$(memory_bytes "$file")" -le "$cap" ]; then
-    /bin/cat "$file"
-    return 0
-  fi
-  last="$(/usr/bin/head -c "$cap" "$file" | /usr/bin/tail -c 1 | /usr/bin/od -An -c | /usr/bin/tr -d ' ')"
-  # A cut that does not end on a newline ends inside a line: that part line goes. A first line that
-  # is longer than the cap itself is kept, without the bytes of a character cut in half.
-  /usr/bin/head -c "$cap" "$file" | LC_ALL=C /usr/bin/awk -v whole="$([ "$last" = '\n' ] && printf 1 || printf 0)" '
-    { line[NR] = $0 } END { n = NR; if (!whole && n > 1) n--; for (i = 1; i <= n; i++) print line[i] }' |
-    /usr/bin/iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true
-}
-
 # memory_boot_text <dir> — the first prompt of the memory team's lead, at every launch
 memory_boot_text() {
   printf 'Team memory is on. Run %s/bin/mem boot, read what it prints, re-create the crons it lists, then read your Beads inboxes.' "$1"
 }
 
-# memory_prompt_block <dir> — the "## Team memory" block at the end of that lead's system prompt.
-# Under MEMORY_BLOCK_CAP bytes in all: the card gets what the rest leaves, never more than
-# MEMORY_CARD_CAP. It rides --append-system-prompt with the rest of the prompt (no hook).
+# memory_prompt_block <dir> — the "## Team memory" block at the end of that lead's system prompt: where the
+# folder is, the rules, the shared folder, and the boot line. Nothing from the folder itself, not even the card.
+# A system prompt is not private: it rides --append-system-prompt, so `ps -axww -o command=` shows it to every
+# process of your user, and `teamctl _prompt lead --team <team>` prints it to any caller. The card is read by
+# `mem boot`, in the lead's own conversation (the boot prompt, cmd_run_agent), and nowhere else.
 memory_prompt_block() {
-  local dir="$1" shared head tail card cut="" room used
+  local dir="$1" shared
   shared="$(project_memory_dir || printf '(unknown)')"
-  head="$(
-    printf '## Team memory\n\n'
-    printf 'Team memory is ON for team %s, and you are its lead. Your memory folder: %s\n\n' "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$dir"
-    printf -- '- It is private to you. Only you read and write it; no other agent may, and the worktree guard refuses a worker that tries.\n'
-    printf -- '- Never copy its contents into Beads, Jira, Slack, repositories or reports. A report about it carries structure and counts only (how many notes, which folders, how many bytes), never what a note says.\n'
-    printf -- '- Claude Code loads its MEMORY.md as your auto memory (autoMemoryDirectory). Keep that index under %s bytes; `%s/bin/mem check` says when it is not.\n' "$MEMORY_INDEX_CAP" "$dir"
-    printf -- '- The shared memory of this repository, which every session here can read, is %s. Read it when you need it; it is not private, so nothing of yours goes there.\n' "$shared"
-    printf -- '- A change to this policy or to core/card.md reaches you only at your next restart.\n\n'
-    printf '### Your card (core/card.md, as it was when you started)\n\n'
-  )"
-  tail="$(printf 'Run `%s/bin/mem boot` before anything else. The card wins over a re-sent handover on HOW to work; the handover is a task.' "$dir")"
-  used="$(printf '%s\n\n%s\n\n%s\n' "$head" "(card truncated at NNNNN bytes: the rest is in core/card.md)" "$tail" | /usr/bin/wc -c | /usr/bin/tr -d ' ')"
-  room=$((MEMORY_BLOCK_CAP - 1 - used))
-  [ "$room" -le "$MEMORY_CARD_CAP" ] || room="$MEMORY_CARD_CAP"
-  [ "$room" -ge 0 ] || room=0
-  card="$(memory_card "$dir/core/card.md" "$room")"
-  if [ "$(memory_bytes "$dir/core/card.md")" -gt "$room" ]; then cut="(card truncated at $room bytes: the rest is in core/card.md)"; fi
-  [ -n "$card" ] || [ -n "$cut" ] || card="(no core/card.md yet: mem boot writes it)"
-  printf '%s\n\n' "$head"
-  if [ -n "$card" ]; then printf '%s\n\n' "$card"; fi
-  if [ -n "$cut" ]; then printf '%s\n\n' "$cut"; fi
-  printf '%s\n' "$tail"
+  printf '## Team memory\n\n'
+  printf 'Team memory is ON for team %s, and you are its lead. Your memory folder: %s\n\n' "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$dir"
+  printf -- '- It is private to you. Only you read and write it; no other agent may, and the worktree guard refuses a worker that tries.\n'
+  printf -- '- Never copy its contents into Beads, Jira, Slack, repositories or reports. A report about it carries structure and counts only (how many notes, which folders, how many bytes), never what a note says.\n'
+  printf -- '- The shared memory of this repository, which every session here can read, is %s. Read it when you need it; it is not private, so nothing of yours goes there.\n\n' "$shared"
+  printf 'Run `%s/bin/mem boot` before anything else, and again after every compaction. The card wins over a re-sent handover on HOW to work; the handover is a task.\n' "$dir"
 }
 
 # memory_log <action> <team> <previous> — one line in the project's team-memory.jsonl and one in the
@@ -219,7 +197,7 @@ memory_lead_sessions() {
 }
 
 memory_status() {
-  local team dir index card files kb settings session pane state started id sessions folders="" path
+  local team dir index card files kb settings session pane state started id sessions folders="" path founder family
   team="$(memory_team)"
   if [ -z "$team" ]; then
     say "team-memory:  off   (policy, for the whole project: no lead has a private memory folder)"
@@ -241,7 +219,16 @@ memory_status() {
     index="$(memory_bytes "$dir/MEMORY.md")"
     say "index:        MEMORY.md $index of $MEMORY_INDEX_CAP bytes$([ "$index" -le "$MEMORY_INDEX_CAP" ] || printf '   OVER THE CAP: Claude Code loads only the start of it')"
     card="$(memory_bytes "$dir/core/card.md")"
-    say "card:         core/card.md $card bytes$([ "$card" -le "$MEMORY_CARD_CAP" ] || printf '   the prompt carries the first %s' "$MEMORY_CARD_CAP")"
+    say "card:         core/card.md $card bytes   (mem boot reads it in the lead's conversation; it is never in a prompt)"
+    [ -x "$dir/bin/mem" ] || warn "$(short_path "$dir")/bin/mem is missing or not executable: the lead gets no memory until it is back (teamctl memory enable $team)"
+  fi
+  founder="$( (team_paths "$team" && team_founder) 2>/dev/null || true)"
+  if [ -n "$founder" ] && [ "$founder" != "operator" ]; then
+    warn "team $team was started by $founder, not by you: its lead gets no memory. Start the team yourself to give it one."
+  fi
+  family="$("$JQ_BIN" -r '.family // empty' "$(memory_team_state "$team")/agents/$WOLFMUX_LEAD_ROLE.json" 2>/dev/null || true)"
+  if [ "$family" = "codex" ]; then
+    warn "the lead of $team runs Codex: Codex has no autoMemoryDirectory, so MEMORY.md is not loaded for it, and a resumed Codex lead (resume --last) opens the newest conversation of the folder every lead shares. Team memory is built for a Claude lead: teamctl model lead opus --team $team"
   fi
   settings="$(memory_team_state "$team")/settings/$WOLFMUX_LEAD_ROLE.json"
   session="$( (team_paths "$team" && session_name_for_project) 2>/dev/null || true)"
@@ -253,9 +240,6 @@ memory_status() {
     started="$(/usr/bin/stat -f %m "$settings" 2>/dev/null || printf 0)"
     if [ "$("$JQ_BIN" -r '.autoMemoryDirectory // empty' "$settings" 2>/dev/null || true)" = "$dir" ]; then
       say "lead:         running, started $(date -r "$started" '+%Y-%m-%d %H:%M' 2>/dev/null || printf '?') WITH the setting"
-      if [ -f "$dir/core/card.md" ] && [ "$(/usr/bin/stat -f %m "$dir/core/card.md" 2>/dev/null || printf 0)" -gt "$started" ]; then
-        warn "the lead's prompt is older than core/card.md (changed $(date -r "$(/usr/bin/stat -f %m "$dir/core/card.md")" '+%Y-%m-%d %H:%M')): it works from the card it started with until its next restart"
-      fi
     else
       say "lead:         running, started WITHOUT the setting (before team memory was turned on): it gets it at its next restart"
     fi
@@ -267,11 +251,26 @@ memory_status() {
       warn "$sessions lead sessions of team $team are alive (processes with conversation $id): two sessions write over each other's memory. Keep one."
     fi
   fi
-  say "note:         enable, disable and a card edit reach a running lead only at its next restart: teamctl restart lead --team $team $([ -n "$id" ] && printf -- '--resume %s' "$id" || printf -- '--continue')"
+  say "note:         enable and disable reach a running lead only at its next restart (a card edit, at its next mem boot): teamctl restart lead --team $team $([ -n "$id" ] && printf -- '--resume %s' "$id" || printf -- '--continue')"
+}
+
+# memory_require_owner <subcommand> — check and path are yours and the memory team's lead's, as disable is:
+# `mem check` writes (it rebuilds MEMORY.md and the card) and prints the names of notes, and the path is
+# what a script would hand to cat. The lead must also be the one that HAS the memory (memory_lead_dir: a
+# lead of the same team name that another lead started has none). Exit 77 for anybody else; status says
+# what anyone may know.
+memory_require_owner() {
+  caller_resolve
+  is_operator && return 0
+  if memory_may_disable && (team_paths "${CALLER_TEAM:-$WOLFMUX_DEFAULT_TEAM}" && memory_lead_dir "$CALLER_ROLE") >/dev/null 2>&1; then
+    return 0
+  fi
+  die "'teamctl memory $1' is yours and the memory team's lead's. You are '$(team_identity "${CALLER_TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$CALLER_ROLE")'. What anyone may see: teamctl memory status (sizes and counts, never what a note says)." 77
 }
 
 memory_path() {
   local team
+  memory_require_owner path
   team="$(memory_team)"
   [ -n "$team" ] || exit 1
   say "$(memory_dir_for "$team")"
@@ -279,6 +278,7 @@ memory_path() {
 
 memory_check() {
   local team dir
+  memory_require_owner check
   team="$(memory_team)"
   [ -n "$team" ] || die "team-memory is off for this project: nothing to check (teamctl memory status)"
   dir="$(memory_dir_for "$team")"
@@ -302,7 +302,8 @@ memory_policy_set() {
 }
 
 # memory_purge_confirm <team> — `teamctl destroy --purge --memory`: the folder goes only after the
-# team's name is typed at a terminal. No --yes for this one, and a pipe is not a terminal.
+# team's name is typed at a terminal. No --yes for this one. This catches a slip of yours; it is not
+# what keeps an agent out (a terminal can be faked): cmd_destroy's require_operator is.
 memory_purge_confirm() {
   local dir answer
   dir="$(memory_dir_for "$1")"

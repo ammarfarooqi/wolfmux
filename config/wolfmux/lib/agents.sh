@@ -1874,6 +1874,12 @@ cmd_destroy() {
   [ "$purge_memory" -eq 0 ] || [ "$purge" -eq 1 ] || die_usage "--memory belongs to --purge (destroy alone never deletes a lead's memory)"
   require_tools
   load_project
+  # The memory folder is yours alone to delete: the pane proof decides (require_operator). The typed
+  # name below only catches a slip; a terminal can be faked (script -q /dev/null), a pane cannot.
+  if [ "$purge_memory" -eq 1 ]; then
+    require_operator "destroy --purge --memory" "a lead's private memory folder, which nothing else holds" \
+      "teamctl destroy --team $TEAM --purge, which keeps the memory folder"
+  fi
   require_manager destroy
   SESSION="$(session_name_for_project)"
   if [ "$purge" -eq 1 ]; then
