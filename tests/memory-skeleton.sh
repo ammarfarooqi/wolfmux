@@ -153,7 +153,7 @@ SHIP="$WORK/fake-repo/config/wolfmux/memory-skeleton"
 ln -s "$SHIP/bin/mem" "$WORK/plain/bin/mem"
 SHIP_SUM="$(tree_sum "$SHIP")"
 check "a link from a plain folder into the shipped skeleton: init, boot, check, backup and add refuse it (exit 1, MEM_ROOT does not count) and the skeleton is untouched" \
-  'for c in init boot check backup; do OUT="$("$WORK/plain/bin/mem" $c 2>&1 </dev/null)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -qF "$SHIP: this is the shipped skeleton; pass --root to use it" || exit 1; done && OUT="$(echo b | "$WORK/plain/bin/mem" add --region topics --name x --keywords "x, y" --summary s 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "shipped skeleton" && OUT="$(MEM_ROOT="$SHIP" "$WORK/plain/bin/mem" init 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "shipped skeleton" && [ "$SHIP_SUM" = "$(tree_sum "$SHIP")" ]'
+  'for c in init boot check backup; do OUT="$("$WORK/plain/bin/mem" $c 2>&1 </dev/null)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -qF "$SHIP: this is the shipped skeleton; pass --root to use it" || exit 1; done; OUT="$(echo b | "$WORK/plain/bin/mem" add --region topics --name x --keywords "x, y" --summary s 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "shipped skeleton; pass --root" || exit 1; OUT="$(MEM_ROOT="$SHIP" "$WORK/plain/bin/mem" init 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "shipped skeleton" && [ "$SHIP_SUM" = "$(tree_sum "$SHIP")" ]'
 check "readers still run on the shipped skeleton, and --root naming it lets a writer in" \
   '"$WORK/plain/bin/mem" status | grep -q "^last backup: none" && [ "$SHIP_SUM" = "$(tree_sum "$SHIP")" ] && "$WORK/plain/bin/mem" --root "$SHIP" init >/dev/null && [ -f "$SHIP/core/card.md" ] && "$WORK/plain/bin/mem" check --root "$SHIP" >/dev/null'
 check "mem runs from any cwd with only PATH and HOME set" \
@@ -243,8 +243,18 @@ keys = [key(n) for n in shown]
 best = sorted((key("filler-%d" % i) for i in range(1, 201)), reverse=True)[:len(keys)]
 sys.exit(not (keys and keys == sorted(keys, reverse=True) and keys == best and all(k[0] == 5 for k in keys)))
 EOF'
-check "the caps and their byte sum are written in schema.md" \
-  'grep -q "rules 14, people 6, teams 4, topics 7" "$SKEL/.meta/schema.md" && grep -q "^| total | ~4,600 of 5,000; 50 of 80 lines |$" "$SKEL/.meta/schema.md"'
+# The doc is checked against the code, not against itself: change a cap in bin/mem and this fails.
+check "schema.md states bin/mem's own caps: INDEX_CAPS per region, INDEX_MAX_BYTES and INDEX_MAX_LINES in the total row" \
+  'python3 -I - "$SKEL/bin/mem" "$SKEL/.meta/schema.md" <<'"'"'EOF'"'"'
+import ast, re, sys
+code, doc = open(sys.argv[1]).read(), open(sys.argv[2]).read()
+caps = ast.literal_eval(re.search(r"^INDEX_CAPS = (.*)$", code, re.M).group(1))
+size = int(re.search(r"^INDEX_MAX_BYTES = (\d+)$", code, re.M).group(1))
+lines = int(re.search(r"^INDEX_MAX_LINES = (\d+)$", code, re.M).group(1))
+want = "Index caps, in lines per region section: " + ", ".join("%s %d" % cap for cap in caps) + "."
+total = re.search(r"^\| total \| ~[\d,]+ of ([\d,]+); \d+ of (\d+) lines \|$", doc, re.M)
+sys.exit(not (want in doc and total and int(total.group(1).replace(",", "")) == size and int(total.group(2)) == lines))
+EOF'
 check "the legend (with the boot line) is at most 500 bytes, and the skeleton ships the index mem generates" \
   '[ "$(sed -n "/^## Legend$/,/^## Rules$/p" "$T/MEMORY.md" | sed "\$d" | wc -c)" -le 500 ] && fresh "$WORK/legend" && MEM_NOW=2026-10-23T16:00Z "$WORK/legend/bin/mem" check >/dev/null && cmp -s "$WORK/legend/MEMORY.md" "$SKEL/MEMORY.md"'
 # full_tree <dir> <rules> <people> <teams> <topics>: files with 160-character summaries, and one
@@ -594,7 +604,7 @@ REF="$(printf x | "$L/bin/mem" decide --time 2026-10-20T11:00Z --source chat)"
 check "erase inside a decide quote counts bytes: again: check stays clean, the rule on the next decision resolves, a new decide in that minute gets a new anchor" \
   'printf "%s\n" "$ERASE_OUT" | grep -q "^erased: 0 files, 1 lines" && ! printf "%s\n" "$ERASE_OUT" | grep -q "^WARN" && printf "%s\n" "$OUT" | grep -qx "result: 0 problems, 0 warnings" && ! grep -q Tom "$L/ledger/decisions-2026-10.md" && grep -qx "Second line." "$L/ledger/decisions-2026-10.md" && grep -qx "bytes: 49" "$L/ledger/decisions-2026-10.md" && [ "$REF" = "decisions-2026-10#2026-10-20T11:00Z-2" ] && [ "$(grep -c "^## 2026-10-20T11:00Z$" "$L/ledger/decisions-2026-10.md")" -eq 1 ]'
 check "after --, --root is a plain value (a recall word); a --root that is no tree is refused" \
-  'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" && OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
+  'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" || exit 1; OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
 fresh "$WORK/after"
 check "--root after the command works as before it; the same folder twice is fine, two different ones exit 64" \
   '"$T/bin/mem" set cursors.after_root 1 --root "$WORK/after" >/dev/null && grep -q "\"after_root\": 1" "$WORK/after/state/cursors.json" && ! grep -q after_root "$T/state/cursors.json" && "$T/bin/mem" --root "$WORK/after" boot --root "$WORK/after/../after" | grep -q "^# Card" && "$T/bin/mem" --root "$T" boot --root "$WORK/after" >/dev/null 2>&1; [ $? -eq 64 ]'
@@ -904,7 +914,7 @@ check "it names the pre-migration tar outside the tree, which it never changes" 
 check "erase without --confirm changes nothing" '[ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 N="$(printf '%s\n' "$LIST" | sed -n 's/^\([0-9][0-9]*\) items; run again with --confirm \1 to erase them.*/\1/p')"
 check "the listing ends with its item count, and --confirm with another count is refused and changes nothing" \
-  '[ "$N" = "$(printf "%s\n" "$LIST" | grep -c "^\(file\|line\|state\|tar\) ")" ] && OUT="$("$T/bin/mem" erase "dana smith" --confirm $((N + 1)) 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "the listing has $N items" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+  '[ "$N" = "$(printf "%s\n" "$LIST" | grep -c "^\(file\|line\|state\|tar\) ")" ] || exit 1; OUT="$("$T/bin/mem" erase "dana smith" --confirm $((N + 1)) 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "the listing has $N items" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 OUT="$("$T/bin/mem" erase "dana smith" --confirm "$N")"; RC=$?
 check "erase --confirm removes the live and archived files that name the subject" \
   '[ "$RC" -eq 0 ] && [ ! -e "$T/people/dana.md" ] && [ ! -e "$T/topics/onboarding.md" ] && [ ! -e "$T/archive/2026-08/topics/dana-old.md" ] && [ -f "$T/topics/unrelated.md" ]'
@@ -943,8 +953,8 @@ check "erase matches whole words: tom finds the file that says Tom, not custom-d
 check "erase tom --confirm 1 removes only that file" \
   '[ ! -e "$T/topics/meeting.md" ] && [ -f "$T/topics/custom-domains.md" ] && [ -f "$T/topics/later.md" ]'
 SUM_BEFORE="$(tree_sum "$T")"
-check "erase dec matches nothing: a path counts by its file stem only, never decisions-YYYY-MM" \
-  '"$T/bin/mem" erase dec | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase ledger 2>/dev/null; [ -f "$T/ledger/decisions-2026-10.md" ]'
+check "erase dec matches nothing (a path counts by its file stem only, never decisions-YYYY-MM); erase ledger is refused (exit 1); the ledger stays" \
+  '"$T/bin/mem" erase dec | grep -qx "nothing in the tree names that subject" || exit 1; OUT="$("$T/bin/mem" erase ledger --confirm 1 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "a word every tree holds" && [ -f "$T/ledger/decisions-2026-10.md" ] && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 check "erase matches state and .jsonl values, never field names: free (free_pct) erases nothing and is left behind as a key" \
   'OUT="$("$T/bin/mem" erase free --confirm 1 2>&1)"; [ $? -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: ledger/sweeps-2026-10.jsonl (key)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 check "erase refuses .md, a header field, a folder name and a bare number, and changes nothing" \
@@ -970,8 +980,10 @@ check "erase drain, role, migrate (and digest, folder, jev, person, team) is ref
   'for s in drain role migrate digest folder jev person team; do OUT="$("$T/bin/mem" erase "$s" --confirm 1 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "a word every tree holds" || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 check "a subject that is only the stem of a .meta file takes nothing: digest-pending and shared-folder stay, live and in the tars" \
   '"$T/bin/mem" erase digest-pending | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase shared-folder | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase migrate-20261001T000000Z | grep -qx "nothing in the tree names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
-check "drain.log keeps every backup basis= line, so the owner's-word tar stays non-routine" \
-  '[ "$(grep -c " backup .meta/backups/[0-9TZ]*\.tar sha256=[0-9a-f]* basis=" "$T/.meta/drain.log")" -eq 2 ] && grep -q "basis=migration rollback; kept on the owner.s word$" "$T/.meta/drain.log"'
+# An erase that really edits a basis: rollback is a word of that basis only.
+"$T/bin/mem" erase rollback --confirm 1 >/dev/null
+check "erase rollback edits the basis text inside its drain.log line: both backup lines stay, the rest of the basis too, so the tar stays non-routine" \
+  '[ "$(grep -c " backup .meta/backups/[0-9TZ]*\.tar sha256=[0-9a-f]* basis=" "$T/.meta/drain.log")" -eq 2 ] && grep -q " backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=migration \[erased 2026-10-23 on owner.s word\]; kept on the owner.s word$" "$T/.meta/drain.log"'
 # A backup line in drain.log is never replaced: the subject goes out of its basis text only, a
 # hit in the rest of the line is left behind, and a tar with no basis line is kept, not routine.
 T="$WORK/erase-basis"
@@ -1056,8 +1068,6 @@ put("archive/2026-08/ledger/sweeps-2026-08.jsonl", "".join(json.dumps(r) + "\n" 
 put(".meta/jev/20261001T000000Z-x.json", json.dumps({"local": {"file": "topics/x.md"}, "note": "José Ruiz"}, indent=2) + "\n")
 put("archive/state/comms-state.json", json.dumps({"contacts": {"c1": {"name": "José Ruiz", "tz": "UTC"}}, "other": "kept"}, indent=2) + "\n")
 EOF
-check "the escaped names are on disk as \\u00e9 (the shape erase used to miss)" \
-  'grep -q "Jos\\\\u00e9 Ruiz" "$T/state/open-asks.json" && ! grep -rq "José" "$T/state" "$T/archive" "$T/.meta/jev"'
 SUM_BEFORE="$(tree_sum "$T")"
 OUT="$("$T/bin/mem" erase zed --confirm 1 2>&1)"; RC=$?
 check "a subject that only a JSON key names (nested in state, a field in a .jsonl line) erases nothing; each file is left behind once" \
@@ -1080,8 +1090,8 @@ check "a JSON file that is another scalar (NaN, read as nan) is never edited: li
   '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-09/number.json (value)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject" && [ "$(cat "$TS/archive/2026-09/number.json")" = NaN ]'
 "$T/bin/mem" backup >/dev/null
 LIST="$("$T/bin/mem" erase "José Ruiz")"
-check "erase finds an escaped name in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \
-  'printf "%s\n" "$LIST" | grep -qx "state  state/open-asks.json#q1" && printf "%s\n" "$LIST" | grep -qx "line   archive/2026-08/ledger/sweeps-2026-08.jsonl:1" && printf "%s\n" "$LIST" | grep -qx "file   .meta/jev/20261001T000000Z-x.json (a JSON value)" && printf "%s\n" "$LIST" | grep -qx "line   archive/state/comms-state.json (1 JSON value)" && [ "$(printf "%s\n" "$LIST" | grep -c "^tar    .meta/backups/.*: \(redact\|drop\) ")" -eq 4 ] && printf "%s\n" "$LIST" | grep -q "^tar    .meta/backups/.*: redact state/open-asks.json$" && printf "%s\n" "$LIST" | grep -q "^8 items; run again with --confirm 8"'
+check "erase finds a name stored only as \\u00e9 escapes (never as é on disk) in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \
+  'grep -q "Jos\\\\u00e9 Ruiz" "$T/state/open-asks.json" && ! grep -rq "José" "$T/state" "$T/archive" "$T/.meta/jev" && printf "%s\n" "$LIST" | grep -qx "state  state/open-asks.json#q1" &&printf "%s\n" "$LIST" | grep -qx "line   archive/2026-08/ledger/sweeps-2026-08.jsonl:1" && printf "%s\n" "$LIST" | grep -qx "file   .meta/jev/20261001T000000Z-x.json (a JSON value)" && printf "%s\n" "$LIST" | grep -qx "line   archive/state/comms-state.json (1 JSON value)" && [ "$(printf "%s\n" "$LIST" | grep -c "^tar    .meta/backups/.*: \(redact\|drop\) ")" -eq 4 ] && printf "%s\n" "$LIST" | grep -q "^tar    .meta/backups/.*: redact state/open-asks.json$" && printf "%s\n" "$LIST" | grep -q "^8 items; run again with --confirm 8"'
 "$T/bin/mem" erase "José Ruiz" --confirm 8 >/dev/null
 check "after it, no file and no tar member names him, decoded or raw; the other entries, lines and values stay, and JSON stays JSON" \
   'python3 -I - "$T" <<'"'"'EOF'"'"'
