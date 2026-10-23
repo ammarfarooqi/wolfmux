@@ -535,6 +535,26 @@ check "everyone else gets the sizes and counts without them: another team's lead
        { echo "shown to: $who"; cat "$WORK/o"; exit 1; }; done &&
    TEAM_ROLE=lead WOLFMUX_TEAM=agt "$REPO/bin/teamctl" memory status >"$WORK/o" 2>&1 && grep -q "^team-memory:  agt" "$WORK/o" && ! grep -qF "$ADIR" "$WORK/o" && ! grep -qF "$AID" "$WORK/o"'
 
+echo "== no runnable bin/mem: no setting, no boot, no block at the next start (not only the prompt)"
+/bin/chmod 600 "$ADIR/bin/mem"
+check "the running lead still holds the memory (its settings): capture of its pane stays refused (77)" \
+  '[ "$(settings_of lead agt | jq -r .autoMemoryDirectory)" = "$ADIR" ] && as_agent other lead capture lead --team agt >/dev/null 2>&1; [ $? -eq 77 ]'
+BEFORE="$(launches agt lead)"
+teamctl restart lead --team agt >/dev/null 2>&1
+check "  ... restarted: no autoMemoryDirectory in its settings, no boot prompt in its argv, no block in its prompt" \
+  'launched_after agt lead "$BEFORE" && sleep 1 && settings_of lead agt | jq -e "has(\"autoMemoryDirectory\") | not" &&
+   ! last_argv agt lead | grep -q "Team memory is" && ! teamctl _prompt lead --team agt | grep -q "^## Team memory"'
+check "  ... and its pane is an ordinary pane again: the other team's lead captures it" \
+  'as_agent other lead capture lead --team agt >/dev/null'
+/bin/chmod 700 "$ADIR/bin/mem"
+BEFORE="$(launches agt lead)"
+teamctl restart lead --team agt >/dev/null 2>&1
+check "bin/mem runnable again: the next start has the setting and the boot prompt back" \
+  'launched_after agt lead "$BEFORE" && [ "$(settings_of lead agt | jq -r .autoMemoryDirectory)" = "$ADIR" ] && last_argv agt lead | jq -e ".[-1] | startswith(\"Team memory is on. Run \")"'
+teamctl memory disable >/dev/null 2>&1
+check "off: the kept folders' names are anyone's, their place only yours" \
+  'teamctl memory status | grep -q "^kept folders: .*(under " && as_agent other lead memory status >"$WORK/o" 2>&1 && grep -q "^kept folders: " "$WORK/o" && ! grep -q "under " "$WORK/o"'
+
 echo
 echo "memory: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
