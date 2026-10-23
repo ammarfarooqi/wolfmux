@@ -1261,15 +1261,17 @@ def cmd_recall(tree, args):
         folder = shared_folder(tree)
         if not folder:
             print("(no shared folder set: mem set shared-folder <path>)")
+        home = os.path.realpath(os.path.expanduser("~"))
         for path, name, keywords, summary, mtime in shared_entries(folder):
-            consider("SHARED ", path, name, keywords, summary, 3, datetime.datetime.fromtimestamp(mtime, UTC).date())
+            shown = "~" + path[len(home):] if path.startswith(home + os.sep) else path
+            consider("SHARED ", shown, name, keywords, summary, 3, datetime.datetime.fromtimestamp(mtime, UTC).date())
     results.sort()
     if not results:
         print("no match for: %s" % " ".join(words))
         return 1
     for _, _, _, label, shown, summary in results[:5]:
         head = "%s%s: " % (label, shown)
-        print(head + cut(summary, max(100 - len(head), 20)))
+        print(head + cut(summary, max(100 - len(head), 40)))
     return 0
 
 

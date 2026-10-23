@@ -59,6 +59,34 @@ topic() {
   chmod 600 "$1/topics/$2.md"
 }
 
+# tree_sum <dir>: one digest over every path, its bytes and its mtime: equal means untouched.
+tree_sum() {
+  python3 -I - "$1" <<'EOF'
+import hashlib, os, sys
+h = hashlib.sha256()
+for folder, dirs, names in os.walk(sys.argv[1]):
+    dirs.sort()
+    for name in sorted(names):
+        path = os.path.join(folder, name)
+        h.update(path.encode() + b"\0" + str(os.lstat(path).st_mtime_ns).encode() + b"\0")
+        if os.path.isfile(path) and not os.path.islink(path):
+            h.update(open(path, "rb").read())
+print(h.hexdigest())
+EOF
+}
+# quote_of <ledger file> <anchor>: the quote of that decision block, byte for byte, on stdout.
+quote_of() {
+  python3 -I - "$1" "$2" <<'EOF'
+import re, sys
+data = open(sys.argv[1], "rb").read()
+start = data.index(b"\n## " + sys.argv[2].encode() + b"\n") + 1
+size = int(re.compile(rb"\nbytes: (\d+)\n").search(data, start).group(1))
+fence_start = data.index(b"\n", data.index(b"\nbytes: ", start) + 1) + 1
+body_start = data.index(b"\n", fence_start) + 1
+sys.stdout.buffer.write(data[body_start:body_start + size])
+EOF
+}
+
 echo "== the skeleton and init"
 check "the skeleton has MEMORY.md, core/boot.md, .meta/schema.md and bin/mem" \
   '[ -f "$SKEL/MEMORY.md" ] && [ -f "$SKEL/core/boot.md" ] && [ -f "$SKEL/.meta/schema.md" ] && [ -x "$SKEL/bin/mem" ]'
@@ -174,6 +202,155 @@ check "a filed auto-memory file gets the missing header fields and keeps its bod
   'f="$T/topics/release-train.md" && grep -q "^region: topics" "$f" && grep -q "^keywords: " "$f" && grep -q "^summary: the release train schedule" "$f" && grep -q "^last_confirmed: " "$f" && tail -1 "$f" | grep -qx "Trains leave on Monday."'
 check "a feedback filed into rules has no authority yet, so check fails until the owner gives one" \
   '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "PROBLEM .*rules/tone-of-replies.md: no authority"'
+
+
+echo "== recall"
+T="$WORK/recall"
+fresh "$T"
+topic "$T" fly-dev "fly, deploy, dev" 3 2026-10-20
+topic "$T" fly-prod "fly, deploy, prod" 5 2026-10-20
+topic "$T" slack-tone "slack, tone" 3 2026-10-20
+topic "$T" old-notes "notes, fly" 2 2026-01-01
+topic "$T" new-notes "notes, fly" 2 2026-10-22
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" recall fly deploy)"
+check "recall ranks equal hits by importance: fly-prod (5) before fly-dev (3)" \
+  '[ "$(printf "%s\n" "$OUT" | sed -n 1p)" = "topics/fly-prod.md: about fly-prod" ] && [ "$(printf "%s\n" "$OUT" | sed -n 2p)" = "topics/fly-dev.md: about fly-dev" ]'
+check "recall leaves out files with no hit" '! printf "%s" "$OUT" | grep -q slack-tone'
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" recall fly dev)"
+check "recall ranks more hits first: fly-dev (fly + dev) before fly-prod (fly)" \
+  'printf "%s\n" "$OUT" | sed -n 1p | grep -q "^topics/fly-dev.md"'
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" recall notes)"
+check "recall ranks equal hits and importance by last_confirmed: the newer first" \
+  'printf "%s\n" "$OUT" | sed -n 1p | grep -q "^topics/new-notes.md" && printf "%s\n" "$OUT" | sed -n 2p | grep -q "^topics/old-notes.md"'
+i=1
+while [ $i -le 8 ]; do topic "$T" "many-$i" "many, things$i" 3 2026-10-20; i=$((i + 1)); done
+OUT="$("$T/bin/mem" recall many)"
+check "recall prints at most 5 lines, about 500 characters" \
+  '[ "$(printf "%s\n" "$OUT" | wc -l | tr -d " ")" -eq 5 ] && [ "$(printf "%s" "$OUT" | wc -c | tr -d " ")" -le 520 ]'
+check "recall with no hit says so and exits 1" '! "$T/bin/mem" recall zebra-nothing && "$T/bin/mem" recall zebra-nothing | grep -q "no match"'
+SH="$WORK/shared-recall"
+/bin/mkdir -p "$SH/rules"
+printf -- '- [Deploy windows](rules/deploy-windows.md) when the shared deploys run\n' >"$SH/MEMORY.md"
+printf -- '---\nname: deploy-windows\nkeywords: deploy, window\nsummary: shared deploy windows\n---\nbody\n' >"$SH/rules/deploy-windows.md"
+"$T/bin/mem" set shared-folder "$SH" >/dev/null
+SUM_BEFORE="$(tree_sum "$SH")"
+OUT="$("$T/bin/mem" recall deploy window --shared)"
+check "recall --shared finds the shared folder's files and labels them SHARED" \
+  'printf "%s" "$OUT" | grep -q "^SHARED $SH/rules/deploy-windows.md: shared deploy windows"'
+check "recall --shared never writes the shared folder" '[ "$SUM_BEFORE" = "$(tree_sum "$SH")" ]'
+check "recall without --shared shows no SHARED line" '! "$T/bin/mem" recall deploy window | grep -q SHARED'
+/bin/mkdir -p "$T/archive/2026-08/topics"
+printf -- '---\nname: gone-topic\nregion: topics\nkeywords: zeppelin\nsummary: an archived zeppelin note\nlinks:\nimportance: 2\nlast_confirmed: 2026-06-01\nstatus: live\n---\nold\n' >"$T/archive/2026-08/topics/gone-topic.md"
+check "recall --archive finds archived files and labels them ARCHIVE; plain recall does not" \
+  '"$T/bin/mem" recall zeppelin --archive | grep -q "^ARCHIVE archive/2026-08/topics/gone-topic.md" && ! "$T/bin/mem" recall zeppelin'
+
+echo "== add"
+T="$WORK/add"
+fresh "$T"
+OUT="$(printf 'Line one.\nThe deploy goes at noon.\nLine three.\n' | MEM_NOW=2026-10-01T09:00Z "$T/bin/mem" add --region topics --name deploys --keywords "deploy, fly, noon" --summary "when deploys go out")"
+check "add of a new name says ADD and writes header + body" \
+  '[ "$OUT" = "ADD topics/deploys.md" ] && grep -q "^last_confirmed: 2026-10-01" "$T/topics/deploys.md" && grep -qx "The deploy goes at noon." "$T/topics/deploys.md"'
+check "add writes the file mode 600 and lists it in MEMORY.md" \
+  '[ "$(mode_of "$T/topics/deploys.md")" = 600 ] && grep -q "^- \[deploys\](topics/deploys.md) when deploys go out" "$T/MEMORY.md"'
+OUT="$(printf 'The deploy goes at 14:00 UTC.\n' | MEM_NOW=2026-10-05T09:00Z "$T/bin/mem" add --region topics --name deploys --keywords "deploy, fly, noon" --summary "when deploys go out" --replace "The deploy goes at noon.")"
+check "add with the same name says UPDATE and sets last_confirmed to today" \
+  'printf "%s" "$OUT" | grep -q "^UPDATE topics/deploys.md (same name" && grep -q "^last_confirmed: 2026-10-05" "$T/topics/deploys.md"'
+check "a correction replaces the old sentence in place; nothing is appended" \
+  'python3 -I -c "import sys; d=open(sys.argv[1]).read(); b=d.split(\"---\n\",2)[2]; sys.exit(b != \"Line one.\nThe deploy goes at 14:00 UTC.\nLine three.\n\")" "$T/topics/deploys.md"'
+OUT="$(MEM_NOW=2026-10-05T10:00Z "$T/bin/mem" add --region topics --name deploys --keywords "deploy, fly, noon" --summary "when deploys go out" </dev/null)"
+check "add with nothing new on the same day says NOOP and changes nothing" '[ "$OUT" = "NOOP topics/deploys.md (nothing new; confirmed today already)" ]'
+OUT="$(MEM_NOW=2026-10-06T10:00Z "$T/bin/mem" add --region topics --name deploy-times --keywords "deploy, fly, noon, times" --summary "deploy times" </dev/null)"
+check "add of a new name with >= 70% keyword overlap updates the existing file instead" \
+  'printf "%s" "$OUT" | grep -q "^UPDATE topics/deploys.md (keywords overlap 75% with --name deploy-times" && [ ! -e "$T/topics/deploy-times.md" ]'
+SUM_BEFORE="$(tree_sum "$T")"
+OUT="$(echo body | "$T/bin/mem" add --region topics --name brand-new --keywords "zinc, copper" --summary "metals" --dry-run)"
+check "add --dry-run shows the decision and writes nothing" '[ "$OUT" = "would ADD topics/brand-new.md" ] && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+OUT="$(echo "Deploys now go through the release train." | MEM_NOW=2026-10-07T09:00Z "$T/bin/mem" add --region topics --name release-train --keywords "train, release" --summary "deploys ride the release train" --supersedes deploys)"
+check "add --supersedes says SUPERSEDE, writes the new file and marks the old one" \
+  '[ "$OUT" = "SUPERSEDE topics/release-train.md replaces topics/deploys.md" ] && grep -q "^status: superseded:release-train" "$T/topics/deploys.md" && grep -q "^superseded_on: 2026-10-07" "$T/topics/deploys.md" && [ -f "$T/topics/release-train.md" ]'
+check "MEMORY.md lists the new file and leaves the superseded one out" \
+  'grep -q "(topics/release-train.md)" "$T/MEMORY.md" && ! grep -q "(topics/deploys.md)" "$T/MEMORY.md"'
+OUT="$(echo "Never send at night." | "$T/bin/mem" add --region rules --name quiet-hours --keywords "night, send" --summary "no sends at night" 2>&1)"; RC=$?
+check "add --region rules without --authority is refused and writes nothing" \
+  '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "rules need --authority" && [ ! -e "$T/rules/quiet-hours.md" ]'
+REF="$(printf 'No sends at night.' | MEM_NOW=2026-10-08T09:00Z "$T/bin/mem" decide --time 2026-10-08T09:00Z --source chat)"
+OUT="$(echo "Never send at night." | MEM_NOW=2026-10-08T09:01Z "$T/bin/mem" add --region rules --name quiet-hours --keywords "night, send" --summary "no sends at night" --authority "$REF")"
+check "add --region rules with the authority mem decide printed is accepted and check passes" \
+  '[ "$OUT" = "ADD rules/quiet-hours.md" ] && grep -q "^authority: decisions-2026-10#2026-10-08T09:00Z" "$T/rules/quiet-hours.md" && "$T/bin/mem" check'
+check "add refuses a name another region already has" \
+  '! echo x | "$T/bin/mem" add --region people --name quiet-hours --keywords "q, r" --summary "clash" && [ ! -e "$T/people/quiet-hours.md" ]'
+check "add refuses a name that is not a slug (no path tricks)" \
+  '! echo x | "$T/bin/mem" add --region topics --name "../escape" --keywords "q" --summary "s" && [ ! -e "$WORK/escape.md" ]'
+
+echo "== set"
+T="$WORK/set"
+fresh "$T"
+"$T/bin/mem" set cursors.slack_dm 1761000000 >/dev/null
+"$T/bin/mem" set cursors.beads_fe.last "bd-42" >/dev/null
+MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" set machine.start.free_pct 50 >/dev/null
+check "set writes a dotted path into the state file, as JSON" \
+  'python3 -I -c "import json,sys; c=json.load(open(sys.argv[1])); m=json.load(open(sys.argv[2])); sys.exit(not (c[\"slack_dm\"] == 1761000000 and c[\"beads_fe\"][\"last\"] == \"bd-42\" and m[\"start\"] == {\"free_pct\": 50, \"set_at\": \"2026-10-23T09:00Z\"}))" "$T/state/cursors.json" "$T/state/machine.json"'
+"$T/bin/mem" set cursors.slack_dm 1761000099 >/dev/null
+check "set keeps the other keys when it changes one" \
+  'python3 -I -c "import json,sys; c=json.load(open(sys.argv[1])); sys.exit(not (c[\"slack_dm\"] == 1761000099 and c[\"beads_fe\"][\"last\"] == \"bd-42\"))" "$T/state/cursors.json"'
+"$T/bin/mem" ask open --id a1 --who sam --what "a question" --waiting-on owner >/dev/null
+"$T/bin/mem" set open-asks.a1.next_check 2026-10-30T09:00Z >/dev/null
+"$T/bin/mem" set crons.sweep.schedule "*/20 * * * *" >/dev/null
+"$T/bin/mem" set crons.sweep.enabled false >/dev/null
+check "set edits open-asks and crons entries by id" \
+  'python3 -I -c "import json,sys; a=json.load(open(sys.argv[1])); c=json.load(open(sys.argv[2])); sys.exit(not (a[0][\"next_check\"] == \"2026-10-30T09:00Z\" and c == [{\"name\": \"sweep\", \"schedule\": \"*/20 * * * *\", \"enabled\": False}]))" "$T/state/open-asks.json" "$T/state/crons.json"'
+"$T/bin/mem" set cursors.gmail 42 --string >/dev/null
+check "set --string keeps a number-looking value a string" 'grep -q "\"gmail\": \"42\"" "$T/state/cursors.json"'
+check "set refuses an unknown state file, an ask that does not exist, and a bare file name" \
+  '! "$T/bin/mem" set nothing.key 1 && ! "$T/bin/mem" set open-asks.nope.what x && ! "$T/bin/mem" set cursors 1'
+
+echo "== decide, sent, ask, sweep-log"
+T="$WORK/ledger"
+fresh "$T"
+printf 'First: keep it short.\n' >"$WORK/q1"
+REF1="$(MEM_NOW=2026-10-09T13:55Z "$T/bin/mem" decide --time 2026-10-09T13:50Z --source chat <"$WORK/q1")"
+check "decide prints the authority ref" '[ "$REF1" = "decisions-2026-10#2026-10-09T13:50Z" ]'
+check "decide writes the quote verbatim (bytes compared)" 'quote_of "$T/ledger/decisions-2026-10.md" 2026-10-09T13:50Z | cmp -s - "$WORK/q1"'
+printf 'Use ```code``` and ````more````,  trailing spaces  \r\nüñí, no newline at the end' >"$WORK/q2"
+BEFORE="$(cat "$T/ledger/decisions-2026-10.md")"
+REF2="$(MEM_NOW=2026-10-09T13:56Z "$T/bin/mem" decide --time 2026-10-09T13:50Z --source slack:1760017800.123 <"$WORK/q2")"
+check "a second decision in the same minute gets -2" '[ "$REF2" = "decisions-2026-10#2026-10-09T13:50Z-2" ]'
+check "backticks, CRLF, unicode and a missing final newline survive byte for byte" \
+  'quote_of "$T/ledger/decisions-2026-10.md" 2026-10-09T13:50Z-2 | cmp -s - "$WORK/q2"'
+check "the ledger is append-only: the earlier text is an exact prefix" \
+  'python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); b=open(sys.argv[2],\"rb\").read(); sys.exit(not d.startswith(b.rstrip(b\"\n\")))" "$T/ledger/decisions-2026-10.md" <(printf "%s" "$BEFORE")'
+check "the block records the source and the byte count" \
+  'grep -q "^source: slack:1760017800.123" "$T/ledger/decisions-2026-10.md" && grep -q "^bytes: $(wc -c <"$WORK/q2" | tr -d " ")$" "$T/ledger/decisions-2026-10.md"'
+check "decide refuses a bad source and an empty quote" \
+  '! printf x | "$T/bin/mem" decide --time 2026-10-09T13:50Z --source email && ! "$T/bin/mem" decide --time 2026-10-09T13:50Z --source chat </dev/null'
+SH="$WORK/shared-decide"
+/bin/mkdir -p "$SH"
+printf '# Shared rules\n- one\n' >"$SH/RULES.md"
+"$T/bin/mem" set shared-folder "$SH" >/dev/null
+printf -- '---\nname: shared-rules\nregion: rules\nkeywords: shared, rules\nsummary: the shared rules file\nlinks:\nimportance: 4\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\npointer: %s\n---\nSee the shared file.\n' "$SH/RULES.md" >"$T/rules/shared-rules.md"
+chmod 600 "$T/rules/shared-rules.md"
+SUM_BEFORE="$(tree_sum "$SH")"
+OUT="$(printf 'Add rule two.' | MEM_NOW=2026-10-10T08:00Z "$T/bin/mem" decide --time 2026-10-10T08:00Z --source bead:x-1 --shared RULES.md)"
+check "decide --shared prints the exact edit for the shared file, with the ref" \
+  'printf "%s" "$OUT" | grep -q "^shared file (mem never writes there; edit it yourself): $SH/RULES.md" && printf "%s" "$OUT" | grep -q "suggested line, under its rule: .*decisions-2026-10#2026-10-10T08:00Z.*Add rule two."'
+check "decide --shared never writes into the shared folder" '[ "$SUM_BEFORE" = "$(tree_sum "$SH")" ]'
+check "decide --shared refreshes the matching pointer file's last_confirmed" 'grep -q "^last_confirmed: 2026-10-10" "$T/rules/shared-rules.md"'
+OUT="$(MEM_NOW=2026-10-11T08:00Z "$T/bin/mem" sent --to sam --channel slack-dm --ref https://example.slack.com/p1 --subject "the deploy plan")"
+check "sent appends one line: time, to, channel, ref, subject" \
+  'grep -qxF -e "- 2026-10-11T08:00Z | to: sam | channel: slack-dm | ref: https://example.slack.com/p1 | the deploy plan" "$T/ledger/sends-2026-10.md"'
+check "sent refuses a subject of two lines" '! "$T/bin/mem" sent --to sam --channel c --ref r --subject "$(printf "a\nb")"'
+MEM_NOW=2026-10-12T08:00Z "$T/bin/mem" ask open --id q-1 --who sam --what "send the logo" --waiting-on dana --next-check 2026-10-13T08:00Z >/dev/null
+check "ask open adds the ask to state/open-asks.json and the ledger" \
+  'python3 -I -c "import json,sys; a=json.load(open(sys.argv[1]))[0]; sys.exit(not (a[\"id\"]==\"q-1\" and a[\"who\"]==\"sam\" and a[\"waiting_on\"]==\"dana\" and a[\"status\"]==\"open\" and a[\"opened\"]==\"2026-10-12T08:00Z\" and a[\"next_check\"]==\"2026-10-13T08:00Z\"))" "$T/state/open-asks.json" && grep -q "^- 2026-10-12T08:00Z | open | q-1 | who: sam | waiting on: dana | send the logo" "$T/ledger/asks-2026-10.md"'
+check "ask open refuses an id that exists" '! "$T/bin/mem" ask open --id q-1 --who x --what y --waiting-on z'
+MEM_NOW=2026-10-12T09:00Z "$T/bin/mem" ask close --id q-1 --note "logo arrived" >/dev/null
+check "ask close marks it closed and logs it" \
+  'grep -q "\"status\": \"closed\"" "$T/state/open-asks.json" && grep -q "^- 2026-10-12T09:00Z | close | q-1 | logo arrived" "$T/ledger/asks-2026-10.md"'
+check "ask close refuses an ask that is not open" '! "$T/bin/mem" ask close --id q-1 && ! "$T/bin/mem" ask close --id nope'
+MEM_NOW=2026-10-12T10:00Z "$T/bin/mem" sweep-log --inboxes 3 --asks-touched 1 --free-pct 41 --swap-gb 2.5 --load 3.2 >/dev/null
+check "sweep-log writes one JSON line with the numbers" \
+  'python3 -I -c "import json,sys; l=open(sys.argv[1]).read().splitlines(); r=json.loads(l[-1]); sys.exit(not (len(l)==1 and r[\"time\"]==\"2026-10-12T10:00Z\" and r[\"inboxes\"]==3 and r[\"free_pct\"]==41 and r[\"swap_gb\"]==2.5 and r[\"load\"]==3.2))" "$T/ledger/sweeps-2026-10.jsonl"'
+check "the ledger files are mode 600" '[ "$(mode_of "$T/ledger/sends-2026-10.md")" = 600 ] && [ "$(mode_of "$T/ledger/sweeps-2026-10.jsonl")" = 600 ]'
 
 echo
 echo "result: $passed passed, $failed failed"
