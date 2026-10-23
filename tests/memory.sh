@@ -56,6 +56,9 @@ unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH WOLFMUX_M
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL WOLFMUX_EXTRA_SETTINGS
 unset WOLFMUX_FABLE_MODEL WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL WOLFMUX_MODEL_POLICY CLAUDE_CONFIG_DIR
 unset WOLFMUX_LEAD_MODEL WOLFMUX_ORPHAN_STEWARD WOLFMUX_HUMAN_PANE_TYPING WOLFMUX_INBOX_WATCHED WOLFMUX_FAKE_PS_TABLE
+# BEADS_DIR of the shell that runs this suite decided whether `teamctl finish` could ask Beads (and so take the team)
+# or found "no Beads workspace" and kept it: the project below has a .beads of its own instead, and the fake bd answers.
+unset BEADS_DIR
 export WOLFMUX_NOTIFY=off WOLFMUX_SPLASH=off WOLFMUX_INBOX_WATCHED=""
 export WOLFMUX_NOTIFY_TTY="$WORK/tty" # a notice for you lands in this file, not on a screen
 
@@ -157,6 +160,7 @@ git init -q -b main
 echo "hello" >README.md
 git add -A
 git -c user.name=memory -c user.email=memory@example.invalid commit -qm "initial commit"
+/bin/mkdir -p "$PROJECT/.beads" # a Beads workspace, so finish asks the fake bd (no open task) whatever the caller's BEADS_DIR
 teamctl start opus --team mem --no-attach --skip-beads >/dev/null 2>&1
 teamctl start opus --team other --no-attach --skip-beads >/dev/null 2>&1
 teamctl spawn w1 opus --team mem --no-kickoff >/dev/null 2>&1
@@ -191,7 +195,7 @@ echo "== the prompt block, the setting and the boot prompt: the mem lead, nobody
 check "teamctl _prompt lead --team mem carries the Team memory block: folder, rule, shared folder, boot line" \
   'P="$(teamctl _prompt lead --team mem)" && printf "%s" "$P" | grep -q "^## Team memory" && printf "%s" "$P" | grep -qF "$DIR" &&
    printf "%s" "$P" | grep -q "Never copy its contents into Beads, Jira, Slack" && printf "%s" "$P" | grep -qF "$WOLFMUX_CLAUDE_PROJECTS/" &&
-   printf "%s" "$P" | grep -qF "Run \`$DIR/bin/mem boot\` before anything else. The card wins over a re-sent handover on HOW to work; the handover is a task."'
+   printf "%s" "$P" | grep -qF "Run \`$DIR/bin/mem boot\` before anything else, and again after every compaction. The card wins over a re-sent handover on HOW to work; the handover is a task."'
 check "  ... the shared project memory folder is Claude Code's own name for the project folder" \
   'teamctl _prompt lead --team mem | grep -qF "$WOLFMUX_CLAUDE_PROJECTS/$(printf "%s" "$PROJECT" | sed "s|[^A-Za-z0-9]|-|g")/memory/"'
 check "the other team's lead and the mem team's worker get no block" \
@@ -239,10 +243,6 @@ check "status names the policy, the folder, the index against its 25000-byte cap
   'for f in "^team-memory:  mem" "^folder: .*files" "^index: .*MEMORY.md [0-9]+ of 25000 bytes" "^card: " "^lead: .*running" "^note: .*next restart"; do
      printf "%s\n" "$OUT" | grep -Eq "$f" || { echo "missing: $f"; exit 1; }; done'
 check "  ... says the running lead was started WITH the setting" 'printf "%s" "$OUT" | grep -q "WITH the setting"'
-sleep 1
-touch "$DIR/core/card.md"
-check "  ... warns when core/card.md is newer than the lead's prompt" \
-  'teamctl memory status 2>&1 | grep -q "prompt is older than core/card.md"'
 ID="$(record lead mem | jq -r .session_id)"
 printf '9001\t1\tclaude --resume %s\n9002\t1\tclaude --resume %s\n' "$ID" "$ID" >"$WORK/ps-table"
 check "  ... warns when two processes carry the lead's conversation id" \
@@ -250,17 +250,16 @@ check "  ... warns when two processes carry the lead's conversation id" \
 check "teamctl memory check runs mem check and passes its exit code" \
   'teamctl memory check | grep -q "0 problems" && FAKE_MEM_CHECK_RC=1 teamctl memory check >/dev/null 2>&1; [ $? -eq 1 ]'
 
-echo "== the card in the prompt"
-awk 'BEGIN { for (i = 1; i <= 80; i++) printf "card line %03d %s\n", i, "................................................................................" }' >"$DIR/core/card.md"
-P="$(teamctl _prompt lead --team mem)"
-BLOCK="$(printf '%s\n' "$P" | sed -n '/^## Team memory/,$p')"
-check "a card over 4000 bytes is cut at the end of a line, and the prompt says card truncated" \
-  'printf "%s" "$BLOCK" | grep -q "card truncated at" && printf "%s" "$BLOCK" | grep -q "^card line 001 " && ! printf "%s" "$BLOCK" | grep -q "^card line 080 " &&
-   [ "$(printf "%s\n" "$BLOCK" | grep -c "^card line ")" -le $((4000 / 95)) ] && [ -z "$(printf "%s\n" "$BLOCK" | grep "^card line" | grep -v "\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.\.$")" ]'
-check "  ... and the whole block stays under 6000 bytes" '[ "$(printf "%s" "$BLOCK" | wc -c)" -lt 6000 ]'
-printf '# Card\nshort\n' >"$DIR/core/card.md"
-check "a short card is carried whole, without the truncated note" \
-  'teamctl _prompt lead --team mem | grep -q "^short$" && ! teamctl _prompt lead --team mem | grep -q "card truncated"'
+echo "== the card is never in the prompt (ps and teamctl _prompt show a prompt to anyone)"
+printf '# Card\nCARD-MARKER-7f3e work this way\n' >"$DIR/core/card.md"
+echo "INDEX-MARKER-91c2" >>"$DIR/MEMORY.md"
+check "the block holds no card body and nothing else of the folder: the planted markers are absent from the prompt" \
+  'P="$(teamctl _prompt lead --team mem)" && printf "%s" "$P" | grep -q "^## Team memory" && ! printf "%s" "$P" | grep -q "CARD-MARKER-7f3e" &&
+   ! printf "%s" "$P" | grep -q "INDEX-MARKER-91c2" && ! printf "%s" "$P" | grep -qi "card truncated"'
+check "  ... nor in the argv of the lead's launch (what ps shows)" \
+  'BEFORE="$(launches mem lead)" && teamctl restart lead --team mem >/dev/null 2>&1 && launched_after mem lead "$BEFORE" && last_argv mem lead | grep -q "Team memory is ON for team mem" && ! last_argv mem lead | grep -q "CARD-MARKER-7f3e"'
+check "  ... and status no longer compares the prompt with the card" \
+  'touch "$DIR/core/card.md" && ! teamctl memory status 2>&1 | grep -q "older than core/card.md"'
 
 echo "== the worktree guard keeps workers out of the folder"
 W1="$(record w1 mem | jq -r .workdir)"
