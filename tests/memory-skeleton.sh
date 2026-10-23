@@ -73,19 +73,41 @@ topic() {
   chmod 600 "$1/topics/$2.md"
 }
 
-# tree_sum <dir>: one digest over every path, its bytes and its mtime: equal means untouched.
+# tree_sum <dir> [<rel>...]: one digest over every path, its bytes and its mtime: equal means
+# untouched. Each <rel> given is left out.
 tree_sum() {
-  python3 -I - "$1" <<'EOF'
+  python3 -I - "$@" <<'EOF'
 import hashlib, os, sys
 h = hashlib.sha256()
+skip = set(os.path.join(sys.argv[1], rel) for rel in sys.argv[2:])
 for folder, dirs, names in os.walk(sys.argv[1]):
     dirs.sort()
     for name in sorted(names):
         path = os.path.join(folder, name)
+        if path in skip:
+            continue
         h.update(path.encode() + b"\0" + str(os.lstat(path).st_mtime_ns).encode() + b"\0")
         if os.path.isfile(path) and not os.path.islink(path):
             h.update(open(path, "rb").read())
 print(h.hexdigest())
+EOF
+}
+# record_mark <dir>: what recorded_only compares with: tree_sum without the erase record and
+# drain.log, and a copy of drain.log (<dir>.log-before).
+record_mark() {
+  /bin/cp "$1/.meta/drain.log" "$1.log-before" 2>/dev/null || : >"$1.log-before"
+  tree_sum "$1" .meta/erased .meta/erase-key .meta/drain.log
+}
+# recorded_only <dir> <record_mark before>: an erase changed nothing but its record: .meta/erased,
+# .meta/erase-key and at most one drain.log line that says so.
+recorded_only() {
+  [ "$2" = "$(tree_sum "$1" .meta/erased .meta/erase-key .meta/drain.log)" ] || return 1
+  python3 -I - "$1/.meta/drain.log" "$1.log-before" <<'EOF'
+import re, sys
+new, old = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+added = new[len(old):]
+sys.exit(not (new.startswith(old) and (added == b"" or re.fullmatch(
+    rb"\S+ erase on the owner's word: erase id [0-9a-f]{8}; nothing in the tree, recorded for migrate\n", added))))
 EOF
 }
 # quote_of <ledger file> <anchor>: the quote of that decision block, byte for byte, on stdout.
@@ -145,6 +167,17 @@ ln -s "$REPO_SKEL/bin/mem" "$LT/bin/mem"
 OUT="$("$LT/bin/mem" init 2>&1)"
 check "a tree whose bin/mem links into a skeleton elsewhere: init, boot and check work on the tree; the target folder is untouched" \
   'printf "%s" "$OUT" | grep -q "^mem init: $LT is ready" && "$LT/bin/mem" boot | grep -q "^# Card" && (cd "$LT" && bin/mem check >/dev/null) && [ -f "$LT/core/card.md" ] && [ -f "$LT/state/cursors.json" ] && [ "$REPO_SUM" = "$(tree_sum "$REPO_SKEL")" ]'
+# A link from a folder that is NOT a tree resolves to the link target's folder: when that is the
+# repo's shipped skeleton (its path holds /memory-skeleton/), every writer refuses it.
+SHIP="$WORK/fake-repo/config/wolfmux/memory-skeleton"
+/bin/mkdir -p "$WORK/fake-repo/config/wolfmux" "$WORK/plain/bin"
+/bin/cp -R "$SKEL" "$SHIP"
+ln -s "$SHIP/bin/mem" "$WORK/plain/bin/mem"
+SHIP_SUM="$(tree_sum "$SHIP")"
+check "a link from a plain folder into the shipped skeleton: init, boot, check, backup and add refuse it (exit 1, MEM_ROOT does not count) and the skeleton is untouched" \
+  'for c in init boot check backup; do OUT="$("$WORK/plain/bin/mem" $c 2>&1 </dev/null)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -qF "$SHIP: this is the shipped skeleton; pass --root to use it" || exit 1; done; OUT="$(echo b | "$WORK/plain/bin/mem" add --region topics --name x --keywords "x, y" --summary s 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "shipped skeleton; pass --root" || exit 1; OUT="$(MEM_ROOT="$SHIP" "$WORK/plain/bin/mem" init 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "shipped skeleton" && [ "$SHIP_SUM" = "$(tree_sum "$SHIP")" ]'
+check "readers still run on the shipped skeleton, and --root naming it lets a writer in" \
+  '"$WORK/plain/bin/mem" status | grep -q "^last backup: none" && [ "$SHIP_SUM" = "$(tree_sum "$SHIP")" ] && "$WORK/plain/bin/mem" --root "$SHIP" init >/dev/null && [ -f "$SHIP/core/card.md" ] && "$WORK/plain/bin/mem" check --root "$SHIP" >/dev/null'
 check "mem runs from any cwd with only PATH and HOME set" \
   '(cd / && env -i PATH="$PATH" HOME="$HOME" "$T/bin/mem" boot) | grep -q "^# Card"'
 check "MEM_ROOT points mem at another tree" \
@@ -232,8 +265,18 @@ keys = [key(n) for n in shown]
 best = sorted((key("filler-%d" % i) for i in range(1, 201)), reverse=True)[:len(keys)]
 sys.exit(not (keys and keys == sorted(keys, reverse=True) and keys == best and all(k[0] == 5 for k in keys)))
 EOF'
-check "the caps and their byte sum are written in schema.md" \
-  'grep -q "rules 14, people 6, teams 4, topics 7" "$SKEL/.meta/schema.md" && grep -q "^| total | ~4,600 of 5,000; 50 of 80 lines |$" "$SKEL/.meta/schema.md"'
+# The doc is checked against the code, not against itself: change a cap in bin/mem and this fails.
+check "schema.md states bin/mem's own caps: INDEX_CAPS per region, INDEX_MAX_BYTES and INDEX_MAX_LINES in the total row" \
+  'python3 -I - "$SKEL/bin/mem" "$SKEL/.meta/schema.md" <<'"'"'EOF'"'"'
+import ast, re, sys
+code, doc = open(sys.argv[1]).read(), open(sys.argv[2]).read()
+caps = ast.literal_eval(re.search(r"^INDEX_CAPS = (.*)$", code, re.M).group(1))
+size = int(re.search(r"^INDEX_MAX_BYTES = (\d+)$", code, re.M).group(1))
+lines = int(re.search(r"^INDEX_MAX_LINES = (\d+)$", code, re.M).group(1))
+want = "Index caps, in lines per region section: " + ", ".join("%s %d" % cap for cap in caps) + "."
+total = re.search(r"^\| total \| ~[\d,]+ of ([\d,]+); \d+ of (\d+) lines \|$", doc, re.M)
+sys.exit(not (want in doc and total and int(total.group(1).replace(",", "")) == size and int(total.group(2)) == lines))
+EOF'
 check "the legend (with the boot line) is at most 500 bytes, and the skeleton ships the index mem generates" \
   '[ "$(sed -n "/^## Legend$/,/^## Rules$/p" "$T/MEMORY.md" | sed "\$d" | wc -c)" -le 500 ] && fresh "$WORK/legend" && MEM_NOW=2026-10-23T16:00Z "$WORK/legend/bin/mem" check >/dev/null && cmp -s "$WORK/legend/MEMORY.md" "$SKEL/MEMORY.md"'
 # full_tree <dir> <rules> <people> <teams> <topics>: files with 160-character summaries, and one
@@ -554,11 +597,39 @@ OUT="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" check)"
 CARD="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" boot)"
 check "a decide block whose bytes: count is wrong is one WARN naming its time; the decisions after it keep their blocks" \
   '[ "$(printf "%s\n" "$OUT" | grep -c "does not match its bytes: count")" -eq 1 ] && printf "%s\n" "$OUT" | grep -qx "WARN    ledger/decisions-2026-10.md: the decision at 2026-10-02T09:00Z does not match its bytes: count; the block is damaged, read it by hand" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-03T09:00Z number-3" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-04T09:00Z number-4"'
+# A bytes: count LARGER than the quote: it is trusted only when the line it reaches is a
+# closing fence. Taken on trust, 4000 bytes would eat every decision after it.
+L="$WORK/big-count"
+fresh "$L"
+for n in 1 2 3; do printf 'Decision %s.' "$n" | "$L/bin/mem" decide --time "2026-10-0${n}T09:00Z" --source chat --slug "big-$n" >/dev/null; done
+python3 -I -c 'import sys; p=sys.argv[1]; d=open(p,"rb").read(); open(p,"wb").write(d.replace(b"bytes: 11\n```\nDecision 1.", b"bytes: 4000\n```\nDecision 1.", 1))' "$L/ledger/decisions-2026-10.md"
+echo b | "$L/bin/mem" add --region rules --name big-rule --keywords "big, rule" --summary s --authority decisions-2026-10#2026-10-03T09:00Z >/dev/null 2>&1
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" check)"
+CARD="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" boot)"
+check "a bytes: count larger than its quote (4000) is one WARN naming its time; the decisions after it keep their anchors, so a rule on the last one resolves" \
+  '[ "$(printf "%s\n" "$OUT" | grep -c "does not match its bytes: count")" -eq 1 ] && printf "%s\n" "$OUT" | grep -q "the decision at 2026-10-01T09:00Z does not match" && [ -f "$L/rules/big-rule.md" ] && ! printf "%s\n" "$OUT" | grep -q "is not in the ledger" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-02T09:00Z big-2" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-03T09:00Z big-3"'
+printf '\n```\n## 2026-10-04T09:00Z\nan example heading inside a fence nobody closed\n' >>"$L/ledger/decisions-2026-10.md"
+SUM_BEFORE="$(tree_sum "$L")"
+OUT="$(printf 'Four.' | "$L/bin/mem" decide --time 2026-10-04T09:00Z --source chat 2>&1)"; RC=$?
+check "decide refuses an anchor whose ## line sits in a fence no block owns (exit 64, anchor taken): two blocks never share an anchor; nothing is written" \
+  '[ "$RC" -eq 64 ] && printf "%s" "$OUT" | grep -q "anchor taken: ledger/decisions-2026-10.md has a .## 2026-10-04T09:00Z. line" && [ "$SUM_BEFORE" = "$(tree_sum "$L")" ] && printf "Five." | "$L/bin/mem" decide --time 2026-10-04T09:01Z --source chat | grep -qx "decisions-2026-10#2026-10-04T09:01Z"'
+# erase inside a decide quote (the reviewer's repro): the marker is shorter than the line it
+# replaces, so bytes: must be counted again or the next decision loses its anchor.
+L="$WORK/erase-quote"
+fresh "$L"
+printf 'We agreed that Tom owns the release train for the whole quarter and nobody else touches the release branch without asking.\nSecond line.\n' | "$L/bin/mem" decide --time 2026-10-20T10:00Z --source chat --slug release-owner >/dev/null
+printf 'Ship on Fridays only.\n' | "$L/bin/mem" decide --time 2026-10-20T11:00Z --source chat --slug friday-ship >/dev/null
+echo b | "$L/bin/mem" add --region rules --name friday-ship --keywords "ship, friday" --summary s --authority decisions-2026-10#2026-10-20T11:00Z >/dev/null
+ERASE_OUT="$("$L/bin/mem" erase Tom --confirm 1 2>&1)"
+OUT="$("$L/bin/mem" check)"
+REF="$(printf x | "$L/bin/mem" decide --time 2026-10-20T11:00Z --source chat)"
+check "erase inside a decide quote counts bytes: again: check stays clean, the rule on the next decision resolves, a new decide in that minute gets a new anchor" \
+  'printf "%s\n" "$ERASE_OUT" | grep -q "^erased: 0 files, 1 lines" && ! printf "%s\n" "$ERASE_OUT" | grep -q "^WARN" && printf "%s\n" "$OUT" | grep -qx "result: 0 problems, 0 warnings" && ! grep -q Tom "$L/ledger/decisions-2026-10.md" && grep -qx "Second line." "$L/ledger/decisions-2026-10.md" && grep -qx "bytes: 49" "$L/ledger/decisions-2026-10.md" && [ "$REF" = "decisions-2026-10#2026-10-20T11:00Z-2" ] && [ "$(grep -c "^## 2026-10-20T11:00Z$" "$L/ledger/decisions-2026-10.md")" -eq 1 ]'
 check "after --, --root is a plain value (a recall word); a --root that is no tree is refused" \
-  'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" && OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
+  'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" || exit 1; OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
 fresh "$WORK/after"
 check "--root after the command works as before it; the same folder twice is fine, two different ones exit 64" \
-  '"$T/bin/mem" set cursors.after_root 1 --root "$WORK/after" >/dev/null && grep -q "\"after_root\": 1" "$WORK/after/state/cursors.json" && ! grep -q after_root "$T/state/cursors.json" && "$T/bin/mem" --root "$WORK/after" boot --root "$WORK/after/../after" | grep -q "^# Card" && "$T/bin/mem" --root "$T" boot --root "$WORK/after" >/dev/null 2>&1; [ $? -eq 64 ]'
+  '"$T/bin/mem" set cursors.after_root 1 --root "$WORK/after" >/dev/null && grep -q "\"after_root\": 1" "$WORK/after/state/cursors.json" && ! grep -q after_root "$T/state/cursors.json" && "$T/bin/mem" --root "$WORK/after" boot --root "$WORK/after/../after" | grep -q "^# Card" || exit 1; "$T/bin/mem" --root "$T" boot --root "$WORK/after" >/dev/null 2>&1; [ $? -eq 64 ]'
 MEM_NOW=2026-10-12T10:00Z "$T/bin/mem" sweep-log --inboxes 3 --asks-touched 1 --free-pct 41 --swap-gb 2.5 --load 3.2 >/dev/null
 check "sweep-log writes one JSON line with the numbers" \
   'python3 -I -c "import json,sys; l=open(sys.argv[1]).read().splitlines(); r=json.loads(l[-1]); sys.exit(not (len(l)==1 and r[\"time\"]==\"2026-10-12T10:00Z\" and r[\"inboxes\"]==3 and r[\"free_pct\"]==41 and r[\"swap_gb\"]==2.5 and r[\"load\"]==3.2))" "$T/ledger/sweeps-2026-10.jsonl"'
@@ -754,6 +825,74 @@ topic "$T" stale-u "stale, u" 3 2026-09-01
 OUT="$(MEM_JEV_URL="http://127.0.0.1:9/v1/systemone" "$T/bin/mem" drain 2>&1)"
 check "Jev unreachable: only the exception's type name is logged, never its text" \
   'printf "%s" "$OUT" | grep -q "^digest topics/stale-u.md (rule 4; Jev failed: URLError; nothing moves)" && grep -q "rule 4: Jev failed (URLError)" "$T/.meta/drain.log" && grep -q "Jev failed: URLError$" "$T/.meta/digest-pending.md" && ! grep -rqi "refused" "$T/.meta/drain.log" "$T/.meta/digest-pending.md" "$T/.meta/jev" && [ -f "$T/topics/stale-u.md" ]'
+T="$WORK/drain-bad-url"
+fresh "$T"
+topic "$T" stale-b "stale, b" 3 2026-09-01
+OUT="$(MEM_JEV_URL="not a url" "$T/bin/mem" drain 2>&1)"; RC=$?
+check "a MEM_JEV_URL that is not a URL fails like any Jev failure (ValueError, nothing moves): no traceback, never the key" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^digest topics/stale-b.md (rule 4; Jev failed: ValueError; nothing moves)" && ! printf "%s" "$OUT" | grep -q "Traceback\|$MEM_JEV_KEY" && ! grep -rq "$MEM_JEV_KEY" "$T/.meta" && [ -f "$T/topics/stale-b.md" ]'
+# A proxy in the environment (HTTPS_PROXY, ALL_PROXY, ...) would see the key: the Jev request
+# never uses one. The proxy here is a dead port; the request still reaches the mock.
+T="$WORK/drain-proxy"
+fresh "$T"
+topic "$T" stale-p "stale, p" 3 2026-09-01
+GOT_BEFORE="$(ls "$WORK/jev-got" | wc -l)"
+OUT="$(env -u no_proxy -u NO_PROXY HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 "$T/bin/mem" drain 2>&1)"
+check "with HTTP_PROXY, HTTPS_PROXY and ALL_PROXY set to a dead port, the Jev request still goes straight to MEM_JEV_URL" \
+  '[ "$(( $(ls "$WORK/jev-got" | wc -l) - GOT_BEFORE ))" -eq 1 ] && ! grep -q "Jev failed" "$T/.meta/drain.log" && [ -f "$T/archive/2026-10/topics/stale-p.md" ]'
+# A decide quote holding a byte that is not UTF-8 (\351, Latin-1 e-acute) and a ## line: bytes:
+# counts it as one byte and every reader counts the same, so the ## line never becomes a block.
+T="$WORK/decide-latin1"
+fresh "$T"
+printf 'caf\351 menu stays\n## 2026-10-21T08:00Z\nslug: fake\nsource: chat\nend\n' | "$T/bin/mem" decide --time 2026-10-21T09:00Z --source chat --slug latin1 >/dev/null
+check "a decide quote with invalid UTF-8 stays one block: check finds nothing damaged, its ## line is no anchor, boot still prints" \
+  '! "$T/bin/mem" check 2>&1 | grep -q "damaged" && [ "$(printf x | "$T/bin/mem" decide --time 2026-10-21T08:00Z --source chat --slug next)" = "decisions-2026-10#2026-10-21T08:00Z" ] && "$T/bin/mem" boot >/dev/null'
+# Each move writes the new place first and removes the old one after: a crash leaves the data in
+# both places. check names each such half move.
+T="$WORK/half-moves"
+fresh "$T"
+/bin/mkdir -p "$T/archive/2026-08/ledger" "$T/archive/2026-09/ledger"
+printf -- '- 2026-08-05T09:00Z | to: sam | channel: c | ref: r | an august send\n' >"$T/ledger/sends-2026-08.md"
+/bin/cp "$T/ledger/sends-2026-08.md" "$T/archive/2026-08/ledger/sends-2026-08.md"
+printf '{"time": "2026-09-01T09:00Z", "inboxes": 1}\n' >"$T/archive/2026-09/ledger/sweeps-2026-09.jsonl"
+printf '{"time": "2026-09-01T09:00Z", "inboxes": 1}\n{"time": "2026-10-20T09:00Z", "inboxes": 2}\n' >"$T/ledger/sweeps-2026-10.jsonl"
+topic "$T" back "back, again"
+printf -- '- 2026-09-30 archive/2026-09/topics/back.md from topics/back.md: rule 4: test\n' >>"$T/archive/index.md"
+chmod 600 "$T"/ledger/* "$T"/archive/2026-0*/ledger/*
+chmod 700 "$T"/archive/2026-0* "$T"/archive/2026-0*/ledger
+OUT="$("$T/bin/mem" check 2>&1)"
+check "check WARNs about each half move: a ledger month also archived in full, a sweep line both live and archived, an index line for a file unarchived halfway" \
+  'printf "%s\n" "$OUT" | grep -q "^WARN .*ledger/sends-2026-08.md is also in archive/2026-08/ledger/ in full" && printf "%s\n" "$OUT" | grep -q "^WARN .*ledger/sweeps-2026-10.jsonl: 1 sweep line is also archived" && printf "%s\n" "$OUT" | grep -q "^WARN .*archive/index.md lists topics/back.md as archived at archive/2026-09/topics/back.md, which is gone"'
+# A drain after a half move finishes it: the live month goes and nothing is appended a second
+# time (a decision anchor stays unique).
+T="$WORK/half-drain"
+fresh "$T"
+MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" sent --to sam --channel c --ref r --subject "aug send" >/dev/null
+printf 'Aug decision.\n' | MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" decide --time 2026-08-05T09:00Z --source chat --slug aug >/dev/null
+/bin/mkdir -p "$T/archive/2026-08/ledger"
+chmod 700 "$T/archive/2026-08" "$T/archive/2026-08/ledger"
+/bin/cp -p "$T/ledger/sends-2026-08.md" "$T/ledger/decisions-2026-08.md" "$T/archive/2026-08/ledger/"
+WARNS="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" check)"
+DRAIN="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" drain --no-jev 2>&1)"
+AFTER="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" check)"
+check "check names a month present in both places and says to run drain; drain then removes the live file and appends nothing: one copy, one anchor, check clean" \
+  'for kind in sends decisions; do printf "%s\n" "$WARNS" | grep -q "^WARN .*ledger/$kind-2026-08.md is also in archive/2026-08/ledger/ in full (a month present in both places: run drain to finish the move)$" && printf "%s\n" "$DRAIN" | grep -qx "remove ledger/$kind-2026-08.md: already archived (half move finished) in archive/2026-08/ledger/$kind-2026-08.md" && [ ! -e "$T/ledger/$kind-2026-08.md" ] || exit 1; done; [ "$(grep -c "aug send" "$T/archive/2026-08/ledger/sends-2026-08.md")" -eq 1 ] && [ "$(grep -c "^## 2026-08-05T09:00Z$" "$T/archive/2026-08/ledger/decisions-2026-08.md")" -eq 1 ] && printf "%s\n" "$AFTER" | grep -qx "result: 0 problems, 0 warnings"'
+# A month archived twice (a drain renames it, a late write makes a new live file, the next drain
+# appends it) holds one head, and unarchive drops both of its index lines.
+T="$WORK/twice-archived"
+fresh "$T"
+MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" sent --to sam --channel c --ref r --subject "first send" >/dev/null
+printf 'First decision.\n' | MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" decide --time 2026-08-05T09:00Z --source chat --slug first >/dev/null
+MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" drain --no-jev >/dev/null 2>&1
+MEM_NOW=2026-08-06T09:00Z "$T/bin/mem" sent --to sam --channel c --ref r --subject "late send" >/dev/null
+printf 'Late decision.\n' | MEM_NOW=2026-08-06T09:00Z "$T/bin/mem" decide --time 2026-08-06T09:00Z --source chat --slug late >/dev/null
+MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" drain --no-jev >/dev/null 2>&1
+INDEX_BEFORE="$(grep -c " archive/2026-08/ledger/sends-2026-08.md from ledger/sends-2026-08.md: " "$T/archive/index.md")"
+HEADS="$(grep -c "^# Sends 2026-08$" "$T/archive/2026-08/ledger/sends-2026-08.md") $(grep -c "^# Decisions 2026-08$" "$T/archive/2026-08/ledger/decisions-2026-08.md")"
+MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" unarchive sends-2026-08 >/dev/null
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" check)"
+check "a month archived twice holds one head (sends and decisions); unarchive drops both index lines, the file is live with both sends, and check gives no WARN" \
+  '[ "$INDEX_BEFORE" -eq 2 ] && [ "$HEADS" = "1 1" ] && ! grep -q " from ledger/sends-2026-08.md: " "$T/archive/index.md" && grep -q "first send" "$T/ledger/sends-2026-08.md" && grep -q "late send" "$T/ledger/sends-2026-08.md" && printf "%s\n" "$OUT" | grep -qx "result: 0 problems, 0 warnings"'
 # Names hidden inside a longer token, and names with accents, are masked too.
 T="$WORK/drain-mask"
 fresh "$T"
@@ -827,7 +966,7 @@ check "it names the pre-migration tar outside the tree, which it never changes" 
 check "erase without --confirm changes nothing" '[ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 N="$(printf '%s\n' "$LIST" | sed -n 's/^\([0-9][0-9]*\) items; run again with --confirm \1 to erase them.*/\1/p')"
 check "the listing ends with its item count, and --confirm with another count is refused and changes nothing" \
-  '[ "$N" = "$(printf "%s\n" "$LIST" | grep -c "^\(file\|line\|state\|tar\) ")" ] && OUT="$("$T/bin/mem" erase "dana smith" --confirm $((N + 1)) 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "the listing has $N items" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+  '[ "$N" = "$(printf "%s\n" "$LIST" | grep -c "^\(file\|line\|state\|tar\) ")" ] || exit 1; OUT="$("$T/bin/mem" erase "dana smith" --confirm $((N + 1)) 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "the listing has $N items" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 OUT="$("$T/bin/mem" erase "dana smith" --confirm "$N")"; RC=$?
 check "erase --confirm removes the live and archived files that name the subject" \
   '[ "$RC" -eq 0 ] && [ ! -e "$T/people/dana.md" ] && [ ! -e "$T/topics/onboarding.md" ] && [ ! -e "$T/archive/2026-08/topics/dana-old.md" ] && [ -f "$T/topics/unrelated.md" ]'
@@ -842,8 +981,8 @@ ERASE_ID="$(printf '%s\n' "$OUT" | sed -n 's/.*(erase id \([0-9a-f]\{8\}\) in .m
 SUBJECT_HASH="$(printf 'dana smith' | python3 -I -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:12])")"
 check "drain.log says what erase did under a random 8-hex erase id (the one erase printed), never the subject or its hash" \
   '[ -n "$ERASE_ID" ] && grep -q "erase on the owner'"'"'s word: erase id $ERASE_ID; 3 files removed" "$T/.meta/drain.log" && ! grep -q "$SUBJECT_HASH" "$T/.meta/drain.log"'
-check "a backup kept on the owner's word keeps its drain.log line: only the basis text is erased, so it stays non-routine" \
-  'grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=\[erased 2026-10-23 on owner.s word\]$" "$T/.meta/drain.log" && grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=\[erased 2026-10-23 on owner.s word\] (rebuilt by erase)$" "$T/.meta/drain.log"'
+check "a backup kept on the owner's word keeps its drain.log line: only the subject inside the basis is erased, so it stays non-routine" \
+  'grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=kept on \[erased 2026-10-23 on owner.s word\].s word$" "$T/.meta/drain.log" && grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=kept on \[erased 2026-10-23 on owner.s word\].s word (rebuilt by erase)$" "$T/.meta/drain.log"'
 check "8 days on, backup pruning drops the routine tar and keeps the one kept on the owner's word" \
   'MEM_NOW=2026-10-31T09:00Z "$T/bin/mem" backup >/dev/null && [ -f "$T/.meta/backups/20261022T090000Z.tar" ] && [ ! -e "$T/.meta/backups/20261023T090000Z.tar" ]'
 check "the pre-migration tar outside the tree is untouched" '[ "$HOME_TAR_SUM" = "$(tree_sum "$HOME/.wolfmux/backups")" ]'
@@ -866,12 +1005,13 @@ check "erase matches whole words: tom finds the file that says Tom, not custom-d
 check "erase tom --confirm 1 removes only that file" \
   '[ ! -e "$T/topics/meeting.md" ] && [ -f "$T/topics/custom-domains.md" ] && [ -f "$T/topics/later.md" ]'
 SUM_BEFORE="$(tree_sum "$T")"
-check "erase dec matches nothing: a path counts by its file stem only, never decisions-YYYY-MM" \
-  '"$T/bin/mem" erase dec | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase ledger 2>/dev/null; [ -f "$T/ledger/decisions-2026-10.md" ]'
-check "erase matches state and .jsonl values, never field names: free (free_pct) erases nothing and is left behind as a key" \
-  'OUT="$("$T/bin/mem" erase free --confirm 1 2>&1)"; [ $? -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: ledger/sweeps-2026-10.jsonl (key)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+check "erase dec matches nothing (a path counts by its file stem only, never decisions-YYYY-MM); erase ledger is refused (exit 1); the ledger stays" \
+  '"$T/bin/mem" erase dec | grep -qx "nothing in the tree names that subject" || exit 1; OUT="$("$T/bin/mem" erase ledger --confirm 1 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "a word every tree holds" && [ -f "$T/ledger/decisions-2026-10.md" ] && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+REC_BEFORE="$(record_mark "$T")"
+check "erase matches state and .jsonl values, never field names: free (free_pct) erases nothing and is left behind as a key; --confirm writes only the record" \
+  'OUT="$("$T/bin/mem" erase free --confirm 1 2>&1)"; [ $? -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: ledger/sweeps-2026-10.jsonl (key)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject; recorded so that mem migrate skips it" && recorded_only "$T" "$REC_BEFORE"'
 check "erase refuses .md, a header field, a folder name and a bare number, and changes nothing" \
-  '! "$T/bin/mem" erase .md && ! "$T/bin/mem" erase summary && ! "$T/bin/mem" erase topics && ! "$T/bin/mem" erase 2026 && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+  '! "$T/bin/mem" erase .md && ! "$T/bin/mem" erase summary && ! "$T/bin/mem" erase topics && ! "$T/bin/mem" erase 2026 && recorded_only "$T" "$REC_BEFORE"'
 printf 'Ask danasmith on call.\n' >>"$T/topics/later.md"
 "$T/bin/mem" backup >/dev/null
 N="$("$T/bin/mem" erase danasmith | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
@@ -893,8 +1033,134 @@ check "erase drain, role, migrate (and digest, folder, jev, person, team) is ref
   'for s in drain role migrate digest folder jev person team; do OUT="$("$T/bin/mem" erase "$s" --confirm 1 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "a word every tree holds" || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 check "a subject that is only the stem of a .meta file takes nothing: digest-pending and shared-folder stay, live and in the tars" \
   '"$T/bin/mem" erase digest-pending | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase shared-folder | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase migrate-20261001T000000Z | grep -qx "nothing in the tree names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
-check "drain.log keeps every backup basis= line, so the owner's-word tar stays non-routine" \
-  '[ "$(grep -c " backup .meta/backups/[0-9TZ]*\.tar sha256=[0-9a-f]* basis=" "$T/.meta/drain.log")" -eq 2 ] && grep -q "basis=migration rollback; kept on the owner.s word$" "$T/.meta/drain.log"'
+# An erase that really edits a basis: rollback is a word of that basis only.
+"$T/bin/mem" erase rollback --confirm 1 >/dev/null
+check "erase rollback edits the basis text inside its drain.log line: both backup lines stay, the rest of the basis too, so the tar stays non-routine" \
+  '[ "$(grep -c " backup .meta/backups/[0-9TZ]*\.tar sha256=[0-9a-f]* basis=" "$T/.meta/drain.log")" -eq 2 ] && grep -q " backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=migration \[erased 2026-10-23 on owner.s word\]; kept on the owner.s word$" "$T/.meta/drain.log"'
+# A backup line in drain.log is never replaced: the subject goes out of its basis text only, a
+# hit in the rest of the line is left behind, and a tar with no basis line is kept, not routine.
+T="$WORK/erase-basis"
+fresh "$T"
+MEM_NOW=2026-10-10T09:00Z "$T/bin/mem" backup --note "$(printf 'kept for the audit Dana Smith and Jose\314\201 asked for')" >/dev/null
+MEM_NOW=2026-10-12T09:00Z "$T/bin/mem" backup >/dev/null
+( cd "$T" && tar -cf .meta/backups/20261002T090000Z.tar core/boot.md && chmod 600 .meta/backups/20261002T090000Z.tar )
+/bin/cp "$T/.meta/backups/20261012T090000Z.tar" "$T/.meta/backups/20261001T090000Z.tar"
+SUM_BEFORE="$(record_mark "$T")"
+OUT="$("$T/bin/mem" erase sha256 --confirm 1 2>&1)"; RC=$?
+check "erase sha256 (the reviewer's repro) replaces no backup line: a hit outside the basis is left behind and nothing changes" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: .meta/drain.log:1 (backup line)" && printf "%s\n" "$OUT" | grep -qx "left behind: .meta/backups/20261012T090000Z.tar: .meta/drain.log:1 (backup line)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject; recorded so that mem migrate skips it" && recorded_only "$T" "$SUM_BEFORE"'
+N="$("$T/bin/mem" erase "Dana Smith" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase "Dana Smith" --confirm "$N" >/dev/null
+N="$("$T/bin/mem" erase "José" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase "José" --confirm "$N" >/dev/null
+check "erase replaces the subject inside a basis and keeps the rest of it (an accent written as a combining mark too)" \
+  'grep -q "^2026-10-10T09:00:00Z backup .meta/backups/20261010T090000Z.tar sha256=[0-9a-f]* basis=kept for the audit \[erased 2026-10-23 on owner.s word\] and \[erased 2026-10-23 on owner.s word\] asked for$" "$T/.meta/drain.log"'
+check "a tar erase rebuilds with no basis line in drain.log is logged as unknown and kept, not routine" \
+  'grep -q " backup .meta/backups/20261001T090000Z.tar sha256=[0-9a-f]* basis=unknown (no log line; kept) (rebuilt by erase)$" "$T/.meta/drain.log" && grep -q " backup .meta/backups/20261012T090000Z.tar sha256=[0-9a-f]* basis=kept 7 days (rebuilt by erase)$" "$T/.meta/drain.log"'
+check "8 days on, pruning drops only the routine tar: the erased basis, the unknown one and the tar with no log line stay, and status lists them as kept" \
+  'MEM_NOW=2026-10-31T09:00Z "$T/bin/mem" backup >/dev/null && [ ! -e "$T/.meta/backups/20261012T090000Z.tar" ] && [ -f "$T/.meta/backups/20261010T090000Z.tar" ] && [ -f "$T/.meta/backups/20261001T090000Z.tar" ] && [ -f "$T/.meta/backups/20261002T090000Z.tar" ] && MEM_NOW=2026-10-31T09:10Z "$T/bin/mem" status | grep -q "^last backup: .meta/backups/20261031T090000Z.tar; kept on their own basis: .meta/backups/20261001T090000Z.tar, .meta/backups/20261002T090000Z.tar, .meta/backups/20261010T090000Z.tar$"'
+# Every rules file carries an authority: erase edits it line by line (role.md too), never drops
+# it for one mention. Other region files go whole, and the listing says why.
+T="$WORK/erase-rules"
+fresh "$T"
+printf -- '---\nname: role\nregion: rules\nkeywords: role, comms\nsummary: the comms lead, next to Shaurya\nlinks:\nimportance: 5\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\nI run comms.\nI sit next to Shaurya.\n' >"$T/rules/role.md"
+printf -- '---\nname: shaurya-review\nregion: rules\nkeywords: review\nsummary: reviews go out on Fridays\nlinks:\nimportance: 3\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\nSend reviews on Friday.\n' >"$T/rules/shaurya-review.md"
+printf -- '---\nname: shaurya\nregion: people\nkeywords: design\nsummary: a designer\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nDesign.\n' >"$T/people/shaurya.md"
+topic "$T" seating "seating, office"
+printf 'Ask Shaurya about the seating plan before Monday.\n' >>"$T/topics/seating.md"
+chmod 600 "$T"/rules/*.md "$T"/people/*.md
+"$T/bin/mem" backup >/dev/null
+LIST="$("$T/bin/mem" erase Shaurya)"
+N="$(printf '%s\n' "$LIST" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase Shaurya --confirm "$N" >/dev/null
+check "erase edits rules/role.md line by line (a header line keeps its field) and never drops a rules file; the card keeps the role" \
+  'printf "%s\n" "$LIST" | grep -qx "line   rules/role.md:5" && printf "%s\n" "$LIST" | grep -qx "line   rules/role.md:13" && ! printf "%s\n" "$LIST" | grep -q "^file   rules/" && printf "%s\n" "$LIST" | grep -q "^tar    .*: redact rules/role.md$" && ! printf "%s\n" "$LIST" | grep -q "drop rules/" && [ -f "$T/rules/role.md" ] && grep -qx "summary: \[erased [0-9-]* on owner.s word\]" "$T/rules/role.md" && grep -qx "I run comms." "$T/rules/role.md" && ! grep -q Shaurya "$T/rules/role.md" && "$T/bin/mem" boot | grep -qF "[erased" && ! "$T/bin/mem" boot | grep -q "no rules/role.md yet" && ! "$T/bin/mem" check | grep -q "^PROBLEM .*rules/role.md"'
+check "a rules file whose name holds the subject stays and is listed as left behind (file name); other region files go whole with (stem) or their first matching line" \
+  'printf "%s\n" "$LIST" | grep -qx "left behind: rules/shaurya-review.md (file name)" && [ -f "$T/rules/shaurya-review.md" ] && printf "%s\n" "$LIST" | grep -qx "file   people/shaurya.md (stem)" && printf "%s\n" "$LIST" | grep -qx "file   topics/seating.md (line 12: Ask Shaurya about the seating plan before Monday.)" && printf "%s\n" "$LIST" | grep -q "^tar    .*: drop people/shaurya.md (stem)$" && [ ! -e "$T/people/shaurya.md" ] && [ ! -e "$T/topics/seating.md" ]'
+# A line of a rules file that erase does not touch keeps its bytes, invalid UTF-8 too (\351,
+# Latin-1 e-acute), in the live file and in the rebuilt tar.
+T="$WORK/erase-rules-bytes"
+fresh "$T"
+printf -- '---\nname: menu\nregion: rules\nkeywords: menu, lunch\nsummary: the lunch menu\nlinks:\nimportance: 3\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\ncaf\351 menu\nAsk Priya Nair first.\n' >"$T/rules/menu.md"
+chmod 600 "$T/rules/menu.md"
+"$T/bin/mem" backup >/dev/null
+LIST="$("$T/bin/mem" erase "Priya Nair")"
+N="$(printf '%s\n' "$LIST" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase "Priya Nair" --confirm "$N" >/dev/null
+check "erase of a rules file line keeps an invalid UTF-8 byte on a line it does not touch, byte for byte, live and in the rebuilt tar" \
+  '[ "$N" = 2 ] && python3 -I - "$T" <<'"'"'EOF'"'"'
+import glob, sys, tarfile
+t = sys.argv[1]
+live = open(t + "/rules/menu.md", "rb").read()
+tars = glob.glob(t + "/.meta/backups/*.tar")
+inner = tarfile.open(tars[0]).extractfile("rules/menu.md").read()
+sys.exit(not (len(tars) == 1 and all(b"\ncaf\xe9 menu\n[erased " in data and b"Priya" not in data and b"\xef\xbf\xbd" not in data
+                                     for data in (live, inner))))
+EOF'
+# A links: or keywords: line of a rules file loses only the items that name the subject and
+# stays a list; check finds nothing after.
+T="$WORK/erase-lists"
+fresh "$T"
+printf -- '---\nname: tom-smith\nregion: people\nkeywords: release\nsummary: a release person\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nRelease.\n' >"$T/people/tom-smith.md"
+topic "$T" trains "trains, carriages"
+topic "$T" deploys "deploys, windows"
+printf 'Trains leave on Monday.' | "$T/bin/mem" decide --time 2026-10-02T09:00Z --source chat --slug trains >/dev/null
+printf 'Ask before a release.' | "$T/bin/mem" decide --time 2026-10-02T10:00Z --source chat --slug ask >/dev/null
+printf -- '---\nname: release-train\nregion: rules\nkeywords: monday, Tom Smith, schedule\nsummary: the release train rule\nlinks: [[tom-smith]], [[trains]], [[deploys]]\nimportance: 3\nauthority: decisions-2026-10#2026-10-02T09:00Z\nlast_confirmed: 2026-10-01\nstatus: live\n---\nTrains leave on Monday.\n' >"$T/rules/release-train.md"
+printf -- '---\nname: owner-rule\nregion: rules\nkeywords: tom, smith\nsummary: who to ask first\nlinks: [[tom-smith]]\nimportance: 3\nauthority: decisions-2026-10#2026-10-02T10:00Z\nlast_confirmed: 2026-10-01\nstatus: live\n---\nAsk first.\n' >"$T/rules/owner-rule.md"
+chmod 600 "$T"/*/*.md
+BEFORE="$("$T/bin/mem" check)"
+N="$("$T/bin/mem" erase "Tom Smith" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase "Tom Smith" --confirm "$N" >/dev/null
+check "erase drops only the matching items of a links: or keywords: line (a name over two keywords too); the lines stay lists and check gives no WARN" \
+  'printf "%s\n" "$BEFORE" | grep -qx "result: 0 problems, 0 warnings" && [ "$N" = 5 ] && grep -qx "links: \[\[trains\]\], \[\[deploys\]\]" "$T/rules/release-train.md" && grep -qx "keywords: monday, schedule" "$T/rules/release-train.md" && grep -qx "links:" "$T/rules/owner-rule.md" && grep -qx "keywords: erased" "$T/rules/owner-rule.md" && ! grep -qi "tom" "$T/rules/release-train.md" "$T/rules/owner-rule.md" && "$T/bin/mem" check | grep -qx "result: 0 problems, 0 warnings"'
+# Matching: both sides NFC, accent-folded, lower case; the subject's words match across any run
+# of space, -, _ or . (file names and [[slug]] links too).
+T="$WORK/erase-match"
+fresh "$T"
+printf -- '---\nname: tom-smith\nregion: people\nkeywords: release\nsummary: a release person\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nRelease.\n' >"$T/people/tom-smith.md"
+topic "$T" trains "trains, release"
+printf 'Owner: [[tom-smith]].\n' >>"$T/topics/trains.md"
+topic "$T" plain-ask "plain, ask"
+printf 'Ask Jose first.\n' >>"$T/topics/plain-ask.md"
+topic "$T" nfd-ask "nfd, ask"
+python3 -I -c 'import sys; open(sys.argv[1], "a").write("Ask Jose" + chr(0x301) + " too.\n")' "$T/topics/nfd-ask.md"
+chmod 600 "$T"/people/*.md "$T"/topics/*.md
+LIST="$("$T/bin/mem" erase "Tom Smith")"
+LIST2="$("$T/bin/mem" erase José)"
+LIST3="$("$T/bin/mem" erase tom-smith)"
+check "erase Tom Smith finds people/tom-smith.md by its stem and the [[tom-smith]] link; erase tom-smith finds the same (a hyphenated name)" \
+  'printf "%s\n" "$LIST" | grep -qx "file   people/tom-smith.md (stem)" && printf "%s\n" "$LIST" | grep -q "^file   topics/trains.md (line 12: Owner: \[\[tom-smith\]\].)$" && [ "$(printf "%s\n" "$LIST3" | grep -c "^file ")" -eq 2 ]'
+check "erase José finds plain Jose and the decomposed form (NFD), as Jev masking folds them" \
+  'printf "%s\n" "$LIST2" | grep -qx "file   topics/plain-ask.md (line 12: Ask Jose first.)" && printf "%s\n" "$LIST2" | grep -q "^file   topics/nfd-ask.md (line 12: " && [ "$(printf "%s\n" "$LIST2" | grep -c "^file ")" -eq 2 ]'
+SUM_BEFORE="$(tree_sum "$T")"
+check "erase refuses a JSON literal (true, null, 12) and a subject under 3 letters with exit 64, and changes nothing" \
+  'for s in true null 12 "J.R"; do "$T/bin/mem" erase "$s" --confirm 1 >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+# A literal in another spelling is refused too, and only JSON strings are matched: str(True) is
+# never the subject True.
+"$T/bin/mem" set machine.ok true >/dev/null && "$T/bin/mem" set machine.off false >/dev/null
+SUM_BEFORE="$(tree_sum "$T")"
+check "erase True, FALSE, none, nan, inf and 1_000 (literals once normalised) exit 64 on a state file holding booleans; the booleans stay" \
+  'for s in True FALSE none nan inf 1_000; do "$T/bin/mem" erase "$s" --confirm 1 >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ] && python3 -I -c "import json, sys; m = json.load(open(sys.argv[1])); sys.exit(not (m[\"ok\"][\"line\"] is True and m[\"off\"][\"line\"] is False))" "$T/state/machine.json"'
+# Two words also match reversed, with or without a comma (Smith, Tom); three or more match in
+# their own order only. The listing says which.
+T="$WORK/erase-order"
+fresh "$T"
+printf -- '---\nname: tom-smith\nregion: people\nkeywords: release\nsummary: a release person\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nRelease.\n' >"$T/people/tom-smith.md"
+topic "$T" ask "ask, owner"
+printf 'Ask Smith, Tom first.\n' >>"$T/topics/ask.md"
+topic "$T" three "three, names"
+printf 'Mary Ann Lee runs it.\n' >>"$T/topics/three.md"
+chmod 600 "$T"/people/*.md "$T"/topics/*.md
+LIST="$("$T/bin/mem" erase "Tom Smith")"
+LIST2="$("$T/bin/mem" erase "Smith Tom")"
+LIST3="$("$T/bin/mem" erase "Lee Ann Mary")"
+LIST4="$("$T/bin/mem" erase "Mary Ann Lee")"
+check "erase Tom Smith finds Smith, Tom; erase Smith Tom finds people/tom-smith.md; the listing says both orders were searched" \
+  'for L in "$LIST" "$LIST2"; do printf "%s\n" "$L" | grep -qx "file   people/tom-smith.md (stem)" && printf "%s\n" "$L" | grep -qx "file   topics/ask.md (line 12: Ask Smith, Tom first.)" && printf "%s\n" "$L" | grep -qx "searched in this word order and reversed" && printf "%s\n" "$L" | grep -qx "2 items; run again with --confirm 2 to erase them (no backup is made first)" || exit 1; done'
+check "three words match in their own order only, and the listing says so" \
+  'printf "%s\n" "$LIST3" | grep -qx "nothing in the tree names that subject" && printf "%s\n" "$LIST3" | grep -qx "searched in this word order only" && printf "%s\n" "$LIST4" | grep -qx "file   topics/three.md (line 12: Mary Ann Lee runs it.)" && printf "%s\n" "$LIST4" | grep -qx "searched in this word order only" && ! printf "%s\n" "$LIST4" | grep -q "and reversed"'
+"$T/bin/mem" erase "Tom Smith" --confirm 2 >/dev/null
 # JSON is decoded before erase matches it: names written as \u escapes (json.dumps without
 # ensure_ascii=False, as migrated files are), and keys at any depth (left behind, never erased).
 T="$WORK/erase-json"
@@ -917,16 +1183,30 @@ put("archive/2026-08/ledger/sweeps-2026-08.jsonl", "".join(json.dumps(r) + "\n" 
 put(".meta/jev/20261001T000000Z-x.json", json.dumps({"local": {"file": "topics/x.md"}, "note": "José Ruiz"}, indent=2) + "\n")
 put("archive/state/comms-state.json", json.dumps({"contacts": {"c1": {"name": "José Ruiz", "tz": "UTC"}}, "other": "kept"}, indent=2) + "\n")
 EOF
-check "the escaped names are on disk as \\u00e9 (the shape erase used to miss)" \
-  'grep -q "Jos\\\\u00e9 Ruiz" "$T/state/open-asks.json" && ! grep -rq "José" "$T/state" "$T/archive" "$T/.meta/jev"'
-SUM_BEFORE="$(tree_sum "$T")"
+SUM_BEFORE="$(record_mark "$T")"
 OUT="$("$T/bin/mem" erase zed --confirm 1 2>&1)"; RC=$?
 check "a subject that only a JSON key names (nested in state, a field in a .jsonl line) erases nothing; each file is left behind once" \
-  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: state/watches.json (key)" && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-08/ledger/sweeps-2026-08.jsonl (key)" && [ "$(printf "%s\n" "$OUT" | grep -c "^left behind: ")" -eq 2 ] && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: state/watches.json (key)" && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-08/ledger/sweeps-2026-08.jsonl (key)" && [ "$(printf "%s\n" "$OUT" | grep -c "^left behind: ")" -eq 2 ] && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject; recorded so that mem migrate skips it" && recorded_only "$T" "$SUM_BEFORE"'
+# A JSON file that is one scalar: a string is edited inside and dumped again, so it stays JSON,
+# whether the name is written as \u escapes or plainly; any other scalar is never edited.
+TS="$WORK/erase-scalar"
+fresh "$TS"
+/bin/mkdir -p "$TS/archive/state" "$TS/archive/2026-09"
+printf '"Jos\\u00e9 Ruiz is the contact"\n' >"$TS/archive/state/scalar.json"
+printf '"ask José Ruiz first"\n' >"$TS/archive/2026-09/plain.json"
+printf 'NaN\n' >"$TS/archive/2026-09/number.json"
+chmod 600 "$TS"/archive/state/*.json "$TS"/archive/2026-09/*.json
+LISTS="$("$TS/bin/mem" erase "José Ruiz")"
+"$TS/bin/mem" erase "José Ruiz" --confirm 2 >/dev/null
+check "a JSON file that is one string (the name escaped, or plain): the subject is replaced inside the string and the file stays valid JSON" \
+  'printf "%s\n" "$LISTS" | grep -qx "line   archive/state/scalar.json (1 JSON value)" && printf "%s\n" "$LISTS" | grep -qx "line   archive/2026-09/plain.json (1 JSON value)" && python3 -I -c "import json, sys; a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2])); sys.exit(not (a.startswith(\"[erased 2026-10-23 on owner\") and a.endswith(\"s word] is the contact\") and b.startswith(\"ask [erased 2026-10-23 on owner\") and b.endswith(\"s word] first\")))" "$TS/archive/state/scalar.json" "$TS/archive/2026-09/plain.json"'
+OUT="$("$TS/bin/mem" erase nan --confirm 1 2>&1)"; RC=$?
+check "a JSON file that is another scalar (NaN) is never edited: only strings name a subject, and nan is refused as a literal (exit 64)" \
+  '[ "$RC" -eq 64 ] && printf "%s\n" "$OUT" | grep -q "is a literal (true, false, null, none, nan, inf or a number)" && [ "$(cat "$TS/archive/2026-09/number.json")" = NaN ] && [ "$(grep -c . "$TS/.meta/erased")" -eq 1 ]'
 "$T/bin/mem" backup >/dev/null
 LIST="$("$T/bin/mem" erase "José Ruiz")"
-check "erase finds an escaped name in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \
-  'printf "%s\n" "$LIST" | grep -qx "state  state/open-asks.json#q1" && printf "%s\n" "$LIST" | grep -qx "line   archive/2026-08/ledger/sweeps-2026-08.jsonl:1" && printf "%s\n" "$LIST" | grep -qx "file   .meta/jev/20261001T000000Z-x.json" && printf "%s\n" "$LIST" | grep -qx "line   archive/state/comms-state.json (1 JSON value)" && [ "$(printf "%s\n" "$LIST" | grep -c "^tar    .meta/backups/.*: \(redact\|drop\) ")" -eq 4 ] && printf "%s\n" "$LIST" | grep -q "^tar    .meta/backups/.*: redact state/open-asks.json$" && printf "%s\n" "$LIST" | grep -q "^8 items; run again with --confirm 8"'
+check "erase finds a name stored only as \\u00e9 escapes (never as é on disk) in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \
+  'grep -q "Jos\\\\u00e9 Ruiz" "$T/state/open-asks.json" && ! grep -rq "José" "$T/state" "$T/archive" "$T/.meta/jev" && printf "%s\n" "$LIST" | grep -qx "state  state/open-asks.json#q1" &&printf "%s\n" "$LIST" | grep -qx "line   archive/2026-08/ledger/sweeps-2026-08.jsonl:1" && printf "%s\n" "$LIST" | grep -qx "file   .meta/jev/20261001T000000Z-x.json (a JSON value)" && printf "%s\n" "$LIST" | grep -qx "line   archive/state/comms-state.json (1 JSON value)" && [ "$(printf "%s\n" "$LIST" | grep -c "^tar    .meta/backups/.*: \(redact\|drop\) ")" -eq 4 ] && printf "%s\n" "$LIST" | grep -q "^tar    .meta/backups/.*: redact state/open-asks.json$" && printf "%s\n" "$LIST" | grep -q "^8 items; run again with --confirm 8"'
 "$T/bin/mem" erase "José Ruiz" --confirm 8 >/dev/null
 check "after it, no file and no tar member names him, decoded or raw; the other entries, lines and values stay, and JSON stays JSON" \
   'python3 -I - "$T" <<'"'"'EOF'"'"'
@@ -952,6 +1232,19 @@ sys.exit(not (not any("ruiz" in x for x in decoded) and [a["id"] for a in asks] 
               and not os.path.exists(t + "/.meta/jev/20261001T000000Z-x.json")
               and state == {"contacts": {"c1": {"name": "[erased %s]" % marker, "tz": "UTC"}}, "other": "kept"}))
 EOF'
+# What names the subject and stays (a rules file name, an outside .sha256 list) is no change, but
+# any --confirm still writes the record, once, so a later migrate skips the subject.
+T="$WORK/erase-record"
+fresh "$T"
+printf -- '---\nname: kim-park-review\nregion: rules\nkeywords: review\nsummary: reviews go out on Fridays\nlinks:\nimportance: 3\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\nSend reviews on Friday.\n' >"$T/rules/kim-park-review.md"
+chmod 600 "$T/rules/kim-park-review.md"
+/bin/mkdir -p "$HOME/.wolfmux/backups"
+printf '%s  source/lena-ortiz.md\n' "$(printf x | shasum -a 256 | cut -c1-64)" >"$HOME/.wolfmux/backups/memory-pre-migration-20261002T000000Z.sha256"
+REC1="$("$T/bin/mem" erase "Kim Park" --confirm 1)"; RC1=$?
+REC2="$("$T/bin/mem" erase "Lena Ortiz" --confirm 1)"; RC2=$?
+"$T/bin/mem" erase "Kim Park" --confirm 1 >/dev/null
+check "any --confirm writes the erase record when the only hits are left behind (a rules file name, an outside .sha256 list), once per subject" \
+  '[ "$RC1" -eq 0 ] && [ "$RC2" -eq 0 ] && printf "%s\n" "$REC1" | grep -qx "left behind: rules/kim-park-review.md (file name)" && printf "%s\n" "$REC1" | grep -qx "nothing to erase: only what is listed as left behind names that subject; recorded so that mem migrate skips it" && printf "%s\n" "$REC2" | grep -q "^left behind outside the tree: .*/memory-pre-migration-20261002T000000Z.sha256$" && printf "%s\n" "$REC2" | grep -qx "nothing in the tree names that subject; recorded so that mem migrate skips it" && [ "$(grep -c " words=2 hmac=[0-9a-f]\{64\}$" "$T/.meta/erased")" -eq 2 ] && [ -f "$T/rules/kim-park-review.md" ]'
 /bin/rm -rf "$HOME/.wolfmux"
 T="$WORK/purge"
 fresh "$T"
@@ -1198,8 +1491,93 @@ DRY="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-fence.csv" --dry-run
 FENCE_OUT="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-fence.csv" 2>&1)"; RC=$?
 check "a migrated decisions payload with an unclosed fence is refused with the reason; a closed one is placed and parses" \
   'for out in "$DRY" "$FENCE_OUT"; do printf "%s" "$out" | grep -q "^- line 2 refused decisions_open.md: the payload leaves a code fence open (1 fence lines): it would swallow the decisions after it; close the fence in the source, or set action skip$" || exit 1; done && [ "$RC" -eq 1 ] && grep -q "^line 3 copy .*: found once$" "$T2"/.meta/migrate-*.md && ! grep -q "open-fence" "$T2/ledger/decisions-2026-10.md" && MEM_NOW=2026-10-23T09:00Z "$T2/bin/mem" boot | grep -qx -- "- 2026-10-06T09:00Z closed-fence"'
+# Its fences balance, but bytes: 4000 is more than its quote: once appended, every later decide
+# block of that month would be read as part of it.
+printf -- '## 2026-10-01T10:00Z\nslug: old\nsource: chat\nbytes: 4000\n```\nold words\n```\n' >"$SRC/decisions_big.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\ndecisions_big.md,file,ledger/decisions-2026-10.md,,copy,no,,,,,,,,\n' >"$WORK/map-big.csv"
+T2="$WORK/migrate-big"
+fresh "$T2"
+BIG_OUT="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-big.csv" 2>&1)"; RC=$?
+check "a migrated decisions payload whose bytes: (4000) is larger than its quote is refused with the reason; nothing is appended" \
+  '[ "$RC" -eq 1 ] && printf "%s" "$BIG_OUT" | grep -q "^- line 2 refused decisions_big.md: the payload.s decision at 2026-10-01T10:00Z does not match its bytes: count" && ! grep -qs "old words" "$T2/ledger/decisions-2026-10.md"'
+# A re-run after a drain: rule 2 has moved the July ledger month to archive/2026-07/ledger/, and
+# a migrated topic was archived (rule 4 or 5, done by hand here). Neither is placed again.
+SRC3="$WORK/redrain-src"
+/bin/mkdir -p "$SRC3"
+printf -- '- 2026-07-05T09:00Z | to: sam | channel: c | ref: r | a july send\n' >"$SRC3/sends-july.md"
+printf 'A topic that drain archives.\n' >"$SRC3/old-topic.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nsends-july.md,file,ledger/sends-2026-07.md,,copy,no,,,,,,,,\nold-topic.md,file,topics/old-topic.md,topics,copy,no,old-topic,"old, topic",an old topic,3,,,,\n' >"$WORK/map-redrain.csv"
+T2="$WORK/migrate-redrain"
+fresh "$T2"
+"$T2/bin/mem" migrate --from "$SRC3" --map "$WORK/map-redrain.csv" >/dev/null 2>&1
+"$T2/bin/mem" drain --no-jev >/dev/null 2>&1
+/bin/mkdir -p "$T2/archive/2026-10/topics"
+/bin/mv "$T2/topics/old-topic.md" "$T2/archive/2026-10/topics/old-topic.md"
+printf -- '- 2026-10-23 archive/2026-10/topics/old-topic.md from topics/old-topic.md: rule 4: a move by hand\n' >>"$T2/archive/index.md"
+AGAIN="$("$T2/bin/mem" migrate --from "$SRC3" --map "$WORK/map-redrain.csv" 2>&1)"; RC=$?
+check "a migrate re-run after a drain appends nothing: the archived ledger month and the archived topic count as placed, each found once" \
+  '[ -f "$T2/archive/2026-07/ledger/sends-2026-07.md" ] && [ "$RC" -eq 0 ] && printf "%s" "$AGAIN" | grep -q "^line 2 exists  sends-july.md -> ledger/sends-2026-07.md.*: found once: placed earlier, archived (in archive/2026-07/ledger/sends-2026-07.md)$" && printf "%s" "$AGAIN" | grep -q "^line 3 exists  old-topic.md -> topics/old-topic.md.*: found once: placed earlier, archived (now archive/2026-10/topics/old-topic.md)$" && [ ! -e "$T2/ledger/sends-2026-07.md" ] && [ ! -e "$T2/topics/old-topic.md" ] && [ "$(grep -c "a july send" "$T2/archive/2026-07/ledger/sends-2026-07.md")" -eq 1 ] && printf "%s" "$AGAIN" | grep -q "^verification: every source body"'
 check "a frontmatter whose first line is key: value may hold a blank line: it is stripped, its description kept" \
   'python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(not d.endswith(b\"\n---\nBody after a blank-line header.\n\") or b\"\nsource_description: with a blank line\n\" not in d)" "$T/topics/blank-front.md" && printf "%s" "$OUT" | grep -q "^line 3 copy .*(source frontmatter of [0-9]* bytes replaced by the header; its description kept as source_description): found once$"'
+# erase keeps a keyed record, so a migrate re-run from the untouched sources skips what names an
+# erased subject (a hyphenated stem, an accent written as a combining mark, a \u escape in JSON)
+# and leaves those files out of the pre-migration tar.
+SRC4="$WORK/erased-src"
+/bin/mkdir -p "$SRC4"
+printf 'Dana Smith likes blue.\n' >"$SRC4/dana_smith.md"
+printf 'Zinc price is up.\n' >"$SRC4/zinc.md"
+printf 'Ask Jose\314\201 Ruiz.\n' >"$SRC4/notes.md"
+printf '{"who": "Jos\\u00e9 Ruiz"}\n' >"$SRC4/escaped.json"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\ndana_smith.md,file,people/dana-smith.md,people,copy,no,dana-smith,"dana, colours",likes,3,,,,\nzinc.md,file,topics/zinc.md,topics,copy,no,zinc,"zinc, price",zinc price,3,,,,\nnotes.md,file,topics/notes.md,topics,copy,no,notes,"notes, misc",some notes,3,,,,\nescaped.json,file,archive/2026-09/escaped.json,,copy,no,,,,,,,,\n' >"$WORK/map-erased.csv"
+T3="$WORK/migrate-erased"
+fresh "$T3"
+FIRST7="$("$T3/bin/mem" migrate --from "$SRC4" --map "$WORK/map-erased.csv" 2>&1)"
+SUMS7="$(printf '%s\n' "$FIRST7" | sed -n 's/^rollback: .* (sha256 list \(.*\))$/\1/p')"
+LIST7="$("$T3/bin/mem" erase "Dana Smith")"
+check "erase lists the pre-migration .sha256 list whose path lines name the subject as left behind outside the tree" \
+  '[ -n "$SUMS7" ] && grep -q "source/dana_smith.md$" "$SUMS7" && printf "%s\n" "$LIST7" | grep -qxF "left behind outside the tree: $SUMS7"'
+N7="$(printf '%s\n' "$LIST7" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T3/bin/mem" erase "Dana Smith" --confirm "$N7" >/dev/null
+N7="$("$T3/bin/mem" erase "José Ruiz" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T3/bin/mem" erase "José Ruiz" --confirm "$N7" >/dev/null
+check "erase keeps a record: .meta/erase-key is 32 bytes, mode 600; .meta/erased has one line per erase (id, word count, HMAC-SHA256 of the normalised words), never the subject" \
+  '[ "$(wc -c <"$T3/.meta/erase-key" | tr -d " ")" -eq 32 ] && [ "$(mode_of "$T3/.meta/erase-key")" = 600 ] && [ "$(grep -c "^2026-10-23T09:00:00Z erase id [0-9a-f]\{8\} words=2 hmac=[0-9a-f]\{64\}$" "$T3/.meta/erased")" -eq 2 ] && ! grep -qi "dana\|ruiz" "$T3/.meta/erased" && python3 -I -c "import hashlib, hmac, sys; k = open(sys.argv[1], \"rb\").read(); t = open(sys.argv[2]).read(); sys.exit(any(hmac.new(k, w, hashlib.sha256).hexdigest() not in t for w in (b\"dana smith\", b\"jose ruiz\")))" "$T3/.meta/erase-key" "$T3/.meta/erased"'
+AGAIN7="$(MEM_NOW=2026-10-23T10:00Z "$T3/bin/mem" migrate --from "$SRC4" --map "$WORK/map-erased.csv" 2>&1)"; RC=$?
+TAR7="$(printf '%s\n' "$AGAIN7" | sed -n 's/^rollback: .*, and \(.*\.tar\) (sha256 list .*)$/\1/p')"
+check "a migrate re-run from the untouched source skips each row that names an erased subject (stem, combining accent, \\u escape), shows neither its source nor its dest, and places nothing again" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s\n" "$AGAIN7" | grep -c "^line [245] skip    (not shown) -> (not shown): erased earlier: skipped$")" -eq 3 ] && printf "%s\n" "$AGAIN7" | grep -q "^line 3 exists  zinc.md -> topics/zinc.md" && [ ! -e "$T3/people/dana-smith.md" ] && [ ! -e "$T3/topics/notes.md" ] && ! grep -rqi "dana\|ruiz" "$T3/people" "$T3/topics" "$T3/archive" "$T3/MEMORY.md" "$T3"/.meta/migrate-*.md'
+check "the re-run's pre-migration tar leaves those sources out and the report says so; its .sha256 list does not name them" \
+  '[ -n "$TAR7" ] && [ "$(tar -tf "$TAR7")" = "source/zinc.md" ] && printf "%s\n" "$AGAIN7" | grep -qx "left out of the pre-migration tar: 3 source files that name an erased subject" && ! grep -qi "dana\|notes\|escaped" "${TAR7%.tar}.sha256"'
+# A subject nothing in the tree names yet (never migrated): --confirm 0 records it anyway, so the
+# first migrate from sources that still name it skips it.
+SRC5="$WORK/early-src"
+/bin/mkdir -p "$SRC5"
+printf 'Kim Lee owns billing.\n' >"$SRC5/kim.md"
+printf 'Zinc price is up.\n' >"$SRC5/zinc.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nkim.md,file,topics/billing.md,topics,copy,no,billing,"billing, owner",who owns billing,3,,,,\nzinc.md,file,topics/zinc.md,topics,copy,no,zinc,"zinc, price",zinc price,3,,,,\n' >"$WORK/map-early.csv"
+T4="$WORK/migrate-early"
+fresh "$T4"
+SUM_BEFORE="$(tree_sum "$T4")"
+DRY5="$("$T4/bin/mem" erase "Kim Lee")"
+check "erase of a subject the tree does not hold yet lists nothing, says --confirm 0 records it, and writes nothing" \
+  'printf "%s\n" "$DRY5" | grep -qx "nothing in the tree names that subject" && printf "%s\n" "$DRY5" | grep -q "^--confirm 0 records the subject in .meta/erased" && [ ! -e "$T4/.meta/erased" ] && [ ! -e "$T4/.meta/erase-key" ] && [ "$SUM_BEFORE" = "$(tree_sum "$T4")" ]'
+OUT5="$("$T4/bin/mem" erase "Kim Lee" --confirm 0)"; RC=$?
+OUT6="$("$T4/bin/mem" erase kim-lee --confirm 0)"
+check "erase <subject> --confirm 0 writes the record (and the 32-byte key) and says so; the same subject again adds no second line" \
+  '[ "$RC" -eq 0 ] && [ "$OUT5" = "nothing in the tree names that subject; recorded so that mem migrate skips it" ] && [ "$OUT6" = "$OUT5" ] && [ "$(wc -c <"$T4/.meta/erase-key" | tr -d " ")" -eq 32 ] && [ "$(grep -c "^2026-10-23T09:00:00Z erase id [0-9a-f]\{8\} words=2 hmac=[0-9a-f]\{64\}$" "$T4/.meta/erased")" -eq 1 ] && grep -q "nothing in the tree, recorded for migrate" "$T4/.meta/drain.log" && ! grep -qi kim "$T4/.meta/erased" "$T4/.meta/drain.log"'
+EARLY="$("$T4/bin/mem" migrate --from "$SRC5" --map "$WORK/map-early.csv" 2>&1)"; RC=$?
+TAR5="$(printf '%s\n' "$EARLY" | sed -n 's/^rollback: .*, and \(.*\.tar\) (sha256 list .*)$/\1/p')"
+check "the first migrate then skips the row naming that subject and leaves its source out of the pre-migration tar" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$EARLY" | grep -q "^line 2 skip    (not shown) -> (not shown): erased earlier: skipped$" && printf "%s\n" "$EARLY" | grep -q "^line 3 copy    zinc.md -> topics/zinc.md" && [ ! -e "$T4/topics/billing.md" ] && [ -n "$TAR5" ] && [ "$(tar -tf "$TAR5")" = "source/zinc.md" ]'
+# erase "Tom Smith" (the erase-order tree) also keeps a migrate from importing "Smith, Tom".
+SRC6="$WORK/order-src"
+/bin/mkdir -p "$SRC6"
+printf 'Ask Smith, Tom about the trains.\n' >"$SRC6/ask.md"
+printf 'Copper price is up.\n' >"$SRC6/copper.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nask.md,file,topics/asked.md,topics,copy,no,asked,"asked, trains",who to ask,3,,,,\ncopper.md,file,topics/copper.md,topics,copy,no,copper,"copper, price",copper price,3,,,,\n' >"$WORK/map-order.csv"
+ORDER="$("$WORK/erase-order/bin/mem" migrate --from "$SRC6" --map "$WORK/map-order.csv" 2>&1)"; RC=$?
+check "a migrate after erase Tom Smith skips the row that says Smith, Tom (the reversed pair hashes to the record too)" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$ORDER" | grep -q "^line 2 skip    (not shown) -> (not shown): erased earlier: skipped$" && printf "%s\n" "$ORDER" | grep -q "^line 3 copy    copper.md -> topics/copper.md" && [ ! -e "$WORK/erase-order/topics/asked.md" ]'
 /bin/rm -rf "$HOME/.wolfmux"
 unset MEM_NOW
 

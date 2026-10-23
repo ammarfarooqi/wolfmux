@@ -18,6 +18,7 @@ import argparse
 import csv
 import datetime
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -64,6 +65,8 @@ NAME_MAX = 80
 OVERLAP = 0.7
 JEV_THRESHOLD = 0.7
 ROUTINE_BASIS = "kept 7 days"
+# A tar with no basis= line in drain.log (gone, unreadable, never written): kept, never routine.
+UNKNOWN_BASIS = "unknown (no log line; kept)"
 
 EXIT_REFUSED = 1
 EXIT_USAGE = 64
@@ -110,15 +113,23 @@ USAGE = """usage: mem [--root <dir>] <command> [options]
 
 The tree: --root <dir> (before or after the command), else $MEM_ROOT, else the folder above
 bin/mem (above the link when bin/mem is a link inside a tree; else above the real script).
+A writer refuses a tree whose path holds /memory-skeleton/ (the repo's shipped copy) unless
+--root names it; $MEM_ROOT does not count.
 Exit status: 0 done, 1 refused or problems found, 64 usage, 75 another writer holds the lock.
 boot never waits for the lock: while another writer holds it, boot prints a fresh card unsaved.
 """
 
 READERS = ("recall", "status", "help")
+# The repo's shipped copy (config/wolfmux/memory-skeleton): a writer touches it only when --root
+# names it. A link to the repo's bin/mem, run from a folder that is not a tree, lands here.
+SHIPPED = os.sep + "memory-skeleton" + os.sep
 
 
 class Refused(Exception):
-    pass
+    """A refusal: nothing (more) is written. code is the exit status: 1, or 64 for a usage error."""
+    def __init__(self, message, code=EXIT_REFUSED):
+        Exception.__init__(self, message)
+        self.code = code
 
 
 class Parser(argparse.ArgumentParser):
@@ -683,34 +694,57 @@ def open_fence(text):
     return count, fence is not None
 
 
-def decision_blocks(text, damaged=None):
+def raw_len(line):
+    """The bytes of one ledger line as written (a byte that is not UTF-8 counts as one byte)."""
+    return len(line.encode("utf-8", "surrogateescape"))
+
+
+def as_written(data):
+    """A decisions ledger as text in which a byte that is not UTF-8 stays one character
+    (surrogateescape), so raw_len counts every line as decide counted the quote: an invalid byte
+    can never shorten or lengthen a quote and leave a fake block. Encode back the same way."""
+    return data.decode("utf-8", "surrogateescape")
+
+
+def shown(text):
+    """Text from as_written with each byte that is not UTF-8 as U+FFFD, safe to print."""
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
+def quote_end(lines, opening, size, fence):
+    """The index of the closing fence of a decide quote of `size` bytes whose fence is
+    lines[opening], or None when the line those bytes reach is not a closing fence. A quote
+    without a final newline gets one from decide: the fence comes after N or N + 1 bytes."""
+    remaining, at = size, opening + 1
+    while remaining > 0 and at < len(lines):
+        remaining -= raw_len(lines[at]) + 1
+        at += 1
+    if remaining in (0, -1) and at < len(lines) and closes_fence(lines[at], fence):
+        return at
+    return None
+
+
+def decision_blocks(text, damaged=None, layout=None):
     """[(anchor, time, {slug, source}, block text)] from one decisions ledger.
 
     The fence decide writes (the line after a block's `bytes: N`) holds exactly N bytes of the
     owner's words: nothing in them starts a block or sets a field, and its closing fence comes
-    right after them. Any other open fence (a stray one in a migrated payload, or a decide fence
-    whose closing fence is not where `bytes:` says) closes at a `## <time>` line followed by a
-    `slug:` line, so it never swallows the next decision. damaged, when given, gets the anchor of
-    every block whose `bytes:` count does not match its quote."""
+    right after them. N is trusted only when the line those N bytes reach really is a closing
+    fence; that is worked out before anything is read as quote. Any other open fence (a stray
+    one in a migrated payload, or a decide fence whose N does not reach a closing fence) closes
+    at a closing fence or at a `## <time>` line followed by a `slug:` line, so it never
+    swallows the next decision. damaged, when given, gets the anchor of every block whose
+    `bytes:` count does not match its quote. layout, when given, gets one dict per block:
+    {"anchor", "head": line index, "meta": {field: line index}, "quote": (bytes line, opening
+    fence, closing fence) of a trusted quote, or None}."""
     out = []
     current = None
     fence = None
-    quote = None  # [bytes of the quote still to come, its fence] inside a decide-written fence
     lines = text.split("\n")
+    resume = 0  # the line after a trusted quote: the lines before it are in the block already
     for number, line in enumerate(lines):
-        if quote is not None:
-            if quote[0] > 0:
-                current[3].append(line)
-                quote[0] -= len(line.encode("utf-8")) + 1
-                continue
-            # A quote without a final newline gets one from decide: the fence is at N or N + 1.
-            if quote[0] >= -1 and closes_fence(line, quote[1]):
-                current[3].append(line)
-                quote = None
-                continue
-            if damaged is not None:
-                damaged.append(current[0])
-            fence, quote = quote[1], None
+        if number < resume:
+            continue
         if fence is not None:
             following = lines[number + 1] if number + 1 < len(lines) else ""
             if not (DECISION_HEAD.match(line) and re.match(r"^slug: \S", following)):
@@ -723,16 +757,22 @@ def decision_blocks(text, damaged=None):
         opening = FENCE.match(line)
         if opening:
             size = re.match(r"^bytes: (\d+)$", current[3][-1]) if current is not None else None
-            if size:
-                quote = [int(size.group(1)), opening.group(1)]
-            else:
-                fence = opening.group(1)
+            close = quote_end(lines, number, int(size.group(1)), opening.group(1)) if size else None
+            if close is not None:
+                current[3].extend(lines[number:close + 1])
+                current[4]["quote"] = (number - 1, number, close)
+                resume = close + 1
+                continue
+            if size and damaged is not None:
+                damaged.append(current[0])
+            fence = opening.group(1)
             if current is not None:
                 current[3].append(line)
             continue
         match = DECISION_HEAD.match(line)
         if match:
-            current = [match.group(1) + (match.group(2) or ""), match.group(1), {}, [line]]
+            anchor = match.group(1) + (match.group(2) or "")
+            current = [anchor, match.group(1), {}, [line], {"anchor": anchor, "head": number, "meta": {}, "quote": None}]
             out.append(current)
             continue
         if current is not None:
@@ -740,9 +780,24 @@ def decision_blocks(text, damaged=None):
             meta = re.match(r"^(slug|source|bytes): (.*)$", line)
             if meta and meta.group(1) not in current[2]:
                 current[2][meta.group(1)] = meta.group(2)
-    if quote is not None and damaged is not None:  # the ledger ends inside a quote
-        damaged.append(current[0])
-    return [(a, t, m, "\n".join(block)) for a, t, m, block in out]
+                current[4]["meta"][meta.group(1)] = number
+    if layout is not None:
+        layout.extend(block[4] for block in out)
+    return [(a, t, dict((k, shown(v)) for k, v in m.items()), shown("\n".join(block))) for a, t, m, block, _ in out]
+
+
+def loose_heads(text, layout):
+    """The anchors of `## <time>` lines that are outside every trusted quote but start no block
+    of their own: swallowed by a damaged block. decide never hands out one of them."""
+    lines = text.split("\n")
+    inside = set(n for block in layout if block["quote"] for n in range(block["quote"][1], block["quote"][2] + 1))
+    heads = set(block["head"] for block in layout)
+    out = set()
+    for number, line in enumerate(lines):
+        match = DECISION_HEAD.match(line)
+        if match and number not in inside and number not in heads:
+            out.add(match.group(1) + (match.group(2) or ""))
+    return out
 
 
 def ledger_entries(tree):
@@ -752,9 +807,10 @@ def ledger_entries(tree):
         match = LEDGER_FILE.match(os.path.basename(rel))
         if not match:
             continue
-        text = tree.read(rel).decode("utf-8", "replace")
+        data = tree.read(rel)
+        text = data.decode("utf-8", "replace")
         if match.group(1) == "decisions":
-            for _, when, _, block in decision_blocks(text):
+            for _, when, _, block in decision_blocks(as_written(data)):
                 out.append((safe_time(when), block))
         elif match.group(1) == "sweeps":
             for line in text.split("\n"):
@@ -799,7 +855,7 @@ def authority_resolves(tree, ref):
     month, anchor = match.groups()
     for rel in ("ledger/decisions-%s.md" % month, "archive/%s/ledger/decisions-%s.md" % (month, month)):
         data = tree.read_or_none(rel)
-        if data is not None and any(a == anchor for a, _, _, _ in decision_blocks(data.decode("utf-8", "replace"))):
+        if data is not None and any(a == anchor for a, _, _, _ in decision_blocks(as_written(data))):
             return True
     return False
 
@@ -986,7 +1042,7 @@ def recent_decisions(tree, when, count=3):
         data = tree.read_or_none("ledger/decisions-%s.md" % month)
         if data is None:
             continue
-        for anchor, at, meta, _ in decision_blocks(data.decode("utf-8", "replace")):
+        for anchor, at, meta, _ in decision_blocks(as_written(data)):
             found.append((at, anchor, meta.get("slug", "")))
     found.sort(reverse=True)
     return found[:count]
@@ -1382,10 +1438,12 @@ def run_check(tree, when, quiet=False):
     for rel in tree.files("ledger") + tree.files("archive"):
         if LEDGER_FILE.match(os.path.basename(rel)) and os.path.basename(rel).startswith("decisions-"):
             damaged = []
-            decision_blocks(tree.read(rel).decode("utf-8", "replace"), damaged)
+            decision_blocks(as_written(tree.read(rel)), damaged)
             for anchor in damaged:
                 report("WARN", "%s: the decision at %s does not match its bytes: count; the block is damaged, read it by hand"
                        % (rel, anchor))
+    for message in half_moves(tree):
+        report("WARN", message)
     boot = tree.read_or_none("core/boot.md")
     if boot is None:
         report("PROBLEM", "core/boot.md is missing (mem init writes the template)")
@@ -1760,15 +1818,22 @@ def cmd_decide(tree, args):
         raise Refused("the owner's words come on stdin, verbatim; nothing arrived")
     month = month_of(when)
     rel = ledger_rel("decisions", month)
-    taken = set()
+    taken, loose = set(), {}
     for existing in (rel, "archive/%s/ledger/decisions-%s.md" % (month, month)):
         data = tree.read_or_none(existing)
         if data is not None:
-            taken.update(a for a, _, _, _ in decision_blocks(data.decode("utf-8", "replace")))
+            text, layout = as_written(data), []
+            taken.update(a for a, _, _, _ in decision_blocks(text, layout=layout))
+            loose.update((a, existing) for a in loose_heads(text, layout))
     anchor, n = minute(when), 1
     while anchor in taken:
         n += 1
         anchor = "%s-%d" % (minute(when), n)
+    if anchor in loose:
+        # A damaged block swallowed a decision with this anchor: a second block would share it.
+        raise Refused("anchor taken: %s has a `## %s` line that a damaged block swallowed; run mem check, "
+                      "repair that block's bytes: by hand, and decide again (nothing was written)"
+                      % (loose[anchor], anchor), code=EXIT_USAGE)
     text = quote.decode("utf-8", "replace")
     slug = check_name(args.slug, "--slug") if args.slug else (slugify(" ".join(text.split()[:6])) or "decision")
     runs = re.findall(r"`+", text)
@@ -1933,7 +1998,7 @@ def prune_backups(tree, when):
         path = os.path.join(folder, name)
         if not name.endswith(".tar") or not os.path.isfile(path):
             continue
-        basis = bases.get(name, ROUTINE_BASIS)
+        basis = bases.get(name, UNKNOWN_BASIS)
         if when - backup_time(name, path) > datetime.timedelta(days=7) and basis == ROUTINE_BASIS:
             os.unlink(path)
             log(tree, "prune .meta/backups/%s (older than 7 days; basis: %s)" % (name, basis))
@@ -1953,13 +2018,70 @@ def index_add(tree, to_rel, from_rel, reason):
     append_file(tree, "archive/index.md", ("- %s %s from %s: %s\n" % (now().date().isoformat(), to_rel, from_rel, one_line(reason))).encode("utf-8"))
 
 
+def half_moves(tree):
+    """What a drain or an unarchive stopped halfway leaves. Each writes the new place first and
+    removes the old one after, so a crash leaves the data in both places, never in neither: a
+    ledger month whose whole text is already in its archived copy, sweep lines both live and
+    archived, an index line for a file unarchive already moved back."""
+    out, archived_sweeps = [], set()
+    for rel in tree.files("archive"):
+        if re.match(r"^sweeps-\d{4}-\d{2}\.jsonl$", os.path.basename(rel)):
+            archived_sweeps.update(line for line in tree.read(rel).split(b"\n") if line.strip())
+    for rel in tree.files("ledger"):
+        match = LEDGER_FILE.match(os.path.basename(rel))
+        if not match:
+            continue
+        live = tree.read(rel)
+        archived = tree.read_or_none("archive/%s/ledger/%s" % (match.group(2), os.path.basename(rel)))
+        if archived and already_archived(tree, rel, "archive/%s/ledger/%s" % (match.group(2), os.path.basename(rel))):
+            out.append("%s is also in archive/%s/ledger/ in full (a month present in both places: run drain to "
+                       "finish the move)" % (rel, match.group(2)))
+        elif match.group(1) == "sweeps":
+            both = [line for line in live.split(b"\n") if line in archived_sweeps]
+            if both:
+                out.append("%s: %d sweep line%s also archived (a drain stopped before it rewrote the live file); remove "
+                           "%s from %s" % (rel, len(both), " is" if len(both) == 1 else "s are",
+                                           "it" if len(both) == 1 else "them", rel))
+    for line in index_lines(tree)[1]:
+        match = INDEX_LINE.match(line)
+        if match and not tree.has(match.group(2)) and tree.has(match.group(3)):
+            out.append("archive/index.md lists %s as archived at %s, which is gone and %s is live (an unarchive "
+                       "stopped halfway); delete that index line" % (match.group(3), match.group(2), match.group(3)))
+    return out
+
+
+def ledger_body(rel, data):
+    """A ledger month without the head mem wrote when it made the file: what a drain appends to
+    the archived copy of that month, so the archived file holds one head and no head line joins
+    the text of a decision block."""
+    match = LEDGER_FILE.match(os.path.basename(rel))
+    if match and match.group(1) in LEDGER_HEADS:
+        head = (LEDGER_HEADS[match.group(1)] % match.group(2)).encode("utf-8")
+        if data.startswith(head):
+            return data[len(head):]
+    return data
+
+
+def already_archived(tree, from_rel, to_rel):
+    """Whether a live ledger month's body is already in its archived copy, in full: a drain that
+    stopped after its append and before it removed the live file."""
+    archived = tree.read_or_none(to_rel)
+    body = ledger_body(from_rel, tree.read(from_rel))
+    return bool(archived) and bool(body.strip()) and body in archived
+
+
 def archive_move(tree, from_rel, to_rel, reason):
     src = tree.abs(from_rel)
     dest = tree.abs(to_rel)
     if os.path.exists(dest):
         if LEDGER_FILE.match(os.path.basename(to_rel)):
-            with open(src, "rb") as handle:
-                append_file(tree, to_rel, handle.read())
+            if already_archived(tree, from_rel, to_rel):
+                # Appending again would hold the month twice (a decision anchor twice): finish the move.
+                os.unlink(src)
+                index_add(tree, to_rel, from_rel, reason + " (already archived (half move finished))")
+                log(tree, "archive %s -> %s: already archived (half move finished): %s" % (from_rel, to_rel, reason))
+                return to_rel
+            append_file(tree, to_rel, ledger_body(from_rel, tree.read(from_rel)))
             os.unlink(src)
             index_add(tree, to_rel, from_rel, reason + " (appended to the archived month)")
             log(tree, "archive %s -> %s (appended): %s" % (from_rel, to_rel, reason))
@@ -2074,14 +2196,15 @@ def jev_ask(tree, entry, age, ref_days, people, key, when):
         }}}}
     url = os.environ.get("MEM_JEV_URL", JEV_URL)
     data = json.dumps(body).encode("utf-8")
-    opener = urllib.request.build_opener(NoRedirect)
+    # No proxy, whatever HTTPS_PROXY or ALL_PROXY say: a proxy would see the key.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
     backoff = float(os.environ.get("MEM_JEV_BACKOFF", "2"))
     status, raw, error, attempts = None, b"", None, 0
     for attempt in range(4):
         attempts += 1
-        request = urllib.request.Request(url, data=data, method="POST",
-                                         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
-        try:
+        try:  # a bad MEM_JEV_URL fails here, in Request, and is reported like any other failure
+            request = urllib.request.Request(url, data=data, method="POST",
+                                             headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
             with opener.open(request, timeout=float(os.environ.get("MEM_JEV_TIMEOUT", "20"))) as answer:
                 status, raw, error = answer.status, answer.read(), None
             break
@@ -2159,7 +2282,10 @@ def drain_moves(tree, args, when, dry):
     # rule 2: ledger months older than this one and the one before
     for rel, month in plan["ledger"]:
         to_rel = "archive/%s/ledger/%s" % (month, os.path.basename(rel))
-        print("%sarchive %s -> %s (rule 2: ledger month %s)" % (would, rel, to_rel, month))
+        if already_archived(tree, rel, to_rel):
+            print("%sremove %s: already archived (half move finished) in %s" % (would, rel, to_rel))
+        else:
+            print("%sarchive %s -> %s (rule 2: ledger month %s)" % (would, rel, to_rel, month))
         if not dry:
             archive_move(tree, rel, to_rel, "rule 2: ledger month %s is older than %s" % (month, previous_month(when)))
             moved += 1
@@ -2225,6 +2351,16 @@ def index_lines(tree):
     return data, data.decode("utf-8", "replace").split("\n")
 
 
+def archived_at(tree, rel):
+    """Where archive/index.md says rel went (its last line for rel whose file is still there), or None."""
+    found = None
+    for line in index_lines(tree)[1]:
+        match = INDEX_LINE.match(line)
+        if match and match.group(3) == rel and tree.has(match.group(2)):
+            found = match.group(2)
+    return found
+
+
 def cmd_unarchive(tree, args):
     name = args.name
     if not SLUG.match(name) or ".." in name:
@@ -2238,7 +2374,7 @@ def cmd_unarchive(tree, args):
             found = (number, match.group(2), match.group(3))
     if found is None:
         raise Refused("archive/index.md has no file named %s" % name)
-    number, to_rel, from_rel = found
+    _, to_rel, from_rel = found
     src, dest = tree.abs(to_rel), tree.abs(from_rel)
     if not os.path.exists(src):
         raise Refused("archive/index.md names %s but the file is gone" % to_rel)
@@ -2252,7 +2388,13 @@ def cmd_unarchive(tree, args):
         if entry.fields is not None:
             fields = dict(entry.fields, last_confirmed=now().date().isoformat())
             write_file(tree, from_rel, rewrite_header(entry.data, fields), expect=entry.data)
-    del lines[number]
+
+    def same_file(line):
+        match = INDEX_LINE.match(line)
+        return bool(match) and (match.group(2), match.group(3)) == (to_rel, from_rel)
+    # Every line for this file goes: a month archived twice (renamed, then appended) has two, and
+    # one left behind would read as an unarchive that stopped halfway.
+    lines = [line for line in lines if not same_file(line)]
     write_file(tree, "archive/index.md", "\n".join(lines).encode("utf-8"), expect=data)
     log(tree, "unarchive %s -> %s" % (to_rel, from_rel))
     print("unarchived %s -> %s" % (to_rel, from_rel))
@@ -2309,34 +2451,154 @@ ERASE_STOP = set(FIELD_ORDER + REGIONS + TREE_DIRS + tuple(n for n, _ in STATE_D
     "decision", "sweep", "send", "person"))
 
 
-def whole_file(rel):
-    """A region file, an archived region file or a .meta/jev/ audit file: erase removes it whole.
-    Every other file (drain.log, the digest, a migrate report, the ledger) is edited line by line."""
+def region_of(rel):
+    """The region of a region file or of its archived copy (archive/<m>/<region>/...), else None."""
     parts = rel.split("/")
-    return (parts[0] in REGIONS or (parts[0] == "archive" and len(parts) > 3 and parts[2] in REGIONS)
-            or rel.startswith(".meta/jev/"))
+    if parts[0] in REGIONS:
+        return parts[0]
+    if parts[0] == "archive" and len(parts) > 3 and parts[2] in REGIONS:
+        return parts[2]
+    return None
+
+
+def whole_file(rel):
+    """A people/, teams/ or topics/ file (live or archived) or a .meta/jev/ audit file: erase
+    removes it whole. A rules file (role.md too) carries an authority and is edited line by
+    line, as is every other file (drain.log, the digest, a migrate report, the ledger)."""
+    return region_of(rel) not in (None, "rules") or rel.startswith(".meta/jev/")
+
+
+def first_hit(text, match):
+    """Why a whole file goes: its first line that names the subject, cut to 80 characters."""
+    for number, line in enumerate(text.split("\n")):
+        if match.search(line):
+            return "line %d: %s" % (number + 1, cut(line.strip(), 80))
+    return "a JSON value"
+
+
+# Header fields that hold a list: erase takes out the items that name the subject, never the line.
+ERASE_LIST_FIELDS = ("keywords", "links")
+
+
+def erase_list(field, value, match):
+    """A links: or keywords: value without the items that name the subject, still a list of the
+    same kind. A name spread over two items (keywords: tom, smith) takes both of its words out.
+    No link left is an empty links:; no keyword left is the one keyword erased (an empty
+    keywords: is a check problem)."""
+    def render(items):
+        return render_links(items) if field == "links" else ", ".join(items)
+    items = links_of(value) if field == "links" else [item.strip() for item in value.split(",") if item.strip()]
+    kept = [item for item in items if not match.search(item)]
+    if match.search(render(kept)):
+        kept = [item for item in kept if erase_norm(item).strip() not in match.words]
+    if match.search(render(kept)):
+        kept = []
+    return render(kept) or ("erased" if field == "keywords" else "")
+
+
+def erase_rule_lines(data, match, marker):
+    """(new bytes, numbers of the lines erased, whether the name: line names the subject) for a
+    rules file. A header line keeps its shape (`key: <marker>`, `- <marker>`, an indented
+    marker), so the file keeps its header; the name: line is the file name and stays (listed as
+    left behind). A body line becomes the marker. A CRLF line stays CRLF, and a line erase does
+    not touch keeps its bytes, invalid UTF-8 too."""
+    text = as_written(data)
+    lines = text.split("\n")
+    close = 0
+    if split_header(data)[0] is not None:
+        close = next(n for n in range(1, len(lines)) if lines[n].rstrip("\r") == "---")
+    hit, named = [], False
+    for number, line in enumerate(lines):
+        bare = line.rstrip("\r")
+        if not match.search(bare) or (close and number in (0, close)):
+            continue
+        end, erased = line[len(bare):], "[erased %s]" % marker
+        if 0 < number < close:
+            key = HEADER_KEY.match(bare)
+            if key and key.group(1) == "name":
+                named = True
+                continue
+            lead = re.match(r"^([ \t]+|- |#\s*)", bare)
+            if key and key.group(1) in ERASE_LIST_FIELDS:
+                erased = ("%s: %s" % (key.group(1), erase_list(key.group(1), key.group(2) or "", match))).rstrip()
+            else:
+                erased = ("%s: %s" % (key.group(1), erased)) if key else (lead.group(1) if lead else "  ") + erased
+        hit.append(number + 1)
+        lines[number] = erased + end
+    return "\n".join(lines).encode("utf-8", "surrogateescape"), hit, named
 
 
 def erase_matcher(subject):
     """The subject as a whole word, case folded: 'tom' finds 'Tom' but not 'tomorrow' or 'custom'."""
-    return re.compile(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(subject.casefold()))
+    return Subject(subject)
+
+
+def erase_norm(text):
+    """NFC, then the accent fold Jev masking uses, lower case: José (either form) is jose."""
+    return fold(unicodedata.normalize("NFC", text or ""))
+
+
+class Subject(object):
+    """The erase subject as a pattern over normalised text (erase_norm, on both sides): its words
+    joined by any run of space, _, . or -, so Tom Smith finds tom-smith, tom_smith and
+    [[tom-smith]]; a whole word, with no letter or digit right before or after it. Two words
+    also match reversed, and with a comma between them in either order (Smith, Tom and
+    smith-tom), so Tom Smith and Smith Tom find the same; three or more match in their own
+    order only."""
+    def __init__(self, subject):
+        self.words = [word for word in re.split(r"[\s_.-]+", erase_norm(subject)) if word]
+        body = r"[\s_.-]+".join(re.escape(word) for word in self.words)
+        if len(self.words) == 2:
+            first, second, gap = re.escape(self.words[0]), re.escape(self.words[1]), r"(?:,[\s_.-]*|[\s_.-]+)"
+            body = r"(?:%s%s%s|%s%s%s)" % (first, gap, second, second, gap, first)
+        self.pattern = re.compile(r"(?<![^\W_])%s(?![^\W_])" % body)
+
+    def search(self, text):
+        return self.pattern.search(erase_norm(text))
+
+    def sub(self, text, repl):
+        """text with each hit replaced by repl; the rest keeps its own spelling. The pattern runs
+        over the normalised text, and a hit maps back to the characters it came from (a letter
+        and the combining marks after it are one unit)."""
+        units = []
+        for char in text:
+            if units and unicodedata.combining(char):
+                units[-1] += char
+            else:
+                units.append(char)
+        owner = []
+        for index, unit in enumerate(units):
+            owner.extend([index] * len(erase_norm(unit)))
+        cut = {}
+        for found in self.pattern.finditer("".join(erase_norm(unit) for unit in units)):
+            cut[owner[found.start()]] = owner[found.end() - 1] + 1
+        out, index = [], 0
+        while index < len(units):
+            if index in cut:
+                out.append(repl)
+                index = cut[index]
+            else:
+                out.append(units[index])
+                index += 1
+        return "".join(out)
 
 
 def json_hits(match, value):
     """(a value names the subject, a key names it), at any depth of a decoded JSON value. Decoded,
-    so a name written as \\u escapes (json.dumps without ensure_ascii=False) is found as well."""
+    so a name written as \\u escapes (json.dumps without ensure_ascii=False) is found as well.
+    Only a string value can name it: a true is never the text True."""
     if isinstance(value, dict):
         found = [json_hits(match, child) for child in value.values()]
-        keyed = any(match.search(str(key).casefold()) for key in value)
+        keyed = any(match.search(str(key)) for key in value)
         return any(v for v, _ in found), keyed or any(k for _, k in found)
     if isinstance(value, list):
         found = [json_hits(match, child) for child in value]
         return any(v for v, _ in found), any(k for _, k in found)
-    return value is not None and bool(match.search(str(value).casefold())), False
+    return isinstance(value, str) and bool(match.search(value)), False
 
 
 def redact_json(value, match, marker):
-    """(value with every scalar that names the subject replaced by the marker, how many were)."""
+    """(value with every string that names the subject replaced by the marker, how many were)."""
     if isinstance(value, (dict, list)):
         pairs = value.items() if isinstance(value, dict) else enumerate(value)
         out, count = ({} if isinstance(value, dict) else []), 0
@@ -2348,22 +2610,23 @@ def redact_json(value, match, marker):
             else:
                 out.append(new)
         return out, count
-    if value is not None and match.search(str(value).casefold()):
+    if isinstance(value, str) and match.search(value):
         return "[erased %s]" % marker, 1
     return value, 0
 
 
 def erase_lines(data, match, marker, jsonl=False, drain_log=False):
     """(new bytes, numbers of the lines that hold the subject, numbers of the lines where only a
-    key names it). A .jsonl line is decoded first and its values count, at any depth; a key (a
-    field name like free_pct) erases nothing and is left behind. In drain.log a `backup ...
-    basis=` line keeps its shape and only its basis text is erased: a tar kept on the owner's
-    word must keep a basis that is not routine, or the next backup would prune it."""
-    text = data.decode("utf-8", "replace")
+    key names it, numbers of the backup lines that still name it). A .jsonl line is decoded
+    first and its values count, at any depth; a key (a field name like free_pct) erases nothing
+    and is left behind. A `backup ... basis=` line in drain.log is never replaced: the subject
+    is replaced inside its basis text only (a routine basis is mem's own words and stays), so
+    the tar keeps the basis it was kept on; a hit in the rest of the line is left behind."""
+    text = as_written(data)  # a line erase does not touch keeps its bytes, invalid UTF-8 too
     lines = text.split("\n")
-    hit, keys = [], []
+    hit, keys, kept = [], [], []
     for number, line in enumerate(lines):
-        named = match.search(line.casefold())
+        named = match.search(line)
         if jsonl:
             try:
                 named, keyed = json_hits(match, json.loads(line))
@@ -2373,13 +2636,49 @@ def erase_lines(data, match, marker, jsonl=False, drain_log=False):
                 keys.append(number + 1)
         if not named:
             continue
-        hit.append(number + 1)
         backup = BACKUP_LOG.match(line) if drain_log else None
-        if backup and not match.search(line[:backup.start(3)].casefold()):
-            lines[number] = line[:backup.start(3)] + "[erased %s]" % marker + line[backup.end(3):]
-        else:
-            lines[number] = json.dumps({"erased": marker}, ensure_ascii=False) if jsonl else "[erased %s]" % marker
-    return "\n".join(lines).encode("utf-8"), hit, keys
+        if backup:
+            basis = backup.group(3)
+            if basis != ROUTINE_BASIS:
+                basis = match.sub(basis, "[erased %s]" % marker)
+            lines[number] = line[:backup.start(3)] + basis + line[backup.end(3):]
+            if lines[number] != line:
+                hit.append(number + 1)
+            if match.search(lines[number]):
+                kept.append(number + 1)
+            continue
+        hit.append(number + 1)
+        lines[number] = json.dumps({"erased": marker}, ensure_ascii=False) if jsonl else "[erased %s]" % marker
+    return "\n".join(lines).encode("utf-8", "surrogateescape"), hit, keys, kept
+
+
+def erase_decisions(data, match, marker):
+    """(new bytes, numbers of the lines that hold the subject) for a decisions ledger. A quote
+    line becomes the marker and the block's `bytes:` is counted again, so the quote still ends
+    at its own fence and no decision after it loses its anchor. A slug: or source: line keeps
+    its field. The `## <time>`, `bytes:` and fence lines hold no names and are never edited."""
+    text = as_written(data)
+    before = text.split("\n")
+    lines = list(before)
+    layout = []
+    decision_blocks(text, layout=layout)
+    fixed = set(block["head"] for block in layout)
+    fixed.update(n for block in layout if block["quote"] for n in block["quote"])
+    fields = dict((n, key) for block in layout for key, n in block["meta"].items())
+    hit = []
+    for number, line in enumerate(lines):
+        if number in fixed or not match.search(line):
+            continue
+        hit.append(number)
+        lines[number] = ("%s: [erased %s]" % (fields[number], marker)) if number in fields else "[erased %s]" % marker
+    for block in layout:
+        if not block["quote"] or not any(block["quote"][1] < n < block["quote"][2] for n in hit):
+            continue
+        size_at, opening, closing = block["quote"]
+        # decide adds a newline to a quote without one: that byte stays out of the count.
+        added = sum(raw_len(line) + 1 for line in before[opening + 1:closing]) - int(before[size_at][len("bytes: "):])
+        lines[size_at] = "bytes: %d" % (sum(raw_len(line) + 1 for line in lines[opening + 1:closing]) - added)
+    return "\n".join(lines).encode("utf-8", "surrogateescape"), [n + 1 for n in hit]
 
 
 def erase_state(value, match):
@@ -2400,7 +2699,7 @@ def erase_state(value, match):
     kept = {}
     for key in value:
         named, keyed = json_hits(match, value[key])
-        if named or match.search(str(key).casefold()):
+        if named or match.search(str(key)):
             removed.append(key)
         else:
             left = left or keyed
@@ -2410,61 +2709,159 @@ def erase_state(value, match):
 
 def erase_plan(rel, data, match, marker):
     """What erase does to one file, in the live tree or inside a backup tar: (None | "drop" |
-    "edit", new bytes, [where the subject is], [the file, when only a JSON key names it]). A
-    path counts by its file stem only, and only for a file erase removes whole: folder names
-    and extensions never match, and `erase drain` never takes .meta/drain.log with it. JSON (a
-    .json file, each .jsonl line) is decoded before it is matched: values and keys at any depth.
-    A hit that is only a key is never erased; it is listed as left behind."""
+    "edit", new bytes, [where the subject is], [what names it and stays, each with its kind:
+    "<rel> (key)", "<rel> (file name)", "<rel>:<n> (backup line)"]). A path counts by its file stem only, and only for a
+    file erase removes whole (listed with "(stem)", or with the first line that names the
+    subject): folder names and extensions never match, and `erase drain` never takes
+    .meta/drain.log with it. A rules file is edited line by line; its stem and name: line stay
+    and are listed as left behind. JSON (a .json file, each .jsonl line) is decoded before it is
+    matched: values and keys at any depth. A hit that is only a key is never erased; it is
+    listed as left behind."""
     whole = whole_file(rel)
-    if whole and match.search(os.path.splitext(os.path.basename(rel))[0].casefold()):
-        return "drop", None, [rel], []
+    stem = match.search(os.path.splitext(os.path.basename(rel))[0])
+    if whole and stem:
+        return "drop", None, ["%s (stem)" % rel], []
     text = data.decode("utf-8", "replace")
+    if region_of(rel) == "rules":
+        new, hit, named = erase_rule_lines(data, match, marker)
+        left = ["%s (file name)" % rel] if stem or named else []
+        if not hit:
+            return None, data, [], left
+        return "edit", new, ["%s:%d" % (rel, n) for n in hit], left
     value = MISSING
     if rel.endswith(".json"):
         try:
             value = json.loads(text)
         except ValueError:
             pass
-    named, keyed = json_hits(match, value) if value is not MISSING else (match.search(text.casefold()), False)
+    named, keyed = json_hits(match, value) if value is not MISSING else (match.search(text), False)
     if isinstance(value, dict) and rel.split("/")[0] == "state":  # an object file's keys name its entries
-        named = named or any(match.search(str(key).casefold()) for key in value)
-    left = [rel] if keyed and not named else []
+        named = named or any(match.search(str(key)) for key in value)
+    left = ["%s (key)" % rel] if keyed and not named else []
     if not named and not rel.endswith(".jsonl"):  # a .jsonl line may hide a name in \u escapes
         return None, data, [], left
     if whole:
-        return "drop", None, [rel], []
+        return "drop", None, ["%s (%s)" % (rel, first_hit(text, match))], []
     if isinstance(value, (list, dict)) and rel.split("/")[0] == "state":
         kept, removed, keys = erase_state(value, match)
-        return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed], [rel] if keys else []
+        return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed], ["%s (key)" % rel] if keys else []
     if isinstance(value, (list, dict)):  # any other JSON: the values are erased in place, the file stays JSON
         new, count = redact_json(value, match, marker)
         return "edit", dump_json(new), ["%s (%d JSON value%s)" % (rel, count, "" if count == 1 else "s")], left
-    new, hit, keys = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
-    left = [rel] if keys else []
+    if value is not MISSING:  # one JSON string (no other scalar names a subject): edited inside, stays JSON
+        new = match.sub(value, "[erased %s]" % marker)
+        return "edit", dump_json("[erased %s]" % marker if match.search(new) else new), ["%s (1 JSON value)" % rel], left
+    ledger = LEDGER_FILE.match(os.path.basename(rel))
+    if ledger and ledger.group(1) == "decisions":
+        (new, hit), keys, kept = erase_decisions(data, match, marker), [], []
+    else:
+        new, hit, keys, kept = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
+    left = (["%s (key)" % rel] if keys else []) + ["%s:%d (backup line)" % (rel, n) for n in kept]
     if not hit:
         return None, data, [], left
     return "edit", new, ["%s:%d" % (rel, n) for n in hit], left
+
+
+# Subjects that are literals once normalised (the words joined by one space): refused like JSON's.
+ERASE_LITERALS = ("true", "false", "null", "none", "nan", "inf", "infinity")
 
 
 # The schema and the tool ship with mem and are not memory: erase never edits them, live or in a tar.
 ERASE_SPEC = (".meta/schema.md",)
 
 
+# What erase keeps so a later migrate can skip an erased subject: a random key and keyed hashes.
+ERASE_RECORD = (".meta/erase-key", ".meta/erased")
+
+
 def erase_skips(rel):
-    return rel in ERASE_SPEC or rel.startswith("bin/")
+    return rel in ERASE_SPEC or rel in ERASE_RECORD or rel.startswith("bin/")
 # MEMORY.md and the card are regenerated once the rest is gone; the lock holds no data.
 ERASE_REGENERATED = ("MEMORY.md", "core/card.md", ".meta/lock")
 
 
+def erase_words(text):
+    """The words of the normalised text (erase_norm): its runs of letters and digits."""
+    return re.findall(r"[^\W_]+", erase_norm(text))
+
+
+def erase_hash(key, words):
+    return hmac.new(key, " ".join(words).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def erase_record(tree, erase_id, subject):
+    """One .meta/erased line: time, erase id, word count and the HMAC-SHA256 of the subject's
+    words under the tree's key (.meta/erase-key: 32 random bytes, made on first use, never
+    printed). The subject itself is never stored. False when the record already holds it."""
+    key = tree.read_or_none(".meta/erase-key")
+    if not key:
+        key = os.urandom(32)
+        write_file(tree, ".meta/erase-key", key, expect=MISSING)
+    words = erase_words(subject)
+    digest = erase_hash(key, words)
+    if digest in erased_subjects(tree)[1].get(len(words), ()):
+        return False
+    append_file(tree, ".meta/erased", ("%s erase id %s words=%d hmac=%s\n" % (
+        second(now()), erase_id, len(words), digest)).encode("utf-8"))
+    return True
+
+
+def erased_subjects(tree):
+    """(key, {word count: hashes}) from the erase record; (None, {}) for a tree with no key."""
+    key, out = tree.read_or_none(".meta/erase-key"), {}
+    if not key:
+        return None, out
+    for line in (tree.read_or_none(".meta/erased") or b"").decode("utf-8", "replace").split("\n"):
+        found = re.search(r" words=(\d+) hmac=([0-9a-f]{64})$", line)
+        if found:
+            out.setdefault(int(found.group(1)), set()).add(found.group(2))
+    return key, out
+
+
+def names_erased(key, erased, text):
+    """Whether any run of words in text hashes to an erased subject; a two-word subject in
+    reverse order too, as erase matches it (Smith, Tom). JSON (the whole text or one line of
+    it) is read decoded as well, so a name written as \\u escapes is found too."""
+    if "\\u" in text:
+        decoded = []
+        for chunk in [text] + text.split("\n"):
+            try:
+                decoded.append(json.dumps(json.loads(chunk), ensure_ascii=False))
+            except ValueError:
+                pass
+        text = "\n".join([text] + decoded)
+    words = erase_words(text)
+    for count, hashes in erased.items():
+        for start in range(len(words) - count + 1):
+            run = words[start:start + count]
+            if erase_hash(key, run) in hashes or (count == 2 and erase_hash(key, run[::-1]) in hashes):
+                return True
+    return False
+
+
 def cmd_erase(tree, args):
     subject = one_line(args.subject)
-    if len(subject) < 3:
-        raise Refused("the subject must be at least 3 characters, or it matches everything")
+    try:
+        literal = json.loads(subject)
+    except ValueError:
+        literal = subject
+    needle = erase_matcher(subject)
+    try:
+        float(erase_norm(subject).strip())
+        number = True
+    except ValueError:
+        number = False
+    # true would take every state entry that holds a true; True, FALSE, none, nan and 1_000 too
+    if not isinstance(literal, str) or number or " ".join(needle.words) in ERASE_LITERALS:
+        raise Refused("%r is a literal (true, false, null, none, nan, inf or a number): it matches values, not a "
+                      "person or thing" % subject, code=EXIT_USAGE)
+    if len("".join(needle.words)) < 3:
+        raise Refused("the subject must be at least 3 characters (letters and digits), or it matches everything",
+                      code=EXIT_USAGE)
     if not re.search(r"[^\W\d_]", subject):
         raise Refused("the subject needs a letter (a bare number or date matches whole ledgers)")
-    if re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", subject.casefold()) in ERASE_STOP:
+    if " ".join(needle.words) in ERASE_STOP:
         raise Refused("%r is a word every tree holds (a header field, a folder or a common word); name the person or thing" % subject)
-    needle = erase_matcher(subject)
     marker = "%s on owner's word" % now().date().isoformat()
     plans, left = [], []
     for rel in walk_tree(tree):
@@ -2489,14 +2886,39 @@ def cmd_erase(tree, args):
     for rel, members in tars:
         for name, action in members:
             print("tar    %s: %s %s" % (rel, "drop" if action == "drop" else "redact", name))
-    # Only a JSON key names the subject there (a field name, a nested key): nothing is erased.
+    # What names the subject and stays: a JSON key (a field name, a nested key), a rules file's name.
     for place in left:
-        print("left behind: %s (key)" % place)
+        print("left behind: %s" % place)
     for path in glob_home_backups():
         if tar_plan(path, needle, marker)[0]:
             print("outside the tree, not changed (erase it by hand): %s" % path)
+    for path in glob_home_backups(".sha256"):  # its path lines name the files the tar holds
+        try:
+            with open(path, "rb") as handle:
+                named = needle.search(handle.read().decode("utf-8", "replace"))
+        except (IOError, OSError):
+            named = None
+        if named:
+            print("left behind outside the tree: %s" % path)
+    if args.confirm is None and len(needle.words) > 1:
+        print("searched in this word order and reversed" if len(needle.words) == 2 else "searched in this word order only")
     if not plans and not tars:
-        print("nothing to erase: only a JSON key names that subject" if left else "nothing in the tree names that subject")
+        if left and all(place.endswith(" (key)") for place in left):
+            message = "nothing to erase: only a JSON key names that subject"
+        else:
+            message = ("nothing to erase: only what is listed as left behind names that subject" if left
+                       else "nothing in the tree names that subject")
+        if args.confirm is None:
+            print(message)
+            print("--confirm 0 records the subject in .meta/erased (a keyed hash, never the name), so that "
+                  "mem migrate skips it")
+            return 0
+        # Nothing to change, but a migrate from sources that still name the subject must skip it:
+        # any --confirm writes the record (once), whatever is left behind.
+        erase_id = os.urandom(4).hex()
+        if erase_record(tree, erase_id, subject):
+            log(tree, "erase on the owner's word: erase id %s; nothing in the tree, recorded for migrate" % erase_id)
+        print("%s; recorded so that mem migrate skips it" % message)
         return 0
     count = sum(len(where) for _, _, _, _, where in plans) + sum(len(members) for _, members in tars)
     if args.confirm is None:
@@ -2504,6 +2926,10 @@ def cmd_erase(tree, args):
         return 0
     if args.confirm != count:
         raise Refused("--confirm %d, but the listing has %d items; read it again and confirm that count" % (args.confirm, count))
+    # A random id in drain.log, never a hash of the subject. The keyed hash in .meta/erased is
+    # written first: a crash halfway still keeps a later migrate from bringing the subject back.
+    erase_id = os.urandom(4).hex()
+    erase_record(tree, erase_id, subject)
     files = lines = entries = 0
     for rel, data, action, new, where in plans:
         if action == "drop":
@@ -2517,13 +2943,17 @@ def cmd_erase(tree, args):
             lines += len(where)
     for rel, _ in tars:
         rebuild_tar(tree, rel, needle, marker)
-    # A random id, never a hash of the subject: a hash would let anyone who guesses the name link it.
-    erase_id = os.urandom(4).hex()
     log(tree, "erase on the owner's word: erase id %s; %d files removed, %d lines and %d state entries erased, %d backups rebuilt"
         % (erase_id, files, lines, entries, len(tars)))
-    run_check(tree, now())
+    found = [line for line in run_check(tree, now())[2] if line.startswith(("PROBLEM", "WARN"))]
     print("erased: %d files, %d lines, %d state entries; %d backups rebuilt (erase id %s in .meta/drain.log)"
           % (files, lines, entries, len(tars), erase_id))
+    print("the migration sources are not changed: mem migrate skips a row that names this subject "
+          "(erased earlier: skipped)")
+    if found:  # what the erase left for the owner to look at (a rule whose authority is gone, say)
+        print("mem check after the erase:")
+        for line in found:
+            print(line)
     return 0
 
 
@@ -2541,18 +2971,18 @@ def walk_tree(tree):
 
 
 def tar_plan(path, needle, marker):
-    """([(member name, action)] for the members of one tar that name the subject, [the members
-    only a JSON key names it in])."""
+    """([(member, action)] for the members of one tar that name the subject (a dropped member
+    with why it goes), [what names it there and stays, with its kind])."""
     out, left = [], []
     try:
         with tarfile.open(path) as tar:
             for member in tar.getmembers():
                 if not member.isfile() or erase_skips(member.name):  # a folder name never matches
                     continue
-                action, _, _, keys = erase_plan(member.name, tar.extractfile(member).read(), needle, marker)
+                action, _, where, keys = erase_plan(member.name, tar.extractfile(member).read(), needle, marker)
                 left.extend(keys)
                 if action:
-                    out.append((member.name, action))
+                    out.append((where[0] if action == "drop" else member.name, action))
     except (IOError, OSError, tarfile.TarError):
         return [], []
     return out, left
@@ -2575,14 +3005,14 @@ def rebuild_tar(tree, rel, needle, marker):
             new.addfile(member, io.BytesIO(data))
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
-    log(tree, "backup %s sha256=%s basis=%s (rebuilt by erase)" % (rel, sha256(tree.read(rel)), bases.get(os.path.basename(rel), ROUTINE_BASIS)))
+    log(tree, "backup %s sha256=%s basis=%s (rebuilt by erase)" % (rel, sha256(tree.read(rel)), bases.get(os.path.basename(rel), UNKNOWN_BASIS)))
 
 
-def glob_home_backups():
+def glob_home_backups(suffix=".tar"):
     folder = os.path.join(os.path.expanduser("~"), ".wolfmux", "backups")
     if not os.path.isdir(folder):
         return []
-    return [os.path.join(folder, n) for n in os.listdir(folder) if n.startswith("memory-pre-migration-") and n.endswith(".tar")]
+    return sorted(os.path.join(folder, n) for n in os.listdir(folder) if n.startswith("memory-pre-migration-") and n.endswith(suffix))
 
 
 # --- migrate --------------------------------------------------------------------------------
@@ -2703,10 +3133,13 @@ def plan_row(tree, row, line, ctx):
             path = item["source_path"]
             item.update(kind="region", status="pointer", bytes_in=0, dest=dest_file)
             item["content"] = region_content(tree, row, dest_file, ctx, pointer=path)
-            if tree.has(dest_file):
-                if Entry(tree, dest_file).get("pointer") != path:
-                    raise Refused("dest %s exists and points elsewhere" % dest_file)
-                item.update(status="exists", reason="already migrated")
+            # A dest that drain archived since an earlier run is placed: never placed again.
+            placed = dest_file if tree.has(dest_file) else archived_at(tree, dest_file)
+            if placed:
+                if Entry(tree, placed).get("pointer") != path:
+                    raise Refused("dest %s exists%s and points elsewhere" % (dest_file, "" if placed == dest_file else " (archived as %s)" % placed))
+                item.update(status="exists", reason="already migrated" if placed == dest_file else "placed earlier, archived (now %s)" % placed)
+                item["placed_at"] = placed
             return item
         if top in REGIONS:
             item.update(kind="region", status="copy")
@@ -2726,16 +3159,32 @@ def plan_row(tree, row, line, ctx):
                 if still_open or fences % 2:
                     raise Refused("the payload leaves a code fence open (%d fence lines): it would swallow the "
                                   "decisions after it; close the fence in the source, or set action skip" % fences)
+                text, damaged = as_written(payload), []
+                decision_blocks(text, damaged)
+                if damaged:
+                    raise Refused("the payload's decision at %s does not match its bytes: count: it would swallow the "
+                                  "decisions after it; fix bytes: in the source, or set action skip" % ", ".join(damaged))
+                # A decide block appended after the payload must keep its anchor.
+                probe = "\n## 9999-12-31T23:59Z\nslug: probe\nsource: chat\nbytes: 2\n```\nx\n```\n"
+                blocks = decision_blocks(text + ("" if text.endswith("\n") else "\n") + probe)
+                if not blocks or blocks[-1][0] != "9999-12-31T23:59Z":
+                    raise Refused("a decision appended after the payload would lose its anchor; fix the payload's "
+                                  "fences in the source, or set action skip")
             item.update(kind="ledger", status="copy", append=payload)
             ledger_held(tree, item, ctx, dest_file)
         else:
             raise Refused("dest %s is not in a region, archive/, ledger/ or state/" % dest_file)
-        if item["kind"] in ("region", "archive") and tree.has(dest_file):
-            current = tree.read(dest_file)
+        placed = None
+        if item["kind"] in ("region", "archive"):
+            placed = dest_file if tree.has(dest_file) else (archived_at(tree, dest_file) if item["kind"] == "region" else None)
+        if placed:
+            current = tree.read(placed)
+            where = "" if placed == dest_file else " (archived as %s)" % placed
             if current == item["content"] or (item["kind"] == "region" and split_header(current)[1] == payload):
-                item.update(status="exists", reason="already migrated")
+                item.update(status="exists", reason="already migrated" if not where else "placed earlier, archived (now %s)" % placed)
+                item["placed_at"] = placed
             else:
-                raise Refused("dest %s exists with other content" % dest_file)
+                raise Refused("dest %s exists%s with other content" % (dest_file, where))
         item["dest"] = dest_file
     except (Refused, ValueError, IOError, OSError) as error:
         item.update(status="refused", reason=str(error))
@@ -2759,12 +3208,21 @@ def line_count(text, payload):
 def ledger_held(tree, item, ctx, dest_file, pattern=None):
     """A ledger row whose payload the ledger already holds as whole lines (from an earlier run,
     or an earlier row of this one) is 'exists': a re-run appends nothing and the payload stays
-    once. A payload that is only part of a longer line is not held."""
+    once. A payload that is only part of a longer line is not held. The month's archived copy
+    counts too (drain rule 2 moves an old month to archive/<m>/ledger/ and appends any later
+    copy there): a re-run after a drain appends nothing."""
     current = tree.read_or_none(dest_file) or b""
     for chunk in ctx["appends"].get(dest_file, []):  # as append_file will write them
         current += (b"\n" if current and not current.endswith(b"\n") else b"") + chunk
-    if (pattern.search(current) if pattern is not None else line_count(current, item["append"])):
+    archived_rel = "archive/%s/ledger/%s" % (LEDGER_FILE.match(os.path.basename(dest_file)).group(2), os.path.basename(dest_file))
+    archived = tree.read_or_none(archived_rel) or b""
+
+    def held(text):
+        return pattern.search(text) if pattern is not None else line_count(text, item["append"])
+    if held(current):
         item.update(status="exists", reason="already in the ledger")
+    elif archived and held(archived):
+        item.update(status="exists", reason="placed earlier, archived (in %s)" % archived_rel)
     elif item["status"] == "copy":
         ctx["appends"].setdefault(dest_file, []).append(item["append"])
 
@@ -2988,18 +3446,20 @@ def verify(tree, items, dry):
             if item["check"].startswith("MISMATCH"):
                 failures.append(item)
             continue
+        # A dest drain has archived since an earlier run is looked for where it is now.
+        place = item.get("placed_at", item["dest"])
         if problem:
             item["check"] = "MISMATCH: %s" % problem
         elif item["action"].strip() == "pointer":
-            entry = Entry(tree, item["dest"])
+            entry = Entry(tree, place)
             item["check"] = "pointer ok" if entry.get("pointer") == item["source_path"] else "MISSING"
         elif item["kind"] == "region" and item["payload"] == b"":
             # An empty body (a source that was all frontmatter) is not unique to anything: look at the dest.
-            placed = tree.read_or_none(item["dest"])
+            placed = tree.read_or_none(place)
             item["check"] = "found at the dest (an empty body)" if placed is not None and split_header(placed)[1] == b"" else "MISSING"
         elif item["kind"] in ("region", "archive"):
             found = shas.get(item["sha"], [])
-            if item["dest"] in found and len(found) == sharing[item["sha"]]:
+            if place in found and len(found) == sharing[item["sha"]]:
                 item["check"] = "found once" if len(found) == 1 else "found once at its dest (%d rows place this body)" % len(found)
             else:
                 item["check"] = "found %d times: %s" % (len(found), ", ".join(found) or "-")
@@ -3022,7 +3482,31 @@ def verify(tree, items, dry):
     return failures
 
 
+def skip_erased(tree, items, ctx):
+    """A row that names an erased subject (the .meta/erased record), in its source, dest, payload
+    or the header mem would write, is skipped: "erased earlier: skipped", its source and dest not
+    shown (the report is written into the tree), its source left out of the pre-migration tar.
+    So a re-run from the untouched source never brings back what erase took."""
+    ctx["erased"] = erased_subjects(tree)
+    ctx["left_out"], ctx["erased_paths"] = 0, set()
+    key, erased = ctx["erased"]
+    if not erased:
+        return
+    for item in items:
+        parts = [item["source"], item["dest"], item["reason"]]
+        parts.extend(item[k].decode("utf-8", "replace") for k in ("content", "append", "payload") if item.get(k))
+        if not names_erased(key, erased, "\n".join(parts)):
+            continue
+        item.update(status="skip", reason="erased earlier: skipped", source="(not shown)", dest="(not shown)", sha="")
+        item.pop("raw_sha", None)
+        if item.get("source_path"):
+            ctx["erased_paths"].add(os.path.realpath(item["source_path"]))
+
+
 def pre_migration_tar(ctx, when):
+    """The --from, --rules-from and claude-mem folders and the --state file as they were, with a
+    .sha256 list beside it. A file that names an erased subject (its path or its text) stays out."""
+    key, erased = ctx.get("erased") or (None, {})
     folder = os.path.join(os.path.expanduser("~"), ".wolfmux", "backups")
     if not os.path.isdir(folder):
         os.makedirs(folder, 0o700)
@@ -3044,15 +3528,24 @@ def pre_migration_tar(ctx, when):
                     full = os.path.join(current, name)
                     if os.path.realpath(full) in ctx["exclude"] or not os.path.isfile(full):
                         continue
+                    with open(full, "rb") as handle:
+                        data = handle.read()
+                    if os.path.realpath(full) in ctx["erased_paths"] or (erased and names_erased(
+                            key, erased, os.path.relpath(full, base) + "\n" + data.decode("utf-8", "replace"))):
+                        ctx["left_out"] += 1
+                        continue
                     arc = "%s/%s" % (label, os.path.relpath(full, base))
                     tar.add(full, arcname=arc, recursive=False)
-                    with open(full, "rb") as handle:
-                        sums.append("%s  %s" % (sha256(handle.read()), arc))
+                    sums.append("%s  %s" % (sha256(data), arc))
         if ctx["state_path"]:
-            arc = "state/%s" % os.path.basename(ctx["state_path"])
-            tar.add(ctx["state_path"], arcname=arc, recursive=False)
             with open(ctx["state_path"], "rb") as handle:
-                sums.append("%s  %s" % (sha256(handle.read()), arc))
+                data = handle.read()
+            if erased and names_erased(key, erased, data.decode("utf-8", "replace")):
+                ctx["left_out"] += 1
+            else:
+                arc = "state/%s" % os.path.basename(ctx["state_path"])
+                tar.add(ctx["state_path"], arcname=arc, recursive=False)
+                sums.append("%s  %s" % (sha256(data), arc))
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     with open(path, "rb") as handle:
@@ -3107,11 +3600,15 @@ def cmd_migrate(tree, args):
     ctx = {"from": source, "rules": rules, "claude_mem": claude_mem, "claude_mem_used": False, "state": state,
            "state_path": state_path, "when": when, "exclude": set(), "dests": {}, "appends": {}}
     items = [plan_row(tree, row, number, ctx) for number, row in enumerate(rows, 2)]
+    skip_erased(tree, items, ctx)
     out = []
     if not args.dry_run:
         backup_rel, _ = do_backup(tree, "migration rollback; delete 7 days after the restart test on the owner's word", when)
         tar_path, sums = pre_migration_tar(ctx, when)
         out.append("rollback: %s, and %s (sha256 list %s)" % (backup_rel, tar_path, sums))
+        if ctx["left_out"]:
+            out.append("left out of the pre-migration tar: %d source file%s that name%s an erased subject" % (
+                ctx["left_out"], "" if ctx["left_out"] == 1 else "s", "s" if ctx["left_out"] == 1 else ""))
         for item in items:
             if item["status"] in ("copy", "pointer"):
                 try:
@@ -3225,7 +3722,7 @@ def cmd_status(tree, args):
     print("open asks: %d; crons: %d" % (len(open_asks(tree)), len(load_state(tree, "crons")[0])))
     tars = sorted(r for r in tree.files(".meta/backups") if r.endswith(".tar"))
     bases = backup_bases(tree)
-    kept = [r for r in tars if bases.get(os.path.basename(r), ROUTINE_BASIS) != ROUTINE_BASIS]
+    kept = [r for r in tars if bases.get(os.path.basename(r), UNKNOWN_BASIS) != ROUTINE_BASIS]
     print("last backup: %s%s" % (tars[-1] if tars else "none", "; kept on their own basis: %s" % ", ".join(kept) if kept else ""))
     match = re.match(r"^# Memory \(checked (\S+) by mem check", index.decode("utf-8", "replace"))
     print("last check: %s" % (match.group(1) if match else "never"))
@@ -3354,10 +3851,13 @@ def main(argv):
             sys.stderr.write("mem: two different --root folders (%s and %s)\n" % (root, after))
             return EXIT_USAGE
         root = after
+    explicit = root is not None
     root = root or os.path.realpath(os.path.expanduser(os.environ.get("MEM_ROOT") or default_root()))
     tree = Tree(root)
     try:
         if args.command not in READERS:
+            if not explicit and SHIPPED in root + os.sep:
+                raise Refused("%s: this is the shipped skeleton; pass --root to use it" % root)
             if args.command == "init":
                 refuse_wide_root(root)
                 refuse_foreign_root(root)
@@ -3371,7 +3871,7 @@ def main(argv):
         return COMMANDS[args.command](tree, args)
     except Refused as error:
         sys.stderr.write("mem: %s\n" % error)
-        return EXIT_REFUSED
+        return error.code
 
 
 if __name__ == "__main__":

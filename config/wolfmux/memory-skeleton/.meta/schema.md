@@ -28,6 +28,8 @@ Keep it current when the format changes.
   .meta/drain.log            what moved when and why; retention basis per backup
   .meta/backups/             tars before each drain and migration, mode 600, kept 7 days
   .meta/jev/                 request/response JSON of every Jev call (audit)
+  .meta/erased               one line per erase: time, erase id, word count, keyed hash
+  .meta/erase-key            32 random bytes, the key of those hashes (made by the first erase)
 ```
 
 Also under `.meta/`: `lock` (the one writer lock; `boot` never waits for it and, while another
@@ -40,7 +42,9 @@ Which tree mem works on: `--root <dir>` (before the command or after it; two dif
 are a usage error), else `$MEM_ROOT`, else the folder above `bin/mem`. When `bin/mem` is a link
 and the folder above the link holds `.meta/`, that folder is the tree (a link into a repo's
 skeleton never writes the repo); otherwise (a link at `~/.local/bin/mem`) it is the folder
-above the real script.
+above the real script. A writer (every command but recall, status and help) refuses a tree
+whose path holds `/memory-skeleton/`, the repo's shipped copy: "this is the shipped skeleton;
+pass --root to use it". Only `--root` naming it lets a writer in; `$MEM_ROOT` does not.
 
 ## File header (every file in rules/ people/ teams/ topics/)
 
@@ -135,11 +139,19 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
   `## migrated state:<key> at <UTC minute>`, then the value pretty-printed in a ```` ```json ````
   fence. A re-run finds the same block (whatever its minute) and appends nothing.
 - In the decisions ledger, the fence `decide` writes (the line after `bytes: N`) holds exactly
-  N bytes of quote: a `## <time>` or `slug:` line inside them never starts a block. Any other
-  open fence (a stray one, or a decide fence whose closing fence is not where `bytes:` says)
-  ends at the next `## <time>` line that is followed by a `slug:` line, so it never swallows
-  the decisions after it. `mem check` WARNs once per block whose `bytes:` count does not
-  match, naming its time. `mem migrate` refuses a decisions payload that leaves a fence open.
+  N bytes of quote: a `## <time>` or `slug:` line inside them never starts a block. N is
+  trusted only when the line those N bytes reach (N + 1 for a quote without a final newline)
+  really is a closing fence. Any other open fence (a stray one, or a decide fence whose N is
+  too small or too large) ends at its closing fence or at the next `## <time>` line that is
+  followed by a `slug:` line, so it never swallows the decisions after it. `mem check` WARNs
+  once per block whose `bytes:` count does not match, naming its time. `mem erase` counts
+  `bytes:` again for every quote it edits. `mem decide` refuses (exit 64, "anchor taken") an
+  anchor whose `## <anchor>` line sits outside every quote but starts no block (a damaged
+  block holds it). `mem migrate` refuses a decisions payload that leaves a fence open, holds a
+  damaged block, or would cost a decide block appended after it its anchor. N counts the
+  quote's bytes as written, invalid UTF-8 included, and every reader counts them the same way
+  (a byte that is not UTF-8 is one byte), so such a byte never shortens a quote into a fake
+  block.
 - `mem ask close` takes any id of `[A-Za-z0-9._-]` (migrated asks keep theirs); `mem ask
   open` still needs a slug.
 
@@ -147,7 +159,18 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
 
 - `archive/index.md`: `- <date> <where it is now> from <where it was>: <reason>`.
 - `archive/YYYY-MM/<region>/<file>`, `archive/YYYY-MM/ledger/<file>`. A ledger month that is
-  archived again is appended to the archived copy.
+  archived again is appended to the archived copy without its head (`# Sends <month>` and the
+  line after it), so the archived month holds one head. A live month whose text (head aside)
+  is already in its archived copy in full is never appended again: drain removes the live
+  file and says `remove <file>: already archived (half move finished) in <archived path>`.
+- `unarchive` drops every index line for the file, not only the last: a month archived twice
+  has two.
+- Every move writes the new place first and removes the old one after (drain's archive of a
+  file or a ledger month, rule 3's sweep lines, unarchive): a crash between the two leaves
+  the data in both places, never in neither. `mem check` WARNs about each such half move: a
+  ledger month whose whole text is already in its archived copy ("a month present in both
+  places: run drain to finish the move"), sweep lines both live and archived, an index line
+  for a file that is live again while its archived path is gone.
 
 ## .meta/drain.log
 
@@ -162,7 +185,9 @@ and failures), `unarchive <from> -> <to>`, `erase on the owner's word: erase id 
 
 `.meta/backups/<YYYYMMDDTHHMMSSZ>[-n].tar`, mode 600, the tree minus `.meta/backups` and the
 lock. The routine basis is `kept 7 days`: only those are pruned, after 7 days. Any other basis
-(the migration rollback tar says "on the owner's word") is never pruned automatically.
+(the migration rollback tar says "on the owner's word") is never pruned automatically. A tar
+with no `basis=` line in drain.log (lost or unreadable) is kept too, never taken as routine;
+when erase rebuilds such a tar it logs `basis=unknown (no log line; kept)`.
 
 ## Jev (drain rule 4)
 
@@ -173,7 +198,9 @@ split on `-`), or holds such a part of 3 or more letters (`danasmith`), is repla
 `person`, accents folded first (`Renée` is `renee`). `.meta/jev/<UTC>-<slug>.json` keeps what was sent and
 what came back: `time, url, attempts, status, error, sent, response`, and `local` (`{"file":
 "<region>/<name>.md"}`, the real path, which never left the machine). Any error, or an answer of the wrong shape: the candidate goes to
-`.meta/digest-pending.md`; nothing moves. Errors are logged by type name only.
+`.meta/digest-pending.md`; nothing moves. Errors are logged by type name only. The request
+never goes through a proxy: `HTTPS_PROXY`, `ALL_PROXY` and the like are ignored, as a proxy
+would see the key. A `MEM_JEV_URL` that is not a URL is one more such error (`ValueError`).
 
 The key: `MEM_JEV_KEY`, else the Keychain item `typesafe-api-key`, which is sent only to the
 default URL `https://api.typesafe.ai/v1/systemone` (a custom `MEM_JEV_URL` needs
@@ -183,8 +210,19 @@ backup pruning is skipped unless `MEM_TEST=1`.
 
 ## Erase (mem erase, on the owner's word)
 
-The subject matches as a whole word, case folded (`tom` finds `Tom`, not `tomorrow` or
-`custom`). A path matches on its file stem only, never a folder name or an extension, and
+The subject matches as a whole word (`tom` finds `Tom`, not `tomorrow` or `custom`). Both
+sides are normalised the same way: NFC, then the accent fold Jev masking uses, lower case
+(`José`, its decomposed form and `Jose` are one name), and the subject's words match across
+any run of space, `-`, `_` or `.` (`Tom Smith` finds `people/tom-smith.md` and
+`[[tom-smith]]`). Two words also match reversed, and with a comma between them in either
+order (`Tom Smith` finds `Smith, Tom`; `Smith Tom` finds `tom-smith`); three or more words
+match in their own order only. The listing says which: "searched in this word order and
+reversed" or "searched in this word order only". The erase record matches the same way, so a
+migrate skips `Smith, Tom` too. A one- or two-letter name is erased as part of a two-word
+subject (`Ed Chen`), as a subject needs 3 letters and digits. A subject under 3 letters and digits, or a literal once normalised (`true`,
+`false`, `null`, `none`, `nan`, `inf`, `infinity` in any case, or a number such as `12`,
+`-2.5` or `1_000`), is refused with exit 64. Only a JSON string can name the subject: a `true`
+value is never the text `True`. A path matches on its file stem only, never a folder name or an extension, and
 only for a file erase removes whole (below): mem's own files (drain.log, digest-pending.md,
 shared-folder, migrate reports) are edited line by line, never dropped for their name, and
 the words of their names (drain, digest, pending, folder, migrate, role, jev, log, schema,
@@ -198,16 +236,44 @@ count leaves it out. mem writes every JSON with the characters themselves, never
 The subject needs 3 characters and a letter, and is not a word every tree holds (a header
 field, a folder, a ledger label, a common word). What it does:
 
-- a region or archive file, or a `.meta/jev/` audit file, that names it: removed whole;
+- a people/, teams/ or topics/ file (live or archived), or a `.meta/jev/` audit file, that
+  names it: removed whole; the listing says why, `(stem)` or the first line that names it
+  (cut to 80 characters);
+- a rules file (rules/role.md too, live or archived): edited line by line, never dropped, as
+  each carries an authority. A header line keeps its field (`summary: [erased ...]`); a list
+  field (`links:`, `keywords:`) loses only the items that name the subject and stays a list
+  (no link left is an empty `links:`, no keyword left is `keywords: erased`); the
+  `name:` line and the file name stay and are listed as `left behind: <path> (file name)`;
 - a ledger, index or log line: replaced by `[erased <YYYY-MM-DD> on owner's word]`
   (`{"erased": "<YYYY-MM-DD> on owner's word"}` in a `.jsonl` file);
-- a `backup ... basis=` line in drain.log: never replaced whole; only its basis text becomes
-  the marker, so a tar kept on the owner's word stays non-routine and is never pruned;
+- a `backup ... basis=` line in drain.log: never replaced; the subject is replaced inside its
+  basis text only and the rest of the basis stays, so a tar kept on the owner's word stays
+  non-routine and is never pruned. A hit elsewhere in the line (its time, tar name or sha256)
+  is listed as `left behind: .meta/drain.log:<n> (backup line)`;
 - a state entry: removed;
 - any other JSON file (a migrated archive copy): each value that names it becomes
-  `[erased <YYYY-MM-DD> on owner's word]`, and the file stays valid JSON;
+  `[erased <YYYY-MM-DD> on owner's word]`, and the file stays valid JSON. A file that is one
+  string has the subject replaced inside the string; a file that is one other scalar (a
+  number, `true`) never names a subject and is never edited;
 - each backup tar under `.meta/backups/`: rebuilt the same way. Pre-migration tars under
-  `~/.wolfmux/backups/` are listed, never changed.
+  `~/.wolfmux/backups/` are listed, never changed; a `.sha256` list beside one whose path
+  lines name the subject is listed as `left behind outside the tree: <path>`.
+
+Erase keeps a record so a later `mem migrate` from the untouched sources does not bring the
+subject back: one line per erase in `.meta/erased`, `<UTC second> erase id <id> words=<k>
+hmac=<hex>`, where the hash is HMAC-SHA256 under `.meta/erase-key` (32 random bytes, mode
+600, made by the first erase, never printed, never sent to Jev, never shown by recall, boot
+or status) of the subject's words: normalised as above (NFC, accent fold, lower case), its
+runs of letters and digits joined by one space. The subject itself is never stored. Anyone
+who can read the tree can test a guessed name against the record, the same as reading the
+tree itself. A tree without the key has nothing to test. The record is written before the
+first edit; erase never edits it, live or in a tar. A subject already recorded is not added
+again. When nothing in the tree names the subject, the listing says so and adds that
+`--confirm 0` records it; `erase <subject> --confirm 0` then writes the record (and the key
+on first use) and prints "nothing in the tree names that subject; recorded so that mem
+migrate skips it", so a first migrate from sources that still name it skips it too. Any
+`--confirm` does the same when only what is left behind names the subject (a rules file
+name, an outside `.sha256` list): the record is written once.
 
 `.meta/schema.md` and `bin/` ship with mem and are never edited, live or in a tar.
 Without `--confirm` it lists every item and the count; `--confirm <count>` erases only when
@@ -251,6 +317,17 @@ Several rows may append to one ledger month; any other dest takes one row. A led
 payload the ledger already holds as whole lines (from a line start to a line end, never part
 of a longer line) is `exists`, so a re-run appends nothing; verification counts it the same
 way, and a state key in the ledger by its whole `## migrated` block, so a short value (`[]`,
-`true`) is never counted where it merely appears. A
+`true`) is never counted where it merely appears. The month's archived copy
+(`archive/<m>/ledger/<file>`, where drain rule 2 moves it) counts as the ledger too, and a
+region or pointer dest that is missing but listed in `archive/index.md` (drain moved it) is
+`exists`, "placed earlier, archived": a re-run after a drain places nothing twice. A
 real run that refused any row writes its report, then exits 1 unless `--allow-refused` is
 given; a dry run exits 0. A re-run in the same second writes `migrate-<UTC>-2.md`.
+
+A row that names an erased subject (`.meta/erased`: any run of k words in its source, dest,
+reason, payload or the header mem would write hashes to a record of k words) is `skip`,
+"erased earlier: skipped", whatever its status was; its source and dest are not shown in
+the report, which is written into the tree. The pre-migration tar leaves out that row's
+source and every source file whose path or text names an erased subject; the report says
+how many. A source file shared with a row that is not skipped (one file mapped twice) is left
+out too: privacy wins over the rollback, and the report counts it.
