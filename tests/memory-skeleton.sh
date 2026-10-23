@@ -1327,6 +1327,35 @@ check "a migrate re-run after a drain appends nothing: the archived ledger month
   '[ -f "$T2/archive/2026-07/ledger/sends-2026-07.md" ] && [ "$RC" -eq 0 ] && printf "%s" "$AGAIN" | grep -q "^line 2 exists  sends-july.md -> ledger/sends-2026-07.md.*: found once: placed earlier, archived (in archive/2026-07/ledger/sends-2026-07.md)$" && printf "%s" "$AGAIN" | grep -q "^line 3 exists  old-topic.md -> topics/old-topic.md.*: found once: placed earlier, archived (now archive/2026-10/topics/old-topic.md)$" && [ ! -e "$T2/ledger/sends-2026-07.md" ] && [ ! -e "$T2/topics/old-topic.md" ] && [ "$(grep -c "a july send" "$T2/archive/2026-07/ledger/sends-2026-07.md")" -eq 1 ] && printf "%s" "$AGAIN" | grep -q "^verification: every source body"'
 check "a frontmatter whose first line is key: value may hold a blank line: it is stripped, its description kept" \
   'python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(not d.endswith(b\"\n---\nBody after a blank-line header.\n\") or b\"\nsource_description: with a blank line\n\" not in d)" "$T/topics/blank-front.md" && printf "%s" "$OUT" | grep -q "^line 3 copy .*(source frontmatter of [0-9]* bytes replaced by the header; its description kept as source_description): found once$"'
+# erase keeps a keyed record, so a migrate re-run from the untouched sources skips what names an
+# erased subject (a hyphenated stem, an accent written as a combining mark, a \u escape in JSON)
+# and leaves those files out of the pre-migration tar.
+SRC4="$WORK/erased-src"
+/bin/mkdir -p "$SRC4"
+printf 'Dana Smith likes blue.\n' >"$SRC4/dana_smith.md"
+printf 'Zinc price is up.\n' >"$SRC4/zinc.md"
+printf 'Ask Jose\314\201 Ruiz.\n' >"$SRC4/notes.md"
+printf '{"who": "Jos\\u00e9 Ruiz"}\n' >"$SRC4/escaped.json"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\ndana_smith.md,file,people/dana-smith.md,people,copy,no,dana-smith,"dana, colours",likes,3,,,,\nzinc.md,file,topics/zinc.md,topics,copy,no,zinc,"zinc, price",zinc price,3,,,,\nnotes.md,file,topics/notes.md,topics,copy,no,notes,"notes, misc",some notes,3,,,,\nescaped.json,file,archive/2026-09/escaped.json,,copy,no,,,,,,,,\n' >"$WORK/map-erased.csv"
+T3="$WORK/migrate-erased"
+fresh "$T3"
+FIRST7="$("$T3/bin/mem" migrate --from "$SRC4" --map "$WORK/map-erased.csv" 2>&1)"
+SUMS7="$(printf '%s\n' "$FIRST7" | sed -n 's/^rollback: .* (sha256 list \(.*\))$/\1/p')"
+LIST7="$("$T3/bin/mem" erase "Dana Smith")"
+check "erase lists the pre-migration .sha256 list whose path lines name the subject as left behind outside the tree" \
+  '[ -n "$SUMS7" ] && grep -q "source/dana_smith.md$" "$SUMS7" && printf "%s\n" "$LIST7" | grep -qxF "left behind outside the tree: $SUMS7"'
+N7="$(printf '%s\n' "$LIST7" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T3/bin/mem" erase "Dana Smith" --confirm "$N7" >/dev/null
+N7="$("$T3/bin/mem" erase "José Ruiz" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T3/bin/mem" erase "José Ruiz" --confirm "$N7" >/dev/null
+check "erase keeps a record: .meta/erase-key is 32 bytes, mode 600; .meta/erased has one line per erase (id, word count, HMAC-SHA256 of the normalised words), never the subject" \
+  '[ "$(wc -c <"$T3/.meta/erase-key" | tr -d " ")" -eq 32 ] && [ "$(mode_of "$T3/.meta/erase-key")" = 600 ] && [ "$(grep -c "^2026-10-23T09:00:00Z erase id [0-9a-f]\{8\} words=2 hmac=[0-9a-f]\{64\}$" "$T3/.meta/erased")" -eq 2 ] && ! grep -qi "dana\|ruiz" "$T3/.meta/erased" && python3 -I -c "import hashlib, hmac, sys; k = open(sys.argv[1], \"rb\").read(); t = open(sys.argv[2]).read(); sys.exit(any(hmac.new(k, w, hashlib.sha256).hexdigest() not in t for w in (b\"dana smith\", b\"jose ruiz\")))" "$T3/.meta/erase-key" "$T3/.meta/erased"'
+AGAIN7="$(MEM_NOW=2026-10-23T10:00Z "$T3/bin/mem" migrate --from "$SRC4" --map "$WORK/map-erased.csv" 2>&1)"; RC=$?
+TAR7="$(printf '%s\n' "$AGAIN7" | sed -n 's/^rollback: .*, and \(.*\.tar\) (sha256 list .*)$/\1/p')"
+check "a migrate re-run from the untouched source skips each row that names an erased subject (stem, combining accent, \\u escape), shows neither its source nor its dest, and places nothing again" \
+  '[ "$RC" -eq 0 ] && [ "$(printf "%s\n" "$AGAIN7" | grep -c "^line [245] skip    (not shown) -> (not shown): erased earlier: skipped$")" -eq 3 ] && printf "%s\n" "$AGAIN7" | grep -q "^line 3 exists  zinc.md -> topics/zinc.md" && [ ! -e "$T3/people/dana-smith.md" ] && [ ! -e "$T3/topics/notes.md" ] && ! grep -rqi "dana\|ruiz" "$T3/people" "$T3/topics" "$T3/archive" "$T3/MEMORY.md" "$T3"/.meta/migrate-*.md'
+check "the re-run's pre-migration tar leaves those sources out and the report says so; its .sha256 list does not name them" \
+  '[ -n "$TAR7" ] && [ "$(tar -tf "$TAR7")" = "source/zinc.md" ] && printf "%s\n" "$AGAIN7" | grep -qx "left out of the pre-migration tar: 3 source files that name an erased subject" && ! grep -qi "dana\|notes\|escaped" "${TAR7%.tar}.sha256"'
 /bin/rm -rf "$HOME/.wolfmux"
 unset MEM_NOW
 

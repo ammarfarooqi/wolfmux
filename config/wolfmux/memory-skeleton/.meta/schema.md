@@ -28,6 +28,8 @@ Keep it current when the format changes.
   .meta/drain.log            what moved when and why; retention basis per backup
   .meta/backups/             tars before each drain and migration, mode 600, kept 7 days
   .meta/jev/                 request/response JSON of every Jev call (audit)
+  .meta/erased               one line per erase: time, erase id, word count, keyed hash
+  .meta/erase-key            32 random bytes, the key of those hashes (made by the first erase)
 ```
 
 Also under `.meta/`: `lock` (the one writer lock; `boot` never waits for it and, while another
@@ -227,7 +229,18 @@ field, a folder, a ledger label, a common word). What it does:
 - any other JSON file (a migrated archive copy): each value that names it becomes
   `[erased <YYYY-MM-DD> on owner's word]`, and the file stays valid JSON;
 - each backup tar under `.meta/backups/`: rebuilt the same way. Pre-migration tars under
-  `~/.wolfmux/backups/` are listed, never changed.
+  `~/.wolfmux/backups/` are listed, never changed; a `.sha256` list beside one whose path
+  lines name the subject is listed as `left behind outside the tree: <path>`.
+
+Erase keeps a record so a later `mem migrate` from the untouched sources does not bring the
+subject back: one line per erase in `.meta/erased`, `<UTC second> erase id <id> words=<k>
+hmac=<hex>`, where the hash is HMAC-SHA256 under `.meta/erase-key` (32 random bytes, mode
+600, made by the first erase, never printed, never sent to Jev, never shown by recall, boot
+or status) of the subject's words: normalised as above (NFC, accent fold, lower case), its
+runs of letters and digits joined by one space. The subject itself is never stored. Anyone
+who can read the tree can test a guessed name against the record, the same as reading the
+tree itself. A tree without the key has nothing to test. The record is written before the
+first edit; erase never edits it, live or in a tar.
 
 `.meta/schema.md` and `bin/` ship with mem and are never edited, live or in a tar.
 Without `--confirm` it lists every item and the count; `--confirm <count>` erases only when
@@ -277,3 +290,10 @@ region or pointer dest that is missing but listed in `archive/index.md` (drain m
 `exists`, "placed earlier, archived": a re-run after a drain places nothing twice. A
 real run that refused any row writes its report, then exits 1 unless `--allow-refused` is
 given; a dry run exits 0. A re-run in the same second writes `migrate-<UTC>-2.md`.
+
+A row that names an erased subject (`.meta/erased`: any run of k words in its source, dest,
+reason, payload or the header mem would write hashes to a record of k words) is `skip`,
+"erased earlier: skipped", whatever its status was; its source and dest are not shown in
+the report, which is written into the tree. The pre-migration tar leaves out that row's
+source and every source file whose path or text names an erased subject; the report says
+how many.

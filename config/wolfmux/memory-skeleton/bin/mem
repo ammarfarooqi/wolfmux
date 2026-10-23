@@ -18,6 +18,7 @@ import argparse
 import csv
 import datetime
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -2648,10 +2649,67 @@ def erase_plan(rel, data, match, marker):
 ERASE_SPEC = (".meta/schema.md",)
 
 
+# What erase keeps so a later migrate can skip an erased subject: a random key and keyed hashes.
+ERASE_RECORD = (".meta/erase-key", ".meta/erased")
+
+
 def erase_skips(rel):
-    return rel in ERASE_SPEC or rel.startswith("bin/")
+    return rel in ERASE_SPEC or rel in ERASE_RECORD or rel.startswith("bin/")
 # MEMORY.md and the card are regenerated once the rest is gone; the lock holds no data.
 ERASE_REGENERATED = ("MEMORY.md", "core/card.md", ".meta/lock")
+
+
+def erase_words(text):
+    """The words of the normalised text (erase_norm): its runs of letters and digits."""
+    return re.findall(r"[^\W_]+", erase_norm(text))
+
+
+def erase_hash(key, words):
+    return hmac.new(key, " ".join(words).encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def erase_record(tree, erase_id, subject):
+    """One .meta/erased line: time, erase id, word count and the HMAC-SHA256 of the subject's
+    words under the tree's key (.meta/erase-key: 32 random bytes, made on first use, never
+    printed). The subject itself is never stored."""
+    key = tree.read_or_none(".meta/erase-key")
+    if not key:
+        key = os.urandom(32)
+        write_file(tree, ".meta/erase-key", key, expect=MISSING)
+    words = erase_words(subject)
+    append_file(tree, ".meta/erased", ("%s erase id %s words=%d hmac=%s\n" % (
+        second(now()), erase_id, len(words), erase_hash(key, words))).encode("utf-8"))
+
+
+def erased_subjects(tree):
+    """(key, {word count: hashes}) from the erase record; (None, {}) for a tree with no key."""
+    key, out = tree.read_or_none(".meta/erase-key"), {}
+    if not key:
+        return None, out
+    for line in (tree.read_or_none(".meta/erased") or b"").decode("utf-8", "replace").split("\n"):
+        found = re.search(r" words=(\d+) hmac=([0-9a-f]{64})$", line)
+        if found:
+            out.setdefault(int(found.group(1)), set()).add(found.group(2))
+    return key, out
+
+
+def names_erased(key, erased, text):
+    """Whether any run of words in text hashes to an erased subject. JSON (the whole text or one
+    line of it) is read decoded as well, so a name written as \\u escapes is found too."""
+    if "\\u" in text:
+        decoded = []
+        for chunk in [text] + text.split("\n"):
+            try:
+                decoded.append(json.dumps(json.loads(chunk), ensure_ascii=False))
+            except ValueError:
+                pass
+        text = "\n".join([text] + decoded)
+    words = erase_words(text)
+    for count, hashes in erased.items():
+        for start in range(len(words) - count + 1):
+            if erase_hash(key, words[start:start + count]) in hashes:
+                return True
+    return False
 
 
 def cmd_erase(tree, args):
@@ -2701,6 +2759,14 @@ def cmd_erase(tree, args):
     for path in glob_home_backups():
         if tar_plan(path, needle, marker)[0]:
             print("outside the tree, not changed (erase it by hand): %s" % path)
+    for path in glob_home_backups(".sha256"):  # its path lines name the files the tar holds
+        try:
+            with open(path, "rb") as handle:
+                named = needle.search(handle.read().decode("utf-8", "replace"))
+        except (IOError, OSError):
+            named = None
+        if named:
+            print("left behind outside the tree: %s" % path)
     if not plans and not tars:
         if left and all(place.endswith(" (key)") for place in left):
             print("nothing to erase: only a JSON key names that subject")
@@ -2714,6 +2780,10 @@ def cmd_erase(tree, args):
         return 0
     if args.confirm != count:
         raise Refused("--confirm %d, but the listing has %d items; read it again and confirm that count" % (args.confirm, count))
+    # A random id in drain.log, never a hash of the subject. The keyed hash in .meta/erased is
+    # written first: a crash halfway still keeps a later migrate from bringing the subject back.
+    erase_id = os.urandom(4).hex()
+    erase_record(tree, erase_id, subject)
     files = lines = entries = 0
     for rel, data, action, new, where in plans:
         if action == "drop":
@@ -2727,13 +2797,13 @@ def cmd_erase(tree, args):
             lines += len(where)
     for rel, _ in tars:
         rebuild_tar(tree, rel, needle, marker)
-    # A random id, never a hash of the subject: a hash would let anyone who guesses the name link it.
-    erase_id = os.urandom(4).hex()
     log(tree, "erase on the owner's word: erase id %s; %d files removed, %d lines and %d state entries erased, %d backups rebuilt"
         % (erase_id, files, lines, entries, len(tars)))
     found = [line for line in run_check(tree, now())[2] if line.startswith(("PROBLEM", "WARN"))]
     print("erased: %d files, %d lines, %d state entries; %d backups rebuilt (erase id %s in .meta/drain.log)"
           % (files, lines, entries, len(tars), erase_id))
+    print("the migration sources are not changed: mem migrate skips a row that names this subject "
+          "(erased earlier: skipped)")
     if found:  # what the erase left for the owner to look at (a rule whose authority is gone, say)
         print("mem check after the erase:")
         for line in found:
@@ -2792,11 +2862,11 @@ def rebuild_tar(tree, rel, needle, marker):
     log(tree, "backup %s sha256=%s basis=%s (rebuilt by erase)" % (rel, sha256(tree.read(rel)), bases.get(os.path.basename(rel), UNKNOWN_BASIS)))
 
 
-def glob_home_backups():
+def glob_home_backups(suffix=".tar"):
     folder = os.path.join(os.path.expanduser("~"), ".wolfmux", "backups")
     if not os.path.isdir(folder):
         return []
-    return [os.path.join(folder, n) for n in os.listdir(folder) if n.startswith("memory-pre-migration-") and n.endswith(".tar")]
+    return sorted(os.path.join(folder, n) for n in os.listdir(folder) if n.startswith("memory-pre-migration-") and n.endswith(suffix))
 
 
 # --- migrate --------------------------------------------------------------------------------
@@ -3266,7 +3336,31 @@ def verify(tree, items, dry):
     return failures
 
 
+def skip_erased(tree, items, ctx):
+    """A row that names an erased subject (the .meta/erased record), in its source, dest, payload
+    or the header mem would write, is skipped: "erased earlier: skipped", its source and dest not
+    shown (the report is written into the tree), its source left out of the pre-migration tar.
+    So a re-run from the untouched source never brings back what erase took."""
+    ctx["erased"] = erased_subjects(tree)
+    ctx["left_out"], ctx["erased_paths"] = 0, set()
+    key, erased = ctx["erased"]
+    if not erased:
+        return
+    for item in items:
+        parts = [item["source"], item["dest"], item["reason"]]
+        parts.extend(item[k].decode("utf-8", "replace") for k in ("content", "append", "payload") if item.get(k))
+        if not names_erased(key, erased, "\n".join(parts)):
+            continue
+        item.update(status="skip", reason="erased earlier: skipped", source="(not shown)", dest="(not shown)", sha="")
+        item.pop("raw_sha", None)
+        if item.get("source_path"):
+            ctx["erased_paths"].add(os.path.realpath(item["source_path"]))
+
+
 def pre_migration_tar(ctx, when):
+    """The --from, --rules-from and claude-mem folders and the --state file as they were, with a
+    .sha256 list beside it. A file that names an erased subject (its path or its text) stays out."""
+    key, erased = ctx.get("erased") or (None, {})
     folder = os.path.join(os.path.expanduser("~"), ".wolfmux", "backups")
     if not os.path.isdir(folder):
         os.makedirs(folder, 0o700)
@@ -3288,15 +3382,24 @@ def pre_migration_tar(ctx, when):
                     full = os.path.join(current, name)
                     if os.path.realpath(full) in ctx["exclude"] or not os.path.isfile(full):
                         continue
+                    with open(full, "rb") as handle:
+                        data = handle.read()
+                    if os.path.realpath(full) in ctx["erased_paths"] or (erased and names_erased(
+                            key, erased, os.path.relpath(full, base) + "\n" + data.decode("utf-8", "replace"))):
+                        ctx["left_out"] += 1
+                        continue
                     arc = "%s/%s" % (label, os.path.relpath(full, base))
                     tar.add(full, arcname=arc, recursive=False)
-                    with open(full, "rb") as handle:
-                        sums.append("%s  %s" % (sha256(handle.read()), arc))
+                    sums.append("%s  %s" % (sha256(data), arc))
         if ctx["state_path"]:
-            arc = "state/%s" % os.path.basename(ctx["state_path"])
-            tar.add(ctx["state_path"], arcname=arc, recursive=False)
             with open(ctx["state_path"], "rb") as handle:
-                sums.append("%s  %s" % (sha256(handle.read()), arc))
+                data = handle.read()
+            if erased and names_erased(key, erased, data.decode("utf-8", "replace")):
+                ctx["left_out"] += 1
+            else:
+                arc = "state/%s" % os.path.basename(ctx["state_path"])
+                tar.add(ctx["state_path"], arcname=arc, recursive=False)
+                sums.append("%s  %s" % (sha256(data), arc))
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     with open(path, "rb") as handle:
@@ -3351,11 +3454,15 @@ def cmd_migrate(tree, args):
     ctx = {"from": source, "rules": rules, "claude_mem": claude_mem, "claude_mem_used": False, "state": state,
            "state_path": state_path, "when": when, "exclude": set(), "dests": {}, "appends": {}}
     items = [plan_row(tree, row, number, ctx) for number, row in enumerate(rows, 2)]
+    skip_erased(tree, items, ctx)
     out = []
     if not args.dry_run:
         backup_rel, _ = do_backup(tree, "migration rollback; delete 7 days after the restart test on the owner's word", when)
         tar_path, sums = pre_migration_tar(ctx, when)
         out.append("rollback: %s, and %s (sha256 list %s)" % (backup_rel, tar_path, sums))
+        if ctx["left_out"]:
+            out.append("left out of the pre-migration tar: %d source file%s that name%s an erased subject" % (
+                ctx["left_out"], "" if ctx["left_out"] == 1 else "s", "s" if ctx["left_out"] == 1 else ""))
         for item in items:
             if item["status"] in ("copy", "pointer"):
                 try:
