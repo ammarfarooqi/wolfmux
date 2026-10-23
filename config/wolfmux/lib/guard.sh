@@ -109,7 +109,9 @@ guard_tokenize() {
 # Beads description may say "tmux" or "git checkout main" or name the lead's checkout;
 # only what the shell would run counts. Heredoc bodies go, then quoted text goes, unless
 # it looks like a path (starts with one of our tokens, /, ~, ./ or ../): `cd "/some dir"`
-# is still a cd. <joiner> (default a space) is what the lines are joined with: ";" keeps
+# is still a cd. A quoted word with no space in it that holds .wolfmux/memory is a path
+# too (`cat "x/.wolfmux/memory/y"`); a sentence that mentions the folder is not.
+# <joiner> (default a space) is what the lines are joined with: ";" keeps
 # one command per line apart for guard_tree_walk.
 guard_strip_prose() {
   local mark=$'\001' joiner="${2:- }"
@@ -124,6 +126,8 @@ guard_strip_prose() {
     sed -E \
       -e 's/"((@[A-Z]+@|~|\.{0,2}\/)[^"]*)"/'"$mark"'\1'"$mark"'/g' \
       -e "s/'((@[A-Z]+@|~|\.{0,2}\/)[^']*)'/$mark\\1$mark/g" \
+      -e 's/"([^"[:space:]]*\.wolfmux\/memory[^"[:space:]]*)"/'"$mark"'\1'"$mark"'/g' \
+      -e "s/'([^'[:space:]]*\\.wolfmux\\/memory[^'[:space:]]*)'/$mark\\1$mark/g" \
       -e 's/"[^"]*"/ /g' \
       -e "s/'[^']*'/ /g" \
       -e "s/$mark/\"/g"

@@ -284,8 +284,33 @@ check "a ~-spelled and a \$HOME-spelled Bash read are denied (~ and \$HOME are e
    [ "$(guard Bash "$(sh "cat \"\${HOME}/hdata/memory/x\"")" "$HOME/hdata")" = deny ]'
 check "  ... the same expansion closes ~/ and \$HOME spellings of teamctl's state" \
   '[ "$(guard Bash "$(sh "cat ~/hdata/state/x.json")" "$HOME/hdata")" = deny ] && [ "$(guard Bash "$(sh "cat \"\$HOME/hdata/state/x.json\"")" "$HOME/hdata")" = deny ]'
-check "any command whose text contains .wolfmux/memory is denied, quoted or not" \
-  '[ "$(guard Bash "$(sh "echo hi; cat x/.wolfmux/memory/y")")" = deny ] && [ "$(guard Bash "$(sh "git commit -m \"see .wolfmux/memory\"")")" = deny ]'
+check "a command that names .wolfmux/memory is denied, quoted or not; prose that only mentions it (a commit message) passes" \
+  '[ "$(guard Bash "$(sh "echo hi; cat x/.wolfmux/memory/y")")" = deny ] && [ "$(guard Bash "$(sh "cat ~/.wolfmux/memory/x")")" = deny ] &&
+   [ "$(guard Bash "$(sh "cat \"x/.wolfmux/memory/y\"")")" = deny ] && [ "$(guard Bash "$(sh "cat '\''~/.wolfmux/memory/x'\''")")" = deny ] &&
+   [ "$(guard Bash "$(sh "git commit -m \"docs: mention .wolfmux/memory\"")")" = allow ] && [ "$(guard Bash "$(sh "bd comment x-1 \"the folder is .wolfmux/memory\"")")" = allow ] &&
+   [ "$(guard Bash "$(printf "cat >notes.md <<EOF\nsee .wolfmux/memory/x\nEOF\n" | jq -Rsc "{command: .}")")" = allow ]'
+pat() { jq -cn --arg p "$1" '{pattern: $p}'; }
+check "letter case and /./ do not slip past: ~/HDATA/MEMORY, \$HOME/HDATA/Memory and ~/hdata/./memory are the folder" \
+  '[ "$(guard Bash "$(sh "cat ~/HDATA/MEMORY/p/t/MEMORY.md")" "$HOME/hdata")" = deny ] && [ "$(guard Read "$(file "$HOME/HDATA/Memory/p/t/MEMORY.md")" "$HOME/hdata")" = deny ] &&
+   [ "$(guard Bash "$(sh "cat ~/hdata/./memory/p/t/MEMORY.md")" "$HOME/hdata")" = deny ] && [ "$(guard Read "$(file "$HOME/hdata/./memory/p/t/MEMORY.md")" "$HOME/hdata")" = deny ]'
+check "an absolute Glob pattern is its own target: one into the folder, and ~/**, are denied" \
+  '[ "$(guard Glob "$(pat "$HOME/hdata/memory/**/*.md")" "$HOME/hdata")" = deny ] && [ "$(guard Glob "$(pat "~/**/*.md")" "$HOME/hdata")" = deny ] &&
+   [ "$(guard Glob "$(pat "$W1/**/*.sh")" "$HOME/hdata")" = allow ]'
+check "a search of a whole tree that holds the folder is denied: grep -r, rg, find, ls -R, du, tar of ~ or of /" \
+  'for c in "grep -r x ~" "grep -rn x ~/hdata/" "rg x ~" "find / -name x" "find ~ -name x" "ls -R ~" "du -sh ~/hdata" "tar czf /tmp/x.tgz ~" "sudo grep -R x \"\$HOME\""; do
+     [ "$(guard Bash "$(sh "$c")" "$HOME/hdata")" = deny ] || { echo "allowed: $c"; exit 1; }; done'
+check "  ... a search of a narrower folder, a plain listing of ~ and the same words in a commit message pass" \
+  'for c in "grep -rn TODO ." "find . -name \"*.sh\"" "ls -la ~" "du -sh ~/Documents" "grep secret ~/notes.txt" "git commit -m \"grep -r x ~\""; do
+     [ "$(guard Bash "$(sh "$c")" "$HOME/hdata")" = allow ] || { echo "denied: $c"; exit 1; }; done'
+TRANSCRIPT="$(transcript_of lead mem)"
+TDIR="$(dirname "$TRANSCRIPT")"
+check "the leads' conversation folder is closed to workers: Read of the mem lead's transcript, Grep of the folder, a Write into it" \
+  '[ "$(guard Read "$(file "$TRANSCRIPT")")" = deny ] && [ "$(guard Grep "$(search "$TDIR")")" = deny ] && [ "$(guard Write "$(file "$TDIR/x.jsonl")")" = deny ]'
+check "  ... and a Grep of a folder that holds it (as ~/.claude holds projects/), and a Bash command that spells it" \
+  '[ "$(guard Grep "$(search "$WOLFMUX_CLAUDE_PROJECTS")")" = deny ] && [ "$(guard Grep "$(search "$WORK")")" = deny ] &&
+   [ "$(guard Bash "$(sh "cat $TDIR/x.jsonl")")" = deny ] && [ "$(guard Bash "$(sh "tail -5 \"$TRANSCRIPT\"")")" = deny ]'
+check "  ... its memory/ (Claude Code's shared project memory) stays open to them" \
+  '[ "$(guard Read "$(file "$TDIR/memory/MEMORY.md")")" = allow ] && [ "$(guard Bash "$(sh "cat $TDIR/memory/MEMORY.md")")" = allow ]'
 check "the honest gap, pinned: a relative path after a cd is not seen (docs/SECURITY.md)" \
   '[ "$(guard Bash "$(sh "cd \"$WOLFMUX_DATA\" && cat memory/x")")" = allow ]'
 check "the worker's own work is untouched by the rule" \
