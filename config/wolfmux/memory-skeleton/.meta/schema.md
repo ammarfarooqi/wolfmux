@@ -178,10 +178,14 @@ only for a file erase removes whole (below): mem's own files (drain.log, digest-
 shared-folder, migrate reports) are edited line by line, never dropped for their name, and
 the words of their names (drain, digest, pending, folder, migrate, role, jev, log, schema,
 card, boot, index) and the singular forms (team, topic, ask, decision, sweep, send, rule,
-person) are refused as subjects. In
-state files and `.jsonl` lines only the values count (and a state file's top-level keys),
-never the field names. The subject needs 3 characters and a letter, and is not a word every
-tree holds (a header field, a folder, a ledger label, a common word). What it does:
+person) are refused as subjects. JSON (a
+`.json` file, each `.jsonl` line) is decoded before it is matched, so a name stored as
+`\uXXXX` escapes is found; values count at any depth, and so do a state object file's
+top-level keys (they name its entries). Any other key (a field name like `free_pct`, a
+nested key) erases nothing: the file is listed once as `left behind: <path> (key)`, and the
+count leaves it out. mem writes every JSON with the characters themselves, never escapes.
+The subject needs 3 characters and a letter, and is not a word every tree holds (a header
+field, a folder, a ledger label, a common word). What it does:
 
 - a region or archive file, or a `.meta/jev/` audit file, that names it: removed whole;
 - a ledger, index or log line: replaced by `[erased <YYYY-MM-DD> on owner's word]`
@@ -189,6 +193,8 @@ tree holds (a header field, a folder, a ledger label, a common word). What it do
 - a `backup ... basis=` line in drain.log: never replaced whole; only its basis text becomes
   the marker, so a tar kept on the owner's word stays non-routine and is never pruned;
 - a state entry: removed;
+- any other JSON file (a migrated archive copy): each value that names it becomes
+  `[erased <YYYY-MM-DD> on owner's word]`, and the file stays valid JSON;
 - each backup tar under `.meta/backups/`: rebuilt the same way. Pre-migration tars under
   `~/.wolfmux/backups/` are listed, never changed.
 

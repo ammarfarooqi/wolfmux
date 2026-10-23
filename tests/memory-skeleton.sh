@@ -40,12 +40,12 @@ check() { # <description> <command string>
 }
 
 MOCK_PID=""
+# MEM_TEST_KEEP=1 keeps $WORK to look at; the Jev mock is stopped either way.
 cleanup() {
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" >/dev/null 2>&1 && wait "$MOCK_PID" 2>/dev/null
-  /bin/rm -rf "$WORK"
+  if [ -n "${MEM_TEST_KEEP:-}" ]; then echo "kept: $WORK"; else /bin/rm -rf "$WORK"; fi
 }
 trap cleanup EXIT
-[ -n "${MEM_TEST_KEEP:-}" ] && trap - EXIT
 
 # fresh <dir>: a copy of the skeleton, initialised, as `teamctl memory enable` makes it.
 fresh() {
@@ -838,8 +838,8 @@ check "erase tom --confirm 1 removes only that file" \
 SUM_BEFORE="$(tree_sum "$T")"
 check "erase dec matches nothing: a path counts by its file stem only, never decisions-YYYY-MM" \
   '"$T/bin/mem" erase dec | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase ledger 2>/dev/null; [ -f "$T/ledger/decisions-2026-10.md" ]'
-check "erase matches state and .jsonl values, never field names: free finds no sweep line" \
-  '"$T/bin/mem" erase free | grep -qx "nothing in the tree names that subject"'
+check "erase matches state and .jsonl values, never field names: free (free_pct) erases nothing and is left behind as a key" \
+  'OUT="$("$T/bin/mem" erase free --confirm 1 2>&1)"; [ $? -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: ledger/sweeps-2026-10.jsonl (key)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 check "erase refuses .md, a header field, a folder name and a bare number, and changes nothing" \
   '! "$T/bin/mem" erase .md && ! "$T/bin/mem" erase summary && ! "$T/bin/mem" erase topics && ! "$T/bin/mem" erase 2026 && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 printf 'Ask danasmith on call.\n' >>"$T/topics/later.md"
@@ -865,6 +865,63 @@ check "a subject that is only the stem of a .meta file takes nothing: digest-pen
   '"$T/bin/mem" erase digest-pending | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase shared-folder | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase migrate-20261001T000000Z | grep -qx "nothing in the tree names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 check "drain.log keeps every backup basis= line, so the owner's-word tar stays non-routine" \
   '[ "$(grep -c " backup .meta/backups/[0-9TZ]*\.tar sha256=[0-9a-f]* basis=" "$T/.meta/drain.log")" -eq 2 ] && grep -q "basis=migration rollback; kept on the owner.s word$" "$T/.meta/drain.log"'
+# JSON is decoded before erase matches it: names written as \u escapes (json.dumps without
+# ensure_ascii=False, as migrated files are), and keys at any depth (left behind, never erased).
+T="$WORK/erase-json"
+fresh "$T"
+python3 -I - "$T" <<'EOF'
+import json, os, sys
+t = sys.argv[1]
+def put(rel, text):
+    path = os.path.join(t, rel)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    with open(path, "w") as out:
+        out.write(text)
+    os.chmod(path, 0o600)
+put("state/open-asks.json", json.dumps([{"id": "q1", "who": "José Ruiz", "what": "the logo", "status": "open"},
+                                        {"id": "q2", "who": "sam", "what": "zinc", "status": "open"}], indent=2) + "\n")
+put("state/watches.json", json.dumps([{"id": "pr-12", "reviewers": {"zed": "approved"}}], indent=2) + "\n")
+put("archive/2026-08/ledger/sweeps-2026-08.jsonl", "".join(json.dumps(r) + "\n" for r in (
+    {"time": "2026-08-01T09:00Z", "note": {"on_call": ["José Ruiz"]}}, {"time": "2026-08-02T09:00Z", "zed": 1},
+    {"time": "2026-08-03T09:00Z", "inboxes": 2})))
+put(".meta/jev/20261001T000000Z-x.json", json.dumps({"local": {"file": "topics/x.md"}, "note": "José Ruiz"}, indent=2) + "\n")
+put("archive/state/comms-state.json", json.dumps({"contacts": {"c1": {"name": "José Ruiz", "tz": "UTC"}}, "other": "kept"}, indent=2) + "\n")
+EOF
+check "the escaped names are on disk as \\u00e9 (the shape erase used to miss)" \
+  'grep -q "Jos\\\\u00e9 Ruiz" "$T/state/open-asks.json" && ! grep -rq "José" "$T/state" "$T/archive" "$T/.meta/jev"'
+SUM_BEFORE="$(tree_sum "$T")"
+OUT="$("$T/bin/mem" erase zed --confirm 1 2>&1)"; RC=$?
+check "a subject that only a JSON key names (nested in state, a field in a .jsonl line) erases nothing; each file is left behind once" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: state/watches.json (key)" && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-08/ledger/sweeps-2026-08.jsonl (key)" && [ "$(printf "%s\n" "$OUT" | grep -c "^left behind: ")" -eq 2 ] && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+"$T/bin/mem" backup >/dev/null
+LIST="$("$T/bin/mem" erase "José Ruiz")"
+check "erase finds an escaped name in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \
+  'printf "%s\n" "$LIST" | grep -qx "state  state/open-asks.json#q1" && printf "%s\n" "$LIST" | grep -qx "line   archive/2026-08/ledger/sweeps-2026-08.jsonl:1" && printf "%s\n" "$LIST" | grep -qx "file   .meta/jev/20261001T000000Z-x.json" && printf "%s\n" "$LIST" | grep -qx "line   archive/state/comms-state.json (1 JSON value)" && [ "$(printf "%s\n" "$LIST" | grep -c "^tar    .meta/backups/.*: \(redact\|drop\) ")" -eq 4 ] && printf "%s\n" "$LIST" | grep -q "^tar    .meta/backups/.*: redact state/open-asks.json$" && printf "%s\n" "$LIST" | grep -q "^8 items; run again with --confirm 8"'
+"$T/bin/mem" erase "José Ruiz" --confirm 8 >/dev/null
+check "after it, no file and no tar member names him, decoded or raw; the other entries, lines and values stay, and JSON stays JSON" \
+  'python3 -I - "$T" <<'"'"'EOF'"'"'
+import json, os, sys, tarfile
+t = sys.argv[1]
+texts = []
+for folder, dirs, names in os.walk(t):
+    for name in names:
+        path = os.path.join(folder, name)
+        data = open(path, "rb").read()
+        if name.endswith(".tar"):
+            with tarfile.open(path) as tar:
+                texts.extend(tar.extractfile(m).read() for m in tar.getmembers() if m.isfile() and not m.name.startswith("bin/"))
+        elif "/bin/" not in path:
+            texts.append(data)
+decoded = [x.decode("utf-8", "replace").encode().decode("unicode_escape", "replace").lower() for x in texts]
+asks = json.load(open(t + "/state/open-asks.json"))
+sweeps = open(t + "/archive/2026-08/ledger/sweeps-2026-08.jsonl").read().splitlines()
+state = json.load(open(t + "/archive/state/comms-state.json"))
+marker = "2026-10-23 on owner" + chr(39) + "s word"
+sys.exit(not (not any("ruiz" in x for x in decoded) and [a["id"] for a in asks] == ["q2"]
+              and json.loads(sweeps[0]) == {"erased": marker} and json.loads(sweeps[1])["zed"] == 1 and len(sweeps) == 3
+              and not os.path.exists(t + "/.meta/jev/20261001T000000Z-x.json")
+              and state == {"contacts": {"c1": {"name": "[erased %s]" % marker, "tz": "UTC"}}, "other": "kept"}))
+EOF'
 /bin/rm -rf "$HOME/.wolfmux"
 T="$WORK/purge"
 fresh "$T"

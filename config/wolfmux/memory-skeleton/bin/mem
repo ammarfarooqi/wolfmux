@@ -1807,7 +1807,7 @@ def cmd_sweep_log(tree, args):
     when = now()
     record = {"time": minute(when), "inboxes": args.inboxes, "asks_touched": args.asks_touched,
               "free_pct": args.free_pct, "swap_gb": args.swap_gb, "load": args.load}
-    ledger_append(tree, "sweeps", month_of(when), (json.dumps(record, sort_keys=True) + "\n").encode("utf-8"))
+    ledger_append(tree, "sweeps", month_of(when), (json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
     print("sweep logged %s" % record["time"])
     return 0
 
@@ -1937,7 +1937,7 @@ def sweep_summaries(lines):
                    "inboxes_max": max(values("inboxes") or [0]), "asks_touched": sum(values("asks_touched")),
                    "free_pct_min": min(values("free_pct") or [0]), "swap_gb_max": max(values("swap_gb") or [0]),
                    "load_max": max(values("load") or [0])}
-        out.append(json.dumps(summary, sort_keys=True))
+        out.append(json.dumps(summary, sort_keys=True, ensure_ascii=False))
     return out
 
 
@@ -2265,33 +2265,55 @@ def erase_matcher(subject):
     return re.compile(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(subject.casefold()))
 
 
-def json_leaves(value):
-    """The scalar values inside a JSON value, keys left out: what erase matches in state and .jsonl."""
+def json_hits(match, value):
+    """(a value names the subject, a key names it), at any depth of a decoded JSON value. Decoded,
+    so a name written as \\u escapes (json.dumps without ensure_ascii=False) is found as well."""
     if isinstance(value, dict):
-        return [leaf for child in value.values() for leaf in json_leaves(child)]
+        found = [json_hits(match, child) for child in value.values()]
+        keyed = any(match.search(str(key).casefold()) for key in value)
+        return any(v for v, _ in found), keyed or any(k for _, k in found)
     if isinstance(value, list):
-        return [leaf for child in value for leaf in json_leaves(child)]
-    return [] if value is None else [str(value)]
+        found = [json_hits(match, child) for child in value]
+        return any(v for v, _ in found), any(k for _, k in found)
+    return value is not None and bool(match.search(str(value).casefold())), False
 
 
-def names_subject(match, value, key=None):
-    return any(match.search(text.casefold()) for text in ([key] if key is not None else []) + json_leaves(value))
+def redact_json(value, match, marker):
+    """(value with every scalar that names the subject replaced by the marker, how many were)."""
+    if isinstance(value, (dict, list)):
+        pairs = value.items() if isinstance(value, dict) else enumerate(value)
+        out, count = ({} if isinstance(value, dict) else []), 0
+        for key, child in pairs:
+            new, n = redact_json(child, match, marker)
+            count += n
+            if isinstance(out, dict):
+                out[key] = new
+            else:
+                out.append(new)
+        return out, count
+    if value is not None and match.search(str(value).casefold()):
+        return "[erased %s]" % marker, 1
+    return value, 0
 
 
 def erase_lines(data, match, marker, jsonl=False, drain_log=False):
-    """(new bytes, numbers of the lines that held the subject). In drain.log a `backup ... basis=`
-    line keeps its shape and only its basis text is erased: a tar kept on the owner's word must
-    keep a basis that is not routine, or the next backup would prune it."""
+    """(new bytes, numbers of the lines that hold the subject, numbers of the lines where only a
+    key names it). A .jsonl line is decoded first and its values count, at any depth; a key (a
+    field name like free_pct) erases nothing and is left behind. In drain.log a `backup ...
+    basis=` line keeps its shape and only its basis text is erased: a tar kept on the owner's
+    word must keep a basis that is not routine, or the next backup would prune it."""
     text = data.decode("utf-8", "replace")
     lines = text.split("\n")
-    hit = []
+    hit, keys = [], []
     for number, line in enumerate(lines):
         named = match.search(line.casefold())
-        if named and jsonl:
+        if jsonl:
             try:
-                named = names_subject(match, json.loads(line))
+                named, keyed = json_hits(match, json.loads(line))
             except ValueError:
-                pass
+                keyed = False
+            if keyed and not named:
+                keys.append(number + 1)
         if not named:
             continue
         hit.append(number + 1)
@@ -2299,57 +2321,72 @@ def erase_lines(data, match, marker, jsonl=False, drain_log=False):
         if backup and not match.search(line[:backup.start(3)].casefold()):
             lines[number] = line[:backup.start(3)] + "[erased %s]" % marker + line[backup.end(3):]
         else:
-            lines[number] = json.dumps({"erased": marker}) if jsonl else "[erased %s]" % marker
-    return "\n".join(lines).encode("utf-8"), hit
+            lines[number] = json.dumps({"erased": marker}, ensure_ascii=False) if jsonl else "[erased %s]" % marker
+    return "\n".join(lines).encode("utf-8"), hit, keys
 
 
 def erase_state(value, match):
-    """(new value, removed ids) for a state file: entries whose values (or top-level key) name the subject go."""
-    removed = []
+    """(new value, removed ids, whether a key alone names the subject somewhere) for a state file.
+    An entry goes when a value inside it names the subject, at any depth, or (in an object file)
+    when its own top-level key does; an entry that only a nested key names stays."""
+    removed, left = [], False
     if isinstance(value, list):
         kept = []
         for item in value:
-            if names_subject(match, item):
+            named, keyed = json_hits(match, item)
+            if named:
                 removed.append(str(item.get("id") or item.get("name") or "?") if isinstance(item, dict) else "?")
             else:
+                left = left or keyed
                 kept.append(item)
-        return kept, removed
+        return kept, removed, left
     kept = {}
     for key in value:
-        if names_subject(match, value[key], key):
+        named, keyed = json_hits(match, value[key])
+        if named or match.search(str(key).casefold()):
             removed.append(key)
         else:
+            left = left or keyed
             kept[key] = value[key]
-    return kept, removed
+    return kept, removed, left
 
 
 def erase_plan(rel, data, match, marker):
-    """What erase does to one file, in the live tree or inside a backup tar:
-    (None | "drop" | "edit", new bytes, [where the subject is]). A path counts by its file
-    stem only, and only for a file erase removes whole: folder names and extensions never
-    match, and `erase drain` never takes .meta/drain.log with it."""
+    """What erase does to one file, in the live tree or inside a backup tar: (None | "drop" |
+    "edit", new bytes, [where the subject is], [the file, when only a JSON key names it]). A
+    path counts by its file stem only, and only for a file erase removes whole: folder names
+    and extensions never match, and `erase drain` never takes .meta/drain.log with it. JSON (a
+    .json file, each .jsonl line) is decoded before it is matched: values and keys at any depth.
+    A hit that is only a key is never erased; it is listed as left behind."""
     whole = whole_file(rel)
     if whole and match.search(os.path.splitext(os.path.basename(rel))[0].casefold()):
-        return "drop", None, [rel]
+        return "drop", None, [rel], []
     text = data.decode("utf-8", "replace")
-    if not match.search(text.casefold()):
-        return None, data, []
-    if whole:
-        return "drop", None, [rel]
-    if rel.split("/")[0] == "state" and rel.endswith(".json"):
+    value = MISSING
+    if rel.endswith(".json"):
         try:
             value = json.loads(text)
         except ValueError:
-            value = None
-        if isinstance(value, (list, dict)):
-            kept, removed = erase_state(value, match)
-            if not removed:
-                return None, data, []
-            return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed]
-    new, hit = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
+            pass
+    named, keyed = json_hits(match, value) if value is not MISSING else (match.search(text.casefold()), False)
+    if isinstance(value, dict) and rel.split("/")[0] == "state":  # an object file's keys name its entries
+        named = named or any(match.search(str(key).casefold()) for key in value)
+    left = [rel] if keyed and not named else []
+    if not named and not rel.endswith(".jsonl"):  # a .jsonl line may hide a name in \u escapes
+        return None, data, [], left
+    if whole:
+        return "drop", None, [rel], []
+    if isinstance(value, (list, dict)) and rel.split("/")[0] == "state":
+        kept, removed, keys = erase_state(value, match)
+        return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed], [rel] if keys else []
+    if isinstance(value, (list, dict)):  # any other JSON: the values are erased in place, the file stays JSON
+        new, count = redact_json(value, match, marker)
+        return "edit", dump_json(new), ["%s (%d JSON value%s)" % (rel, count, "" if count == 1 else "s")], left
+    new, hit, keys = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
+    left = [rel] if keys else []
     if not hit:
-        return None, data, []
-    return "edit", new, ["%s:%d" % (rel, n) for n in hit]
+        return None, data, [], left
+    return "edit", new, ["%s:%d" % (rel, n) for n in hit], left
 
 
 # The schema and the tool ship with mem and are not memory: erase never edits them, live or in a tar.
@@ -2372,18 +2409,20 @@ def cmd_erase(tree, args):
         raise Refused("%r is a word every tree holds (a header field, a folder or a common word); name the person or thing" % subject)
     needle = erase_matcher(subject)
     marker = "%s on owner's word" % now().date().isoformat()
-    plans = []
+    plans, left = [], []
     for rel in walk_tree(tree):
         if rel.startswith(".meta/backups/") or rel in ERASE_REGENERATED or erase_skips(rel):
             continue
         data = tree.read(rel)
-        action, new, where = erase_plan(rel, data, needle, marker)
+        action, new, where, keys = erase_plan(rel, data, needle, marker)
+        left.extend(keys)
         if action:
             plans.append((rel, data, action, new, where))
     tars = []
     for rel in tree.files(".meta/backups"):
         if rel.endswith(".tar"):
-            members = tar_plan(tree.abs(rel), needle, marker)
+            members, keys = tar_plan(tree.abs(rel), needle, marker)
+            left.extend("%s: %s" % (rel, name) for name in keys)
             if members:
                 tars.append((rel, members))
     for rel, _, action, _, where in plans:
@@ -2393,11 +2432,14 @@ def cmd_erase(tree, args):
     for rel, members in tars:
         for name, action in members:
             print("tar    %s: %s %s" % (rel, "drop" if action == "drop" else "redact", name))
+    # Only a JSON key names the subject there (a field name, a nested key): nothing is erased.
+    for place in left:
+        print("left behind: %s (key)" % place)
     for path in glob_home_backups():
-        if tar_plan(path, needle, marker):
+        if tar_plan(path, needle, marker)[0]:
             print("outside the tree, not changed (erase it by hand): %s" % path)
     if not plans and not tars:
-        print("nothing in the tree names that subject")
+        print("nothing to erase: only a JSON key names that subject" if left else "nothing in the tree names that subject")
         return 0
     count = sum(len(where) for _, _, _, _, where in plans) + sum(len(members) for _, members in tars)
     if args.confirm is None:
@@ -2442,19 +2484,21 @@ def walk_tree(tree):
 
 
 def tar_plan(path, needle, marker):
-    """[(member name, action)] for the members of one tar that name the subject."""
-    out = []
+    """([(member name, action)] for the members of one tar that name the subject, [the members
+    only a JSON key names it in])."""
+    out, left = [], []
     try:
         with tarfile.open(path) as tar:
             for member in tar.getmembers():
                 if not member.isfile() or erase_skips(member.name):  # a folder name never matches
                     continue
-                action, _, _ = erase_plan(member.name, tar.extractfile(member).read(), needle, marker)
+                action, _, _, keys = erase_plan(member.name, tar.extractfile(member).read(), needle, marker)
+                left.extend(keys)
                 if action:
                     out.append((member.name, action))
     except (IOError, OSError, tarfile.TarError):
-        return []
-    return out
+        return [], []
+    return out, left
 
 
 def rebuild_tar(tree, rel, needle, marker):
@@ -2467,7 +2511,7 @@ def rebuild_tar(tree, rel, needle, marker):
             if not member.isfile() or erase_skips(member.name):
                 new.addfile(member, old.extractfile(member) if member.isfile() else None)
                 continue
-            action, data, _ = erase_plan(member.name, old.extractfile(member).read(), needle, marker)
+            action, data, _, _ = erase_plan(member.name, old.extractfile(member).read(), needle, marker)
             if action == "drop":
                 continue
             member.size = len(data)
