@@ -257,18 +257,20 @@ and the lead keep the feature exactly as you configured it.
 
 ```bash
 teamctl memory enable <team>     # yours alone (77 for an agent): policy team-memory, the folder from the skeleton, mem init
-teamctl memory status            # anyone: which team, folder and index sizes (25,000-byte cap), was the lead started with it
+teamctl memory status            # anyone: which team, sizes (25,000-byte cap), lead state; path and id: you and that lead
 teamctl memory disable           # you or that team's own lead: policy off; nothing is deleted
 teamctl memory path              # you or that team's own lead: the folder (exit 1 when off)
 teamctl memory check             # you or that team's own lead: the folder's own lint, <folder>/bin/mem check
+teamctl memory adopt <team>      # yours alone: a team an agent founded becomes yours (enable refuses it until then)
 ```
 
 ONE team's lead per project keeps `~/.wolfmux/memory/<project>/<team>/` (mode 700), and only while you
 founded that team and its `bin/mem` runs. It gets it as `autoMemoryDirectory`, a short "Team memory"
 block in its system prompt (the folder and the rules, never `core/card.md`: `ps` and `teamctl _prompt`
 show a prompt to anyone), and a first prompt to run `<folder>/bin/mem boot`, which prints the card, at
-every launch. Nobody copies what is in it into Beads, Jira, Slack, repositories or reports. Its
-`--continue` needs a stored conversation id; only you capture its pane. Changes reach a running lead at
+every launch. Nobody copies what is in it into Beads, Jira, Slack, repositories or reports. While it
+is on, every lead's `--continue` needs a stored conversation id (all leads share one transcripts
+folder); only you capture its pane, for as long as the running lead holds the memory. Changes reach a running lead at
 its next restart. `teamctl destroy --purge` and `teamctl finish` keep the folder; `teamctl destroy --purge
 --memory` deletes it, and only you may run it (an agent gets exit 77). Workers are refused the folder and
 the leads' conversations by the worktree guard; a search of a whole tree that holds them (`grep -r x ~`,

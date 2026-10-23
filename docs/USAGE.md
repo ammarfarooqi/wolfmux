@@ -742,7 +742,8 @@ team's event log. Then `enable` works:
 - a short "Team memory" block at the end of its system prompt: the folder, the rule (private to that
   lead; nothing from it goes into Beads, Jira, Slack, repositories or reports, which carry counts only),
   the shared project memory folder `~/.claude/projects/<project path>/memory/`, and the line "Run
-  `<folder>/bin/mem boot` before anything else, and again after every compaction". The card
+  `<folder>/bin/mem boot` before anything else, and again after every compaction" (the lead is told to
+  run it again after every compaction; nothing enforces that in v1.22.0). The card
   (`core/card.md`) is NOT in the prompt: `ps` shows every process's arguments to every other process,
   and `teamctl _prompt` prints a prompt to anyone, so a prompt is not private;
 - a first prompt at every launch, fresh, `--continue`, `--resume` and restore alike: run

@@ -2016,8 +2016,9 @@ appears, and each pattern was first shown to match a line that does contain it.
 
 Asked for by the owner for the communication-management lead, planned by `comms-memory.lead`, built
 in two lanes with disjoint files: this one (teamctl) and `memtool` (the folder's contents, under
-`config/wolfmux/memory-skeleton/`). The contract between them: teamctl calls only `mem init`,
-`mem boot` and `mem check`, and reads only the size of `core/card.md` (since review round 2). Decision and findings:
+`config/wolfmux/memory-skeleton/`). The contract between them: teamctl runs only `mem init` (enable)
+and `mem check` (memory check), passes the lead a boot prompt that tells it to run `mem boot` (teamctl
+never runs `mem boot` itself), and reads only the size of `core/card.md` (since review round 2). Decision and findings:
 [ADR-0030](adr/0030-one-lead-keeps-a-private-memory.md).
 
 | Piece | Where |

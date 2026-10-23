@@ -17,13 +17,15 @@
 # is a decision about your own work. Disabling only narrows, so the memory team's own lead may do it
 # too. Neither deletes anything; the folder goes only with `teamctl destroy --purge --memory`, which
 # is yours alone too (the pane proof, require_operator), or with `uninstall.sh --purge --purge-memory`.
-# `memory check` and `memory path` are yours and that lead's (memory_may_disable): check runs
-# `mem check`, which writes and names notes, and path is the folder handed to a script.
+# `memory check` and `memory path` are yours and that lead's (memory_require_owner): check runs
+# `mem check`, which writes and names notes, and path is the folder handed to a script. Enable refuses
+# a team an agent founded; `memory adopt <team>`, yours alone, makes you its founder first.
 #
 # The folder's contents (bin/mem, the templates, the schema) are the memory skeleton, installed to
-# ~/.config/wolfmux/memory-skeleton/ and copied once by `enable`. teamctl calls only `mem init`,
-# `mem boot` and `mem check`, and reads nothing in the folder but file sizes: nothing else crosses
-# that line.
+# ~/.config/wolfmux/memory-skeleton/ and copied once by `enable`. teamctl runs only `mem init` (enable)
+# and `mem check` (memory check); `mem boot` is run by the lead itself, told to by its first prompt
+# (memory_boot_text) and by the prompt block (after every compaction, which nothing enforces). teamctl
+# reads nothing in the folder but file sizes: nothing else crosses that line.
 
 MEMORY_INDEX_CAP=25000 # bytes of MEMORY.md that Claude Code's auto memory loads
 
