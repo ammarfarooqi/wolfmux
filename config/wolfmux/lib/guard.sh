@@ -15,7 +15,8 @@
 #                    worker may only read, move or delete branches, switch to another
 #                    branch, touch git worktrees, push to main, or drive tmux; and when a
 #                    tool that walks a tree (grep -r, rg, find, ls -R, du, tar) is pointed
-#                    at a folder that holds the memory folders or the leads' conversations
+#                    at a folder that holds the memory folders or the leads' conversations;
+#                    a relative path counts where the shell would be, after its cd (guard_follow)
 #
 # Two checkouts are read-only for a worker: the lead's (the project, WOLFMUX_ROOT) and,
 # for a teammate spawned with --repo, the main checkout of the repository its worktree
@@ -136,6 +137,9 @@ guard_tokenize() {
 # has a pattern in front of its folder (guard_tree_walk).
 guard_strip_prose() {
   local mark=$'\001' joiner="${2:- }"
+  local -a words=()
+  # <words> (any third argument): a quoted string with no space in it stays too, for guard_follow
+  if [ -n "${3:-}" ]; then words=(-e 's/"([^"[:space:]]+)"/'"$mark"'\1'"$mark"'/g' -e "s/'([^'[:space:]]+)'/$mark\\1$mark/g"); fi
   printf '%s\n' "$1" |
     awk '
       skipping { if ($0 ~ "^[[:space:]]*" marker "[[:space:]]*[)\"]*[[:space:]]*$") skipping = 0; next }
@@ -149,6 +153,7 @@ guard_strip_prose() {
       -e "s/'((@[A-Z]+@|~|\.{0,2}\/)[^']*)'/$mark\\1$mark/g" \
       -e 's/"([^"[:space:]]*\.wolfmux\/memory[^"[:space:]]*)"/'"$mark"'\1'"$mark"'/g' \
       -e "s/'([^'[:space:]]*\\.wolfmux\\/memory[^'[:space:]]*)'/$mark\\1$mark/g" \
+      ${words[@]+"${words[@]}"} \
       -e 's/"[^"]*"/""/g' \
       -e "s/'[^']*'/\"\"/g" \
       -e "s/$mark/\"/g"
@@ -281,11 +286,176 @@ guard_climbs() {
   return 1
 }
 
+# guard_follow <command, ~ and $HOME spelled out> — reads the command word by word and follows the folder the
+# shell is in as cd, pushd and popd move it (a cd inside ( ), $( ), a pipe or & stays there, as in the shell).
+# It sets:
+#   GUARD_EXTRA     the paths the text does not spell out, absolute: every word that climbs or starts here
+#                   (../x, ./x: guard_climbs), resolved against the folder the shell is in at that word, and
+#                   while that folder is not your own worktree, every relative word (cd ~/.wolfmux && cat
+#                   memory/x); every folder a cd moves to; the part of a wildcard word before the wildcard
+#   GUARD_FOLLOWED  the command again, one line, with those words spelled out (for guard_tree_walk)
+#   GUARD_HERES     every folder a cd moved to, one per line (what sh -c or eval runs may run there)
+#   GUARD_WILD      a reason to refuse: a wildcard that could still become a private folder or is your home
+#                   itself (cat ~/.wolfmux/mem*/…, grep -r x ~/.*), or a command too long to follow
+# A quoted word with no space in it counts as a word here (cd ~/.wolfmux && cat "memory/x"). Out of reach: a cd
+# to a folder built at run time (d=~/.wolfmux; cd $d && cat memory/x) leaves the folder where it was, and so do
+# CDPATH and a cd to a wildcard (docs/SECURITY.md).
+guard_follow() {
+  local line kind tok value raw path pre prefix lp private home outside=0 count=0 resolved=0 redir=0 at=1
+  local here="$GUARD_CWD" old="" list pipe piped=0 depth=0 cd="" cdarg="" taken=0
+  local wild='[][*?{}]*' # in a variable: bash 3.2 ends ${word%%…} at the first "}" of a literal pattern
+  local -a sub_here=() sub_list=() sub_pipe=() sub_piped=() dirs=()
+  home="$(guard_lower "${HOME%/}")"
+  list="$here" pipe="$here"
+  GUARD_EXTRA="" GUARD_FOLLOWED="" GUARD_HERES="" GUARD_WILD=""
+  guard_inside "$here" "$GUARD_OWN" || outside=1
+  while IFS= read -r line; do
+    count=$((count + 1))
+    if [ "$count" -gt 4000 ]; then GUARD_WILD="that command is too long for the guard to follow (over 4000 words); split it." && return 0; fi
+    kind="${line:0:1}" tok="${line:1}"
+    if [ "$kind" = o ]; then
+      # a redirection: the next word is a file, and the command goes on
+      if [ "$tok" = ">" ]; then redir=1 GUARD_FOLLOWED="$GUARD_FOLLOWED >" && continue; fi
+      if [ -n "$cd" ]; then guard_follow_cd; fi
+      case "$tok" in
+        ";") if [ "$piped" -eq 1 ]; then here="$pipe"; fi && piped=0 list="$here" pipe="$here" ;;
+        a) if [ "$piped" -eq 1 ]; then here="$pipe"; fi && piped=0 pipe="$here" ;;
+        "|") here="$pipe" piped=1 ;;
+        "&") here="$list" piped=0 pipe="$list" ;;
+        "(")
+          sub_here[$depth]="$here" sub_list[$depth]="$list" sub_pipe[$depth]="$pipe" sub_piped[$depth]="$piped"
+          depth=$((depth + 1)) list="$here" pipe="$here" piped=0
+          ;;
+        ")")
+          if [ "$depth" -gt 0 ]; then
+            depth=$((depth - 1))
+            here="${sub_here[$depth]}" list="${sub_list[$depth]}" pipe="${sub_pipe[$depth]}" piped="${sub_piped[$depth]}"
+          fi
+          ;;
+      esac
+      at=1 redir=0 outside=0
+      guard_inside "$here" "$GUARD_OWN" || outside=1
+      if [ "$tok" = a ]; then tok=";"; fi
+      GUARD_FOLLOWED="$GUARD_FOLLOWED $tok"
+      continue
+    fi
+    value="$tok"
+    if [ "$redir" -eq 1 ]; then
+      redir=0
+    elif [ "$at" -eq 1 ]; then
+      case "$value" in
+        cd | pushd | popd) cd="$value" cdarg="" taken=0 at=0 ;;
+        "{" | "!" | if | then | else | elif | while | until | do | time | builtin | command | nohup | exec | [A-Za-z_]*=*) ;;
+        *) at=0 ;;
+      esac
+    elif [ -n "$cd" ] && [ "$taken" -eq 0 ]; then
+      case "$value" in
+        -) cdarg=- taken=1 ;;
+        -- | -[LPe@]*) ;;
+        *'$'* | *[][*?{}]*) cdarg="?" taken=1 ;;
+        *) cdarg="$value" taken=1 ;;
+      esac
+    fi
+    case "$value" in
+      '""' | *'$'*) ;; # quoted prose, or built at run time: out of reach (docs/SECURITY.md)
+      *[][*?{}]*)
+        raw="${value%%$wild}" prefix="${value%%$wild}"
+        if guard_climbs "$prefix"; then
+          prefix="$(guard_resolve_word "$prefix" "$here")" resolved=$((resolved + 1))
+        elif [ "$outside" -eq 1 ]; then
+          case "$prefix" in /* | -*) ;; *) prefix="$here/$prefix" ;; esac
+        fi
+        case "$prefix" in
+          /*)
+            value="$prefix${value#"$raw"}"
+            GUARD_EXTRA="$GUARD_EXTRA $prefix"
+            lp="$(guard_lower "$prefix")"
+            lp="${lp%/}"
+            if [ "$lp" = "$home" ]; then
+              GUARD_WILD="$(printf "that command has a wildcard in your home folder (%s), which also matches the leads' private folders under it; name the files." "$tok")" && return 0
+            fi
+            for private in "$GUARD_MEMORY_LC" "$GUARD_STATE_LC" "$GUARD_TREES_LC" "$GUARD_TRANSCRIPTS_LC" ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"}; do
+              [ -n "$private" ] || continue
+              case "$private/" in "$lp"*) GUARD_WILD="$(printf "that command has a wildcard (%s) that can match a private folder (%s); name the files." "$tok" "$private")" && return 0 ;; esac
+            done
+            ;;
+        esac
+        ;;
+      *)
+        # --file=../x and X=../x name ../x
+        path="$value" pre=""
+        case "$path" in -*=* | [A-Za-z_]*=*) pre="${path%%=*}=" path="${path#*=}" ;; esac
+        if guard_climbs "$path"; then
+          path="$(guard_resolve_word "$path" "$here")" resolved=$((resolved + 1))
+          GUARD_EXTRA="$GUARD_EXTRA $path" value="$pre$path"
+        elif [ "$outside" -eq 1 ]; then
+          case "$path" in "" | /* | -*) ;; *) GUARD_EXTRA="$GUARD_EXTRA $here/$path" value="$pre$here/$path" ;; esac
+        fi
+        ;;
+    esac
+    if [ "$resolved" -gt 100 ]; then GUARD_WILD="that command has more than 100 relative paths for the guard to follow; split it." && return 0; fi
+    GUARD_FOLLOWED="$GUARD_FOLLOWED $value"
+  done < <(guard_strip_prose "$1" ";" words | LC_ALL=C /usr/bin/awk '
+    # one line per word ("w" and the word, unquoted; "w" "" for quoted prose) and per operator: "o;" (; and the
+    # end of a line), "oa" (&& ||), "o|", "o&", "o(" "o)" (also $( and `), "o>" (any redirection)
+    function flush() { if (w != "" || q) print "w" (w == "" ? "\"\"" : w); w = ""; q = 0 }
+    function op(o) { flush(); print "o" o }
+    { s = s (NR > 1 ? ";" : "") $0 }
+    END {
+      n = length(s); w = ""; q = 0; inq = 0; bt = 0
+      for (i = 1; i <= n; i++) {
+        ch = substr(s, i, 1)
+        if (inq) { if (ch == "\"") inq = 0; else w = w ch; continue }
+        if (ch == "\"") { inq = 1; q = 1; continue }
+        if (ch == " " || ch == "\t") { flush(); continue }
+        two = substr(s, i, 2)
+        if (two == "&&" || two == "||") { op("a"); i++; continue }
+        if (two == "|&") { op("|"); i++; continue }
+        if (two == ">&" || two == "<&" || two == "&>" || two == ">|") { op(">"); i++; if (substr(s, i + 1, 1) == ">") i++; continue }
+        if (ch == ">" || ch == "<") { op(">"); continue }
+        if (ch == ";" || ch == "|" || ch == "&" || ch == "(" || ch == ")") { op(ch); continue }
+        if (ch == "`") { op(bt ? ")" : "("); bt = !bt; continue }
+        w = w ch
+      }
+      flush()
+    }')
+  if [ -n "$cd" ]; then guard_follow_cd; fi
+  GUARD_EXTRA="$(guard_squeeze "$GUARD_EXTRA")"
+  return 0
+}
+
+# guard_follow_cd — guard_follow's cd, pushd or popd, once its words are read: moves guard_follow's "here" (bash
+# functions see their caller's locals). A bare cd goes home, cd - goes back, a run-time folder ("?") stays put.
+guard_follow_cd() {
+  local to="" n="${#dirs[@]}"
+  case "$cd" in
+    popd)
+      if [ "$n" -gt 0 ]; then to="${dirs[$((n - 1))]}" && unset "dirs[$((n - 1))]"; fi
+      ;;
+    *)
+      case "$cdarg" in
+        "") if [ "$cd" = cd ]; then to="$(guard_abspath "$HOME" /)"; fi ;;
+        -) to="$old" ;;
+        "?") ;;
+        *) to="$(guard_resolve_word "$cdarg" "$here")" ;;
+      esac
+      if [ -n "$to" ] && [ "$cd" = pushd ]; then dirs[$n]="$here"; fi
+      ;;
+  esac
+  cd=""
+  [ -n "$to" ] || return 0
+  old="$here" here="$to"
+  GUARD_EXTRA="$GUARD_EXTRA $to"
+  GUARD_HERES="$GUARD_HERES$to"$'\n'
+  return 0
+}
+
 # guard_tree_walk <command, ~ and $HOME spelled out> — prints a reason when a tool that walks a whole tree
 # (grep -r, rg, find, ls -R, du, tar) is given a folder that holds a memory folder or the leads'
 # conversations: `grep -r x ~` reads ~/.wolfmux/memory as surely as a cat of it does. Absolute arguments
 # are seen, and relative ones that climb or start here (../../.., ., ./x: guard_climbs), resolved against
-# GUARD_CWD; grep's and rg's pattern is not a folder. Prose (quoted text, heredoc bodies) is not a command
+# GUARD_CWD (guard_shell passes the command as guard_follow spelled it out, in the folder each cd moved
+# to: they come absolute); grep's and rg's pattern is not a folder. Prose (quoted text, heredoc bodies) is not a command
 # (guard_strip_prose); lines that end in "\" go on in the next one.
 guard_tree_walk() {
   local line i j n tool word lw walks takes pattern skip ended
@@ -376,46 +546,29 @@ guard_tree_walk() {
 
 # guard_shell <command> — prints a reason when the command reaches outside
 guard_shell() {
-  local c lc word inner extra="" prefix lp private home depth="${2:-0}"
-  # What sh -c, bash -lc, a here-string, a heredoc fed to a shell, or eval will run is a command and
-  # not prose, though it is quoted: each is checked as one (guard_inner_commands), three levels deep.
-  while IFS= read -r inner; do
-    [ -n "$inner" ] || continue
-    if [ "$depth" -ge 3 ]; then printf 'that command nests sh -c or eval more than three levels deep; run the inner command itself.' && return 0; fi
-    word="$(guard_shell "${inner//$'\001'/$'\n'}" $((depth + 1)))"
-    if [ -n "$word" ]; then printf '%s' "$word" && return 0; fi
-  done < <(guard_inner_commands "$1")
+  local c lc word inner h heres extra followed depth="${2:-0}"
   # Literal paths become tokens first, so no path can confuse a pattern below. A path can
   # be written in more than one way (as configured, with symlinks resolved, /private/tmp
   # as /tmp, doubled slashes, "/./", ~, ~<name> or $HOME for a home directory), so every spelling we know
-  # of is replaced. What stays out of reach: a relative path after a cd (cd ~/.wolfmux &&
-  # cat memory/…), a path built at run time, code in a string (python3 -c "…") — the guard
-  # reads text, not what the shell will resolve (docs/SECURITY.md).
+  # of is replaced. Paths the text does not spell out (../x, ./x, a relative word after cd ~/.wolfmux, a
+  # wildcard) are resolved as the shell would, folder by folder (guard_follow). What stays out of reach: a
+  # cd to a folder built at run time (d=~/.wolfmux; cd $d && cat memory/…), a path built at run time, code
+  # in a string (python3 -c "…") — the guard reads text, not what the shell will resolve (docs/SECURITY.md).
   c="$(guard_squeeze "$(guard_home "$1")")"
-  # Paths the text does not spell out: a word that climbs (cat ../../../../../memory/…) or starts here (./x)
-  # is resolved against the folder the command runs in, and a wildcard (cat ~/.wolfmux/mem*/…, grep -r x ~/.*)
-  # is refused when what comes before it could still become a private folder, or is your home itself.
-  home="$(guard_lower "${HOME%/}")"
-  local wild='[][*?{}]*' # in a variable: bash 3.2 ends ${word%%…} at the first "}" of a literal pattern
-  while IFS= read -r word; do
-    case "$word" in "" | *'$'* | *'`'*) continue ;; esac # built at run time: out of reach (docs/SECURITY.md)
-    case "$word" in
-      *[][*?{}]*)
-        prefix="${word%%$wild}"
-        if guard_climbs "$prefix"; then prefix="$(guard_resolve_word "$prefix" "$GUARD_CWD")"; fi
-        case "$prefix" in /*) ;; *) continue ;; esac
-        extra="$extra $prefix"
-        lp="$(guard_lower "$prefix")"
-        lp="${lp%/}"
-        if [ "$lp" = "$home" ]; then printf "that command has a wildcard in your home folder (%s), which also matches the leads' private folders under it; name the files." "$word" && return 0; fi
-        for private in "$GUARD_MEMORY_LC" "$GUARD_STATE_LC" "$GUARD_TREES_LC" "$GUARD_TRANSCRIPTS_LC" ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"}; do
-          [ -n "$private" ] || continue
-          case "$private/" in "$lp"*) printf "that command has a wildcard (%s) that can match a private folder (%s); name the files." "$word" "$private" && return 0 ;; esac
-        done
-        ;;
-      *) if guard_climbs "$word"; then extra="$extra $(guard_resolve_word "$word" "$GUARD_CWD")"; fi ;;
-    esac
-  done < <(guard_strip_prose "$c" ";" | LC_ALL=C /usr/bin/tr -s " \t\n;|&()<>\`\"'" '\n' | LC_ALL=C /usr/bin/grep -E '(^|/)\.\.(/|$)|^\.(/|$)|[][*?{}]' | /usr/bin/head -40)
+  guard_follow "$c"
+  if [ -n "$GUARD_WILD" ]; then printf '%s' "$GUARD_WILD" && return 0; fi
+  extra="$GUARD_EXTRA" followed="$GUARD_FOLLOWED" heres="$GUARD_HERES"
+  # What sh -c, bash -lc, a here-string, a heredoc fed to a shell, or eval will run is a command and
+  # not prose, though it is quoted: each is checked as one (guard_inner_commands), three levels deep, in the
+  # folder the command starts in and in every folder a cd in it moved to (which one it runs in is not followed).
+  while IFS= read -r inner; do
+    [ -n "$inner" ] || continue
+    if [ "$depth" -ge 3 ]; then printf 'that command nests sh -c or eval more than three levels deep; run the inner command itself.' && return 0; fi
+    while IFS= read -r h; do
+      word="$(GUARD_CWD="$h" && guard_shell "${inner//$'\001'/$'\n'}" $((depth + 1)))"
+      if [ -n "$word" ]; then printf '%s' "$word" && return 0; fi
+    done < <(printf '%s\n%s' "$GUARD_CWD" "$heres" | LC_ALL=C /usr/bin/awk 'NF && !seen[$0]++' | /usr/bin/head -5)
+  done < <(guard_inner_commands "$1")
   # Other teammates' worktrees, teamctl's state, the memory folders, the leads' conversations and Claude Code's
   # other records, in lower case (the disk does not tell ~/.WOLFMUX/MEMORY from ~/.wolfmux/memory), and after
   # the prose is gone: a commit message or a heredoc may SAY .wolfmux/memory, a command may not name it. The
@@ -436,7 +589,8 @@ guard_shell() {
   case "$(printf '%s' "$lc" | sed -E 's#@TRANSCRIPTS@/memory([^a-z0-9_.-]|$)#\1#g')" in
     *@TRANSCRIPTS@*) printf "that command names the folder of the leads' conversations (%s); only its memory/ is shared." "$GUARD_TRANSCRIPTS" && return 0 ;;
   esac
-  word="$(guard_tree_walk "$c")"
+  # the tree walk reads the command with its relative words spelled out in the folder they are used in
+  word="$(guard_tree_walk "$followed")"
   if [ -n "$word" ]; then printf '%s' "$word" && return 0; fi
   c="$(guard_tokenize "$c" @OWN@ "$GUARD_OWN" "${WOLFMUX_WORKTREE:-}")"
   c="$(guard_tokenize "$c" @TREES@ "$GUARD_TREES" "$WOLFMUX_DATA/worktrees")"
