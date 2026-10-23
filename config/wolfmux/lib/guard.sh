@@ -215,7 +215,7 @@ guard_deny() {
 # seconds, every 1000 characters, 50 words and 50 paths) is the backstop: 5 seconds from the first pass, under
 # the hook's 10.
 # Out of reach: a folder or path built at run time (d=~/.wolfmux; cd $d), code in a string (python3 -c),
-# CDPATH, a chain of more than three links (docs/SECURITY.md).
+# CDPATH (docs/SECURITY.md).
 GUARD_SCAN='
 function init(   n, t, k, at) {
   HOME = ENVIRON["GA_HOME"]; sub(/\/+$/, "", HOME); LHOME = tolower(HOME)

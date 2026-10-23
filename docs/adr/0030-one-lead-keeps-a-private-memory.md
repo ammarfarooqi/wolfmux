@@ -117,8 +117,9 @@ session id) and the pane says so.
   `rg`, `find`, `ls -R`, `du`, `tar`, a Grep of the whole `~/.claude`) is refused with "search a
   narrower folder". The memory folder and the leads' transcripts are under the same home for all of
   them, so a rule for one team only would leave the others' workers a way in. A Bash check costs about
-  20 ms (one jq and one awk, no fork per word); a check that would take over 2 seconds is refused,
-  because Claude Code runs a call whose hook times out.
+  20 ms (one jq and one awk, no fork per word). The cost is bounded by size, not by the clock: a command
+  over 64 KB is refused before awk starts, the lexer counts characters, words and paths against a step
+  budget, and a 5 s clock is only a backstop, because Claude Code runs a call whose hook times out.
 - A change of the policy reaches a running lead only at its next restart; a change of `core/card.md`
   reaches it at its next `mem boot` (every launch; after a compaction only if the lead runs it, as it is
   told to: nothing enforces that in v1.22.0).
@@ -133,12 +134,15 @@ session id) and the pane says so.
   command, and refuses wildcards that can match a private folder. Since round 4 it reads the command
   in one pass as the shell does: quotes and `\` removed inside words, a pipe of `echo` or a heredoc into
   a shell, `ssh` and `watch` text, the pattern of a search tool never taken for a path, symlinks under
-  the worktree followed, Claude Code's `sessions/`, `history.jsonl` and temporary folder closed. What it
+  the worktree followed, Claude Code's `sessions/`, `history.jsonl` and temporary folder closed. Since
+  round 5 the hook matcher is `.*` (Monitor, PowerShell and any other tool are read), workers run the
+  Bash tool in bash and zsh glob groups are read as groups anyway, a quoted word with a blank is a path
+  when it holds a `/`, a word is also read with its run-time parts deleted (`mem${x}ory`), a link is
+  followed where a path ends too, and the link-making forms with run-time words are refused. What it
   still does not see: a `cd` to a folder known only at run time (`d=~/.wolfmux; cd $d && cat memory/…`,
   which `tests/memory.sh` pins), a program known only at run time (`c=claude; $c -r <id>`), `CDPATH`, a
-  `cd` to a wildcard, a path built at run time, code in another language (`python3 -c "…"`), a script the
-  command runs, a chain of more than three symlinks, and tree walkers it does not know (`cp -R`, `rsync`,
-  `zip -r`). Every
+  path built at run time, code in another language that builds the path (`python3 -c "…"`), a script the
+  command runs, and tree walkers it does not know (`cp -R`, `rsync`, `zip -r`). Every
   owner-only gate is a pane proof that a process can drop by unsetting `TEAM_ROLE` and `TMUX_PANE`; the
   worker guard refuses the obvious forms (`env -u`, `env -i`, `unset`, an `X=` prefix). Leads of other
   teams are not guarded at all, and a team with `worker-isolation off` has no guard. docs/SECURITY.md

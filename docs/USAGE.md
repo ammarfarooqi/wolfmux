@@ -773,7 +773,12 @@ worktree and its scratchpad, never all of `/tmp`. A worker never resumes a conve
 `claude --resume`, `-r`, `--continue`, `-c` or `--session-id` in its Bash text is refused wherever `claude`
 is the program (bare, by a path, after `env`, `sudo`, `nice`, `timeout`, `nohup`, `xargs` or `script`, as
 `npx @anthropic-ai/claude-code`, inside `sh -c`, `eval` or a heredoc fed to a shell), because the CLI
-would read that conversation itself; `claude -p` and `claude --version` pass. Where that guard ends is in
+would read that conversation itself; `claude -p` and `claude --version` pass. The guard reads every tool
+call (Bash, Monitor, PowerShell, MCP and any other tool), not only the file tools, and a command over
+64 KB is refused ("split this command"). A quoted word that holds a `/` is a path even with a blank in
+it, so a commit message that names a private folder by path (`see ~/.wolfmux/memory`) or climbs out of
+the worktree (`see ../README.md`) is refused on purpose: rephrase it ("see README.md in the project
+root"). Where that guard ends is in
 [SECURITY.md](SECURITY.md#team-memory-who-can-read-a-leads-private-folder).
 
 Team memory is built for a Claude lead. A Codex lead has no `autoMemoryDirectory`, so `MEMORY.md` is not
