@@ -2474,7 +2474,10 @@ def pre_migration_tar(ctx, when):
     folder = os.path.join(os.path.expanduser("~"), ".wolfmux", "backups")
     if not os.path.isdir(folder):
         os.makedirs(folder, 0o700)
-    path = os.path.join(folder, "memory-pre-migration-%s.tar" % stamp(when))
+    path, n = os.path.join(folder, "memory-pre-migration-%s.tar" % stamp(when)), 1
+    while os.path.exists(path):  # a rollback tar is never overwritten, not even by a run in the same second
+        n += 1
+        path = os.path.join(folder, "memory-pre-migration-%s-%d.tar" % (stamp(when), n))
     sums = []
     fd, tmp = tempfile.mkstemp(prefix=".mem-", suffix=".tmp", dir=folder)
     os.close(fd)

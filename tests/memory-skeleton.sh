@@ -506,6 +506,187 @@ check "unarchive lists the file in MEMORY.md again" 'grep -q "(topics/stale-a.md
 check "unarchive refuses a name that is not archived, and a path" '! "$T/bin/mem" unarchive no-such-file && ! "$T/bin/mem" unarchive ../etc'
 unset MEM_NOW
 
+
+echo "== erase and purge"
+export MEM_NOW=2026-10-23T09:00Z
+T="$WORK/erase"
+fresh "$T"
+printf -- '---\nname: dana\nregion: people\nkeywords: design\nsummary: Dana Smith runs design\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nDana.\n' >"$T/people/dana.md"
+topic "$T" onboarding "onboarding, design" 3 2026-10-01
+printf 'Ask DANA SMITH first.\n' >>"$T/topics/onboarding.md"
+topic "$T" unrelated "zinc, copper" 3 2026-10-01
+chmod 600 "$T"/*/*.md
+/bin/mkdir -p "$T/archive/2026-08/topics"
+printf -- '---\nname: dana-old\nregion: topics\nkeywords: old\nsummary: Dana Smith in August\nlinks:\nimportance: 2\nlast_confirmed: 2026-08-01\nstatus: live\n---\nOld.\n' >"$T/archive/2026-08/topics/dana-old.md"
+printf -- '- 2026-08-30 archive/2026-08/topics/dana-old.md from topics/dana-old.md: test\n' >>"$T/archive/index.md"
+printf 'Dana Smith decides the colours.' | "$T/bin/mem" decide --time 2026-10-02T09:00Z --source chat --slug colours >/dev/null
+"$T/bin/mem" sent --to "Dana Smith" --channel dm --ref r1 --subject "colours" >/dev/null
+"$T/bin/mem" sent --to "sam" --channel dm --ref r2 --subject "zinc" >/dev/null
+"$T/bin/mem" ask open --id colours --who "Dana Smith" --what "the colours" --waiting-on owner >/dev/null
+"$T/bin/mem" ask open --id zinc --who sam --what "zinc price" --waiting-on owner >/dev/null
+"$T/bin/mem" backup >/dev/null
+/bin/mkdir -p "$HOME/.wolfmux/backups"
+( cd "$T" && tar -cf "$HOME/.wolfmux/backups/memory-pre-migration-20261001T000000Z.tar" people/dana.md )
+HOME_TAR_SUM="$(tree_sum "$HOME/.wolfmux/backups")"
+SUM_BEFORE="$(tree_sum "$T")"
+LIST="$("$T/bin/mem" erase "dana smith")"; RC=$?
+check "erase without --confirm lists every live file, archive file, ledger line, state entry and tar member" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$LIST" | grep -q "^file   people/dana.md" && printf "%s" "$LIST" | grep -q "^file   topics/onboarding.md" && printf "%s" "$LIST" | grep -q "^file   archive/2026-08/topics/dana-old.md" && printf "%s" "$LIST" | grep -q "^line   ledger/decisions-2026-10.md:" && printf "%s" "$LIST" | grep -q "^line   ledger/sends-2026-10.md:" && printf "%s" "$LIST" | grep -q "^state  state/open-asks.json#colours" && printf "%s" "$LIST" | grep -q "^tar    .meta/backups/20261023T090000Z.tar: drop people/dana.md"'
+check "it names the pre-migration tar outside the tree, which it never changes" \
+  'printf "%s" "$LIST" | grep -q "^outside the tree, not changed (erase it by hand): $HOME/.wolfmux/backups/memory-pre-migration-20261001T000000Z.tar"'
+check "erase without --confirm changes nothing" '[ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+OUT="$("$T/bin/mem" erase "dana smith" --confirm)"; RC=$?
+check "erase --confirm removes the live and archived files that name the subject" \
+  '[ "$RC" -eq 0 ] && [ ! -e "$T/people/dana.md" ] && [ ! -e "$T/topics/onboarding.md" ] && [ ! -e "$T/archive/2026-08/topics/dana-old.md" ] && [ -f "$T/topics/unrelated.md" ]'
+check "the ledger lines become a one-line marker; the other lines stay" \
+  'grep -qxF "[erased 2026-10-23 on owner'"'"'s word]" "$T/ledger/sends-2026-10.md" && grep -q "| to: sam |" "$T/ledger/sends-2026-10.md" && grep -qF "[erased 2026-10-23 on owner'"'"'s word]" "$T/ledger/decisions-2026-10.md"'
+check "the state entry naming the subject is removed; the others stay" \
+  '! grep -q colours "$T/state/open-asks.json" && grep -q zinc "$T/state/open-asks.json"'
+check "the backup tar is rebuilt without the subject and keeps the rest" \
+  'python3 -I -c "import sys,tarfile; t=tarfile.open(sys.argv[1]); n=t.getnames(); bad=[m.name for m in t.getmembers() if m.isfile() and b\"dana smith\" in t.extractfile(m).read().lower()]; sys.exit(bool(bad) or \"people/dana.md\" in n or \"topics/unrelated.md\" not in n)" "$T/.meta/backups/20261023T090000Z.tar"'
+check "nothing in the tree names the subject any more, drain.log included" '! grep -rqi "dana smith" "$T"'
+check "drain.log says what erase did, with a sha256 prefix of the subject, never the subject" \
+  'grep -q "erase on the owner'"'"'s word: subject sha256:[0-9a-f]\{12\}; 3 files removed" "$T/.meta/drain.log"'
+check "the pre-migration tar outside the tree is untouched" '[ "$HOME_TAR_SUM" = "$(tree_sum "$HOME/.wolfmux/backups")" ]'
+check "erase refuses a subject shorter than 3 characters" '! "$T/bin/mem" erase da --confirm'
+/bin/rm -rf "$HOME/.wolfmux"
+T="$WORK/purge"
+fresh "$T"
+/bin/mkdir -p "$T/archive/2026-07/topics" "$T/archive/2026-08/topics"
+for m in 07 08; do
+  printf -- '---\nname: old-%s\nregion: topics\nkeywords: old\nsummary: old\nlinks:\nimportance: 2\nlast_confirmed: 2026-%s-01\nstatus: live\n---\nOld.\n' "$m" "$m" >"$T/archive/2026-$m/topics/old-$m.md"
+  printf -- '- 2026-%s-30 archive/2026-%s/topics/old-%s.md from topics/old-%s.md: test\n' "$m" "$m" "$m" "$m" >>"$T/archive/index.md"
+done
+topic "$T" old-07 "live, copy" 3 2026-10-01
+SUM_BEFORE="$(tree_sum "$T")"
+OUT="$("$T/bin/mem" purge old-08)"
+check "purge without --confirm lists and deletes nothing" \
+  'printf "%s" "$OUT" | grep -q "^would purge archive/2026-08/topics/old-08.md" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+"$T/bin/mem" purge --confirm old-08 >/dev/null
+check "purge --confirm deletes from archive/, drops its index line and logs it" \
+  '[ ! -e "$T/archive/2026-08" ] && ! grep -q "old-08" "$T/archive/index.md" && grep -q "purge on the owner'"'"'s word: deleted 1 archived files: archive/2026-08/topics/old-08.md" "$T/.meta/drain.log"'
+"$T/bin/mem" purge --confirm 2026-07 >/dev/null
+check "purge --confirm YYYY-MM deletes that month and never a live file of the same name" \
+  '[ ! -e "$T/archive/2026-07/topics/old-07.md" ] && [ -f "$T/topics/old-07.md" ]'
+check "purge of something not archived exits 1; a path is refused" '! "$T/bin/mem" purge --confirm nothing-here && ! "$T/bin/mem" purge --confirm ../topics'
+
+echo "== migrate"
+SRC="$WORK/shared-src"
+RULES_SRC="$WORK/rules-src"
+/bin/mkdir -p "$SRC/old" "$RULES_SRC"
+printf '# Shared memory\n\n- [Fly](project_fly.md) fly notes\n- [Tone](feedback_tone.md) tone\n' >"$SRC/MEMORY.md"
+printf -- '---\nname: Tone\ndescription: keep it short\ntype: feedback\n---\nKeep replies short.\nNo jargon.\n' >"$SRC/feedback_tone.md"
+printf 'AFD-2129 notes: the fly deploy, step 1.\r\nstep 2, with ```code```\n' >"$SRC/project_fly.md"
+printf 'Shared links live here.\n' >"$SRC/reference_links.md"
+printf 'Archived note from July.\n' >"$SRC/old/archived.md"
+printf 'private, never copied\n' >"$SRC/secret.md"
+printf 'held for later\n' >"$SRC/held.md"
+printf 'Slack rule: plain names.\n' >"$RULES_SRC/slack-names.md"
+printf 'A rule without a ledger line.\n' >"$RULES_SRC/orphan.md"
+printf '{"cursors": {"slack_dm": "1761000000.1"}, "asks": [{"id": "a1", "who": "sam", "what": "logo", "status": "open", "opened": "2026-10-01T09:00Z", "waiting_on": "dana"}], "decisions": [{"time": "2026-10-09T13:50Z", "quote": "keep it short"}]}\n' >"$WORK/comms-state.json"
+python3 -I - "$WORK/map.csv" <<'EOF'
+import csv, sys
+rows = [
+    ("feedback_tone.md", "file", "rules/tone.md", "rules", "copy", "no", "tone", "tone, replies", "keep replies short, no jargon", "4", "decisions-2026-10#2026-10-09T13:50Z", "", "", "feedback"),
+    ("project_fly.md", "file", "topics/afd-2129.md", "topics", "copy", "no", "afd-2129", "fly, deploy, afd-2129", "the fly deploy steps", "3", "", "", "fe:src/features/fly/agent-log/0007.md AFD-2129", ""),
+    ("reference_links.md", "file", "rules/shared-links.md", "rules", "pointer", "no", "shared-links", "links", "where the shared links live", "3", "", "", "", ""),
+    ("archive:old/archived.md", "archive-file", "archive/state/archived.md", "", "copy", "no", "", "", "", "", "", "", "", ""),
+    ("hub:MEMORY.md#3", "hub-line", "archive/hub/memory-line-3.md", "", "copy", "no", "", "", "", "", "", "", "", "one hub line"),
+    ("rules:slack-names.md", "rules-file", "rules/slack-names.md", "rules", "copy", "no", "slack-names", "slack, names", "plain names in slack", "4", "decisions-2026-10#2026-10-09T13:50Z", "[[tone]]", "", ""),
+    ("rules:orphan.md", "rules-file", "rules/orphan.md", "rules", "copy", "no", "orphan", "orphan", "a rule with no authority", "3", "", "", "", ""),
+    ("state:cursors.slack_dm", "state-key", "state/cursors.json#slack_dm", "", "copy", "no", "", "", "", "", "", "", "", ""),
+    ("state:asks.a1", "state-key", "state/open-asks.json#a1", "", "copy", "no", "", "", "", "", "", "", "", ""),
+    ("state:decisions.0", "state-key", "ledger/decisions-2026-10.md", "", "copy", "no", "", "", "", "", "", "", "", ""),
+    ("held.md", "file", "topics/held.md", "topics", "hold", "yes", "held", "held", "held", "3", "", "", "", "waiting for the owner"),
+    ("secret.md", "file", "", "", "skip", "no", "", "", "", "", "", "", "", "private"),
+]
+with open(sys.argv[1], "w", newline="") as out:
+    w = csv.writer(out)
+    w.writerow(["source", "source_type", "dest", "region", "action", "hold", "name", "keywords", "summary", "importance", "authority", "links", "repo_ref", "notes"])
+    w.writerows(rows)
+EOF
+T="$WORK/migrate"
+fresh "$T"
+SRC_SUM="$(tree_sum "$SRC")"; RULES_SUM="$(tree_sum "$RULES_SRC")"; T_SUM="$(tree_sum "$T")"
+DRY="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --dry-run)"; RC=$?
+check "migrate --dry-run exits 0 and says nothing was written" '[ "$RC" -eq 0 ] && printf "%s\n" "$DRY" | sed -n 1p | grep -q "(dry run: nothing was written)"'
+check "the dry run reports a sha256 match for every copied body" \
+  '[ "$(printf "%s" "$DRY" | grep -c "sha256 match (in memory)")" -eq 5 ] && printf "%s" "$DRY" | grep -q "^verification: every payload keeps its sha256 in memory"'
+check "the dry run writes nothing: not the tree, not the source, not ~/.wolfmux" \
+  '[ "$T_SUM" = "$(tree_sum "$T")" ] && [ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ ! -e "$HOME/.wolfmux" ]'
+check "the dry run lists the held and skipped rows with their reasons" \
+  'printf "%s" "$DRY" | grep -q "^- line 8 hold rules:orphan.md: a rules dest needs an authority" && printf "%s" "$DRY" | grep -q "^- line 12 hold held.md: waiting for the owner" && printf "%s" "$DRY" | grep -q "^- line 13 skip secret.md: private"'
+OUT="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json")"; RC=$?
+printf '%s\n' "$OUT" >"$WORK/migrate-report.txt"
+check "the real migrate exits 0 and finds every source body and state value exactly once" \
+  '[ "$RC" -eq 0 ] && grep -q "^verification: every source body and state value found exactly once in the new tree" "$WORK/migrate-report.txt" && grep -q "^modes: all 700/600" "$WORK/migrate-report.txt"'
+check "every copied body is byte for byte the source (sha256 compared here, not by mem)" \
+  'python3 -I - "$T" "$SRC" "$RULES_SRC" <<'"'"'EOF'"'"'
+import hashlib, sys
+t, s, r = sys.argv[1:4]
+def body(path):
+    d = open(path, "rb").read()
+    return d.split(b"\n---\n", 1)[1] if d.startswith(b"---\n") else d
+sha = lambda b: hashlib.sha256(b).hexdigest()
+pairs = [(body(t + "/rules/tone.md"), body(s + "/feedback_tone.md")),
+         (body(t + "/topics/afd-2129.md"), open(s + "/project_fly.md", "rb").read()),
+         (open(t + "/archive/state/archived.md", "rb").read(), open(s + "/old/archived.md", "rb").read()),
+         (open(t + "/archive/hub/memory-line-3.md", "rb").read(), open(s + "/MEMORY.md", "rb").read().split(b"\n")[2] + b"\n"),
+         (body(t + "/rules/slack-names.md"), open(r + "/slack-names.md", "rb").read())]
+sys.exit(not all(sha(a) == sha(b) for a, b in pairs))
+EOF'
+check "the source folder and the rules folder are never written" '[ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ "$RULES_SUM" = "$(tree_sum "$RULES_SRC")" ]'
+check "headers come from the map: region, keywords, authority, repo_ref, last_confirmed from the source mtime" \
+  'grep -q "^authority: decisions-2026-10#2026-10-09T13:50Z" "$T/rules/tone.md" && grep -q "^repo_ref: fe:src/features/fly/agent-log/0007.md AFD-2129" "$T/topics/afd-2129.md" && grep -q "^last_confirmed: $(date -u -r "$SRC/project_fly.md" +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)" "$T/topics/afd-2129.md" && grep -q "^links: \[\[tone\]\]" "$T/rules/slack-names.md"'
+check "a pointer row writes a pointer file with shared:<path> authority, not the body" \
+  'grep -q "^pointer: $SRC/reference_links.md" "$T/rules/shared-links.md" && grep -q "^authority: shared:$SRC/reference_links.md" "$T/rules/shared-links.md" && ! grep -q "Shared links live here" "$T/rules/shared-links.md"'
+check "state keys land in state/*.json and the ledger" \
+  'grep -q "\"slack_dm\": \"1761000000.1\"" "$T/state/cursors.json" && grep -q "\"id\": \"a1\"" "$T/state/open-asks.json" && grep -q "migrated state:decisions.0" "$T/ledger/decisions-2026-10.md"'
+check "held and skipped rows write nothing" '[ ! -e "$T/rules/orphan.md" ] && [ ! -e "$T/topics/held.md" ] && ! grep -rq "never copied" "$T"'
+check "archive rows are listed in archive/index.md" 'grep -q "archive/state/archived.md from shared:archive:old/archived.md" "$T/archive/index.md"'
+check "a rollback backup is taken first, kept on the owner's word" \
+  'grep -q "basis=migration rollback; delete 7 days after the restart test on the owner'"'"'s word" "$T/.meta/drain.log" && [ "$(ls "$T"/.meta/backups/*.tar | wc -l | tr -d " ")" -ge 1 ]'
+PRE="$(ls "$HOME"/.wolfmux/backups/memory-pre-migration-*.tar 2>/dev/null | head -1)"
+check "the source and rules folders are tarred to ~/.wolfmux/backups, mode 600, with a sha256 list, minus skip rows" \
+  '[ -n "$PRE" ] && [ "$(mode_of "$PRE")" = 600 ] && [ -f "${PRE%.tar}.sha256" ] && tar -tf "$PRE" | grep -qx "source/feedback_tone.md" && tar -tf "$PRE" | grep -qx "rules/slack-names.md" && tar -tf "$PRE" | grep -qx "state/comms-state.json" && ! tar -tf "$PRE" | grep -q secret.md'
+check "the report is kept in .meta/migrate-<UTC>.md" 'ls "$T"/.meta/migrate-*.md >/dev/null 2>&1 && grep -q "^verification: every source body" "$T"/.meta/migrate-*.md'
+check "after migrate, check passes" '"$T/bin/mem" check'
+"$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" >/dev/null 2>&1
+check "a second run in the same second keeps the first pre-migration tar" '[ "$(ls "$HOME"/.wolfmux/backups/memory-pre-migration-*.tar | wc -l | tr -d " ")" -eq 2 ] && [ -f "$PRE" ]'
+check "migrate refuses a memory root inside --from" 'fresh "$SRC/inner" 2>/dev/null; ! "$SRC/inner/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --dry-run; /bin/rm -rf "$SRC/inner"'
+printf 'source,source_type\nx,file\n' >"$WORK/bad.csv"
+check "migrate refuses a map without the contract columns" '! "$T/bin/mem" migrate --from "$SRC" --map "$WORK/bad.csv" --dry-run'
+/bin/rm -rf "$HOME/.wolfmux"
+unset MEM_NOW
+
+echo "== the lock, paths outside the root, status"
+T="$WORK/lock"
+fresh "$T"
+( sleep 4 | "$T/bin/mem" decide --time 2026-10-09T13:50Z --source chat >/dev/null 2>&1 ) &
+HOLDER=$!
+sleep 1.5
+OUT="$(MEM_LOCK_WAIT=0 "$T/bin/mem" set cursors.slack_dm 7 2>&1)"; RC=$?
+check "a second writer is refused (exit 75) while another writer holds the lock" \
+  '[ "$RC" -eq 75 ] && printf "%s" "$OUT" | grep -q "another writer holds" && ! grep -q slack_dm "$T/state/cursors.json"'
+check "readers take no lock: recall and status work while it is held" '"$T/bin/mem" status >/dev/null && "$T/bin/mem" recall zebra | grep -q "no match"'
+wait "$HOLDER"
+check "once the lock is free the same writer goes through" '"$T/bin/mem" set cursors.slack_dm 7 >/dev/null && grep -q "\"slack_dm\": 7" "$T/state/cursors.json"'
+printf -- '---\nname: evil\nregion: topics\nkeywords: evil\nsummary: outside\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nOutside.\n' >"$WORK/outside.md"
+OUTSIDE_SUM="$(tree_sum "$WORK/outside.md")"
+ln -s "$WORK/outside.md" "$T/topics/evil.md"
+check "a symlink out of the root is refused, and the file it points at is untouched" \
+  'OUT="$(echo new | "$T/bin/mem" add --region topics --name evil --keywords evil --summary s 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "outside the memory root" && [ "$OUTSIDE_SUM" = "$(tree_sum "$WORK/outside.md")" ]'
+/bin/rm -f "$T/topics/evil.md"
+printf -- '- 2026-10-01 ../outside-dest.md from topics/zzz.md: crafted\n' >>"$T/archive/index.md"
+check "an archive index line that leads outside the root is refused" \
+  'OUT="$("$T/bin/mem" unarchive outside-dest 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "outside the memory root"'
+check "a tree that was never initialised is refused" '/bin/mkdir -p "$WORK/plain" && ! "$T/bin/mem" --root "$WORK/plain" boot && [ ! -e "$WORK/plain/core" ]'
+check "an unknown command and a missing option exit 64" \
+  '"$T/bin/mem" frobnicate >/dev/null 2>&1; [ $? -eq 64 ] && "$T/bin/mem" sent --to x >/dev/null 2>&1; [ $? -eq 64 ]'
+OUT="$("$T/bin/mem" status)"
+check "status shows sizes, counts per region, index vs cap, candidates, last backup and last check" \
+  'printf "%s" "$OUT" | grep -q "^size: [0-9]* bytes in [0-9]* files" && printf "%s" "$OUT" | grep -q "^live: rules 0, people 0, teams 0, topics 0" && printf "%s" "$OUT" | grep -q "^index: [0-9]* / 5000 bytes, [0-9]* / 80 lines; card: [0-9]* / 2000 bytes" && printf "%s" "$OUT" | grep -q "^drain candidates: rule 4 0" && printf "%s" "$OUT" | grep -q "^last backup: none" && printf "%s" "$OUT" | grep -q "^last check: 20"'
+
 echo
 echo "result: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
