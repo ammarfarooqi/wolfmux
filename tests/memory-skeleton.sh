@@ -746,12 +746,29 @@ check "erase matches state and .jsonl values, never field names: free finds no s
   '"$T/bin/mem" erase free | grep -qx "nothing in the tree names that subject"'
 check "erase refuses .md, a header field, a folder name and a bare number, and changes nothing" \
   '! "$T/bin/mem" erase .md && ! "$T/bin/mem" erase summary && ! "$T/bin/mem" erase topics && ! "$T/bin/mem" erase 2026 && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
-printf 'Ask the person on call.\n' >>"$T/topics/later.md"
+printf 'Ask danasmith on call.\n' >>"$T/topics/later.md"
 "$T/bin/mem" backup >/dev/null
-N="$("$T/bin/mem" erase person | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
-"$T/bin/mem" erase person --confirm "$N" >/dev/null
-check "erase never edits bin/mem or .meta/schema.md, live or inside a backup tar (both say person)" \
-  '[ ! -e "$T/topics/later.md" ] && grep -q person "$T/bin/mem" && grep -q person "$T/.meta/schema.md" && python3 -I -c "import sys,tarfile; t=tarfile.open(sys.argv[1]); sys.exit(not (t.extractfile(\"bin/mem\").read() == open(sys.argv[2], \"rb\").read() and t.extractfile(\".meta/schema.md\").read() == open(sys.argv[3], \"rb\").read() and \"topics/later.md\" not in t.getnames()))" "$(ls "$T"/.meta/backups/*.tar | head -1)" "$T/bin/mem" "$T/.meta/schema.md"'
+N="$("$T/bin/mem" erase danasmith | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase danasmith --confirm "$N" >/dev/null
+check "erase never edits bin/mem or .meta/schema.md, live or inside a backup tar (both say danasmith)" \
+  '[ ! -e "$T/topics/later.md" ] && grep -q danasmith "$T/bin/mem" && grep -q danasmith "$T/.meta/schema.md" && python3 -I -c "import sys,tarfile; t=tarfile.open(sys.argv[1]); sys.exit(not (t.extractfile(\"bin/mem\").read() == open(sys.argv[2], \"rb\").read() and t.extractfile(\".meta/schema.md\").read() == open(sys.argv[3], \"rb\").read() and \"topics/later.md\" not in t.getnames()))" "$(ls "$T"/.meta/backups/*.tar | head -1)" "$T/bin/mem" "$T/.meta/schema.md"'
+# mem's own files: a subject that is their stem, or a word of their names, never takes them.
+T="$WORK/erase-own"
+fresh "$T"
+"$T/bin/mem" set shared-folder "$WORK/shared-own" >/dev/null
+printf '# Weekly digest: drain candidates waiting for the owner\n\n- 2026-10-23 topics/x.md: rule 4 candidate\n' >"$T/.meta/digest-pending.md"
+printf '# Migration report\n' >"$T/.meta/migrate-20261001T000000Z.md"
+printf -- '---\nname: role\nregion: rules\nkeywords: role, comms\nsummary: the comms lead\nlinks:\nimportance: 5\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\nRole.\n' >"$T/rules/role.md"
+chmod 600 "$T/rules/role.md" "$T"/.meta/*.md
+"$T/bin/mem" backup >/dev/null
+MEM_NOW=2026-10-22T09:00Z "$T/bin/mem" backup --note "migration rollback; kept on the owner's word" >/dev/null
+SUM_BEFORE="$(tree_sum "$T")"
+check "erase drain, role, migrate (and digest, folder, jev, person, team) is refused: words of mem's own files; nothing changes" \
+  'for s in drain role migrate digest folder jev person team; do OUT="$("$T/bin/mem" erase "$s" --confirm 1 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "a word every tree holds" || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+check "a subject that is only the stem of a .meta file takes nothing: digest-pending and shared-folder stay, live and in the tars" \
+  '"$T/bin/mem" erase digest-pending | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase shared-folder | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase migrate-20261001T000000Z | grep -qx "nothing in the tree names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+check "drain.log keeps every backup basis= line, so the owner's-word tar stays non-routine" \
+  '[ "$(grep -c " backup .meta/backups/[0-9TZ]*\.tar sha256=[0-9a-f]* basis=" "$T/.meta/drain.log")" -eq 2 ] && grep -q "basis=migration rollback; kept on the owner.s word$" "$T/.meta/drain.log"'
 /bin/rm -rf "$HOME/.wolfmux"
 T="$WORK/purge"
 fresh "$T"

@@ -152,7 +152,12 @@ backup pruning is skipped unless `MEM_TEST=1`.
 ## Erase (mem erase, on the owner's word)
 
 The subject matches as a whole word, case folded (`tom` finds `Tom`, not `tomorrow` or
-`custom`). A path matches on its file stem only, never a folder name or an extension. In
+`custom`). A path matches on its file stem only, never a folder name or an extension, and
+only for a file erase removes whole (below): mem's own files (drain.log, digest-pending.md,
+shared-folder, migrate reports) are edited line by line, never dropped for their name, and
+the words of their names (drain, digest, pending, folder, migrate, role, jev, log, schema,
+card, boot, index) and the singular forms (team, topic, ask, decision, sweep, send, rule,
+person) are refused as subjects. In
 state files and `.jsonl` lines only the values count (and a state file's top-level keys),
 never the field names. The subject needs 3 characters and a letter, and is not a word every
 tree holds (a header field, a folder, a ledger label, a common word). What it does:

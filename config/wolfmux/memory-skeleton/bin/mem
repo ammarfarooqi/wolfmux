@@ -2233,7 +2233,19 @@ ERASE_STOP = set(FIELD_ORDER + REGIONS + TREE_DIRS + tuple(n for n, _ in STATE_D
     "that", "from", "have", "has", "will", "can", "all", "any", "new", "old", "none", "live", "superseded", "erased",
     "owner", "word", "memory", "mem", "index", "card", "boot", "check", "meta", "backups", "shared", "migrated",
     "ledger", "decisions", "sends", "asks", "sweeps", "slug", "source", "bytes", "chat", "slack", "bead", "open",
-    "close", "who", "what", "waiting", "channel", "ref", "time", "backup", "basis", "kept", "days", "rule", "prune"))
+    "close", "who", "what", "waiting", "channel", "ref", "time", "backup", "basis", "kept", "days", "rule", "prune",
+    # the stems and words of mem's own files: drain.log, digest-pending.md, shared-folder, migrate-*.md,
+    # rules/role.md, .meta/jev/, schema.md, card.md, boot.md, index.md; and the singular forms
+    "drain", "digest", "pending", "folder", "migrate", "role", "jev", "log", "schema", "team", "topic", "ask",
+    "decision", "sweep", "send", "person"))
+
+
+def whole_file(rel):
+    """A region file, an archived region file or a .meta/jev/ audit file: erase removes it whole.
+    Every other file (drain.log, the digest, a migrate report, the ledger) is edited line by line."""
+    parts = rel.split("/")
+    return (parts[0] in REGIONS or (parts[0] == "archive" and len(parts) > 3 and parts[2] in REGIONS)
+            or rel.startswith(".meta/jev/"))
 
 
 def erase_matcher(subject):
@@ -2302,16 +2314,17 @@ def erase_state(value, match):
 def erase_plan(rel, data, match, marker):
     """What erase does to one file, in the live tree or inside a backup tar:
     (None | "drop" | "edit", new bytes, [where the subject is]). A path counts by its file
-    stem only: folder names and extensions never match."""
-    if match.search(os.path.splitext(os.path.basename(rel))[0].casefold()):
+    stem only, and only for a file erase removes whole: folder names and extensions never
+    match, and `erase drain` never takes .meta/drain.log with it."""
+    whole = whole_file(rel)
+    if whole and match.search(os.path.splitext(os.path.basename(rel))[0].casefold()):
         return "drop", None, [rel]
     text = data.decode("utf-8", "replace")
     if not match.search(text.casefold()):
         return None, data, []
-    parts = rel.split("/")
-    if parts[0] in REGIONS or (parts[0] == "archive" and len(parts) > 3 and parts[2] in REGIONS) or rel.startswith(".meta/jev/"):
+    if whole:
         return "drop", None, [rel]
-    if parts[0] == "state" and rel.endswith(".json"):
+    if rel.split("/")[0] == "state" and rel.endswith(".json"):
         try:
             value = json.loads(text)
         except ValueError:
