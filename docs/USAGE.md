@@ -720,33 +720,45 @@ One team of a project may give its lead a private memory folder. Only the human 
 ```bash
 teamctl memory enable communication-management   # or: teamctl policy team-memory communication-management
 teamctl memory status                            # anyone: which team, sizes, index vs its 25,000-byte cap, the lead's state
+                                                 # (the folder's path and the lead's conversation id: the human and that lead only)
 teamctl restart lead --team communication-management --resume <its id>   # the lead gets it at its next start
 teamctl memory disable                           # the human, or that lead itself: policy off, the folder stays
 teamctl memory path                              # the human, or that lead itself: the folder
 teamctl memory check                             # the human, or that lead itself: <folder>/bin/mem check
+teamctl memory adopt <team>                      # the human only: a team an agent founded becomes the human's
 ```
 
 The folder is `~/.wolfmux/memory/<project>/<team>/` (mode 700), copied once from the skeleton that
 `install.sh` puts in `~/.config/wolfmux/memory-skeleton/`. That team's lead, and nobody else, gets the
 three things below, and only while the human founded that team (a team another lead founds under the
-same name after a purge gets nothing) and the folder's `bin/mem` can run:
+same name after a purge or a `finish` gets nothing) and the folder's `bin/mem` can run. A team keeps its
+founder through every restart, restore and model change, so `enable` refuses a team an agent founded
+instead of promising a memory its lead would never get. `teamctl memory adopt <team>` makes such a team
+the human's first: the lead's record and the team's `meta.json` say `operator` from then on, the founding
+agent loses what a founder may do while the lead is down, and it is logged in `team-memory.jsonl` and the
+team's event log. Then `enable` works:
 
 - the folder as Claude Code's `autoMemoryDirectory`, so its `MEMORY.md` loads at every start;
 - a short "Team memory" block at the end of its system prompt: the folder, the rule (private to that
   lead; nothing from it goes into Beads, Jira, Slack, repositories or reports, which carry counts only),
   the shared project memory folder `~/.claude/projects/<project path>/memory/`, and the line "Run
-  `<folder>/bin/mem boot` before anything else, and again after every compaction". The card
+  `<folder>/bin/mem boot` before anything else, and again after every compaction" (the lead is told to
+  run it again after every compaction; nothing enforces that in v1.22.0). The card
   (`core/card.md`) is NOT in the prompt: `ps` shows every process's arguments to every other process,
   and `teamctl _prompt` prints a prompt to anyone, so a prompt is not private;
 - a first prompt at every launch, fresh, `--continue`, `--resume` and restore alike: run
   `<folder>/bin/mem boot` (it prints the card), re-create the crons it lists, then read the Beads
   inboxes. With a handover, the boot comes first and the handover after it, in the same prompt.
 
-Its `start --continue` and `restart --continue` are refused while no conversation id is stored, because
-`claude --continue` would open the newest conversation in the folder every lead shares. That lead's pane
-shows the card after a boot, so `teamctl capture` of it is the human's alone (exit 77 for anyone else).
-`teamctl memory status` stays open to anyone and shows sizes, counts and the policy, never what a note
-says. `destroy --purge`, `finish` and `install.sh` leave the folder alone; `teamctl destroy --purge
+While team memory is on, `start --continue` and `restart --continue` of EVERY lead of the project are
+refused while that lead has no stored conversation id, because `claude --continue` would open the newest
+conversation in the folder every lead shares: the memory lead could get another lead's conversation, and
+any other lead the memory lead's. The refusal names the memory team. With the policy off, a lead with no
+id continues as before (the newest-transcript guess, with a warning). That lead's pane shows the card
+after a boot, so `teamctl capture` of it is the human's alone (exit 77 for anyone else), also after the
+policy moved, for as long as the running lead's settings still carry `autoMemoryDirectory` (until its
+restart). `teamctl memory status` stays open to anyone and shows sizes, counts and the policy, never what
+a note says; the folder's path and the lead's conversation id only to the human and that lead. `destroy --purge`, `finish` and `install.sh` leave the folder alone; `teamctl destroy --purge
 --memory` and `uninstall.sh --purge --purge-memory` delete it. `--memory` is the human's alone (the pane
 proof decides: an agent gets exit 77 even when it has a terminal to type the name on), and it also asks
 for the team's name. `uninstall.sh --purge-memory` without `--purge` removes nothing (exit 64).
@@ -754,7 +766,10 @@ for the team's name. `uninstall.sh --purge-memory` without `--purge` removes not
 Workers are refused the folder by the worktree guard, and also the folder of the leads' conversations
 (`~/.claude/projects/<project path>/`, except its shared `memory/`). A worker's search of a whole tree
 that holds either one is refused too: `grep -r x ~`, `find / …`, `du -sh ~`, and a Grep of the whole
-`~/.claude` folder. Search a narrower folder instead. Where that guard ends is in
+`~/.claude` folder. Search a narrower folder instead. A worker never resumes a conversation either:
+`claude --resume`, `-r`, `--continue`, `-c` or `--session-id` in its Bash text (bare, by a path, after
+`env` or `npx`, inside `sh -c` or `eval`) is refused, because the CLI would read that conversation itself;
+`claude -p` and `claude --version` pass. Where that guard ends is in
 [SECURITY.md](SECURITY.md#team-memory-who-can-read-a-leads-private-folder).
 
 Team memory is built for a Claude lead. A Codex lead has no `autoMemoryDirectory`, so `MEMORY.md` is not
@@ -781,7 +796,7 @@ team's lead runs Codex; move it back with `teamctl model lead opus --team <team>
 | `teamctl restart <role> [--model <model>] [--continue] [--resume <session-id>]` | same worktree and branch, on its recorded model; `--model` records and uses a different model. `--continue` resumes that agent's own conversation, `--resume` the one you name; both require the same CLI family. Without either it starts a new one |
 | `teamctl model <role> <model> [--team <name>] [--now]` | record the model for the next start, restart or restore. `--now` also switches a Claude agent by a resume-restart when it is between turns, has a recorded conversation id, and nobody is at its pane. An unsafe switch waits until the next restart, with a reason printed. Same model keys as `spawn` |
 | `teamctl policy lead-model <model>\|default` | only the human may set this project-wide default for new leads. Default Opus, or `WOLFMUX_LEAD_MODEL` when set; `default` returns to that config value. Existing teams keep their lead's model |
-| `teamctl memory [status]` · `teamctl memory enable <team>` · `teamctl memory disable` · `teamctl memory path` · `teamctl memory check` | team memory, see [Team memory](#team-memory-one-leads-private-notes). `status` anyone; `enable` the human only (77 for an agent); `disable` the human or the memory team's own lead; `path` prints the folder (exit 1 when off) and `check` runs the folder's own `mem check` and passes its exit code: both the human's or the memory team's own lead's only (77 for anyone else; `check` writes the index and prints names) |
+| `teamctl memory [status]` · `teamctl memory enable <team>` · `teamctl memory adopt <team>` · `teamctl memory disable` · `teamctl memory path` · `teamctl memory check` | team memory, see [Team memory](#team-memory-one-leads-private-notes). `status` anyone; `enable` the human only (77 for an agent; refused for a team an agent founded); `adopt` the human only (77 for an agent): the team's founder becomes the human, logged; `disable` the human or the memory team's own lead; `path` prints the folder (exit 1 when off) and `check` runs the folder's own `mem check` and passes its exit code: both the human's or the memory team's own lead's only (77 for anyone else; `check` writes the index and prints names) |
 | `teamctl policy team-memory <team>\|off` | project-wide, default `off`: the same as `memory enable` / `memory disable` |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | for debugging: the pane notices filed for a role, oldest first. Default: the lead of this team. They are not counted in the status bar (the `📨` number is your unread Beads messages); reading them does not change whether the agent has had them. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
@@ -916,8 +931,8 @@ conversation, then `restart` each teammate. To end a team on purpose: `teamctl d
 **Which conversation comes back.** Every Claude-family agent is given its own conversation id
 when it starts, and `--continue` reopens exactly that one. So with several teams in one
 project each lead comes back in its own conversation, not in whichever was written to last.
-`teamctl status --json` prints the stored id per agent (`.agents[].session_id`), and
-`--resume <session-id>` pins a different one; it is stored, and it wins over `--continue`.
+`teamctl status --json` prints the stored id per agent (`.agents[].session_id`; the team-memory
+lead's is `hidden` to anyone but the human and that lead), and `--resume <session-id>` pins a different one; it is stored, and it wins over `--continue`.
 The lead's id is kept with the team, so `teamctl destroy` in the evening and `teamctl start
 <model> --continue` in the morning is the same conversation. Four cases are worth knowing:
 

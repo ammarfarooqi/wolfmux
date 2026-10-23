@@ -160,7 +160,7 @@ complete_first_word() {
   complete_emit "$prefix" inbox "<role>: the pane notices filed for an agent (alias: notices)"
   complete_emit "$prefix" notices "alias of inbox"
   complete_emit "$prefix" policy "show or set what the team may do (permissions, spawning, isolation)"
-  complete_emit "$prefix" memory "team memory: status, enable <team>, disable, path, check"
+  complete_emit "$prefix" memory "team memory: status, enable <team>, disable, adopt <team>, path, check"
   complete_emit "$prefix" layout "how the panes are arranged (lead-left, lead-top, tiled)"
   complete_emit "$prefix" approvals "workers' permission requests waiting for the lead"
   complete_emit "$prefix" approve "<id>: allow a worker's permission request"
@@ -449,7 +449,10 @@ cmd_complete() {
           [ "$position" -eq 0 ] && complete_policy_choices "$cur" zsh bash
           ;;
         memory)
-          [ "$position" -eq 0 ] && complete_policy_choices "$cur" status enable disable path check
+          case "$position" in
+            0) complete_policy_choices "$cur" status enable disable adopt path check ;;
+            1) case "${pos[0]}" in enable | adopt) complete_teams "$cur" "" ;; esac ;;
+          esac
           ;;
       esac
       ;;

@@ -128,16 +128,21 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       a restored lead on it when its transcript reports a usage limit)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
   Team memory  one team's lead keeps a private memory folder, ~/.wolfmux/memory/<project>/<team>/ (default: none)
-    teamctl memory [status]                           anyone: which team has it, the folder and its sizes, the MEMORY.md index
-                                                      against its 25,000-byte cap, and whether the running lead was started with it
+    teamctl memory [status]                           anyone: which team has it, the folder's sizes, the MEMORY.md index against
+                                                      its 25,000-byte cap, and whether the running lead was started with it. The
+                                                      folder's path and the lead's conversation id: only to you or that lead
     teamctl memory enable <team>                      yours alone (77 for an agent): sets policy team-memory, creates the folder
-                                                      (mode 700) from the installed skeleton, runs mem init. An existing folder is kept
+                                                      (mode 700) from the installed skeleton, runs mem init. An existing folder is kept.
+                                                      Refused for a team an agent founded: its lead would never get it
+    teamctl memory adopt <team>                       yours alone (77 for an agent): the team's founder becomes you (record and
+                                                      meta.json), logged; then enable may give its lead the memory
     teamctl memory disable                            you, or that team's own lead: policy off. Nothing is deleted
     teamctl memory path · teamctl memory check        the folder's path (exit 1 when off) · its own lint (mem check);
                                                       both yours or that team's own lead's (77 for anyone else)
                                                       Every change reaches a running lead only at its next restart. That lead is
-                                                      started with "run <folder>/bin/mem boot" every time, and its --continue needs
-                                                      a stored conversation id. Workers are refused the folder (worktree guard)
+                                                      started with "run <folder>/bin/mem boot" every time. While it is on, every
+                                                      lead's --continue needs a stored conversation id (they share one folder).
+                                                      Workers are refused the folder (worktree guard)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;

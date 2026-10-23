@@ -25,14 +25,23 @@ on (`teamctl memory enable <team>`, `require_operator`; an agent gets exit 77); 
 own lead may turn it off. Its lead, and nobody else, gets `~/.wolfmux/memory/<project-key>/<team>/`
 (mode 700, copied once from `~/.config/wolfmux/memory-skeleton/`) as `autoMemoryDirectory`, a short "Team
 memory" block at the end of its system prompt (`--append-system-prompt`, no new hook: the folder, the
-rules, and "Run `<dir>/bin/mem boot` before anything else, and again after every compaction"), and a
+rules, and "Run `<dir>/bin/mem boot` before anything else, and again after every compaction": the lead
+is told to run it again after every compaction, and nothing enforces that in v1.22.0), and a
 first prompt at EVERY launch: `Team memory is on. Run <dir>/bin/mem boot, read what it prints, re-create
 the crons it lists, then read your Beads inboxes.` "That lead" means: the lead of the named team, while
 the owner founded that team (`team_founder` is the operator) and the folder's `bin/mem` can run. A team
-another lead founds under the same name after a `destroy --purge` or a `finish` gets nothing. Its
-`--continue` is refused while no conversation id is stored. Workers are refused the folder, and the
-folder of the leads' conversations, by the worktree guard. `teamctl memory check`, `teamctl memory path`
-and `teamctl capture` of that lead's pane are the owner's (and, for `check` and `path`, that lead's).
+another lead founds under the same name after a `destroy --purge` or a `finish` gets nothing. No
+restart, restore or model change moves a team's founder (`lead_restore` carries it on), so `enable`
+refuses a team an agent founded rather than promise a memory its lead would never get; `teamctl memory
+adopt <team>`, the owner's alone (`require_operator`), makes the owner that team's founder first (the
+lead's `spawned_by` and `meta.json`'s `founder`), logged in `team-memory.jsonl` and the team's event log,
+and the founding agent loses what a founder may do while the lead is down. While the policy is on,
+`--continue` is refused for EVERY lead of the project that has no stored conversation id (round 3: all
+leads share one transcripts folder, so any of them could open the memory lead's newest conversation).
+Workers are refused the folder, and the folder of the leads' conversations, by the worktree guard.
+`teamctl memory check`, `teamctl memory path` and `teamctl capture` of that lead's pane are the owner's
+(and, for `check` and `path`, that lead's); capture stays the owner's for as long as the running lead's
+settings carry `autoMemoryDirectory`, whatever the policy says by then.
 Nothing deletes the folder except `destroy --purge --memory`, which is the owner's alone by the pane
 proof (`require_operator`), and `uninstall.sh --purge --purge-memory`.
 
@@ -42,7 +51,8 @@ The first version put `core/card.md` (cut at 4,000 bytes) into the prompt block.
 that a prompt is not private: `ps -axww -o command=` shows every agent's whole `--append-system-prompt`
 text to every process of the user, and `teamctl _prompt lead --team <team>` prints the prompt to any
 caller. So the block holds no note, only where the folder is and how to treat it, and the card is read
-by `mem boot` inside that lead's own conversation, at every launch and after every compaction. The
+by `mem boot` inside that lead's own conversation, at every launch (the first prompt) and after every
+compaction (the lead is told to; nothing enforces it in v1.22.0). The
 boot also prints the card into that lead's pane, which is why capturing the pane is the owner's alone.
 Five read channels were closed in the same round: the prompt (`ps`, `_prompt`), `teamctl capture` of
 that lead's pane, the leads' transcripts in `~/.claude/projects/<project path>/` (every lead's
@@ -94,7 +104,8 @@ session id) and the pane says so.
 
 ### Positive
 - A restarted comms lead wakes up, runs `mem boot`, and works from its card instead of idling.
-- `--continue` can no longer mix two leads' conversations for the memory team.
+- `--continue` can no longer mix two leads' conversations while team memory is on: since review round 3
+  every lead of the project needs a stored conversation id for it, not only the memory team's.
 - Other teams' leads get no setting, no block and no prompt.
 
 ### Negative
@@ -107,21 +118,32 @@ session id) and the pane says so.
   them, so a rule for one team only would leave the others' workers a way in. Each check costs a few
   milliseconds per tool call.
 - A change of the policy reaches a running lead only at its next restart; a change of `core/card.md`
-  reaches it at its next `mem boot` (every launch, and after every compaction).
+  reaches it at its next `mem boot` (every launch; after a compaction only if the lead runs it, as it is
+  told to: nothing enforces that in v1.22.0).
 - One team per project.
 - Built for a Claude lead. A Codex lead has no `autoMemoryDirectory` (its `MEMORY.md` is not loaded), and
   a resumed one (`codex resume --last`) opens the newest conversation of the shared folder and gets no
   first prompt. `teamctl memory status` warns when the memory team's lead runs Codex.
 
 ### Risks
-- The guard reads text. A relative path after a `cd`, a path built at run time, code in a string
-  (`python3 -c "…"`) and tree walkers it does not know (`cp -R`, `rsync`, `zip -r`) are not seen
-  (`tests/memory.sh` pins the `cd` case). Leads of other teams are not guarded at all, and a team with
-  `worker-isolation off` has no guard. docs/SECURITY.md lists every layer and where it ends.
+- The guard reads text. Since review round 3 it resolves `..` and `./` words, follows a literal `cd`
+  or `pushd`, checks the text handed to `sh -c` / `bash -c` / `eval` / a heredoc fed to a shell as a
+  command, and refuses wildcards that start a private folder. What it still does not see: a `cd` to a
+  folder known only at run time (`d=~/.wolfmux; cd $d && cat memory/…`, which `tests/memory.sh` pins),
+  `CDPATH`, a `cd` to a wildcard, a path built at run time, code in another language (`python3 -c "…"`),
+  a script the command runs, and tree walkers it does not know (`cp -R`, `rsync`, `zip -r`). Every
+  owner-only gate is a pane proof that a process can drop by unsetting `TEAM_ROLE` and `TMUX_PANE`; the
+  worker guard refuses the obvious forms (`env -u`, `env -i`, `unset`, an `X=` prefix). Leads of other
+  teams are not guarded at all, and a team with `worker-isolation off` has no guard. docs/SECURITY.md
+  lists every layer and where it ends.
 - `teamctl memory check` writes (it rebuilds `MEMORY.md` and the card) and prints ask ids and names, and
   `teamctl memory path` hands out the path for `$(teamctl memory path)`, which the guard cannot read: both
   are the owner's and that lead's only (exit 77 for anyone else). `teamctl memory status` stays open and
-  prints sizes, counts and the policy only.
+  prints sizes, counts and the policy; the folder's path and the lead's conversation id only to the owner
+  and that lead (since round 3). Every view that prints conversation ids (`teamctl status`, plain and
+  `--json`, `model --now`, `restore`, also when the orphan steward runs it) prints the memory lead's as
+  `hidden` to anyone else; the records under `~/.wolfmux/state` still hold it (closed to workers, not to
+  leads).
 - `destroy --purge --memory` is protected by the pane proof, not by the typed team name: a process can
   get a terminal from a piped `script -q /dev/null` and type the name itself.
 - The boot prompt with `--resume` is documented, not yet observed on a live pane: the first real
