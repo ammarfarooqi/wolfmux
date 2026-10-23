@@ -2381,7 +2381,7 @@ def whole_file(rel):
 def first_hit(text, match):
     """Why a whole file goes: its first line that names the subject, cut to 80 characters."""
     for number, line in enumerate(text.split("\n")):
-        if match.search(line.casefold()):
+        if match.search(line):
             return "line %d: %s" % (number + 1, cut(line.strip(), 80))
     return "a JSON value"
 
@@ -2399,7 +2399,7 @@ def erase_rule_lines(data, match, marker):
     hit, named = [], False
     for number, line in enumerate(lines):
         bare = line.rstrip("\r")
-        if not match.search(bare.casefold()) or (close and number in (0, close)):
+        if not match.search(bare) or (close and number in (0, close)):
             continue
         end, erased = line[len(bare):], "[erased %s]" % marker
         if 0 < number < close:
@@ -2416,7 +2416,24 @@ def erase_rule_lines(data, match, marker):
 
 def erase_matcher(subject):
     """The subject as a whole word, case folded: 'tom' finds 'Tom' but not 'tomorrow' or 'custom'."""
-    return re.compile(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(subject.casefold()))
+    return Subject(subject)
+
+
+def erase_norm(text):
+    """NFC, then the accent fold Jev masking uses, lower case: José (either form) is jose."""
+    return fold(unicodedata.normalize("NFC", text or ""))
+
+
+class Subject(object):
+    """The erase subject as a pattern over normalised text (erase_norm, on both sides): its words
+    joined by any run of space, _, . or -, so Tom Smith finds tom-smith, tom_smith and
+    [[tom-smith]]; a whole word, with no letter or digit right before or after it."""
+    def __init__(self, subject):
+        self.words = [word for word in re.split(r"[\s_.-]+", erase_norm(subject)) if word]
+        self.pattern = re.compile(r"(?<![^\W_])%s(?![^\W_])" % r"[\s_.-]+".join(re.escape(word) for word in self.words))
+
+    def search(self, text):
+        return self.pattern.search(erase_norm(text))
 
 
 def json_hits(match, value):
@@ -2424,12 +2441,12 @@ def json_hits(match, value):
     so a name written as \\u escapes (json.dumps without ensure_ascii=False) is found as well."""
     if isinstance(value, dict):
         found = [json_hits(match, child) for child in value.values()]
-        keyed = any(match.search(str(key).casefold()) for key in value)
+        keyed = any(match.search(str(key)) for key in value)
         return any(v for v, _ in found), keyed or any(k for _, k in found)
     if isinstance(value, list):
         found = [json_hits(match, child) for child in value]
         return any(v for v, _ in found), any(k for _, k in found)
-    return value is not None and bool(match.search(str(value).casefold())), False
+    return value is not None and bool(match.search(str(value))), False
 
 
 def redact_json(value, match, marker):
@@ -2445,7 +2462,7 @@ def redact_json(value, match, marker):
             else:
                 out.append(new)
         return out, count
-    if value is not None and match.search(str(value).casefold()):
+    if value is not None and match.search(str(value)):
         return "[erased %s]" % marker, 1
     return value, 0
 
@@ -2460,7 +2477,7 @@ def erase_lines(data, match, marker, jsonl=False, drain_log=False):
     lines = text.split("\n")
     hit, keys = [], []
     for number, line in enumerate(lines):
-        named = match.search(line.casefold())
+        named = match.search(line)
         if jsonl:
             try:
                 named, keyed = json_hits(match, json.loads(line))
@@ -2472,7 +2489,7 @@ def erase_lines(data, match, marker, jsonl=False, drain_log=False):
             continue
         hit.append(number + 1)
         backup = BACKUP_LOG.match(line) if drain_log else None
-        if backup and not match.search(line[:backup.start(3)].casefold()):
+        if backup and not match.search(line[:backup.start(3)]):
             lines[number] = line[:backup.start(3)] + "[erased %s]" % marker + line[backup.end(3):]
         else:
             lines[number] = json.dumps({"erased": marker}, ensure_ascii=False) if jsonl else "[erased %s]" % marker
@@ -2494,7 +2511,7 @@ def erase_decisions(data, match, marker):
     fields = dict((n, key) for block in layout for key, n in block["meta"].items())
     hit = []
     for number, line in enumerate(lines):
-        if number in fixed or not match.search(line.casefold()):
+        if number in fixed or not match.search(line):
             continue
         hit.append(number)
         lines[number] = ("%s: [erased %s]" % (fields[number], marker)) if number in fields else "[erased %s]" % marker
@@ -2526,7 +2543,7 @@ def erase_state(value, match):
     kept = {}
     for key in value:
         named, keyed = json_hits(match, value[key])
-        if named or match.search(str(key).casefold()):
+        if named or match.search(str(key)):
             removed.append(key)
         else:
             left = left or keyed
@@ -2545,7 +2562,7 @@ def erase_plan(rel, data, match, marker):
     matched: values and keys at any depth. A hit that is only a key is never erased; it is
     listed as left behind."""
     whole = whole_file(rel)
-    stem = match.search(os.path.splitext(os.path.basename(rel))[0].casefold())
+    stem = match.search(os.path.splitext(os.path.basename(rel))[0])
     if whole and stem:
         return "drop", None, ["%s (stem)" % rel], []
     text = data.decode("utf-8", "replace")
@@ -2561,9 +2578,9 @@ def erase_plan(rel, data, match, marker):
             value = json.loads(text)
         except ValueError:
             pass
-    named, keyed = json_hits(match, value) if value is not MISSING else (match.search(text.casefold()), False)
+    named, keyed = json_hits(match, value) if value is not MISSING else (match.search(text), False)
     if isinstance(value, dict) and rel.split("/")[0] == "state":  # an object file's keys name its entries
-        named = named or any(match.search(str(key).casefold()) for key in value)
+        named = named or any(match.search(str(key)) for key in value)
     left = ["%s (key)" % rel] if keyed and not named else []
     if not named and not rel.endswith(".jsonl"):  # a .jsonl line may hide a name in \u escapes
         return None, data, [], left
@@ -2598,13 +2615,21 @@ ERASE_REGENERATED = ("MEMORY.md", "core/card.md", ".meta/lock")
 
 def cmd_erase(tree, args):
     subject = one_line(args.subject)
-    if len(subject) < 3:
-        raise Refused("the subject must be at least 3 characters, or it matches everything")
+    try:
+        literal = json.loads(subject)
+    except ValueError:
+        literal = subject
+    if not isinstance(literal, str):  # true would take every state entry that holds a true
+        raise Refused("%r is a JSON literal (true, false, null or a number): it matches values, not a person or "
+                      "thing" % subject, code=EXIT_USAGE)
+    needle = erase_matcher(subject)
+    if len("".join(needle.words)) < 3:
+        raise Refused("the subject must be at least 3 characters (letters and digits), or it matches everything",
+                      code=EXIT_USAGE)
     if not re.search(r"[^\W\d_]", subject):
         raise Refused("the subject needs a letter (a bare number or date matches whole ledgers)")
-    if re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", subject.casefold()) in ERASE_STOP:
+    if " ".join(needle.words) in ERASE_STOP:
         raise Refused("%r is a word every tree holds (a header field, a folder or a common word); name the person or thing" % subject)
-    needle = erase_matcher(subject)
     marker = "%s on owner's word" % now().date().isoformat()
     plans, left = [], []
     for rel in walk_tree(tree):

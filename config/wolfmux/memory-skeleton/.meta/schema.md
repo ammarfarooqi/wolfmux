@@ -188,8 +188,12 @@ backup pruning is skipped unless `MEM_TEST=1`.
 
 ## Erase (mem erase, on the owner's word)
 
-The subject matches as a whole word, case folded (`tom` finds `Tom`, not `tomorrow` or
-`custom`). A path matches on its file stem only, never a folder name or an extension, and
+The subject matches as a whole word (`tom` finds `Tom`, not `tomorrow` or `custom`). Both
+sides are normalised the same way: NFC, then the accent fold Jev masking uses, lower case
+(`José`, its decomposed form and `Jose` are one name), and the subject's words match across
+any run of space, `-`, `_` or `.` (`Tom Smith` finds `people/tom-smith.md` and
+`[[tom-smith]]`). A subject under 3 letters and digits, or a JSON literal (`true`, `false`,
+`null`, a number), is refused with exit 64. A path matches on its file stem only, never a folder name or an extension, and
 only for a file erase removes whole (below): mem's own files (drain.log, digest-pending.md,
 shared-folder, migrate reports) are edited line by line, never dropped for their name, and
 the words of their names (drain, digest, pending, folder, migrate, role, jev, log, schema,

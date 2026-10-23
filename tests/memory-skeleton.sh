@@ -941,6 +941,28 @@ check "erase edits rules/role.md line by line (a header line keeps its field) an
   'printf "%s\n" "$LIST" | grep -qx "line   rules/role.md:5" && printf "%s\n" "$LIST" | grep -qx "line   rules/role.md:13" && ! printf "%s\n" "$LIST" | grep -q "^file   rules/" && printf "%s\n" "$LIST" | grep -q "^tar    .*: redact rules/role.md$" && ! printf "%s\n" "$LIST" | grep -q "drop rules/" && [ -f "$T/rules/role.md" ] && grep -qx "summary: \[erased [0-9-]* on owner.s word\]" "$T/rules/role.md" && grep -qx "I run comms." "$T/rules/role.md" && ! grep -q Shaurya "$T/rules/role.md" && "$T/bin/mem" boot | grep -qF "[erased" && ! "$T/bin/mem" boot | grep -q "no rules/role.md yet" && ! "$T/bin/mem" check | grep -q "^PROBLEM .*rules/role.md"'
 check "a rules file whose name holds the subject stays and is listed as left behind (file name); other region files go whole with (stem) or their first matching line" \
   'printf "%s\n" "$LIST" | grep -qx "left behind: rules/shaurya-review.md (file name)" && [ -f "$T/rules/shaurya-review.md" ] && printf "%s\n" "$LIST" | grep -qx "file   people/shaurya.md (stem)" && printf "%s\n" "$LIST" | grep -qx "file   topics/seating.md (line 12: Ask Shaurya about the seating plan before Monday.)" && printf "%s\n" "$LIST" | grep -q "^tar    .*: drop people/shaurya.md (stem)$" && [ ! -e "$T/people/shaurya.md" ] && [ ! -e "$T/topics/seating.md" ]'
+# Matching: both sides NFC, accent-folded, lower case; the subject's words match across any run
+# of space, -, _ or . (file names and [[slug]] links too).
+T="$WORK/erase-match"
+fresh "$T"
+printf -- '---\nname: tom-smith\nregion: people\nkeywords: release\nsummary: a release person\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nRelease.\n' >"$T/people/tom-smith.md"
+topic "$T" trains "trains, release"
+printf 'Owner: [[tom-smith]].\n' >>"$T/topics/trains.md"
+topic "$T" plain-ask "plain, ask"
+printf 'Ask Jose first.\n' >>"$T/topics/plain-ask.md"
+topic "$T" nfd-ask "nfd, ask"
+python3 -I -c 'import sys; open(sys.argv[1], "a").write("Ask Jose" + chr(0x301) + " too.\n")' "$T/topics/nfd-ask.md"
+chmod 600 "$T"/people/*.md "$T"/topics/*.md
+LIST="$("$T/bin/mem" erase "Tom Smith")"
+LIST2="$("$T/bin/mem" erase José)"
+LIST3="$("$T/bin/mem" erase tom-smith)"
+check "erase Tom Smith finds people/tom-smith.md by its stem and the [[tom-smith]] link; erase tom-smith finds the same (a hyphenated name)" \
+  'printf "%s\n" "$LIST" | grep -qx "file   people/tom-smith.md (stem)" && printf "%s\n" "$LIST" | grep -q "^file   topics/trains.md (line 12: Owner: \[\[tom-smith\]\].)$" && [ "$(printf "%s\n" "$LIST3" | grep -c "^file ")" -eq 2 ]'
+check "erase José finds plain Jose and the decomposed form (NFD), as Jev masking folds them" \
+  'printf "%s\n" "$LIST2" | grep -qx "file   topics/plain-ask.md (line 12: Ask Jose first.)" && printf "%s\n" "$LIST2" | grep -q "^file   topics/nfd-ask.md (line 12: " && [ "$(printf "%s\n" "$LIST2" | grep -c "^file ")" -eq 2 ]'
+SUM_BEFORE="$(tree_sum "$T")"
+check "erase refuses a JSON literal (true, null, 12) and a subject under 3 letters with exit 64, and changes nothing" \
+  'for s in true null 12 "J.R"; do "$T/bin/mem" erase "$s" --confirm 1 >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 # JSON is decoded before erase matches it: names written as \u escapes (json.dumps without
 # ensure_ascii=False, as migrated files are), and keys at any depth (left behind, never erased).
 T="$WORK/erase-json"
