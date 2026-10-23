@@ -445,6 +445,61 @@ def render_header(fields):
     return ("\n".join(lines) + "\n").encode("utf-8")
 
 
+def rewrite_header(data, fields, body=None):
+    """An existing file with `fields` applied inside its own header bytes. Only a key whose value
+    changed is rewritten, as one line, and its indented or `- item` lines go with it; a key that
+    is gone (or empty, links aside) is dropped; a new key goes after the nearest key before it in
+    FIELD_ORDER, or last. Every other line, comments, YAML blocks and line ends included, stays
+    byte for byte. `body` replaces the body when given."""
+    old, old_body, _ = split_header(data)
+    if old is None:
+        return render_header(fields) + (old_body if body is None else body)
+    lines = data[:len(data) - len(old_body)].split(b"\n")
+    opening, inner, closing = lines[0], lines[1:-2], lines[-2]
+    eol = b"\r" if opening.endswith(b"\r") else b""
+    owners, key = [], None
+    for line in inner:
+        text = line.rstrip(b"\r").decode("utf-8", "replace")
+        match = HEADER_KEY.match(text)
+        if match:
+            key = match.group(1)
+            owners.append(key)
+        elif re.match(r"^([ \t]+\S|- |-$)", text):
+            owners.append(key)
+        else:
+            owners.append(None)
+
+    def wanted(name):
+        value = fields.get(name)
+        if value is None or (one_line(str(value)) == "" and name != "links"):
+            return None
+        return one_line(str(value))
+
+    def line_for(name):
+        return ("%s: %s" % (name, wanted(name))).rstrip().encode("utf-8") + eol
+
+    changed = set(name for name in old if fields.get(name) is None or one_line(str(fields[name])) != old[name])
+    out, written = [], set()
+    for line, owner in zip(inner, owners):
+        if owner not in changed:
+            out.append((owner, line))
+        elif HEADER_KEY.match(line.rstrip(b"\r").decode("utf-8", "replace")) and owner not in written:
+            written.add(owner)
+            if wanted(owner) is not None:
+                out.append((owner, line_for(owner)))
+    order = [name for name in FIELD_ORDER if name in fields] + sorted(n for n in fields if n not in FIELD_ORDER)
+    for name in order:
+        if name in old or wanted(name) is None:
+            continue
+        at = len(out)
+        if name in FIELD_ORDER:
+            before = FIELD_ORDER[:FIELD_ORDER.index(name)]
+            places = [i + 1 for i, (owner, _) in enumerate(out) if owner in before]
+            at = max(places) if places else 0
+        out.insert(at, (name, line_for(name)))
+    return b"\n".join([opening] + [line for _, line in out] + [closing, b""]) + (old_body if body is None else body)
+
+
 class Entry(object):
     def __init__(self, tree, rel):
         self.rel = rel
@@ -1439,7 +1494,7 @@ def cmd_add(tree, args):
         old_fields = dict(old.fields or {})
         old_fields["status"] = "superseded:%s" % name
         old_fields["superseded_on"] = today
-        write_file(tree, old.rel, render_header(old_fields) + old.body, expect=old.data)
+        write_file(tree, old.rel, rewrite_header(old.data, old_fields), expect=old.data)
         quiet_check(tree)
         return 0
 
@@ -1498,7 +1553,7 @@ def cmd_add(tree, args):
     fields["last_confirmed"] = today
     print("%sUPDATE %s (%s%s)" % (dry, target.rel, why, "; only last_confirmed changes" if unchanged else ""))
     if not args.dry_run:
-        write_file(tree, target.rel, render_header(fields) + new_body, expect=target.data)
+        write_file(tree, target.rel, rewrite_header(target.data, fields, new_body), expect=target.data)
         quiet_check(tree)
     return 0
 
@@ -1629,7 +1684,7 @@ def shared_instruction(tree, shared, ref, source, when, text):
         if target and os.path.realpath(target) == real:
             fields = dict(entry.fields)
             fields["last_confirmed"] = now().date().isoformat()
-            write_file(tree, entry.rel, render_header(fields) + entry.body, expect=entry.data)
+            write_file(tree, entry.rel, rewrite_header(entry.data, fields), expect=entry.data)
             print("pointer %s: last_confirmed %s" % (entry.rel, fields["last_confirmed"]))
             return
     print("no pointer file in the regions points at it; add one with mem add --region rules (pointer: %s)" % real)
@@ -2075,7 +2130,7 @@ def cmd_unarchive(tree, args):
         entry = Entry(tree, from_rel)
         if entry.fields is not None:
             fields = dict(entry.fields, last_confirmed=now().date().isoformat())
-            write_file(tree, from_rel, render_header(fields) + entry.body, expect=entry.data)
+            write_file(tree, from_rel, rewrite_header(entry.data, fields), expect=entry.data)
     del lines[number]
     write_file(tree, "archive/index.md", "\n".join(lines).encode("utf-8"), expect=data)
     log(tree, "unarchive %s -> %s" % (to_rel, from_rel))

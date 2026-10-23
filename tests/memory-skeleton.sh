@@ -325,6 +325,21 @@ check "add --supersedes says SUPERSEDE, writes the new file and marks the old on
   '[ "$OUT" = "SUPERSEDE topics/release-train.md replaces topics/deploys.md" ] && grep -q "^status: superseded:release-train" "$T/topics/deploys.md" && grep -q "^superseded_on: 2026-10-07" "$T/topics/deploys.md" && [ -f "$T/topics/release-train.md" ]'
 check "MEMORY.md lists the new file and leaves the superseded one out" \
   'grep -q "(topics/release-train.md)" "$T/MEMORY.md" && ! grep -q "(topics/deploys.md)" "$T/MEMORY.md"'
+H="$WORK/header"
+fresh "$H"
+# kept_header <last_confirmed> <status lines> <body>: a header with a comment line and a folded block.
+kept_header() {
+  printf -- '---\nname: kept\n# the owner asked for this note\nregion: topics\nkeywords: kept, header, comment\nsummary: a header with a comment\nlinks:\nimportance: 3\nlast_confirmed: %s\n%bcontext: >-\n  a folded block\n  over two lines\n---\n%b' "$1" "$2" "$3"
+}
+kept_header 2026-10-01 'status: live\n' 'Old body.\n' >"$H/topics/kept.md"
+printf 'New body.\n' | MEM_NOW=2026-10-06T10:00Z "$H/bin/mem" add --region topics --name kept --keywords "kept, header, comment" --summary "a header with a comment" >/dev/null
+kept_header 2026-10-06 'status: live\n' 'New body.\n' >"$WORK/kept-update.md"
+check "an UPDATE rewrites only the changed header line; a comment line and a folded block stay byte for byte" \
+  'cmp -s "$WORK/kept-update.md" "$H/topics/kept.md"'
+echo "Kept, but newer." | MEM_NOW=2026-10-07T09:00Z "$H/bin/mem" add --region topics --name kept-two --keywords "newer, kept" --summary "the newer one" --supersedes kept >/dev/null
+kept_header 2026-10-06 'status: superseded:kept-two\nsuperseded_on: 2026-10-07\n' 'New body.\n' >"$WORK/kept-superseded.md"
+check "a supersede edits status in place and puts superseded_on after it; the comment and the block stay" \
+  'cmp -s "$WORK/kept-superseded.md" "$H/topics/kept.md"'
 OUT="$(echo "Never send at night." | "$T/bin/mem" add --region rules --name quiet-hours --keywords "night, send" --summary "no sends at night" 2>&1)"; RC=$?
 check "add --region rules without --authority is refused and writes nothing" \
   '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "rules need --authority" && [ ! -e "$T/rules/quiet-hours.md" ]'
