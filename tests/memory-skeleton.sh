@@ -237,6 +237,8 @@ check "check warns on two files sharing >= 70% of their keywords and names both"
 MEM_NOW=2026-09-01T09:00Z "$T/bin/mem" ask open --id stale-ask --who sam --what "an old question" --waiting-on owner >/dev/null
 OUT="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" check)"
 check "check warns on an open ask untouched for 14 days" 'printf "%s" "$OUT" | grep -q "WARN .*open ask stale-ask untouched for 52 days"'
+check "that warning names the ask id and the days only, never who asked or who is waited on" \
+  '[ "$(printf "%s\n" "$OUT" | grep "open ask stale-ask")" = "WARN    open ask stale-ask untouched for 52 days" ]'
 printf -- '---\nname: sam\nregion: people\nkeywords: sam, design\nsummary: Sam leads design\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nSam.\n' >"$T/people/sam.md"
 chmod 600 "$T/people/sam.md"
 printf -- '---\nname: Tone of replies\ndescription: keep replies short\ntype: feedback\n---\nShort replies.\n' >"$T/feedback_tone.md"
@@ -422,6 +424,15 @@ MEM_NOW=2026-10-12T09:00Z "$T/bin/mem" ask close --id q-1 --note "logo arrived" 
 check "ask close marks it closed and logs it" \
   'grep -q "\"status\": \"closed\"" "$T/state/open-asks.json" && grep -q "^- 2026-10-12T09:00Z | close | q-1 | logo arrived" "$T/ledger/asks-2026-10.md"'
 check "ask close refuses an ask that is not open" '! "$T/bin/mem" ask close --id q-1 && ! "$T/bin/mem" ask close --id nope'
+python3 -I -c "import json,sys; p=sys.argv[1]; a=json.load(open(p)); a.append({'id': 'AFD-1234_v2', 'who': 'sam', 'what': 'migrated', 'opened': '2026-10-01T09:00Z', 'waiting_on': 'owner', 'next_check': None, 'status': 'open', 'updated': '2026-10-01T09:00Z'}); open(p, 'w').write(json.dumps(a, indent=2) + '\n')" "$T/state/open-asks.json"
+check "ask close takes a migrated id that is not a slug; ask open still wants a slug; a | in an id is refused" \
+  'MEM_NOW=2026-10-12T09:30Z "$T/bin/mem" ask close --id AFD-1234_v2 >/dev/null && grep -q "^- 2026-10-12T09:30Z | close | AFD-1234_v2 |" "$T/ledger/asks-2026-10.md" && ! "$T/bin/mem" ask open --id AFD-9 --who x --what y --waiting-on z 2>/dev/null && ! "$T/bin/mem" ask close --id "a|b" 2>/dev/null'
+printf 'The owner pasted an old note:\n## 2026-10-05T10:00Z\nslug: not-a-block\n' | "$T/bin/mem" decide --time 2026-10-04T09:00Z --source chat >/dev/null
+REF="$(printf 'A real decision.' | "$T/bin/mem" decide --time 2026-10-05T10:00Z --source chat)"
+check "a ## <time> line inside a decision's fence is quote only: the real decision at that time keeps the plain anchor" \
+  '[ "$REF" = "decisions-2026-10#2026-10-05T10:00Z" ]'
+check "--root counts only before the command; after it, it is the command's own argument" \
+  'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" && OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
 MEM_NOW=2026-10-12T10:00Z "$T/bin/mem" sweep-log --inboxes 3 --asks-touched 1 --free-pct 41 --swap-gb 2.5 --load 3.2 >/dev/null
 check "sweep-log writes one JSON line with the numbers" \
   'python3 -I -c "import json,sys; l=open(sys.argv[1]).read().splitlines(); r=json.loads(l[-1]); sys.exit(not (len(l)==1 and r[\"time\"]==\"2026-10-12T10:00Z\" and r[\"inboxes\"]==3 and r[\"free_pct\"]==41 and r[\"swap_gb\"]==2.5 and r[\"load\"]==3.2))" "$T/ledger/sweeps-2026-10.jsonl"'

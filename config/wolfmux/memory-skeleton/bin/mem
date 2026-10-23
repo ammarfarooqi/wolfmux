@@ -656,10 +656,26 @@ def ledger_append(tree, kind, month, data):
 
 
 def decision_blocks(text):
-    """[(anchor, time, {slug, source}, block text)] from one decisions ledger."""
+    """[(anchor, time, {slug, source}, block text)] from one decisions ledger. Fenced lines (the
+    owner's words as decide quotes them) are block text only: a `## <time>` or `slug:` line
+    inside a fence never starts a block or sets a field. A fence closes on a line of the same
+    character at least as long, as in CommonMark."""
     out = []
     current = None
+    fence = None
     for line in text.split("\n"):
+        if fence is not None:
+            if line.rstrip() and set(line.rstrip()) == set(fence[0]) and len(line.rstrip()) >= len(fence):
+                fence = None
+            if current is not None:
+                current[3].append(line)
+            continue
+        opening = re.match(r"^(`{3,}|~{3,})", line)
+        if opening:
+            fence = opening.group(1)
+            if current is not None:
+                current[3].append(line)
+            continue
         match = DECISION_HEAD.match(line)
         if match:
             current = [match.group(1) + (match.group(2) or ""), match.group(1), {}, [line]]
@@ -1300,8 +1316,7 @@ def run_check(tree, when, quiet=False):
         for ask in open_asks(tree):
             touched = safe_time(str(ask.get("updated") or ask.get("opened") or ""))
             if touched and when - touched > datetime.timedelta(days=14):
-                report("WARN", "open ask %s untouched for %d days (%s waits on %s)" % (
-                    ask.get("id"), (when - touched).days, ask.get("who"), ask.get("waiting_on")))
+                report("WARN", "open ask %s untouched for %d days" % (ask.get("id"), (when - touched).days))
     except Refused:
         pass
     boot = tree.read_or_none("core/boot.md")
@@ -1743,7 +1758,12 @@ def cmd_sent(tree, args):
 def cmd_ask(tree, args):
     when = now()
     asks, raw = load_state(tree, "open-asks")
-    ident = check_name(args.id, "--id")
+    if args.op == "open":
+        ident = check_name(args.id, "--id")
+    elif re.match(r"^[A-Za-z0-9._-]+$", args.id or "") and len(args.id) <= 200:
+        ident = args.id  # a migrated ask may carry an id that is not a slug (AFD-1234, Ask_7)
+    else:
+        raise Refused("--id %r is not an ask id (letters, digits, . _ -)" % args.id)
     item = find_item(asks, "id", ident)
     if args.op == "open":
         for flag, value in (("--who", args.who), ("--what", args.what), ("--waiting-on", args.waiting_on)):
@@ -3141,20 +3161,17 @@ COMMANDS = {
 
 
 def split_root(argv):
-    root, rest, i = None, [], 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg == "--root":
-            if i + 1 >= len(argv):
-                sys.stderr.write("mem: --root needs a folder\n")
-                sys.exit(EXIT_USAGE)
-            root, i = argv[i + 1], i + 2
+    """--root <dir> (or --root=<dir>) counts only before the command. After it, `--root` is a
+    value like any other (an erase subject, a note) and goes to the command untouched."""
+    root, rest = None, list(argv)
+    while rest and (rest[0] == "--root" or rest[0].startswith("--root=")):
+        if rest[0] != "--root":
+            root, rest = rest[0][len("--root="):], rest[1:]
             continue
-        if arg.startswith("--root="):
-            root = arg[len("--root="):]
-        else:
-            rest.append(arg)
-        i += 1
+        if len(rest) < 2:
+            sys.stderr.write("mem: --root needs a folder\n")
+            sys.exit(EXIT_USAGE)
+        root, rest = rest[1], rest[2:]
     if not root:
         root = os.environ.get("MEM_ROOT") or os.path.join(os.path.dirname(SELF), "..")
     return os.path.realpath(os.path.expanduser(root)), rest

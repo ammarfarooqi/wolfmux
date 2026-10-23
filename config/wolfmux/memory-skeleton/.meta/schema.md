@@ -101,7 +101,15 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
 - asks: `- <UTC minute> | open | <id> | who: <who> | waiting on: <who> | <what>` and
   `- <UTC minute> | close | <id> | <note>`
 - sweeps: one JSON object per line: `time, inboxes, asks_touched, free_pct, swap_gb, load`.
-  Lines older than 14 days are archived; one summary line per day stays.
+  Lines older than 14 days are archived; one summary line per day stays:
+  `{"time": "<day>T00:00Z", "day", "summary": true, "sweeps", "inboxes_max", "asks_touched"
+  (the day's sum), "free_pct_min", "swap_gb_max", "load_max"}`.
+- a migrated state key (`mem migrate`, a `state:` row into a ledger file) is appended as
+  `## migrated state:<key> at <UTC minute>`, then the value pretty-printed in a ```` ```json ````
+  fence. A re-run finds the same block (whatever its minute) and appends nothing.
+- In the decisions ledger, fenced lines are quote only: a `## <time>` or `slug:` line inside a
+  fence never starts a block. `mem ask close` takes any id of `[A-Za-z0-9._-]` (migrated asks
+  keep theirs); `mem ask open` still needs a slug.
 
 ## Archive
 
@@ -131,7 +139,8 @@ slug, region, keywords, importance, days since last_confirmed, days since last r
 the size in bytes, nothing else; every token that matches a people/ file name (or a part of it
 split on `-`), or holds such a part of 3 or more letters (`danasmith`), is replaced by
 `person`, accents folded first (`Renée` is `renee`). `.meta/jev/<UTC>-<slug>.json` keeps what was sent and
-what came back. Any error, or an answer of the wrong shape: the candidate goes to
+what came back: `time, url, attempts, status, error, sent, response`, and `local` (`{"file":
+"<region>/<name>.md"}`, the real path, which never left the machine). Any error, or an answer of the wrong shape: the candidate goes to
 `.meta/digest-pending.md`; nothing moves. Errors are logged by type name only.
 
 The key: `MEM_JEV_KEY`, else the Keychain item `typesafe-api-key`, which is sent only to the
