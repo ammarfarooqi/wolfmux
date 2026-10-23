@@ -125,7 +125,14 @@ A rule-4 candidate is archived only when Jev answers archive with probability >=
 slug, region, keywords, importance, days since last_confirmed, days since last reference and
 the size in bytes, nothing else; every token that matches a people/ file name (or a part of it
 split on `-`) is replaced by `person`. `.meta/jev/<UTC>-<slug>.json` keeps what was sent and
-what came back. Any error: the candidate goes to `.meta/digest-pending.md`; nothing moves.
+what came back. Any error, or an answer of the wrong shape: the candidate goes to
+`.meta/digest-pending.md`; nothing moves. Errors are logged by type name only.
+
+The key: `MEM_JEV_KEY`, else the Keychain item `typesafe-api-key`, which is sent only to the
+default URL `https://api.typesafe.ai/v1/systemone` (a custom `MEM_JEV_URL` needs
+`MEM_JEV_KEY`). A key outside printable ASCII (a space, a newline) is never sent: "jev key
+rejected (format)". Test hooks: `MEM_NOW` pins the clock; with it set, `drain` refuses and
+backup pruning is skipped unless `MEM_TEST=1`.
 
 ## Erase (mem erase, on the owner's word)
 

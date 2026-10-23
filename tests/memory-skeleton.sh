@@ -18,6 +18,8 @@ export HOME="$WORK/home"
 /bin/mkdir -p "$HOME"
 # Run from an agent's pane, the environment may carry a real tree or a real clock: all dropped.
 unset MEM_ROOT MEM_NOW MEM_PYTHON MEM_LOCK_WAIT MEM_LOCK_HELD MEM_SHARED_FOLDER MEM_JEV_URL MEM_JEV_KEY MEM_JEV_BACKOFF
+# MEM_TEST=1 lets drain and backup pruning run on the pinned MEM_NOW clock the checks use.
+export MEM_TEST=1
 # Jev is never the real one here: the key is a dummy and the URL is the mock (set once it runs).
 export MEM_JEV_KEY="test-key-not-real"
 export MEM_JEV_URL="http://127.0.0.1:9/never-started"
@@ -544,7 +546,27 @@ GOT_BEFORE="$(ls "$WORK/jev-got" | wc -l | tr -d ' ')"
 check "drain --no-jev never calls Jev and moves no rule-4 file" \
   '"$T/bin/mem" drain --no-jev | grep -q "^digest topics/stale-x.md (rule 4; --no-jev)" && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && [ -f "$T/topics/stale-x.md" ]'
 check "with no key (no MEM_JEV_KEY, no Keychain item) nothing is sent and nothing moves" \
-  '(unset MEM_JEV_KEY; PATH="$WORK/nosec:$PATH"; /bin/mkdir -p "$WORK/nosec"; printf "#!/bin/sh\nexit 44\n" >"$WORK/nosec/security"; chmod +x "$WORK/nosec/security"; "$T/bin/mem" drain | grep -q "no Jev key") && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && [ -f "$T/topics/stale-x.md" ]'
+  '(unset MEM_JEV_KEY MEM_JEV_URL; PATH="$WORK/nosec:$PATH"; /bin/mkdir -p "$WORK/nosec"; printf "#!/bin/sh\nexit 44\n" >"$WORK/nosec/security"; chmod +x "$WORK/nosec/security"; "$T/bin/mem" drain | grep -q "no Jev key") && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && [ -f "$T/topics/stale-x.md" ]'
+# A Keychain stand-in that hands out a key and leaves a mark when asked.
+/bin/mkdir -p "$WORK/fakesec"
+printf '#!/bin/sh\ntouch "%s/fakesec/asked"\necho KEYCHAINSECRET42\n' "$WORK" >"$WORK/fakesec/security"; chmod +x "$WORK/fakesec/security"
+OUT="$(unset MEM_JEV_KEY; PATH="$WORK/fakesec:$PATH" "$T/bin/mem" drain 2>&1)"
+check "a custom MEM_JEV_URL without MEM_JEV_KEY never gets the Keychain key: the Keychain is not asked, nothing is sent" \
+  'printf "%s" "$OUT" | grep -q "^digest topics/stale-x.md (rule 4; MEM_JEV_URL is not https://api.typesafe.ai/v1/systemone and MEM_JEV_KEY is not set" && [ ! -e "$WORK/fakesec/asked" ] && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && ! grep -rq KEYCHAINSECRET42 "$T" "$WORK/jev-got"'
+# A leftover MEM_NOW outside the tests (no MEM_TEST): drain refuses, backup keeps every tar.
+T="$WORK/pinned"
+fresh "$T"
+topic "$T" stale-p "stale, p" 3 2026-01-01
+MEM_NOW=2026-10-01T09:00Z "$T/bin/mem" backup >/dev/null
+SUM_BEFORE="$(tree_sum "$T")"
+OUT="$(env -u MEM_TEST MEM_NOW=2027-06-01T09:00Z "$T/bin/mem" drain 2>&1)"; RC=$?
+check "drain with MEM_NOW set and no MEM_TEST=1 refuses and changes nothing" \
+  '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "^mem: MEM_NOW is set: drain refuses a pinned clock" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+OUT="$(env -u MEM_TEST MEM_NOW=2027-06-01T09:00Z "$T/bin/mem" backup 2>&1)"; RC=$?
+check "backup with MEM_NOW set and no MEM_TEST=1 warns, takes the backup but prunes nothing" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^mem: warning: MEM_NOW=2027-06-01T09:00Z pins the clock" && printf "%s" "$OUT" | grep -q "^prune skipped: MEM_NOW is set" && [ -f "$T/.meta/backups/20261001T090000Z.tar" ] && [ -f "$T/.meta/backups/20270601T090000Z.tar" ]'
+check "with MEM_TEST=1 the same backup prunes the old routine tar" \
+  'MEM_NOW=2027-06-02T09:00Z "$T/bin/mem" backup >/dev/null && [ ! -e "$T/.meta/backups/20261001T090000Z.tar" ]'
 # A key that cannot go in a header is "no key"; an error is logged by its type name only.
 T="$WORK/drain-key"
 fresh "$T"

@@ -125,11 +125,28 @@ class Parser(argparse.ArgumentParser):
 # --- time --------------------------------------------------------------------------------
 # MEM_NOW pins the clock, so the tests can age asks, ledgers and backups without waiting.
 
+PINNED_WARNED = []
+
+
 def now():
     text = os.environ.get("MEM_NOW", "")
     if text:
+        if not testing() and not PINNED_WARNED:
+            PINNED_WARNED.append(True)
+            sys.stderr.write("mem: warning: MEM_NOW=%s pins the clock (a test hook); drain and backup pruning "
+                             "refuse to run with it unless MEM_TEST=1\n" % text)
         return parse_time(text)
     return datetime.datetime.now(UTC).replace(microsecond=0)
+
+
+def testing():
+    return os.environ.get("MEM_TEST") == "1"
+
+
+def refuse_pinned_clock(what):
+    """A MEM_NOW left behind in a shell would make drain archive everything and prune every routine backup."""
+    if os.environ.get("MEM_NOW") and not testing():
+        raise Refused("MEM_NOW is set: %s refuses a pinned clock; unset MEM_NOW (the tests also set MEM_TEST=1)" % what)
 
 
 def parse_time(text):
@@ -1721,6 +1738,10 @@ def backup_time(name, path):
 
 
 def prune_backups(tree, when):
+    if os.environ.get("MEM_NOW") and not testing():
+        print("prune skipped: MEM_NOW is set (a pinned clock never prunes)")
+        log(tree, "prune skipped: MEM_NOW is set")
+        return
     folder = os.path.join(tree.root, ".meta", "backups")
     bases = backup_bases(tree)
     for name in sorted(os.listdir(folder)):
@@ -1822,9 +1843,17 @@ def drain_sweeps(tree, rel, when):
 
 
 def jev_key():
+    """(key, why there is none). The Keychain key goes only to the default https URL: a custom
+    MEM_JEV_URL (a test mock, or a typo) gets a key only from MEM_JEV_KEY."""
     key = os.environ.get("MEM_JEV_KEY", "")
     if key:
-        return key
+        return key, None
+    if os.environ.get("MEM_JEV_URL", JEV_URL) != JEV_URL:
+        return None, "MEM_JEV_URL is not %s and MEM_JEV_KEY is not set; the Keychain key is never sent elsewhere" % JEV_URL
+    return keychain_key(), "no Jev key (Keychain item %s)" % JEV_KEYCHAIN_ITEM
+
+
+def keychain_key():
     try:
         out = subprocess.run(["security", "find-generic-password", "-s", JEV_KEYCHAIN_ITEM, "-w"],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
@@ -1916,6 +1945,7 @@ def digest_add(tree, rel, reason):
 
 
 def cmd_drain(tree, args):
+    refuse_pinned_clock("drain")
     when = now()
     dry = args.dry_run
     if not dry:
@@ -1969,9 +1999,9 @@ def drain_moves(tree, args, when, dry):
         if dry:
             print("candidate %s (rule 4: %s); Jev is not asked in a dry run" % (entry.rel, facts))
     if candidates and not dry:
-        key = None if args.no_jev else jev_key()
+        key, missing = (None, "--no-jev") if args.no_jev else jev_key()
         people = people_tokens(tree)
-        down = "--no-jev" if args.no_jev else (None if key else "no Jev key (Keychain item %s)" % JEV_KEYCHAIN_ITEM)
+        down = None if key else missing
         if key and not JEV_KEY_FORMAT.fullmatch(key):
             # A key with a space, a newline or a non-ASCII byte is never put in a header.
             key, down = None, "jev key rejected (format)"
