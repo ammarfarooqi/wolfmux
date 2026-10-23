@@ -54,7 +54,7 @@ note "no team running"
 # whole. While a memory folder holds anything, that needs a word of its own, --purge-memory; what it
 # would delete is said first, and without the word nothing at all is removed.
 MEMORY_DIR="$HOME/.wolfmux/memory"
-if [ "$PURGE" -eq 1 ] && [ -n "$(find "$MEMORY_DIR" -mindepth 1 -print -quit 2>/dev/null || true)" ]; then
+if [ "$PURGE" -eq 1 ] && [ -n "$(find "$MEMORY_DIR" -type f -print -quit 2>/dev/null || true)" ]; then
   echo "== team memory (~/.wolfmux/memory)"
   for dir in "$MEMORY_DIR"/*/*/; do
     [ -d "$dir" ] && note "$(du -sh "$dir" 2>/dev/null | cut -f1)	${dir%/}"

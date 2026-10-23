@@ -400,13 +400,13 @@ cmd_start() {
   fi
   require_metered_ok
   require_pin "$pin" "$MODEL_FAMILY" "$WOLFMUX_LEAD_ROLE"
+  # Here, in this shell: start_permitted runs in a substitution, where a refusal would only end the subshell.
+  caller_require_proven
+  founder="$(start_permitted)" || exit 77
   # The conversation --continue would reopen, as the paths below find it: the lead's record, else what the team kept.
   previous_session="$(reg_field "$WOLFMUX_LEAD_ROLE" session_id 2>/dev/null || true)"
   [ -n "$previous_session" ] || previous_session="$(meta_get lead_session 2>/dev/null || true)"
   memory_require_pinned "$WOLFMUX_LEAD_ROLE" "$resume" "$pin" "$previous_session" "$MODEL_FAMILY"
-  # Here, in this shell: start_permitted runs in a substitution, where a refusal would only end the subshell.
-  caller_require_proven
-  founder="$(start_permitted)" || exit 77
   # An agent acting on a team it did not found today is a founder bringing one back: it is announced and logged as that.
   if [ "$founder" != "operator" ]; then EVENT_BY="$founder"; fi
   if [ "$founder" != "operator" ] && founder_may_act; then FOUNDER_ACTING="$founder"; fi
@@ -1259,7 +1259,6 @@ cmd_restart() {
     agent_adopt_live "$role" "${MT_MODEL_AT:-}"
   fi
   require_pin "$pin" "$family" "$role"
-  memory_require_pinned "$role" "$resume" "$pin" "$(reg_field "$role" session_id)" "$family"
   workdir="$(reg_field "$role" workdir)"
   [ -d "$workdir" ] || die "cannot restart '$role': its working directory is gone ($workdir)"
   SESSION="$(session_name_for_project)"
@@ -1268,6 +1267,7 @@ cmd_restart() {
     return
   fi
   require_manager restart "$role"
+  memory_require_pinned "$role" "$resume" "$pin" "$(reg_field "$role" session_id)" "$family"
   model="${new_model:-$(reg_field "$role" model)}"
   models_refresh "$model" # fable/opus/sonnet/haiku: a restart is how an agent moves to a newer model
   lock_acquire

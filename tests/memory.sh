@@ -195,7 +195,7 @@ check "teamctl _prompt lead --team mem carries the Team memory block: folder, ru
 check "  ... the shared project memory folder is Claude Code's own name for the project folder" \
   'teamctl _prompt lead --team mem | grep -qF "$WOLFMUX_CLAUDE_PROJECTS/$(printf "%s" "$PROJECT" | sed "s|[^A-Za-z0-9]|-|g")/memory/"'
 check "the other team's lead and the mem team's worker get no block" \
-  '! teamctl _prompt lead --team other | grep -q "Team memory" && ! teamctl _prompt w1 --team mem | grep -q "Team memory"'
+  '! teamctl _prompt lead --team other | grep -q "^## Team memory" && ! teamctl _prompt w1 --team mem | grep -q "^## Team memory"'
 BEFORE="$(launches mem lead)"
 teamctl restart lead --team mem >/dev/null 2>&1
 check "a fresh restart of the mem lead: its first prompt is the boot" \
@@ -302,7 +302,7 @@ check "the mem team's own lead may: the policy is off, the folder stays, it is l
 check "off: teamctl memory path prints nothing and exits 1; status lists the kept folder" \
   'out="$(teamctl memory path)"; [ $? -eq 1 ] && [ -z "$out" ] && teamctl memory status | grep -q "^kept folders: mem"'
 check "off: the mem lead's prompt and settings are back to plain at its next start" \
-  '! teamctl _prompt lead --team mem | grep -q "Team memory" && teamctl restart lead --team mem >/dev/null 2>&1 && sleep 1 && settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not"'
+  '! teamctl _prompt lead --team mem | grep -q "^## Team memory" && teamctl restart lead --team mem >/dev/null 2>&1 && sleep 1 && settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not"'
 teamctl policy team-memory mem >/dev/null 2>&1
 check "teamctl policy team-memory mem, by you, is enable: the same folder, kept" \
   '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = mem ] && [ -f "$DIR/MEMORY.md" ]'
