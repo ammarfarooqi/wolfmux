@@ -2316,13 +2316,15 @@ def plan_row(tree, row, line, ctx):
         if action == "hold" or row.get("hold", "no").strip().lower() == "yes":
             item.update(status="hold", reason=row.get("notes", "").strip() or "held by the map")
             return item
-        if dest in ctx["dests"]:
-            raise Refused("dest %s is already the dest of line %d: keep one row, set the others to action skip "
-                          "(or give each its own dest)" % (dest, ctx["dests"][dest]))
-        ctx["dests"][dest] = line
         dest_file, _, dest_key = dest.partition("#")
-        tree.abs(dest_file)
         top = dest_file.split("/")[0]
+        # Several rows may append to one ledger month; a region file, an archive file or a state key takes one.
+        if top != "ledger":
+            if dest in ctx["dests"]:
+                raise Refused("dest %s is already the dest of line %d: keep one row, set the others to action skip "
+                              "(or give each its own dest)" % (dest, ctx["dests"][dest]))
+            ctx["dests"][dest] = line
+        tree.abs(dest_file)
         if expected == "state-key":
             if ctx["state"] is None:
                 raise Refused("a state: row needs --state <comms-state.json>")
@@ -2341,8 +2343,13 @@ def plan_row(tree, row, line, ctx):
                 return item
             if top == "ledger" and LEDGER_FILE.match(os.path.basename(dest_file)):
                 pretty = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
-                item["append"] = ("\n## migrated %s at %s\n```json\n%s\n```\n" % (source, minute(ctx["when"]), pretty)).encode("utf-8")
+                head = ("\n## migrated %s at " % source).encode("utf-8")
+                tail = ("\n```json\n%s\n```\n" % pretty).encode("utf-8")
+                item["append"] = head + minute(ctx["when"]).encode("utf-8") + tail
                 item.update(kind="ledger", dest=dest_file, status=action, payload=pretty.encode("utf-8"))
+                # The same block from an earlier run differs only in its time.
+                held = re.compile(re.escape(head) + rb"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z" + re.escape(tail))
+                ledger_held(tree, item, ctx, dest_file, held)
                 return item
             if top not in REGIONS:
                 raise Refused("a state key goes to state/<file>.json#<key>, ledger/<file> or <region>/<name>.md")
@@ -2377,7 +2384,10 @@ def plan_row(tree, row, line, ctx):
         elif top == "ledger":
             if not LEDGER_FILE.match(os.path.basename(dest_file)) or dest_file.count("/") != 1:
                 raise Refused("dest %s is not ledger/<kind>-YYYY-MM.<md|jsonl>" % dest_file)
+            if not payload:
+                raise Refused("the source is empty: nothing to append to %s; set action skip" % dest_file)
             item.update(kind="ledger", status="copy", append=payload)
+            ledger_held(tree, item, ctx, dest_file)
         else:
             raise Refused("dest %s is not in a region, archive/, ledger/ or state/" % dest_file)
         if item["kind"] in ("region", "archive") and tree.has(dest_file):
@@ -2390,6 +2400,16 @@ def plan_row(tree, row, line, ctx):
     except (Refused, ValueError, IOError, OSError) as error:
         item.update(status="refused", reason=str(error))
     return item
+
+
+def ledger_held(tree, item, ctx, dest_file, pattern=None):
+    """A ledger row whose payload the ledger already holds byte for byte (from an earlier run, or
+    an earlier row of this one) is 'exists': a re-run appends nothing and the payload stays once."""
+    current = (tree.read_or_none(dest_file) or b"") + b"".join(ctx["appends"].get(dest_file, []))
+    if (pattern.search(current) if pattern is not None else item["append"] in current):
+        item.update(status="exists", reason="already in the ledger")
+    elif item["status"] == "copy":
+        ctx["appends"].setdefault(dest_file, []).append(item["append"])
 
 
 def read_source(item, ctx, source, kind, top):
@@ -2612,6 +2632,10 @@ def verify(tree, items, dry):
         elif item["action"].strip() == "pointer":
             entry = Entry(tree, item["dest"])
             item["check"] = "pointer ok" if entry.get("pointer") == item["source_path"] else "MISSING"
+        elif item["kind"] == "region" and item["payload"] == b"":
+            # An empty body (a source that was all frontmatter) is not unique to anything: look at the dest.
+            placed = tree.read_or_none(item["dest"])
+            item["check"] = "found at the dest (an empty body)" if placed is not None and split_header(placed)[1] == b"" else "MISSING"
         elif item["kind"] in ("region", "archive"):
             found = shas.get(item["sha"], [])
             if item["dest"] in found and len(found) == sharing[item["sha"]]:
@@ -2709,7 +2733,7 @@ def cmd_migrate(tree, args):
             raise Refused("the map has no column %s (the header is %s)" % (", ".join(missing), ",".join(MAP_COLUMNS)))
         rows = list(reader)
     ctx = {"from": source, "rules": rules, "claude_mem": claude_mem, "claude_mem_used": False, "state": state,
-           "state_path": state_path, "when": when, "exclude": set(), "dests": {}}
+           "state_path": state_path, "when": when, "exclude": set(), "dests": {}, "appends": {}}
     items = [plan_row(tree, row, number, ctx) for number, row in enumerate(rows, 2)]
     out = []
     if not args.dry_run:
@@ -2726,7 +2750,11 @@ def cmd_migrate(tree, args):
     failures = verify(tree, items, args.dry_run)
     report = migrate_report(tree, args, items, failures, out, when)
     if not args.dry_run:
-        write_file(tree, ".meta/migrate-%s.md" % stamp(when), report.encode("utf-8"), expect=MISSING)
+        rel, n = ".meta/migrate-%s.md" % stamp(when), 1
+        while tree.has(rel):  # a re-run in the same second keeps the first report
+            n += 1
+            rel = ".meta/migrate-%s-%d.md" % (stamp(when), n)
+        write_file(tree, rel, report.encode("utf-8"), expect=MISSING)
         run_check(tree, now())
     sys.stdout.write(report)
     return 1 if failures else 0
