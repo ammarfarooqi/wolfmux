@@ -2446,8 +2446,9 @@ def erase_rule_lines(data, match, marker):
     """(new bytes, numbers of the lines erased, whether the name: line names the subject) for a
     rules file. A header line keeps its shape (`key: <marker>`, `- <marker>`, an indented
     marker), so the file keeps its header; the name: line is the file name and stays (listed as
-    left behind). A body line becomes the marker. A CRLF line stays CRLF."""
-    text = data.decode("utf-8", "replace")
+    left behind). A body line becomes the marker. A CRLF line stays CRLF, and a line erase does
+    not touch keeps its bytes, invalid UTF-8 too."""
+    text = as_written(data)
     lines = text.split("\n")
     close = 0
     if split_header(data)[0] is not None:
@@ -2467,7 +2468,7 @@ def erase_rule_lines(data, match, marker):
             erased = ("%s: %s" % (key.group(1), erased)) if key else (lead.group(1) if lead else "  ") + erased
         hit.append(number + 1)
         lines[number] = erased + end
-    return "\n".join(lines).encode("utf-8"), hit, named
+    return "\n".join(lines).encode("utf-8", "surrogateescape"), hit, named
 
 
 def erase_matcher(subject):

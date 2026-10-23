@@ -1047,6 +1047,26 @@ check "erase edits rules/role.md line by line (a header line keeps its field) an
   'printf "%s\n" "$LIST" | grep -qx "line   rules/role.md:5" && printf "%s\n" "$LIST" | grep -qx "line   rules/role.md:13" && ! printf "%s\n" "$LIST" | grep -q "^file   rules/" && printf "%s\n" "$LIST" | grep -q "^tar    .*: redact rules/role.md$" && ! printf "%s\n" "$LIST" | grep -q "drop rules/" && [ -f "$T/rules/role.md" ] && grep -qx "summary: \[erased [0-9-]* on owner.s word\]" "$T/rules/role.md" && grep -qx "I run comms." "$T/rules/role.md" && ! grep -q Shaurya "$T/rules/role.md" && "$T/bin/mem" boot | grep -qF "[erased" && ! "$T/bin/mem" boot | grep -q "no rules/role.md yet" && ! "$T/bin/mem" check | grep -q "^PROBLEM .*rules/role.md"'
 check "a rules file whose name holds the subject stays and is listed as left behind (file name); other region files go whole with (stem) or their first matching line" \
   'printf "%s\n" "$LIST" | grep -qx "left behind: rules/shaurya-review.md (file name)" && [ -f "$T/rules/shaurya-review.md" ] && printf "%s\n" "$LIST" | grep -qx "file   people/shaurya.md (stem)" && printf "%s\n" "$LIST" | grep -qx "file   topics/seating.md (line 12: Ask Shaurya about the seating plan before Monday.)" && printf "%s\n" "$LIST" | grep -q "^tar    .*: drop people/shaurya.md (stem)$" && [ ! -e "$T/people/shaurya.md" ] && [ ! -e "$T/topics/seating.md" ]'
+# A line of a rules file that erase does not touch keeps its bytes, invalid UTF-8 too (\351,
+# Latin-1 e-acute), in the live file and in the rebuilt tar.
+T="$WORK/erase-rules-bytes"
+fresh "$T"
+printf -- '---\nname: menu\nregion: rules\nkeywords: menu, lunch\nsummary: the lunch menu\nlinks:\nimportance: 3\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\ncaf\351 menu\nAsk Priya Nair first.\n' >"$T/rules/menu.md"
+chmod 600 "$T/rules/menu.md"
+"$T/bin/mem" backup >/dev/null
+LIST="$("$T/bin/mem" erase "Priya Nair")"
+N="$(printf '%s\n' "$LIST" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase "Priya Nair" --confirm "$N" >/dev/null
+check "erase of a rules file line keeps an invalid UTF-8 byte on a line it does not touch, byte for byte, live and in the rebuilt tar" \
+  '[ "$N" = 2 ] && python3 -I - "$T" <<'"'"'EOF'"'"'
+import glob, sys, tarfile
+t = sys.argv[1]
+live = open(t + "/rules/menu.md", "rb").read()
+tars = glob.glob(t + "/.meta/backups/*.tar")
+inner = tarfile.open(tars[0]).extractfile("rules/menu.md").read()
+sys.exit(not (len(tars) == 1 and all(b"\ncaf\xe9 menu\n[erased " in data and b"Priya" not in data and b"\xef\xbf\xbd" not in data
+                                     for data in (live, inner))))
+EOF'
 # Matching: both sides NFC, accent-folded, lower case; the subject's words match across any run
 # of space, -, _ or . (file names and [[slug]] links too).
 T="$WORK/erase-match"
