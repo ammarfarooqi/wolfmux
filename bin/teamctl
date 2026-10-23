@@ -128,8 +128,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       a restored lead on it when its transcript reports a usage limit)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
   Team memory  one team's lead keeps a private memory folder, ~/.wolfmux/memory/<project>/<team>/ (default: none)
-    teamctl memory [status]                           anyone: which team has it, the folder and its sizes, the MEMORY.md index
-                                                      against its 25,000-byte cap, and whether the running lead was started with it
+    teamctl memory [status]                           anyone: which team has it, the folder's sizes, the MEMORY.md index against
+                                                      its 25,000-byte cap, and whether the running lead was started with it. The
+                                                      folder's path and the lead's conversation id: only to you or that lead
     teamctl memory enable <team>                      yours alone (77 for an agent): sets policy team-memory, creates the folder
                                                       (mode 700) from the installed skeleton, runs mem init. An existing folder is kept.
                                                       Refused for a team an agent founded: its lead would never get it

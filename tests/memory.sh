@@ -522,6 +522,19 @@ check "a mem team that another lead founds after finish gets no block, no settin
 check "  ... and status says why, with the way out (adopt), not \"start the team yourself\"" \
   'teamctl memory status 2>&1 | grep -q "founded by other.lead, not by you: its lead gets no memory.*teamctl memory adopt mem" && ! teamctl memory status 2>&1 | grep -q "Start the team yourself"'
 
+echo "== memory status: the folder's path and the lead's conversation id for you and the memory lead only"
+teamctl memory enable agt >/dev/null 2>&1
+AID="$(record lead agt | jq -r .session_id)"
+check "you see the folder's path and the lead's conversation id" \
+  '[ -n "$AID" ] && teamctl memory status >"$WORK/o" 2>&1 && grep -q "^team-memory:  agt" "$WORK/o" && grep -qF "$ADIR" "$WORK/o" && grep -qF "$AID" "$WORK/o"'
+check "  ... and so does the memory team's own lead" \
+  'as_agent agt lead memory status >"$WORK/o" 2>&1 && grep -qF "$ADIR" "$WORK/o" && grep -qF "$AID" "$WORK/o"'
+check "everyone else gets the sizes and counts without them: another team's lead, a caller outside its pane (no 77: status is open)" \
+  'for who in "other lead" "mem lead"; do as_agent $who memory status >"$WORK/o" 2>&1 || exit 1
+     grep -q "^folder: .*files" "$WORK/o" && grep -Eq "^index: .*MEMORY.md [0-9]+ of 25000 bytes" "$WORK/o" && ! grep -qF "$ADIR" "$WORK/o" && ! grep -qF "$AID" "$WORK/o" ||
+       { echo "shown to: $who"; cat "$WORK/o"; exit 1; }; done &&
+   TEAM_ROLE=lead WOLFMUX_TEAM=agt "$REPO/bin/teamctl" memory status >"$WORK/o" 2>&1 && grep -q "^team-memory:  agt" "$WORK/o" && ! grep -qF "$ADIR" "$WORK/o" && ! grep -qF "$AID" "$WORK/o"'
+
 echo
 echo "memory: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

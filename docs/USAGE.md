@@ -720,6 +720,7 @@ One team of a project may give its lead a private memory folder. Only the human 
 ```bash
 teamctl memory enable communication-management   # or: teamctl policy team-memory communication-management
 teamctl memory status                            # anyone: which team, sizes, index vs its 25,000-byte cap, the lead's state
+                                                 # (the folder's path and the lead's conversation id: the human and that lead only)
 teamctl restart lead --team communication-management --resume <its id>   # the lead gets it at its next start
 teamctl memory disable                           # the human, or that lead itself: policy off, the folder stays
 teamctl memory path                              # the human, or that lead itself: the folder
@@ -748,11 +749,15 @@ team's event log. Then `enable` works:
   `<folder>/bin/mem boot` (it prints the card), re-create the crons it lists, then read the Beads
   inboxes. With a handover, the boot comes first and the handover after it, in the same prompt.
 
-Its `start --continue` and `restart --continue` are refused while no conversation id is stored, because
-`claude --continue` would open the newest conversation in the folder every lead shares. That lead's pane
-shows the card after a boot, so `teamctl capture` of it is the human's alone (exit 77 for anyone else).
-`teamctl memory status` stays open to anyone and shows sizes, counts and the policy, never what a note
-says. `destroy --purge`, `finish` and `install.sh` leave the folder alone; `teamctl destroy --purge
+While team memory is on, `start --continue` and `restart --continue` of EVERY lead of the project are
+refused while that lead has no stored conversation id, because `claude --continue` would open the newest
+conversation in the folder every lead shares: the memory lead could get another lead's conversation, and
+any other lead the memory lead's. The refusal names the memory team. With the policy off, a lead with no
+id continues as before (the newest-transcript guess, with a warning). That lead's pane shows the card
+after a boot, so `teamctl capture` of it is the human's alone (exit 77 for anyone else), also after the
+policy moved, for as long as the running lead's settings still carry `autoMemoryDirectory` (until its
+restart). `teamctl memory status` stays open to anyone and shows sizes, counts and the policy, never what
+a note says; the folder's path and the lead's conversation id only to the human and that lead. `destroy --purge`, `finish` and `install.sh` leave the folder alone; `teamctl destroy --purge
 --memory` and `uninstall.sh --purge --purge-memory` delete it. `--memory` is the human's alone (the pane
 proof decides: an agent gets exit 77 even when it has a terminal to type the name on), and it also asks
 for the team's name. `uninstall.sh --purge-memory` without `--purge` removes nothing (exit 64).

@@ -216,31 +216,49 @@ memory_lead_sessions() {
   "$WOLFMUX_PS_BIN" -axo pid=,command= 2>/dev/null | MEMORY_SID="$1" /usr/bin/awk 'index($0, ENVIRON["MEMORY_SID"]) { n++ } END { print n + 0 }'
 }
 
+# memory_caller_is_owner — 0 for you and for the memory team's own lead (the one that HAS the memory, as
+# memory_require_owner asks); 1 for everybody else, a caller that fails the pane proof included. It never dies:
+# status is open to anyone, and this only decides which of its lines carry the folder's path and the lead's
+# conversation id (a path feeds a script; an id feeds `claude --resume`, which opens that conversation, card and all).
+memory_caller_is_owner() {
+  local team
+  caller_resolve
+  [ -z "$CALLER_NOT_HERE" ] || return 1
+  [ -n "$CALLER_ROLE" ] || return 0
+  team="${CALLER_TEAM:-$WOLFMUX_DEFAULT_TEAM}"
+  [ "$CALLER_ROLE" = "$WOLFMUX_LEAD_ROLE" ] && [ "$team" = "$(memory_team)" ] || return 1
+  (team_paths "$team" && memory_lead_dir "$CALLER_ROLE") >/dev/null 2>&1
+}
+
 memory_status() {
-  local team dir index card files kb settings session pane state started id sessions folders="" path founder family
+  local team dir index card files kb settings session pane state started id sessions folders="" path founder family owner=0 where="" restart
+  memory_caller_is_owner && owner=1
   team="$(memory_team)"
   if [ -z "$team" ]; then
     say "team-memory:  off   (policy, for the whole project: no lead has a private memory folder)"
     for path in "$WOLFMUX_DATA/memory/$PROJECT_KEY"/*/; do
       [ -d "$path" ] && folders="$folders $(basename "$path")"
     done
-    [ -z "$folders" ] || say "kept folders:$folders   (under $(short_path "$WOLFMUX_DATA/memory/$PROJECT_KEY")/; nothing reads them while it is off)"
+    [ "$owner" -eq 0 ] || where="under $(short_path "$WOLFMUX_DATA/memory/$PROJECT_KEY")/; "
+    [ -z "$folders" ] || say "kept folders:$folders   (${where}nothing reads them while it is off)"
     say "turn it on:   teamctl memory enable <team>   (yours alone, from your own terminal)"
     return 0
   fi
   dir="$(memory_dir_for "$team")"
+  # The folder's path and the lead's conversation id: to you and that lead only (memory_caller_is_owner).
+  if [ "$owner" -eq 1 ]; then where="$(short_path "$dir")   "; fi
   say "team-memory:  $team   (policy, for the whole project: its lead keeps a private memory folder)"
   if [ ! -d "$dir" ]; then
-    say "folder:       $(short_path "$dir")   MISSING: teamctl memory enable $team creates it"
+    say "folder:       ${where}MISSING: teamctl memory enable $team creates it"
   else
     files="$(/usr/bin/find "$dir" -type f 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
     kb="$(disk_kb "$dir")"
-    say "folder:       $(short_path "$dir")   $files files, $(human_size "$kb")"
+    say "folder:       $where$files files, $(human_size "$kb")"
     index="$(memory_bytes "$dir/MEMORY.md")"
     say "index:        MEMORY.md $index of $MEMORY_INDEX_CAP bytes$([ "$index" -le "$MEMORY_INDEX_CAP" ] || printf '   OVER THE CAP: Claude Code loads only the start of it')"
     card="$(memory_bytes "$dir/core/card.md")"
     say "card:         core/card.md $card bytes   (mem boot reads it in the lead's conversation; it is never in a prompt)"
-    [ -x "$dir/bin/mem" ] || warn "$(short_path "$dir")/bin/mem is missing or not executable: the lead gets no memory until it is back (teamctl memory enable $team)"
+    [ -x "$dir/bin/mem" ] || warn "the folder's bin/mem is missing or not executable: the lead gets no memory until it is back (teamctl memory enable $team)"
   fi
   founder="$( (team_paths "$team" && team_founder) 2>/dev/null || true)"
   if [ -n "$founder" ] && [ "$founder" != "operator" ]; then
@@ -268,10 +286,14 @@ memory_status() {
   if [ -n "$id" ]; then
     sessions="$(memory_lead_sessions "$id")"
     if [ "$sessions" -gt 1 ]; then
-      warn "$sessions lead sessions of team $team are alive (processes with conversation $id): two sessions write over each other's memory. Keep one."
+      warn "$sessions lead sessions of team $team are alive$([ "$owner" -eq 0 ] || printf ' (processes with conversation %s)' "$id"): two sessions write over each other's memory. Keep one."
     fi
   fi
-  say "note:         enable and disable reach a running lead only at its next restart (a card edit, at its next mem boot): teamctl restart lead --team $team $([ -n "$id" ] && printf -- '--resume %s' "$id" || printf -- '--continue')"
+  restart=""
+  if [ "$owner" -eq 1 ]; then
+    restart=": teamctl restart lead --team $team $([ -n "$id" ] && printf -- '--resume %s' "$id" || printf -- '--continue')"
+  fi
+  say "note:         enable and disable reach a running lead only at its next restart (a card edit, at its next mem boot)$restart"
 }
 
 # memory_require_owner <subcommand> — check and path are yours and the memory team's lead's, as disable is:
