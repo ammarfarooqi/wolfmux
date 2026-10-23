@@ -966,6 +966,10 @@ OUT="$(MEM_LOCK_WAIT=0 "$T/bin/mem" set cursors.slack_dm 7 2>&1)"; RC=$?
 check "a second writer is refused (exit 75) while another writer holds the lock" \
   '[ "$RC" -eq 75 ] && printf "%s" "$OUT" | grep -q "another writer holds" && ! grep -q slack_dm "$T/state/cursors.json"'
 check "readers take no lock: recall and status work while it is held" '"$T/bin/mem" status >/dev/null && "$T/bin/mem" recall zebra | grep -q "no match"'
+CARD_SUM="$(tree_sum "$T/core/card.md")"
+OUT="$("$T/bin/mem" boot 2>"$WORK/boot-busy.err")"; RC=$?
+check "boot while another writer holds the lock still reads: it prints a fresh card at once, unsaved, and says so" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^# Card" && grep -q "the card below is current but not saved" "$WORK/boot-busy.err" && [ "$CARD_SUM" = "$(tree_sum "$T/core/card.md")" ]'
 wait "$HOLDER"
 check "once the lock is free the same writer goes through" '"$T/bin/mem" set cursors.slack_dm 7 >/dev/null && grep -q "\"slack_dm\": 7" "$T/state/cursors.json"'
 printf -- '---\nname: evil\nregion: topics\nkeywords: evil\nsummary: outside\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nOutside.\n' >"$WORK/outside.md"

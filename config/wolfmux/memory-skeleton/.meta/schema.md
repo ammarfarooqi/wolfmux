@@ -30,7 +30,8 @@ Keep it current when the format changes.
   .meta/jev/                 request/response JSON of every Jev call (audit)
 ```
 
-Also under `.meta/`: `lock` (the one writer lock), `shared-folder` (the shared project
+Also under `.meta/`: `lock` (the one writer lock; `boot` never waits for it and, while another
+writer holds it, prints a fresh card without saving it), `shared-folder` (the shared project
 folder's path, one line), `digest-pending.md` (drain candidates waiting for the owner),
 `migrate-<UTC>.md` (the report of a real migration). Empty folders carry a `.keep` file;
 mem ignores it.

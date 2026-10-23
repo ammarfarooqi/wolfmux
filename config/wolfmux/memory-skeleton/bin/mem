@@ -108,6 +108,7 @@ USAGE = """usage: mem [--root <dir>] <command> [options]
 
 The tree: --root <dir>, else $MEM_ROOT, else the folder above this script.
 Exit status: 0 done, 1 refused or problems found, 64 usage, 75 another writer holds the lock.
+boot never waits for the lock: while another writer holds it, boot prints a fresh card unsaved.
 """
 
 READERS = ("recall", "status", "help")
@@ -737,10 +738,12 @@ def authority_resolves(tree, ref):
 # older holder still runs (measured on this machine, see lib/disk.sh). mem runs itself again
 # as lockf's command; the child knows it holds the lock from MEM_LOCK_HELD.
 
-def run_locked(tree, argv):
+def run_locked(tree, argv, busy=None):
+    """Re-run this command under the lock. With `busy`, the lock is not waited for: when another
+    writer holds it, busy() runs instead and its return is the exit status."""
     if os.environ.get("MEM_LOCK_HELD") == tree.lock:
         return
-    wait = os.environ.get("MEM_LOCK_WAIT", "10")
+    wait = "0" if busy else os.environ.get("MEM_LOCK_WAIT", "10")
     if not re.match(r"^\d+$", wait):
         raise Refused("MEM_LOCK_WAIT must be a number of seconds, not %r" % wait)
     meta = os.path.dirname(tree.lock)
@@ -753,6 +756,8 @@ def run_locked(tree, argv):
         code = subprocess.call([lockf, "-k", "-s", "-t", wait, tree.lock] + child, env=env)
     else:
         code = flock_call(tree.lock, int(wait), child, env)
+    if code == EXIT_BUSY and busy:
+        sys.exit(busy())
     if code == EXIT_BUSY:
         sys.stderr.write("mem: another writer holds %s (waited %ss); nothing was changed, try again\n" % (tree.lock, wait))
     sys.exit(code)
@@ -1073,6 +1078,14 @@ def cmd_init(tree, args):
 
 def cmd_boot(tree, args):
     sys.stdout.write(write_card(tree, now()))
+    return 0
+
+
+def boot_unsaved(tree):
+    """boot while another writer holds the lock: a session must still read its card, so it gets
+    a fresh one at once, and the next boot saves it."""
+    sys.stderr.write("mem: another writer holds %s; the card below is current but not saved\n" % tree.lock)
+    sys.stdout.write(card_text(tree, now()))
     return 0
 
 
@@ -3154,7 +3167,7 @@ def main(argv):
                     os.makedirs(root, 0o700)
             elif not tree.is_tree():
                 raise Refused("%s is not a memory tree (no .meta/); run mem init first" % root)
-            run_locked(tree, rest)
+            run_locked(tree, rest, (lambda: boot_unsaved(tree)) if args.command == "boot" else None)
         elif not tree.is_tree():
             raise Refused("%s is not a memory tree (no .meta/); run mem init first" % root)
         return COMMANDS[args.command](tree, args)
