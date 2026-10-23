@@ -36,6 +36,12 @@ folder's path, one line), `digest-pending.md` (drain candidates waiting for the 
 `migrate-<UTC>.md` (the report of a real migration). Empty folders carry a `.keep` file;
 mem ignores it.
 
+Which tree mem works on: `--root <dir>` (before the command or after it; two different ones
+are a usage error), else `$MEM_ROOT`, else the folder above `bin/mem`. When `bin/mem` is a link
+and the folder above the link holds `.meta/`, that folder is the tree (a link into a repo's
+skeleton never writes the repo); otherwise (a link at `~/.local/bin/mem`) it is the folder
+above the real script.
+
 ## File header (every file in rules/ people/ teams/ topics/)
 
 ```

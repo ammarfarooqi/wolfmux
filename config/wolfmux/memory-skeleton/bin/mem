@@ -33,7 +33,7 @@ import urllib.error
 import urllib.request
 
 # realpath, not abspath: through a link at ~/.local/bin/mem the tree is still the folder above
-# the real script, never ~/.local.
+# the real script, never ~/.local. (default_root says when the link's own folder wins.)
 SELF = os.path.realpath(sys.argv[0])
 UTC = datetime.timezone.utc
 
@@ -108,7 +108,8 @@ USAGE = """usage: mem [--root <dir>] <command> [options]
       [--dry-run] [--allow-refused]
   status
 
-The tree: --root <dir>, else $MEM_ROOT, else the folder above this script.
+The tree: --root <dir> (before or after the command), else $MEM_ROOT, else the folder above
+bin/mem (above the link when bin/mem is a link inside a tree; else above the real script).
 Exit status: 0 done, 1 refused or problems found, 64 usage, 75 another writer holds the lock.
 boot never waits for the lock: while another writer holds it, boot prints a fresh card unsaved.
 """
@@ -3302,6 +3303,8 @@ def build_parser():
     p.add_argument("--state")
     p.add_argument("--dry-run", dest="dry_run", action="store_true")
     p.add_argument("--allow-refused", dest="allow_refused", action="store_true")
+    for p in sub.choices.values():  # --root after the command too; main holds it to the one before
+        p.add_argument("--root")
     return parser
 
 
@@ -3314,8 +3317,8 @@ COMMANDS = {
 
 
 def split_root(argv):
-    """--root <dir> (or --root=<dir>) counts only before the command. After it, `--root` is a
-    value like any other (an erase subject, a note) and goes to the command untouched."""
+    """(the --root given before the command or None, the rest). After the command, --root is
+    the command's own option (see main); after `--` it is a plain value."""
     root, rest = None, list(argv)
     while rest and (rest[0] == "--root" or rest[0].startswith("--root=")):
         if rest[0] != "--root":
@@ -3325,9 +3328,17 @@ def split_root(argv):
             sys.stderr.write("mem: --root needs a folder\n")
             sys.exit(EXIT_USAGE)
         root, rest = rest[1], rest[2:]
-    if not root:
-        root = os.environ.get("MEM_ROOT") or os.path.join(os.path.dirname(SELF), "..")
-    return os.path.realpath(os.path.expanduser(root)), rest
+    return (os.path.realpath(os.path.expanduser(root)) if root else None), rest
+
+
+def default_root():
+    """The folder above this script. When bin/mem is itself a link (into a repo's skeleton, say),
+    the folder above the LINK is the tree if it holds .meta/: the link target's folder is never
+    written. Otherwise (a link at ~/.local/bin/mem) the folder above the real script."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(sys.argv[0])))  # lexical: no link followed
+    if os.path.isdir(os.path.join(here, ".meta")):
+        return here
+    return os.path.join(os.path.dirname(SELF), "..")
 
 
 def main(argv):
@@ -3337,6 +3348,13 @@ def main(argv):
         sys.stdout.write(USAGE)
         return 0 if rest else EXIT_USAGE
     args = build_parser().parse_args(rest)
+    if getattr(args, "root", None):  # `mem boot --root X` works as `mem --root X boot`
+        after = os.path.realpath(os.path.expanduser(args.root))
+        if root and after != root:
+            sys.stderr.write("mem: two different --root folders (%s and %s)\n" % (root, after))
+            return EXIT_USAGE
+        root = after
+    root = root or os.path.realpath(os.path.expanduser(os.environ.get("MEM_ROOT") or default_root()))
     tree = Tree(root)
     try:
         if args.command not in READERS:

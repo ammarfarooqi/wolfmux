@@ -133,6 +133,18 @@ OUT="$("$HOME/.local/bin/mem" init 2>&1)"; RC=$?
 check "through a symlinked \$0, init and boot work on the real tree, never on the link's folder" \
   '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^mem init: $T is ready" && "$HOME/.local/bin/mem" boot | grep -q "^# Card" && [ ! -e "$HOME/.local/.meta" ] && [ ! -e "$HOME/.local/MEMORY.md" ] && [ "$(mode_of "$HOME/.local")" = 755 ] && [ "$(mode_of "$HOME/.local/bin")" = 755 ]'
 /bin/rm -rf "$HOME/.local"
+# A tree whose bin/mem is itself a link into a skeleton elsewhere (a repo checkout, which has a
+# .meta/ too): the tree is the folder above the link; the link's target folder is never written.
+REPO_SKEL="$WORK/repo-skel"
+/bin/cp -R "$SKEL" "$REPO_SKEL"
+REPO_SUM="$(tree_sum "$REPO_SKEL")"
+LT="$WORK/linked"
+/bin/cp -R "$SKEL" "$LT"
+/bin/rm -f "$LT/bin/mem"
+ln -s "$REPO_SKEL/bin/mem" "$LT/bin/mem"
+OUT="$("$LT/bin/mem" init 2>&1)"
+check "a tree whose bin/mem links into a skeleton elsewhere: init, boot and check work on the tree; the target folder is untouched" \
+  'printf "%s" "$OUT" | grep -q "^mem init: $LT is ready" && "$LT/bin/mem" boot | grep -q "^# Card" && (cd "$LT" && bin/mem check >/dev/null) && [ -f "$LT/core/card.md" ] && [ -f "$LT/state/cursors.json" ] && [ "$REPO_SUM" = "$(tree_sum "$REPO_SKEL")" ]'
 check "mem runs from any cwd with only PATH and HOME set" \
   '(cd / && env -i PATH="$PATH" HOME="$HOME" "$T/bin/mem" boot) | grep -q "^# Card"'
 check "MEM_ROOT points mem at another tree" \
@@ -542,8 +554,11 @@ OUT="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" check)"
 CARD="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" boot)"
 check "a decide block whose bytes: count is wrong is one WARN naming its time; the decisions after it keep their blocks" \
   '[ "$(printf "%s\n" "$OUT" | grep -c "does not match its bytes: count")" -eq 1 ] && printf "%s\n" "$OUT" | grep -qx "WARN    ledger/decisions-2026-10.md: the decision at 2026-10-02T09:00Z does not match its bytes: count; the block is damaged, read it by hand" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-03T09:00Z number-3" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-04T09:00Z number-4"'
-check "--root counts only before the command; after it, it is the command's own argument" \
+check "after --, --root is a plain value (a recall word); a --root that is no tree is refused" \
   'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" && OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
+fresh "$WORK/after"
+check "--root after the command works as before it; the same folder twice is fine, two different ones exit 64" \
+  '"$T/bin/mem" set cursors.after_root 1 --root "$WORK/after" >/dev/null && grep -q "\"after_root\": 1" "$WORK/after/state/cursors.json" && ! grep -q after_root "$T/state/cursors.json" && "$T/bin/mem" --root "$WORK/after" boot --root "$WORK/after/../after" | grep -q "^# Card" && "$T/bin/mem" --root "$T" boot --root "$WORK/after" >/dev/null 2>&1; [ $? -eq 64 ]'
 MEM_NOW=2026-10-12T10:00Z "$T/bin/mem" sweep-log --inboxes 3 --asks-touched 1 --free-pct 41 --swap-gb 2.5 --load 3.2 >/dev/null
 check "sweep-log writes one JSON line with the numbers" \
   'python3 -I -c "import json,sys; l=open(sys.argv[1]).read().splitlines(); r=json.loads(l[-1]); sys.exit(not (len(l)==1 and r[\"time\"]==\"2026-10-12T10:00Z\" and r[\"inboxes\"]==3 and r[\"free_pct\"]==41 and r[\"swap_gb\"]==2.5 and r[\"load\"]==3.2))" "$T/ledger/sweeps-2026-10.jsonl"'
