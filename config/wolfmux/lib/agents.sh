@@ -974,6 +974,11 @@ cmd_run_agent() {
     WOLFMUX_BRANCH="$(reg_field "$role" branch)"
     WOLFMUX_REPO="$(reg_field "$role" repo)" # set only with --repo: that repository's own checkout is read-only too
     export WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_REPO
+    # Claude Code's Bash tool runs in CLAUDE_CODE_SHELL, else in $SHELL when that is bash or zsh (Claude Code
+    # 2.1.309). The guard reads a command the way bash does, so a worker's commands run in bash; on a Mac whose
+    # login shell is zsh they ran in zsh, where (a|b) is a glob group and =cmd a path lookup. The guard reads
+    # those two anyway (lib/guard.sh). Leads keep their own shell.
+    export SHELL=/bin/bash CLAUDE_CODE_SHELL=/bin/bash
     # A teammate spawned with --repo sits in another repository, and bd resolves its workspace
     # through git: without this it would look for Beads in THAT repository and find none or the
     # wrong one. The team's tasks and messages live in the project's workspace, so name it.

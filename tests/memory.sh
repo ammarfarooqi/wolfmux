@@ -41,6 +41,7 @@ if [ "${1:-}" = "-p" ]; then
   exit 0
 fi
 jq -cn --args '$ARGS.positional' -- "$@" >>"$FAKE/argv-${WOLFMUX_TEAM:-default}-${TEAM_ROLE:-x}"
+printf '%s|%s\n' "${SHELL:-}" "${CLAUDE_CODE_SHELL:-}" >"$FAKE/shell-${WOLFMUX_TEAM:-default}-${TEAM_ROLE:-x}"
 exec "$STUB_AGENT" "$@"
 EOF
 /bin/cat >"$FAKE/bd" <<'EOF'
@@ -473,6 +474,8 @@ W65="echo $(awk 'BEGIN { for (i = 0; i < 66000; i++) printf "A" }')"
 HD400="$(awk 'BEGIN { print "cat > out.txt <<\047EOF\047"; for (i = 0; i < 200000; i++) print "x"; printf "EOF" }')"
 check "H1: a 60 KB heredoc and one 60 KB word pass in under 0.5 s; 65 KB and a 400 KB heredoc are refused at once (under 0.3 s)" \
   'timed 500 allow "$HD60" && timed 500 allow "$W60" && timed 300 deny "$W65" && timed 300 deny "$HD400"'
+check "H2: a worker runs its Bash tool in bash (SHELL and CLAUDE_CODE_SHELL are /bin/bash at its launch); a lead keeps its own shell" \
+  '[ "$(cat "$FAKE/shell-mem-w1")" = "/bin/bash|/bin/bash" ] && case "$(cat "$FAKE/shell-mem-lead")" in *"|") true ;; *) false ;; esac'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \
