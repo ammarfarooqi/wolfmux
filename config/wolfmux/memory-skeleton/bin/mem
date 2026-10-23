@@ -2442,6 +2442,26 @@ def first_hit(text, match):
     return "a JSON value"
 
 
+# Header fields that hold a list: erase takes out the items that name the subject, never the line.
+ERASE_LIST_FIELDS = ("keywords", "links")
+
+
+def erase_list(field, value, match):
+    """A links: or keywords: value without the items that name the subject, still a list of the
+    same kind. A name spread over two items (keywords: tom, smith) takes both of its words out.
+    No link left is an empty links:; no keyword left is the one keyword erased (an empty
+    keywords: is a check problem)."""
+    def render(items):
+        return render_links(items) if field == "links" else ", ".join(items)
+    items = links_of(value) if field == "links" else [item.strip() for item in value.split(",") if item.strip()]
+    kept = [item for item in items if not match.search(item)]
+    if match.search(render(kept)):
+        kept = [item for item in kept if erase_norm(item).strip() not in match.words]
+    if match.search(render(kept)):
+        kept = []
+    return render(kept) or ("erased" if field == "keywords" else "")
+
+
 def erase_rule_lines(data, match, marker):
     """(new bytes, numbers of the lines erased, whether the name: line names the subject) for a
     rules file. A header line keeps its shape (`key: <marker>`, `- <marker>`, an indented
@@ -2465,7 +2485,10 @@ def erase_rule_lines(data, match, marker):
                 named = True
                 continue
             lead = re.match(r"^([ \t]+|- |#\s*)", bare)
-            erased = ("%s: %s" % (key.group(1), erased)) if key else (lead.group(1) if lead else "  ") + erased
+            if key and key.group(1) in ERASE_LIST_FIELDS:
+                erased = ("%s: %s" % (key.group(1), erase_list(key.group(1), key.group(2) or "", match))).rstrip()
+            else:
+                erased = ("%s: %s" % (key.group(1), erased)) if key else (lead.group(1) if lead else "  ") + erased
         hit.append(number + 1)
         lines[number] = erased + end
     return "\n".join(lines).encode("utf-8", "surrogateescape"), hit, named

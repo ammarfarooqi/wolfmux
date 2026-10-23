@@ -1067,6 +1067,23 @@ inner = tarfile.open(tars[0]).extractfile("rules/menu.md").read()
 sys.exit(not (len(tars) == 1 and all(b"\ncaf\xe9 menu\n[erased " in data and b"Priya" not in data and b"\xef\xbf\xbd" not in data
                                      for data in (live, inner))))
 EOF'
+# A links: or keywords: line of a rules file loses only the items that name the subject and
+# stays a list; check finds nothing after.
+T="$WORK/erase-lists"
+fresh "$T"
+printf -- '---\nname: tom-smith\nregion: people\nkeywords: release\nsummary: a release person\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nRelease.\n' >"$T/people/tom-smith.md"
+topic "$T" trains "trains, carriages"
+topic "$T" deploys "deploys, windows"
+printf 'Trains leave on Monday.' | "$T/bin/mem" decide --time 2026-10-02T09:00Z --source chat --slug trains >/dev/null
+printf 'Ask before a release.' | "$T/bin/mem" decide --time 2026-10-02T10:00Z --source chat --slug ask >/dev/null
+printf -- '---\nname: release-train\nregion: rules\nkeywords: monday, Tom Smith, schedule\nsummary: the release train rule\nlinks: [[tom-smith]], [[trains]], [[deploys]]\nimportance: 3\nauthority: decisions-2026-10#2026-10-02T09:00Z\nlast_confirmed: 2026-10-01\nstatus: live\n---\nTrains leave on Monday.\n' >"$T/rules/release-train.md"
+printf -- '---\nname: owner-rule\nregion: rules\nkeywords: tom, smith\nsummary: who to ask first\nlinks: [[tom-smith]]\nimportance: 3\nauthority: decisions-2026-10#2026-10-02T10:00Z\nlast_confirmed: 2026-10-01\nstatus: live\n---\nAsk first.\n' >"$T/rules/owner-rule.md"
+chmod 600 "$T"/*/*.md
+BEFORE="$("$T/bin/mem" check)"
+N="$("$T/bin/mem" erase "Tom Smith" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase "Tom Smith" --confirm "$N" >/dev/null
+check "erase drops only the matching items of a links: or keywords: line (a name over two keywords too); the lines stay lists and check gives no WARN" \
+  'printf "%s\n" "$BEFORE" | grep -qx "result: 0 problems, 0 warnings" && [ "$N" = 5 ] && grep -qx "links: \[\[trains\]\], \[\[deploys\]\]" "$T/rules/release-train.md" && grep -qx "keywords: monday, schedule" "$T/rules/release-train.md" && grep -qx "links:" "$T/rules/owner-rule.md" && grep -qx "keywords: erased" "$T/rules/owner-rule.md" && ! grep -qi "tom" "$T/rules/release-train.md" "$T/rules/owner-rule.md" && "$T/bin/mem" check | grep -qx "result: 0 problems, 0 warnings"'
 # Matching: both sides NFC, accent-folded, lower case; the subject's words match across any run
 # of space, -, _ or . (file names and [[slug]] links too).
 T="$WORK/erase-match"

@@ -234,7 +234,9 @@ field, a folder, a ledger label, a common word). What it does:
   names it: removed whole; the listing says why, `(stem)` or the first line that names it
   (cut to 80 characters);
 - a rules file (rules/role.md too, live or archived): edited line by line, never dropped, as
-  each carries an authority. A header line keeps its field (`summary: [erased ...]`); the
+  each carries an authority. A header line keeps its field (`summary: [erased ...]`); a list
+  field (`links:`, `keywords:`) loses only the items that name the subject and stays a list
+  (no link left is an empty `links:`, no keyword left is `keywords: erased`); the
   `name:` line and the file name stay and are listed as `left behind: <path> (file name)`;
 - a ledger, index or log line: replaced by `[erased <YYYY-MM-DD> on owner's word]`
   (`{"erased": "<YYYY-MM-DD> on owner's word"}` in a `.jsonl` file);
