@@ -32,6 +32,9 @@ export ECC_DISABLED_HOOKS="post:example" # a hook the user already disables; tea
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH WOLFMUX_METERED TMUX TMUX_PANE
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL WOLFMUX_EXTRA_SETTINGS
 unset WOLFMUX_FABLE_MODEL WOLFMUX_OPUS_MODEL WOLFMUX_SONNET_MODEL WOLFMUX_HAIKU_MODEL WOLFMUX_MODEL_POLICY # an agent's pins
+# An agent's pane exports BEADS_DIR (its project's database), and bd prefers it to the test project's own .beads:
+# the real bd below would write test messages into that real database, and read its messages back.
+unset BEADS_DIR
 # An agent's command runs from its own pane (tests/in-pane: the pane proof, lib/common.sh
 # identity_in_own_pane); without TEAM_ROLE the shim changes nothing.
 teamctl() { "$REPO/tests/in-pane" "$@"; }
