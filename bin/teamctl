@@ -133,7 +133,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl memory enable <team>                      yours alone (77 for an agent): sets policy team-memory, creates the folder
                                                       (mode 700) from the installed skeleton, runs mem init. An existing folder is kept
     teamctl memory disable                            you, or that team's own lead: policy off. Nothing is deleted
-    teamctl memory path · teamctl memory check        the folder's path (exit 1 when off) · its own lint (mem check)
+    teamctl memory path · teamctl memory check        the folder's path (exit 1 when off) · its own lint (mem check);
+                                                      both yours or that team's own lead's (77 for anyone else)
                                                       Every change reaches a running lead only at its next restart. That lead is
                                                       started with "run <folder>/bin/mem boot" every time, and its --continue needs
                                                       a stored conversation id. Workers are refused the folder (worktree guard)
@@ -243,7 +244,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       created, records, transcripts. Lists uncommitted and unmerged work and asks first;
                                                       --force deletes it anyway. teamctl teams shows what a team takes on disk.
                                                       The lead's memory folder (team memory) stays, unless --memory: then it goes
-                                                      too, once you type the team's name at a terminal (no --yes for that)
+                                                      too: yours alone (77 for an agent), and you type the team's name (no --yes for that)
     teamctl version | help
 
   Tasks and messages are Beads, not teamctl:

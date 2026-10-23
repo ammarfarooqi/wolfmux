@@ -259,17 +259,20 @@ and the lead keep the feature exactly as you configured it.
 teamctl memory enable <team>     # yours alone (77 for an agent): policy team-memory, the folder from the skeleton, mem init
 teamctl memory status            # anyone: which team, folder and index sizes (25,000-byte cap), was the lead started with it
 teamctl memory disable           # you or that team's own lead: policy off; nothing is deleted
-teamctl memory path              # the folder (exit 1 when off)
-teamctl memory check             # the folder's own lint: <folder>/bin/mem check
+teamctl memory path              # you or that team's own lead: the folder (exit 1 when off)
+teamctl memory check             # you or that team's own lead: the folder's own lint, <folder>/bin/mem check
 ```
 
-ONE team's lead per project keeps `~/.wolfmux/memory/<project>/<team>/` (mode 700). It gets it as
-`autoMemoryDirectory`, a "Team memory" block in its system prompt with `core/card.md` (cut at 4,000
-bytes), and a first prompt to run `<folder>/bin/mem boot` at every launch. Nobody copies what is in it
-into Beads, Jira, Slack, repositories or reports. Its `--continue` needs a stored conversation id.
-Changes reach a running lead at its next restart. `teamctl destroy --purge` and `teamctl finish` keep
-the folder; `teamctl destroy --purge --memory` deletes it after you type the team's name. Workers are
-refused it by the worktree guard (docs/SECURITY.md in the repository says where that guard ends).
+ONE team's lead per project keeps `~/.wolfmux/memory/<project>/<team>/` (mode 700), and only while you
+founded that team and its `bin/mem` runs. It gets it as `autoMemoryDirectory`, a short "Team memory"
+block in its system prompt (the folder and the rules, never `core/card.md`: `ps` and `teamctl _prompt`
+show a prompt to anyone), and a first prompt to run `<folder>/bin/mem boot`, which prints the card, at
+every launch. Nobody copies what is in it into Beads, Jira, Slack, repositories or reports. Its
+`--continue` needs a stored conversation id; only you capture its pane. Changes reach a running lead at
+its next restart. `teamctl destroy --purge` and `teamctl finish` keep the folder; `teamctl destroy --purge
+--memory` deletes it, and only you may run it (an agent gets exit 77). Workers are refused the folder and
+the leads' conversations by the worktree guard; a search of a whole tree that holds them (`grep -r x ~`,
+a Grep of `~/.claude`) is refused too (docs/SECURITY.md in the repository says where that guard ends).
 
 ## Messaging (Beads)
 
@@ -430,7 +433,7 @@ have not set the policy.
 teamctl teams                              # DISK shows what each team takes
 teamctl destroy --team review --purge      # shows what would be lost, asks, then deletes the whole team
 teamctl destroy --team review --purge --force    # …even with uncommitted or unmerged work
-teamctl destroy --team review --purge --memory   # …and the lead's memory folder (you type the team's name)
+teamctl destroy --team review --purge --memory   # …and the lead's memory folder (yours alone; you type the team's name)
 ```
 
 A worker costs a checkout of your tracked files plus whatever it installs or builds; the

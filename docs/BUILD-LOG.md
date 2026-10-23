@@ -2017,14 +2017,14 @@ appears, and each pattern was first shown to match a line that does contain it.
 Asked for by the owner for the communication-management lead, planned by `comms-memory.lead`, built
 in two lanes with disjoint files: this one (teamctl) and `memtool` (the folder's contents, under
 `config/wolfmux/memory-skeleton/`). The contract between them: teamctl calls only `mem init`,
-`mem boot` and `mem check`, and reads only `core/card.md`. Decision and findings:
+`mem boot` and `mem check`, and reads only the size of `core/card.md` (since review round 2). Decision and findings:
 [ADR-0030](adr/0030-one-lead-keeps-a-private-memory.md).
 
 | Piece | Where |
 |-------|-------|
 | policy `team-memory <team>\|off`, project-level, owner-only on, lead-allowed off, logged to `team-memory.jsonl` and `events.jsonl` | `lib/policy.sh`, `lib/memory.sh` |
 | `teamctl memory status\|enable\|disable\|path\|check` | `lib/memory.sh` |
-| the "Team memory" prompt block (card cut at 4,000 bytes, block under 6,000) | `build_role_prompt` |
+| the "Team memory" prompt block: the folder, the rules, the boot line; never the card (review round 2) | `build_role_prompt` |
 | `autoMemoryDirectory` for that lead only | `write_agent_settings` |
 | the boot prompt at every launch | `cmd_run_agent` |
 | `--continue` refused with no stored id; `destroy --purge --memory` | `cmd_start`, `cmd_restart`, `cmd_destroy` |
@@ -2038,6 +2038,23 @@ alone: `~/.wolfmux` is `--wolfmux` in such a name. Checked against the real fold
 reach a first turn in 90 s (print mode did), so the boot prompt rests on the CLI reference; see the ADR.
 
 `tests/memory.sh` (new, 51 checks) covers it end to end with a stub agent and a fake skeleton.
+
+**Review round 2.** An adversarial review found the switch, the settings and the prompt wiring right
+and five read channels open. All five are closed: (1) the card is out of the prompt, because `ps
+-axww -o command=` shows every agent's `--append-system-prompt` to every process and `teamctl _prompt`
+prints it to any caller (`mem boot` prints the card inside the lead's conversation instead); (2)
+`teamctl capture` of the memory lead's pane is the owner's alone; (3) the worktree guard closes the
+leads' transcript folder `~/.claude/projects/<project path>/` (all but its shared `memory/`) to
+workers' file tools and Bash text; (4) `teamctl memory check` (it writes and prints names) and
+`teamctl memory path` are the owner's and that lead's only; (5) `destroy --purge --memory` needs the
+pane proof (`require_operator`), since a piped `script -q /dev/null` fakes a terminal. Also: no owner,
+no memory (`team_founder` must be the operator and `bin/mem` must run); the guard compares paths
+without regard to letter case, drops `/./`, judges an absolute Glob pattern by its root, refuses tree
+walks of `~`, `~/.wolfmux`, `~/.claude` or `/`, and reads the `.wolfmux/memory` rule after the prose is
+gone (a commit message passes, a quoted path does not); `uninstall.sh --purge-memory` alone is exit 64;
+`memory status` warns about a Codex lead. The suite unsets `BEADS_DIR` and gives the test project a
+`.beads` of its own: the caller's `BEADS_DIR` had decided whether `teamctl finish` could take the team.
+`tests/memory.sh` has 75 checks.
 
 ## Footprint on the machine
 

@@ -236,7 +236,7 @@ complete_options() {
       # --quiet is deliberately not described here: nudge and heavy both take it and it means
       # a different thing in each, and this case block is shared by every command.
       --timeout) complete_emit "$prefix" "$option" "<seconds>: give up waiting for the heavy lock (exit 75)" ;;
-      --memory) complete_emit "$prefix" "$option" "with --purge: also the lead's memory folder (you type the team's name)" ;;
+      --memory) complete_emit "$prefix" "$option" "with --purge: also the lead's memory folder (yours alone; you type the team's name)" ;;
       *) complete_emit "$prefix" "$option" ;;
     esac
   done
