@@ -118,3 +118,17 @@ slug, region, keywords, importance, days since last_confirmed, days since last r
 the size in bytes, nothing else; every token that matches a people/ file name (or a part of it
 split on `-`) is replaced by `person`. `.meta/jev/<UTC>-<slug>.json` keeps what was sent and
 what came back. Any error: the candidate goes to `.meta/digest-pending.md`; nothing moves.
+
+## Migration (mem migrate)
+
+The mapping CSV has one row per item: `source,source_type,dest,region,action,hold,name,
+keywords,summary,importance,authority,links,repo_ref,notes`. What a row carries:
+
+- a file (`<path>` under --from, `rules:<file>` under --rules-from, `archive:<file>` under
+  --from): its bytes; going to a region, only what follows its own frontmatter.
+  `hub:<file>#<n>`: line n of that file.
+- `state:<key>` (a key of --state): to `state/<file>.json#<key>` or a ledger file, the JSON
+  value; to `<region>/<name>.md`, the value's text is the body (a string as is, any other
+  value pretty-printed with indent 2 and sorted keys; no newline added).
+
+A region dest gets its header from the row, and its body's sha256 is checked like a file's.

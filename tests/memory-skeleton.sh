@@ -592,7 +592,7 @@ printf 'private, never copied\n' >"$SRC/secret.md"
 printf 'held for later\n' >"$SRC/held.md"
 printf 'Slack rule: plain names.\n' >"$RULES_SRC/slack-names.md"
 printf 'A rule without a ledger line.\n' >"$RULES_SRC/orphan.md"
-printf '{"cursors": {"slack_dm": "1761000000.1"}, "asks": [{"id": "a1", "who": "sam", "what": "logo", "status": "open", "opened": "2026-10-01T09:00Z", "waiting_on": "dana"}], "decisions": [{"time": "2026-10-09T13:50Z", "quote": "keep it short"}]}\n' >"$WORK/comms-state.json"
+printf '{"cursors": {"slack_dm": "1761000000.1"}, "asks": [{"id": "a1", "who": "sam", "what": "logo", "status": "open", "opened": "2026-10-01T09:00Z", "waiting_on": "dana"}], "decisions": [{"time": "2026-10-09T13:50Z", "quote": "keep it short"}], "notes": {"tone": "Plain words, short lines."}, "contacts": {"dana": {"tz": "UTC+1", "role": "design"}}}\n' >"$WORK/comms-state.json"
 python3 -I - "$WORK/map.csv" <<'EOF'
 import csv, sys
 rows = [
@@ -608,6 +608,10 @@ rows = [
     ("state:decisions.0", "state-key", "ledger/decisions-2026-10.md", "", "copy", "no", "", "", "", "", "", "", "", ""),
     ("held.md", "file", "topics/held.md", "topics", "hold", "yes", "held", "held", "held", "3", "", "", "", "waiting for the owner"),
     ("secret.md", "file", "", "", "skip", "no", "", "", "", "", "", "", "", "private"),
+    # line 14 on: a state key whose value becomes a region file's body (a string; an object)
+    ("state:notes.tone", "state-key", "topics/state-tone.md", "topics", "copy", "no", "state-tone", "tone, state", "the tone note from the comms state", "3", "", "", "", ""),
+    ("state:contacts.dana", "state-key", "people/dana.md", "people", "copy", "no", "dana", "dana, design", "dana works on design", "3", "", "", "", ""),
+    ("state:notes.tone", "state-key", "rules/state-tone-pointer.md", "rules", "pointer", "no", "state-tone-pointer", "tone", "a pointer to a state key", "3", "", "", "", ""),
 ]
 with open(sys.argv[1], "w", newline="") as out:
     w = csv.writer(out)
@@ -620,7 +624,7 @@ SRC_SUM="$(tree_sum "$SRC")"; RULES_SUM="$(tree_sum "$RULES_SRC")"; T_SUM="$(tre
 DRY="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --dry-run)"; RC=$?
 check "migrate --dry-run exits 0 and says nothing was written" '[ "$RC" -eq 0 ] && printf "%s\n" "$DRY" | sed -n 1p | grep -q "(dry run: nothing was written)"'
 check "the dry run reports a sha256 match for every copied body" \
-  '[ "$(printf "%s" "$DRY" | grep -c "sha256 match (in memory)")" -eq 5 ] && printf "%s" "$DRY" | grep -q "^verification: every payload keeps its sha256 in memory"'
+  '[ "$(printf "%s" "$DRY" | grep -c "sha256 match (in memory)")" -eq 7 ] && printf "%s" "$DRY" | grep -q "^verification: every payload keeps its sha256 in memory"'
 check "the dry run writes nothing: not the tree, not the source, not ~/.wolfmux" \
   '[ "$T_SUM" = "$(tree_sum "$T")" ] && [ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ ! -e "$HOME/.wolfmux" ]'
 check "the dry run lists the held and skipped rows with their reasons" \
@@ -644,6 +648,18 @@ pairs = [(body(t + "/rules/tone.md"), body(s + "/feedback_tone.md")),
          (body(t + "/rules/slack-names.md"), open(r + "/slack-names.md", "rb").read())]
 sys.exit(not all(sha(a) == sha(b) for a, b in pairs))
 EOF'
+check "a state key into a region: a string value is the body as is, an object is pretty-printed (indent 2, sorted keys)" \
+  'python3 -I - "$T" "$WORK/comms-state.json" <<'"'"'EOF'"'"'
+import json, sys
+t, s = sys.argv[1:3]
+state = json.load(open(s))
+body = lambda p: open(p, "rb").read().split(b"\n---\n", 1)[1]
+want = json.dumps(state["contacts"]["dana"], indent=2, sort_keys=True, ensure_ascii=False).encode()
+sys.exit(not (body(t + "/topics/state-tone.md") == b"Plain words, short lines." and body(t + "/people/dana.md") == want
+              and b"\nregion: people\n" in open(t + "/people/dana.md", "rb").read()))
+EOF'
+check "the report finds both state-key bodies once; a state key as a pointer is refused" \
+  'grep -q "^line 14 copy    state:notes.tone -> topics/state-tone.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^line 15 copy    state:contacts.dana -> people/dana.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^- line 16 hold state:notes.tone: a state key is copied into rules/, never a pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/rules/state-tone-pointer.md" ]'
 check "the source folder and the rules folder are never written" '[ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ "$RULES_SUM" = "$(tree_sum "$RULES_SRC")" ]'
 check "headers come from the map: region, keywords, authority, repo_ref, last_confirmed from the source mtime" \
   'grep -q "^authority: decisions-2026-10#2026-10-09T13:50Z" "$T/rules/tone.md" && grep -q "^repo_ref: fe:src/features/fly/agent-log/0007.md AFD-2129" "$T/topics/afd-2129.md" && grep -q "^last_confirmed: $(date -u -r "$SRC/project_fly.md" +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)" "$T/topics/afd-2129.md" && grep -q "^links: \[\[tone\]\]" "$T/rules/slack-names.md"'

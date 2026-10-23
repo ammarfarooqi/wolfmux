@@ -2235,36 +2235,27 @@ def plan_row(tree, row, line, ctx):
                 if dest_file != "state/%s.json" % name or name not in state_names() or not dest_key:
                     raise Refused("dest %s is not state/<file>.json#<key>" % dest)
                 item.update(kind="state", state_name=name, state_key=dest_key, status=action)
-            elif top == "ledger" and LEDGER_FILE.match(os.path.basename(dest_file)):
+                return item
+            if top == "ledger" and LEDGER_FILE.match(os.path.basename(dest_file)):
                 pretty = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
                 item["append"] = ("\n## migrated %s at %s\n```json\n%s\n```\n" % (source, minute(ctx["when"]), pretty)).encode("utf-8")
                 item.update(kind="ledger", dest=dest_file, status=action, payload=pretty.encode("utf-8"))
-            else:
-                raise Refused("a state key goes to state/<file>.json#<key> or ledger/<file>")
-            return item
-        path = source_path(ctx, source, expected)
-        if not os.path.isfile(path):
-            raise Refused("source %s is not a file" % source)
-        with open(path, "rb") as handle:
-            raw = handle.read()
-        item["source_path"] = path
-        item["bytes_in"] = len(raw)
-        if expected == "hub-line":
-            number = int(source.rsplit("#", 1)[1])
-            lines = raw.split(b"\n")
-            if number < 1 or number > len(lines) or (number == len(lines) and not lines[-1]):
-                raise Refused("%s has no line %d" % (source.rsplit("#", 1)[0], number))
-            payload = lines[number - 1] + b"\n"
+                return item
+            if top not in REGIONS:
+                raise Refused("a state key goes to state/<file>.json#<key>, ledger/<file> or <region>/<name>.md")
+            if action == "pointer":
+                raise Refused("a state key is copied into %s/, never a pointer: set action copy" % top)
+            # The value's text is the body: a string as is, anything else pretty-printed; no newline added.
+            text = value if isinstance(value, str) else json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
+            payload, mtime = text.encode("utf-8"), None
             item["bytes_in"] = len(payload)
         else:
-            fields, body, _ = split_header(raw)
-            payload = body if fields is not None and top in REGIONS else raw
-            if fields is not None and top in REGIONS:
-                item["frontmatter"] = len(raw) - len(body)
+            payload, mtime = read_source(item, ctx, source, expected, top)
         item.update(payload=payload, sha=sha256(payload))
         if action == "pointer":
             if top != "rules":
                 raise Refused("a pointer goes to rules/<name>.md")
+            path = item["source_path"]
             item.update(kind="region", status="pointer", bytes_in=0, dest=dest_file)
             item["content"] = region_content(tree, row, dest_file, ctx, pointer=path)
             if tree.has(dest_file):
@@ -2274,7 +2265,7 @@ def plan_row(tree, row, line, ctx):
             return item
         if top in REGIONS:
             item.update(kind="region", status="copy")
-            item["content"] = region_content(tree, row, dest_file, ctx, payload=payload, mtime=os.path.getmtime(path))
+            item["content"] = region_content(tree, row, dest_file, ctx, payload=payload, mtime=mtime)
         elif top == "archive":
             if dest_file.count("/") < 2:
                 raise Refused("dest %s is not archive/<folder>/<file>" % dest_file)
@@ -2295,6 +2286,31 @@ def plan_row(tree, row, line, ctx):
     except (Refused, ValueError, IOError, OSError) as error:
         item.update(status="hold", reason=str(error))
     return item
+
+
+def read_source(item, ctx, source, kind, top):
+    """The bytes a file-backed row carries, and the source's mtime. A source with its own
+    frontmatter going to a region carries only what follows it; a hub line carries one line."""
+    path = source_path(ctx, source, kind)
+    if not os.path.isfile(path):
+        raise Refused("source %s is not a file" % source)
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    item["source_path"] = path
+    item["bytes_in"] = len(raw)
+    if kind == "hub-line":
+        number = int(source.rsplit("#", 1)[1])
+        lines = raw.split(b"\n")
+        if number < 1 or number > len(lines) or (number == len(lines) and not lines[-1]):
+            raise Refused("%s has no line %d" % (source.rsplit("#", 1)[0], number))
+        payload = lines[number - 1] + b"\n"
+        item["bytes_in"] = len(payload)
+    else:
+        fields, body, _ = split_header(raw)
+        payload = body if fields is not None and top in REGIONS else raw
+        if fields is not None and top in REGIONS:
+            item["frontmatter"] = len(raw) - len(body)
+    return payload, os.path.getmtime(path)
 
 
 def source_path(ctx, source, kind):
