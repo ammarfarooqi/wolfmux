@@ -172,12 +172,43 @@ python3 -I -c 'import sys; open(sys.argv[1], "w").write("# Memory\n" + ("- fille
 OUT="$("$T/bin/mem" check)"; RC=$?
 check "check fails on a 6,000-byte MEMORY.md" '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "PROBLEM .*bytes (cap 5000)"'
 "$T/bin/mem" check >/dev/null
-i=1
-while [ $i -le 85 ]; do topic "$T" "filler-$i" "kw$i, other$i"; i=$((i + 1)); done
+# 200 topics (importance 1..5 in turn, dates spread) and 30 rules: far past 80 lines unless cut.
+python3 -I - "$T" <<'EOF'
+import os, sys
+t = sys.argv[1]
+for i in range(1, 201):
+    imp, day = (i % 5) + 1, (i % 28) + 1
+    with open(os.path.join(t, "topics", "filler-%d.md" % i), "w") as out:
+        out.write("---\nname: filler-%d\nregion: topics\nkeywords: kw%d, other%d\nsummary: a filler topic number %d with a summary long enough to take room in the index\n"
+                  "links:\nimportance: %d\nlast_confirmed: 2026-10-%02d\nstatus: live\n---\nbody %d\n" % (i, i, i, i, imp, day, i))
+    os.chmod(os.path.join(t, "topics", "filler-%d.md" % i), 0o600)
+for i in range(1, 31):
+    with open(os.path.join(t, "rules", "rule-%d.md" % i), "w") as out:
+        out.write("---\nname: rule-%d\nregion: rules\nkeywords: rk%d, rother%d\nsummary: rule number %d\nlinks:\nimportance: 3\nauthority: shared:RULES.md\n"
+                  "last_confirmed: 2026-10-%02d\nstatus: live\n---\nrule %d\n" % (i, i, i, i, (i % 28) + 1, i))
+    os.chmod(os.path.join(t, "rules", "rule-%d.md" % i), 0o600)
+EOF
 OUT="$("$T/bin/mem" check)"; RC=$?
-check "check fails when the generated index would pass 80 lines" \
-  '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "PROBLEM .*MEMORY.md (generated) has [0-9]* lines (cap 80)"'
-/bin/rm -f "$T"/topics/filler-*.md
+check "200 topics and 30 rules: check exits 0, MEMORY.md stays within 80 lines and 5,000 bytes" \
+  '[ "$RC" -eq 0 ] && [ "$(wc -l <"$T/MEMORY.md")" -le 80 ] && [ "$(wc -c <"$T/MEMORY.md")" -le 5000 ] && ! printf "%s" "$OUT" | grep -q PROBLEM'
+check "the overflow is a WARN per cut region, naming how many are listed" \
+  'printf "%s" "$OUT" | grep -q "^WARN .*MEMORY.md lists [0-9]* of 200 live topics (the index caps); mem recall finds the rest" && printf "%s" "$OUT" | grep -q "^WARN .*MEMORY.md lists [0-9]* of 30 live rules"'
+check "a cut region ends with ONE line: N more <region>: mem recall <words>" \
+  '[ "$(grep -c "^- [0-9]* more topics: mem recall <words>$" "$T/MEMORY.md")" -eq 1 ] && [ "$(grep -c "^- 11 more rules: mem recall <words>$" "$T/MEMORY.md")" -eq 1 ] && n="$(grep -c "(topics/filler-" "$T/MEMORY.md")" && grep -q "^- $((200 - n)) more topics:" "$T/MEMORY.md"'
+check "listed topics are the most important first, then the most recently confirmed" \
+  'python3 -I - "$T" <<'"'"'EOF'"'"'
+import re, sys
+t = sys.argv[1]
+shown = re.findall(r"\(topics/(filler-\d+)\.md\)", open(t + "/MEMORY.md").read())
+def key(name):
+    text = open("%s/topics/%s.md" % (t, name)).read()
+    return (int(re.search(r"^importance: (\d)", text, re.M).group(1)), re.search(r"^last_confirmed: (\S+)", text, re.M).group(1))
+keys = [key(n) for n in shown]
+best = sorted((key("filler-%d" % i) for i in range(1, 201)), reverse=True)[:len(keys)]
+sys.exit(not (keys and keys == sorted(keys, reverse=True) and keys == best and all(k[0] == 5 for k in keys)))
+EOF'
+check "the caps are written in schema.md" 'grep -q "rules 20, people 8, teams 6, topics 12" "$SKEL/.meta/schema.md"'
+/bin/rm -f "$T"/topics/filler-*.md "$T"/rules/rule-*.md
 printf -- '---\nname: no-summary\nregion: topics\nkeywords: a, b\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nbody\n' >"$T/topics/no-summary.md"
 chmod 600 "$T/topics/no-summary.md"
 OUT="$("$T/bin/mem" check)"; RC=$?

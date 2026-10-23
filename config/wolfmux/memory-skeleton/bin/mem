@@ -51,6 +51,9 @@ REQUIRED = ("name", "region", "keywords", "summary", "links", "importance", "las
 INDEX_MAX_BYTES = 5000
 INDEX_MAX_LINES = 80
 INDEX_LINE_MAX = 120
+# Lines per region section of MEMORY.md, its "N more" line included. With the title, the
+# legend (15 lines), five headings and up to four ledger pointers they fit 80 lines.
+INDEX_CAPS = (("rules", 20), ("people", 8), ("teams", 6), ("topics", 12))
 CARD_MAX = 2000
 BOOT_MAX = 2000
 SUMMARY_MAX = 160
@@ -720,19 +723,21 @@ def index_line(entry):
     return (prefix + cut(summary, room)).rstrip()
 
 
-def build_index(tree, entries, when):
-    body = list(LEGEND)
-    for region, title in REGION_TITLES:
-        body.append("## %s" % title)
-        live = [e for e in entries if e.region == region and e.live]
-        if region == "rules":
-            live.sort(key=lambda e: (e.get("last_confirmed"), e.get("authority"), e.name), reverse=True)
-        else:
-            live.sort(key=lambda e: e.name)
-        body.extend(index_line(e) for e in live)
-        if not live:
-            body.append("- (none yet)")
-    body.append("## Ledger pointers")
+def index_order(region, live):
+    if region == "rules":
+        live.sort(key=lambda e: (e.get("last_confirmed"), e.get("authority"), e.name), reverse=True)
+    else:  # the most important first, then the most recently confirmed
+        live.sort(key=lambda e: e.name)
+        live.sort(key=lambda e: (e.importance, e.get("last_confirmed") or ""), reverse=True)
+    return live
+
+
+def build_index(tree, entries, when, cuts=None):
+    """MEMORY.md. A region with more live files than its INDEX_CAPS lines shows the first ones
+    and ONE line saying how many more; if the bytes still pass the cap, topics give way first,
+    then teams, people, rules. cuts, when given, gets (region, shown, live) per cut region."""
+    sections = [(region, title, index_order(region, [e for e in entries if e.region == region and e.live]))
+                for region, title in REGION_TITLES]
     month = month_of(when)
     pointers = []
     for rel in tree.files("ledger"):
@@ -740,6 +745,33 @@ def build_index(tree, entries, when):
         if match and match.group(2) == month and rel.count("/") == 1:
             count = tree.read(rel).count(b"\n")
             pointers.append("- [%s](%s) %d lines" % (os.path.splitext(os.path.basename(rel))[0], rel, count))
+    caps = dict(INDEX_CAPS)
+    while True:
+        full, used = render_index(sections, caps, pointers, when)
+        if len(full.encode("utf-8")) <= INDEX_MAX_BYTES:
+            break
+        shrink = [region for region, _ in reversed(INDEX_CAPS) if used[region][0] > 0]
+        if not shrink:
+            break
+        caps[shrink[0]] = max(1, used[shrink[0]][1] - 1)
+    if cuts is not None:
+        cuts.extend((region, used[region][0], len(live)) for region, _, live in sections if used[region][0] < len(live))
+    return full
+
+
+def render_index(sections, caps, pointers, when):
+    body = list(LEGEND)
+    used = {}
+    for region, title, live in sections:
+        body.append("## %s" % title)
+        shown = live if len(live) <= caps[region] else live[:caps[region] - 1]
+        body.extend(index_line(e) for e in shown)
+        if len(shown) < len(live):
+            body.append("- %d more %s: mem recall <words>" % (len(live) - len(shown), region))
+        if not live:
+            body.append("- (none yet)")
+        used[region] = (len(shown), len(shown) + (1 if len(shown) < len(live) else 0))
+    body.append("## Ledger pointers")
     body.extend(pointers or ["- (nothing this month yet)"])
     text = "\n".join(body) + "\n"
     size = 0
@@ -749,7 +781,7 @@ def build_index(tree, entries, when):
         if len(full.encode("utf-8")) == size:
             break
         size = len(full.encode("utf-8"))
-    return full
+    return full, used
 
 
 def lint_index(text, label):
@@ -1190,7 +1222,10 @@ def run_check(tree, when, quiet=False):
             total, len(plan["asks"]), len(plan["ledger"]), len(plan["sweeps"]), len(plan["candidates"]), len(plan["superseded"])))
     except Refused:
         pass
-    index = build_index(tree, entries, when)
+    cuts = []
+    index = build_index(tree, entries, when, cuts)
+    for region, shown, live in cuts:
+        report("WARN", "MEMORY.md lists %d of %d live %s (the index caps); mem recall finds the rest" % (shown, live, region))
     for problem in lint_index(index, "MEMORY.md (generated)"):
         report("PROBLEM", problem)
     write_file(tree, "MEMORY.md", index.encode("utf-8"))

@@ -73,6 +73,13 @@ a long name is cut in the link text so the summary keeps 20 characters, never in
 and `## Ledger pointers` (this month's ledger files with line counts). A line with more than
 one link (a hub of hubs) is a problem.
 
+Index caps, in lines per region section: rules 20, people 8, teams 6, topics 12 (with the
+title, legend, headings and ledger pointers that is at most 80 lines). Rules come newest
+first; people, teams and topics most important first, then newest `last_confirmed`. A region
+with more live files than its cap shows the first ones and ONE line
+`- N more <region>: mem recall <words>`. If the index still passes 5,000 bytes, topics give
+way first, then teams, people and rules. A cut region is a WARN in `check`, never a problem.
+
 ## Ledger formats (append-only)
 
 - decisions: one block per decision.
