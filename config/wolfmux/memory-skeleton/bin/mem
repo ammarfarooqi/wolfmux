@@ -1,0 +1,2752 @@
+#!/bin/bash
+''':'
+# mem — one team's private memory tree: the index, the card, state, the ledger, the archive.
+# The format is in ../.meta/schema.md; `mem help` lists the commands.
+#
+# This file is bash and Python at once. bash runs the lines down to `exec` and hands the
+# whole file to python3 in isolated mode (-I: no PYTHON* variables, no user site packages,
+# not this folder on sys.path). Python reads everything between the two triple quotes as a
+# string and never runs these lines. Nothing here may contain three single quotes in a row.
+#
+# The interpreter: $MEM_PYTHON, else python3 on PATH, else /usr/bin/python3 (3.9 or newer).
+python="${MEM_PYTHON:-}"
+[ -n "$python" ] || python="$(command -v python3 2>/dev/null)" || python=/usr/bin/python3
+exec "$python" -I "$0" "$@"
+'''
+
+import argparse
+import csv
+import datetime
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+SELF = os.path.abspath(sys.argv[0])
+UTC = datetime.timezone.utc
+
+REGIONS = ("rules", "people", "teams", "topics")
+# The folders mem owns. Modes are set and checked inside these and nowhere else, so a wrong
+# --root can never chmod somebody's home folder.
+TREE_DIRS = ("core", "state", "rules", "people", "teams", "topics", "ledger", "archive", "bin",
+             ".meta", ".meta/backups", ".meta/jev")
+TREE_FILES = ("MEMORY.md",)
+STATE_DEFAULTS = (("open-asks", []), ("watches", []), ("cursors", {}), ("crons", []), ("machine", {}))
+LIST_IDS = {"open-asks": "id", "watches": "id", "crons": "name"}
+FIELD_ORDER = ("name", "region", "keywords", "summary", "links", "importance", "authority",
+               "last_confirmed", "status", "superseded_on", "pointer", "repo_ref", "origin")
+REQUIRED = ("name", "region", "keywords", "summary", "links", "importance", "last_confirmed", "status")
+
+INDEX_MAX_BYTES = 5000
+INDEX_MAX_LINES = 80
+INDEX_LINE_MAX = 120
+CARD_MAX = 2000
+BOOT_MAX = 2000
+SUMMARY_MAX = 160
+NAME_MAX = 50
+OVERLAP = 0.7
+JEV_THRESHOLD = 0.7
+ROUTINE_BASIS = "kept 7 days"
+
+EXIT_REFUSED = 1
+EXIT_USAGE = 64
+EXIT_BUSY = 75
+
+JEV_URL = "https://api.typesafe.ai/v1/systemone"
+JEV_MODEL = "jev-latest"
+JEV_KEYCHAIN_ITEM = "typesafe-api-key"
+
+SLUG = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+MONTH = re.compile(r"^\d{4}-\d{2}$")
+AUTHORITY = re.compile(r"^(decisions-\d{4}-\d{2}#\S+|shared:\S.*)$")
+LEDGER_FILE = re.compile(r"^(decisions|sends|asks|sweeps)-(\d{4}-\d{2})\.(md|jsonl)$")
+DECISION_HEAD = re.compile(r"^## (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z)(-\d+)?\s*$")
+LINE_TIME = re.compile(r"^- (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z) ")
+INDEX_LINE = re.compile(r"^- (\d{4}-\d{2}-\d{2}) (\S+) from (\S+): (.*)$")
+BACKUP_NAME = re.compile(r"^(\d{8}T\d{6}Z)(-\d+)?\.tar$")
+BACKUP_LOG = re.compile(r"^\S+ backup \.meta/backups/(\S+) sha256=([0-9a-f]+) basis=(.*?)( \(rebuilt by erase\))?$")
+
+USAGE = """usage: mem [--root <dir>] <command> [options]
+
+  init                     create what is missing, set modes, write the first card
+  boot                     rebuild core/card.md from state/ and print it
+  check                    lint the tree, regenerate MEMORY.md, refresh the card
+  recall <words...> [--archive] [--shared]
+  add --region <r> --name <slug> --keywords <a, b> --summary <line> [--importance n]
+      [--authority <ref>] [--links <a, b>] [--repo-ref <ref>] [--supersedes <name>]
+      [--replace <old text>] [--body-file <file>] [--dry-run]           < body
+  set <file.key.path> <value> [--string]       set shared-folder <path>
+  decide --time <UTC> --source <chat|slack:<ts>|bead:<id>> [--slug <s>] [--shared <file>]  < quote
+  sent --to <who> --channel <c> --ref <permalink or bead> --subject <one line>
+  ask open --id <id> --who <who> --what <text> --waiting-on <who> [--next-check <UTC>]
+  ask close --id <id> [--note <text>]
+  sweep-log --inboxes n --asks-touched n --free-pct n --swap-gb n --load n
+  drain [--dry-run] [--no-jev]
+  backup [--note <retention basis>]
+  unarchive <name>
+  erase <subject> [--confirm]
+  purge [--confirm] <archived name | YYYY-MM>...
+  migrate --from <dir> --map <csv> [--rules-from <dir>] [--state <json>] [--dry-run]
+  status
+
+The tree: --root <dir>, else $MEM_ROOT, else the folder above this script.
+Exit status: 0 done, 1 refused or problems found, 64 usage, 75 another writer holds the lock.
+"""
+
+READERS = ("recall", "status", "help")
+
+
+class Refused(Exception):
+    pass
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        sys.stderr.write("mem: %s\n(mem help lists the commands)\n" % message)
+        sys.exit(EXIT_USAGE)
+
+
+# --- time --------------------------------------------------------------------------------
+# MEM_NOW pins the clock, so the tests can age asks, ledgers and backups without waiting.
+
+def now():
+    text = os.environ.get("MEM_NOW", "")
+    if text:
+        return parse_time(text)
+    return datetime.datetime.now(UTC).replace(microsecond=0)
+
+
+def parse_time(text):
+    value = text.strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%MZ", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y%m%dT%H%M%SZ", "%Y-%m-%d"):
+        try:
+            return datetime.datetime.strptime(value, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            pass
+    raise Refused("not a UTC time: %r (write it like 2026-10-09T13:50Z)" % text)
+
+
+def minute(dt):
+    return dt.strftime("%Y-%m-%dT%H:%MZ")
+
+
+def second(dt):
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def stamp(dt):
+    return dt.strftime("%Y%m%dT%H%M%SZ")
+
+
+def month_of(dt):
+    return dt.strftime("%Y-%m")
+
+
+def previous_month(dt):
+    return month_of(dt.replace(day=1) - datetime.timedelta(days=1))
+
+
+def parse_date(text):
+    try:
+        return datetime.datetime.strptime((text or "").strip(), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def safe_time(text):
+    try:
+        return parse_time(text) if text else None
+    except Refused:
+        return None
+
+
+# --- text helpers --------------------------------------------------------------------------
+
+def one_line(text):
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def cut(text, width):
+    text = one_line(text)
+    if len(text) <= width:
+        return text
+    return text[:max(width - 1, 0)].rstrip() + "…"
+
+
+def slugify(text, width=48):
+    slug = "-".join(re.findall(r"[a-z0-9]+", (text or "").lower()))
+    return slug[:width].strip("-")
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def keywords_of(text):
+    out = []
+    for word in (text or "").split(","):
+        word = one_line(word).lower()
+        if word and word not in out:
+            out.append(word)
+    return out
+
+
+def links_of(text):
+    names = re.findall(r"\[\[([^\]]+)\]\]", text or "")
+    if not names:
+        names = [part for part in re.split(r"[,\s]+", text or "") if part]
+    out = []
+    for name in names:
+        name = name.strip()
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def render_links(names):
+    return ", ".join("[[%s]]" % name for name in names)
+
+
+def tokens(text):
+    return [part for part in re.split(r"[^a-z0-9]+", (text or "").lower()) if part]
+
+
+def overlap(first, second):
+    a, b = set(first), set(second)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / float(len(a | b))
+
+
+def link_count(line):
+    return len(re.findall(r"\]\([^)]*\)", line)) + len(re.findall(r"\[\[[^\]]+\]\]", line))
+
+
+def check_name(name, what="name"):
+    if not name or not SLUG.match(name) or ".." in name or len(name) > NAME_MAX:
+        raise Refused("%s %r is not a slug (lowercase letters, digits, - _ . ; at most %d characters)"
+                      % (what, name, NAME_MAX))
+    return name
+
+
+def dump_json(value):
+    return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+# --- the tree ------------------------------------------------------------------------------
+
+MISSING = object()
+
+
+class Tree(object):
+    def __init__(self, root):
+        self.root = root
+        self.lock = os.path.join(root, ".meta", "lock")
+
+    def abs(self, rel):
+        """The real path of rel; refuses anything that resolves outside the root."""
+        path = rel if os.path.isabs(rel) else os.path.join(self.root, rel)
+        real = os.path.realpath(path)
+        if real != self.root and not real.startswith(self.root + os.sep):
+            raise Refused("%s is outside the memory root %s; nothing was changed" % (rel, self.root))
+        return real
+
+    def rel(self, path):
+        return os.path.relpath(path, self.root)
+
+    def has(self, rel):
+        return os.path.lexists(os.path.join(self.root, rel))
+
+    def read(self, rel):
+        with open(self.abs(rel), "rb") as handle:
+            return handle.read()
+
+    def read_or_none(self, rel):
+        try:
+            return self.read(rel)
+        except (IOError, OSError):
+            return None
+
+    def files(self, rel_dir):
+        """Regular files under rel_dir, as root-relative paths, sorted; .keep and temp files left out."""
+        base = os.path.join(self.root, rel_dir)
+        out = []
+        if not os.path.isdir(base):
+            return out
+        for folder, dirs, names in os.walk(base):
+            dirs.sort()
+            for name in sorted(names):
+                if name == ".keep" or name.startswith(".mem-"):
+                    continue
+                path = os.path.join(folder, name)
+                if os.path.isfile(path) and not os.path.islink(path):
+                    out.append(self.rel(path))
+        return out
+
+    def is_tree(self):
+        return os.path.isdir(os.path.join(self.root, ".meta"))
+
+
+def write_file(tree, rel, data, expect=None, mode=0o600):
+    """Temp-then-rename. expect=MISSING: the file must not exist yet; expect=<bytes>: the file
+    must still hold exactly what was read, so a hand edit made meanwhile is never overwritten."""
+    path = tree.abs(rel)
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        os.makedirs(parent, 0o700)
+    current = None
+    if os.path.lexists(path):
+        with open(path, "rb") as handle:
+            current = handle.read()
+    if expect is MISSING and current is not None:
+        raise Refused("%s already exists; nothing was written" % rel)
+    if expect is not None and expect is not MISSING and current != expect:
+        raise Refused("%s changed while mem was working on it; nothing was written, run the command again" % rel)
+    fd, tmp = tempfile.mkstemp(prefix=".mem-", suffix=".tmp", dir=parent)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.chmod(tmp, mode)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def append_file(tree, rel, data, head=b""):
+    """Append-only writes (the ledger, the logs): the file is never rewritten, only added to."""
+    path = tree.abs(rel)
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        os.makedirs(parent, 0o700)
+    prefix = b""
+    if os.path.exists(path):
+        if os.path.getsize(path):
+            with open(path, "rb") as handle:
+                handle.seek(-1, os.SEEK_END)
+                if handle.read(1) != b"\n":
+                    prefix = b"\n"
+    else:
+        prefix = head
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.write(fd, prefix + data)
+    finally:
+        os.close(fd)
+
+
+def log(tree, message):
+    append_file(tree, ".meta/drain.log", ("%s %s\n" % (second(now()), message)).encode("utf-8"))
+
+
+# --- headers -------------------------------------------------------------------------------
+
+def split_header(data):
+    """(fields, body, raw header text). fields is None when the file has no --- header. The body
+    is every byte after the closing --- line, untouched."""
+    if not (data.startswith(b"---\n") or data.startswith(b"---\r\n")):
+        return None, data, ""
+    pos = data.index(b"\n") + 1
+    fields = {}
+    raw = []
+    while True:
+        end = data.find(b"\n", pos)
+        if end < 0:
+            return None, data, ""
+        line = data[pos:end].rstrip(b"\r").decode("utf-8", "replace")
+        if line == "---":
+            return fields, data[end + 1:], "\n".join(raw)
+        raw.append(line)
+        match = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*):(.*)$", line)
+        if match and not line[:1].isspace():
+            fields[match.group(1)] = match.group(2).strip()
+        pos = end + 1
+
+
+def render_header(fields):
+    lines = ["---"]
+    keys = [key for key in FIELD_ORDER if key in fields] + sorted(k for k in fields if k not in FIELD_ORDER)
+    for key in keys:
+        value = fields[key]
+        if value is None:
+            continue
+        value = one_line(str(value))
+        if value == "" and key not in ("links",):
+            continue
+        lines.append(("%s: %s" % (key, value)).rstrip())
+    lines.append("---")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+class Entry(object):
+    def __init__(self, tree, rel):
+        self.rel = rel
+        self.path = os.path.join(tree.root, rel)
+        self.data = tree.read(rel)
+        self.fields, self.body, self.raw_header = split_header(self.data)
+        parts = rel.split("/")
+        self.region = parts[2] if parts[0] == "archive" and len(parts) > 3 else parts[0]
+        self.name = os.path.splitext(parts[-1])[0]
+        self.mtime = os.path.getmtime(self.path)
+
+    def get(self, key, default=""):
+        return (self.fields or {}).get(key, default)
+
+    @property
+    def keywords(self):
+        return keywords_of(self.get("keywords"))
+
+    @property
+    def summary(self):
+        return self.get("summary")
+
+    @property
+    def importance(self):
+        try:
+            return int(self.get("importance", "3"))
+        except ValueError:
+            return 3
+
+    @property
+    def status(self):
+        return self.get("status", "live") or "live"
+
+    @property
+    def live(self):
+        return self.status == "live"
+
+    @property
+    def confirmed(self):
+        return parse_date(self.get("last_confirmed"))
+
+
+def region_entries(tree, regions=REGIONS):
+    out = []
+    for region in regions:
+        for rel in tree.files(region):
+            if rel.endswith(".md") and rel.count("/") == 1:
+                out.append(Entry(tree, rel))
+    return out
+
+
+def archive_entries(tree):
+    out = []
+    for rel in tree.files("archive"):
+        parts = rel.split("/")
+        if rel.endswith(".md") and len(parts) == 4 and parts[2] in REGIONS:
+            out.append(Entry(tree, rel))
+    return out
+
+
+def people_tokens(tree):
+    """Every people/<slug> name and every part of it: what Jev must never see."""
+    out = set()
+    for entry in region_entries(tree, ("people",)):
+        for name in (entry.name, entry.get("name")):
+            for part in tokens(name):
+                if len(part) >= 2:
+                    out.add(part)
+    return out
+
+
+def mask(text, people):
+    parts = re.split(r"([^a-z0-9]+)", (text or "").lower())
+    return "".join("person" if part in people else part for part in parts)
+
+
+# --- state ---------------------------------------------------------------------------------
+
+def state_names():
+    return [name for name, _ in STATE_DEFAULTS]
+
+
+def state_default(name):
+    return json.loads(json.dumps(dict(STATE_DEFAULTS)[name]))
+
+
+def load_state(tree, name):
+    rel = "state/%s.json" % name
+    raw = tree.read_or_none(rel)
+    if raw is None:
+        return state_default(name), None
+    try:
+        value = json.loads(raw.decode("utf-8")) if raw.strip() else state_default(name)
+    except ValueError:
+        raise Refused("%s is not valid JSON; fix it by hand (mem check names it)" % rel)
+    if type(value) is not type(state_default(name)):
+        raise Refused("%s should hold a JSON %s" % (rel, "list" if isinstance(state_default(name), list) else "object"))
+    return value, raw
+
+
+def save_state(tree, name, value, raw):
+    write_file(tree, "state/%s.json" % name, dump_json(value), expect=raw if raw is not None else MISSING)
+
+
+def find_item(items, key, ident):
+    for item in items:
+        if isinstance(item, dict) and str(item.get(key)) == ident:
+            return item
+    return None
+
+
+def parse_value(text, as_string=False):
+    if as_string:
+        return text
+    if re.match(r"^-?\d+$", text):
+        return int(text)
+    if re.match(r"^-?\d+\.\d+$", text) and repr(float(text)) == text:
+        return float(text)
+    if text in ("true", "false", "null"):
+        return json.loads(text)
+    if text[:1] in ("{", "[", '"'):
+        try:
+            return json.loads(text)
+        except ValueError:
+            pass
+    return text
+
+
+# --- ledger --------------------------------------------------------------------------------
+
+LEDGER_HEADS = {
+    "decisions": "# Decisions %s\n\nAppend-only. `mem decide` writes one block per decision: the owner's words verbatim, the UTC time, the source.\n",
+    "sends": "# Sends %s\n\nAppend-only. `mem sent` writes one line per message sent: time, to, channel, ref, subject (never the body).\n\n",
+    "asks": "# Asks %s\n\nAppend-only. `mem ask` writes one line per ask opened or closed.\n\n",
+}
+
+
+def ledger_rel(kind, month):
+    return "ledger/%s-%s.%s" % (kind, month, "jsonl" if kind == "sweeps" else "md")
+
+
+def ledger_append(tree, kind, month, data):
+    head = (LEDGER_HEADS[kind] % month).encode("utf-8") if kind in LEDGER_HEADS else b""
+    append_file(tree, ledger_rel(kind, month), data, head=head)
+
+
+def decision_blocks(text):
+    """[(anchor, time, {slug, source}, block text)] from one decisions ledger."""
+    out = []
+    current = None
+    for line in text.split("\n"):
+        match = DECISION_HEAD.match(line)
+        if match:
+            current = [match.group(1) + (match.group(2) or ""), match.group(1), {}, [line]]
+            out.append(current)
+            continue
+        if current is not None:
+            current[3].append(line)
+            meta = re.match(r"^(slug|source|bytes): (.*)$", line)
+            if meta and meta.group(1) not in current[2]:
+                current[2][meta.group(1)] = meta.group(2)
+    return [(a, t, m, "\n".join(lines)) for a, t, m, lines in out]
+
+
+def ledger_entries(tree):
+    """(time, text) for every entry of the live ledger: decision blocks, send and ask lines, sweeps."""
+    out = []
+    for rel in tree.files("ledger"):
+        match = LEDGER_FILE.match(os.path.basename(rel))
+        if not match:
+            continue
+        text = tree.read(rel).decode("utf-8", "replace")
+        if match.group(1) == "decisions":
+            for _, when, _, block in decision_blocks(text):
+                out.append((safe_time(when), block))
+        elif match.group(1) == "sweeps":
+            for line in text.split("\n"):
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    out.append((safe_time(record.get("time", "")), line))
+        else:
+            for line in text.split("\n"):
+                found = LINE_TIME.match(line)
+                if found:
+                    out.append((safe_time(found.group(1)), line))
+    return [(when, text) for when, text in out if when is not None]
+
+
+def last_references(tree, names):
+    found = {}
+    if not names:
+        return found
+    patterns = dict((name, re.compile(r"(?<![a-z0-9-])%s(?![a-z0-9-])" % re.escape(name), re.I)) for name in names)
+    for when, text in ledger_entries(tree):
+        for name, pattern in patterns.items():
+            if pattern.search(text) and (name not in found or when > found[name]):
+                found[name] = when
+    return found
+
+
+def authority_resolves(tree, ref):
+    if ref.startswith("shared:"):
+        return os.path.exists(ref[len("shared:"):].strip())
+    match = re.match(r"^decisions-(\d{4}-\d{2})#(\S+)$", ref)
+    if not match:
+        return False
+    month, anchor = match.groups()
+    for rel in ("ledger/decisions-%s.md" % month, "archive/%s/ledger/decisions-%s.md" % (month, month)):
+        data = tree.read_or_none(rel)
+        if data is not None and any(a == anchor for a, _, _, _ in decision_blocks(data.decode("utf-8", "replace"))):
+            return True
+    return False
+
+
+# --- the lock ------------------------------------------------------------------------------
+# Every write goes through one lock, <root>/.meta/lock, held with lockf(1) and always with -k:
+# without -k lockf deletes the file on exit, and the next holder locks a fresh inode while an
+# older holder still runs (measured on this machine, see lib/disk.sh). mem runs itself again
+# as lockf's command; the child knows it holds the lock from MEM_LOCK_HELD.
+
+def run_locked(tree, argv):
+    if os.environ.get("MEM_LOCK_HELD") == tree.lock:
+        return
+    wait = os.environ.get("MEM_LOCK_WAIT", "10")
+    if not re.match(r"^\d+$", wait):
+        raise Refused("MEM_LOCK_WAIT must be a number of seconds, not %r" % wait)
+    meta = os.path.dirname(tree.lock)
+    if not os.path.isdir(meta):
+        os.makedirs(meta, 0o700)
+    env = dict(os.environ, MEM_LOCK_HELD=tree.lock)
+    child = [sys.executable, "-I", SELF, "--root", tree.root] + argv
+    lockf = shutil.which("lockf") or ("/usr/bin/lockf" if os.path.exists("/usr/bin/lockf") else None)
+    if lockf:
+        code = subprocess.call([lockf, "-k", "-s", "-t", wait, tree.lock] + child, env=env)
+    else:
+        code = flock_call(tree.lock, int(wait), child, env)
+    if code == EXIT_BUSY:
+        sys.stderr.write("mem: another writer holds %s (waited %ss); nothing was changed, try again\n" % (tree.lock, wait))
+    sys.exit(code)
+
+
+def flock_call(path, wait, command, env):
+    """Where lockf(1) is missing: the same flock(2) lock that lockf takes on macOS."""
+    import fcntl
+    handle = open(path, "a")
+    deadline = time.time() + wait
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except (IOError, OSError):
+            if time.time() >= deadline:
+                return EXIT_BUSY
+            time.sleep(0.1)
+    try:
+        return subprocess.call(command, env=env)
+    finally:
+        handle.close()
+
+
+# --- MEMORY.md ------------------------------------------------------------------------------
+
+LEGEND = [
+    "## Legend",
+    "- CORE: core/card.md is generated by `mem boot` (never edit it); core/boot.md is the restart checklist.",
+    "- STATE: state/*.json holds open asks, watches, read cursors, crons to re-create and machine lines.",
+    "- RULES: one standing rule per file, each with the ledger line (authority) that set it.",
+    "- PEOPLE / TEAMS / TOPICS: one file per person, team or topic.",
+    "- LEDGER: append-only. Decisions (the owner's words verbatim), sends, asks, sweeps; one file a month.",
+    "- ARCHIVE: archive/index.md lists drained files; `mem recall --archive` finds them, `mem unarchive` restores.",
+    "- [[name]] in a file means the file with that name, in any region.",
+    "- Every file header has keywords + summary + links; `mem recall <words>` greps those.",
+    "## Boot (every start)",
+    "1. Run `bin/mem boot`.",
+    "2. Read what it prints.",
+    "3. Re-create the crons from state/crons.json.",
+    "4. List the Beads inboxes.",
+]
+REGION_TITLES = (("rules", "Rules"), ("people", "People"), ("teams", "Teams"), ("topics", "Topics"))
+
+
+def index_line(entry):
+    prefix = "- [%s](%s/%s.md) " % (entry.name, entry.region, entry.name)
+    room = INDEX_LINE_MAX - len(prefix)
+    summary = re.sub(r"\[\[([^\]]+)\]\]", r"\1", entry.summary)
+    return (prefix + cut(summary, room)).rstrip()
+
+
+def build_index(tree, entries, when):
+    body = list(LEGEND)
+    for region, title in REGION_TITLES:
+        body.append("## %s" % title)
+        live = [e for e in entries if e.region == region and e.live]
+        if region == "rules":
+            live.sort(key=lambda e: (e.get("last_confirmed"), e.get("authority"), e.name), reverse=True)
+        else:
+            live.sort(key=lambda e: e.name)
+        body.extend(index_line(e) for e in live)
+        if not live:
+            body.append("- (none yet)")
+    body.append("## Ledger pointers")
+    month = month_of(when)
+    pointers = []
+    for rel in tree.files("ledger"):
+        match = LEDGER_FILE.match(os.path.basename(rel))
+        if match and match.group(2) == month and rel.count("/") == 1:
+            count = tree.read(rel).count(b"\n")
+            pointers.append("- [%s](%s) %d lines" % (os.path.splitext(os.path.basename(rel))[0], rel, count))
+    body.extend(pointers or ["- (nothing this month yet)"])
+    text = "\n".join(body) + "\n"
+    size = 0
+    for _ in range(5):
+        title = "# Memory (checked %s by mem check, %d bytes)\n" % (minute(when), size)
+        full = title + text
+        if len(full.encode("utf-8")) == size:
+            break
+        size = len(full.encode("utf-8"))
+    return full
+
+
+def lint_index(text, label):
+    problems = []
+    size = len(text.encode("utf-8"))
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if size > INDEX_MAX_BYTES:
+        problems.append("%s is %d bytes (cap %d): drain, merge or archive files" % (label, size, INDEX_MAX_BYTES))
+    if len(lines) > INDEX_MAX_LINES:
+        problems.append("%s has %d lines (cap %d): drain, merge or archive files" % (label, len(lines), INDEX_MAX_LINES))
+    for number, line in enumerate(lines, 1):
+        links = link_count(line)
+        if links > 1:
+            problems.append("%s line %d has %d links (a hub-of-hubs line; one link per line)" % (label, number, links))
+        if len(line) > INDEX_LINE_MAX:
+            problems.append("%s line %d is %d characters (cap %d)" % (label, number, len(line), INDEX_LINE_MAX))
+    return problems
+
+
+# --- the card ------------------------------------------------------------------------------
+
+def open_asks(tree):
+    asks, _ = load_state(tree, "open-asks")
+    out = [a for a in asks if isinstance(a, dict) and a.get("status", "open") == "open"]
+    out.sort(key=lambda a: (str(a.get("opened", "")), str(a.get("id", ""))))
+    return out
+
+
+def recent_decisions(tree, when, count=3):
+    found = []
+    for month in (month_of(when), previous_month(when)):
+        data = tree.read_or_none("ledger/decisions-%s.md" % month)
+        if data is None:
+            continue
+        for anchor, at, meta, _ in decision_blocks(data.decode("utf-8", "replace")):
+            found.append((at, anchor, meta.get("slug", "")))
+    found.sort(reverse=True)
+    return found[:count]
+
+
+def build_card(tree, when, width=70, max_crons=8):
+    role = "(no rules/role.md yet)"
+    if tree.has("rules/role.md"):
+        role = Entry(tree, "rules/role.md").summary or role
+    asks = open_asks(tree)
+    crons, _ = load_state(tree, "crons")
+    crons = [c for c in crons if isinstance(c, dict) and c.get("enabled", True) not in (False, "false", 0)]
+    machine, _ = load_state(tree, "machine")
+    lines = ["# Card (generated by mem boot at %s; do not edit)" % minute(when), "role: " + cut(role, 160)]
+    lines.append("open asks: %d%s" % (len(asks), " (the 5 oldest)" if len(asks) > 5 else ""))
+    for ask in asks[:5]:
+        lines.append("- %s since %s: %s waits on %s: %s" % (
+            cut(str(ask.get("id", "?")), 30), str(ask.get("opened", "?"))[:10], cut(str(ask.get("who", "?")), 24),
+            cut(str(ask.get("waiting_on", "?")), 24), cut(str(ask.get("what", "")), width)))
+    lines.append("crons to re-create (state/crons.json): %d" % len(crons))
+    for cron in crons[:max_crons]:
+        lines.append("- %s [%s] %s" % (cut(str(cron.get("name", "?")), 30), cut(str(cron.get("schedule", "?")), 24),
+                                       cut(str(cron.get("prompt_file", "")), width)))
+    if len(crons) > max_crons:
+        lines.append("- and %d more" % (len(crons) - max_crons))
+    lines.append("machine:%s" % ("" if machine else " (no lines set)"))
+    for key in sorted(machine):
+        value = machine[key]
+        if isinstance(value, dict):
+            when_set = value.get("set_at", "")
+            shown = ", ".join("%s=%s" % (k, value[k]) for k in sorted(value) if k != "set_at")
+            lines.append("- %s: %s%s" % (key, cut(shown, width), " (set %s)" % when_set if when_set else ""))
+        else:
+            lines.append("- %s: %s" % (key, cut(str(value), width)))
+    decisions = recent_decisions(tree, when)
+    lines.append("newest decisions: %s" % ("" if decisions else "(none in the last two months)"))
+    for at, anchor, slug in decisions:
+        lines.append("- %s %s" % (anchor, cut(slug, 48)))
+    month = month_of(when)
+    count = len([r for r in tree.files("ledger") if month in os.path.basename(r)])
+    lines.append("ledger files this month: %d" % count)
+    shared = shared_folder(tree)
+    if shared:
+        lines.append("shared folder: %s" % shared)
+    lines.append("next: read core/boot.md")
+    return "\n".join(lines) + "\n"
+
+
+def card_text(tree, when):
+    for width, crons in ((70, 8), (40, 5), (24, 3), (12, 1)):
+        text = build_card(tree, when, width, crons)
+        if len(text.encode("utf-8")) <= CARD_MAX:
+            return text
+    lines = text.split("\n")
+    footer = "(card cut at %d bytes; mem status has the rest)\nnext: read core/boot.md\n" % CARD_MAX
+    out = ""
+    for line in lines[:-2]:
+        if len((out + line + "\n" + footer).encode("utf-8")) > CARD_MAX:
+            break
+        out += line + "\n"
+    return out + footer
+
+
+def write_card(tree, when):
+    text = card_text(tree, when)
+    write_file(tree, "core/card.md", text.encode("utf-8"))
+    return text
+
+
+def shared_folder(tree):
+    data = tree.read_or_none(".meta/shared-folder")
+    return data.decode("utf-8", "replace").strip() if data else ""
+
+
+# --- init ---------------------------------------------------------------------------------
+
+BOOT_TEMPLATE = """# Boot checklist (hand-written; at most 2,000 bytes)
+
+1. `bin/mem boot`: read the card it prints (role, oldest asks, crons, machine, newest decisions).
+2. Re-create every enabled cron in state/crons.json, with its prompt file.
+3. List the Beads inboxes and close what is read.
+4. Open the 5 oldest asks on the card; chase whoever is waited on.
+5. `bin/mem recall <words>` before you answer from memory.
+6. Record the owner's words with `bin/mem decide`, every send with `bin/mem sent`.
+7. `bin/mem check` at the end of each sweep; fix what it prints.
+"""
+
+
+def set_modes(tree):
+    paths = [tree.root]
+    for rel in TREE_DIRS + TREE_FILES:
+        base = os.path.join(tree.root, rel)
+        if os.path.lexists(base) and not os.path.islink(base):
+            paths.append(base)
+            if os.path.isdir(base):
+                for folder, dirs, names in os.walk(base):
+                    paths.extend(os.path.join(folder, d) for d in dirs)
+                    paths.extend(os.path.join(folder, n) for n in names)
+    for path in sorted(set(paths)):
+        if os.path.islink(path):
+            continue
+        os.chmod(path, wanted_mode(tree, path))
+
+
+def wanted_mode(tree, path):
+    if os.path.isdir(path):
+        return 0o700
+    if tree.rel(path).startswith("bin/") and os.stat(path).st_mode & 0o100:
+        return 0o700
+    return 0o600
+
+
+def refuse_wide_root(root):
+    """init sets modes on what it creates: never on / or a home folder."""
+    if root in ("/", os.path.realpath(os.path.expanduser("~"))):
+        raise Refused("refusing to make %s a memory tree; give --root a folder of its own" % root)
+
+
+def cmd_init(tree, args):
+    refuse_wide_root(tree.root)
+    created = []
+    for rel in TREE_DIRS:
+        path = os.path.join(tree.root, rel)
+        if not os.path.isdir(path):
+            os.makedirs(path, 0o700)
+            created.append(rel + "/")
+    for name, default in STATE_DEFAULTS:
+        rel = "state/%s.json" % name
+        if not tree.has(rel):
+            write_file(tree, rel, dump_json(default), expect=MISSING)
+            created.append(rel)
+    if not tree.has("archive/index.md"):
+        write_file(tree, "archive/index.md", b"# Archive index\n\nOne line per archived file: date, where it is now, where it came from, why.\n\n", expect=MISSING)
+        created.append("archive/index.md")
+    if not tree.has("core/boot.md"):
+        write_file(tree, "core/boot.md", BOOT_TEMPLATE.encode("utf-8"), expect=MISSING)
+        created.append("core/boot.md")
+    when = now()
+    if not tree.has("MEMORY.md"):
+        write_file(tree, "MEMORY.md", build_index(tree, region_entries(tree), when).encode("utf-8"), expect=MISSING)
+        created.append("MEMORY.md")
+    shared = os.environ.get("MEM_SHARED_FOLDER", "")
+    if shared and not tree.has(".meta/shared-folder"):
+        write_file(tree, ".meta/shared-folder", (os.path.abspath(os.path.expanduser(shared)) + "\n").encode("utf-8"))
+        created.append(".meta/shared-folder")
+    if os.path.exists(tree.lock):
+        os.chmod(tree.lock, 0o600)
+    write_card(tree, when)
+    set_modes(tree)
+    print("mem init: %s is ready%s" % (tree.root, "; created " + ", ".join(created) if created else "; nothing was missing"))
+    return 0
+
+
+def cmd_boot(tree, args):
+    sys.stdout.write(write_card(tree, now()))
+    return 0
+
+
+# --- check --------------------------------------------------------------------------------
+
+def file_auto_memory(tree, when, report):
+    """Claude Code's own auto-memory files land at the top level, with a `type:` in their
+    frontmatter. They are filed into their region with the header fields this tree needs."""
+    people = people_tokens(tree)
+    taken = set(e.name for e in region_entries(tree) + archive_entries(tree))
+    for name in sorted(os.listdir(tree.root)):
+        path = os.path.join(tree.root, name)
+        if not name.endswith(".md") or name == "MEMORY.md" or not os.path.isfile(path) or os.path.islink(path):
+            continue
+        data = tree.read(name)
+        fields, body, raw = split_header(data)
+        kind = re.search(r"(?m)^\s*type:\s*([a-z]+)", raw or "")
+        if fields is None or not kind:
+            report("WARN", "%s sits at the top level and is not an auto-memory file; move it into a region" % name)
+            continue
+        kind = kind.group(1)
+        stem = slugify(fields.get("name") or name[:-3], NAME_MAX)
+        description = one_line(fields.get("description", ""))
+        if kind == "feedback":
+            region = "people" if set(tokens(stem + " " + description)) & people else "rules"
+        elif kind == "user":
+            region = "people"
+        elif kind in ("project", "reference"):
+            region = "topics"
+        else:
+            report("WARN", "%s is an auto-memory file of type %r, which has no region; file it by hand" % (name, kind))
+            continue
+        if not stem or stem in taken:
+            report("PROBLEM", "%s (auto-memory) clashes with an existing file named %r; merge it by hand" % (name, stem))
+            continue
+        summary = description or one_line(body.decode("utf-8", "replace"))
+        header = {
+            "name": stem, "region": region,
+            "keywords": ", ".join(t for t in tokens(stem) if len(t) >= 3) or stem,
+            "summary": cut(summary, SUMMARY_MAX), "links": render_links(links_of(" ".join(re.findall(r"\[\[[^\]]+\]\]", body.decode("utf-8", "replace"))))),
+            "importance": "3",
+            "last_confirmed": datetime.datetime.fromtimestamp(os.path.getmtime(path), UTC).date().isoformat(),
+            "status": "live", "origin": "auto-memory type=%s, filed %s" % (kind, when.date().isoformat()),
+        }
+        dest = "%s/%s.md" % (region, stem)
+        write_file(tree, dest, render_header(header) + body, expect=MISSING)
+        os.unlink(path)
+        taken.add(stem)
+        report("INFO", "filed %s into %s (auto-memory %s)%s" % (name, dest, kind,
+                                                                 "; it needs an authority" if region == "rules" else ""))
+
+
+def entry_problems(tree, entry, names):
+    if entry.fields is None:
+        return ["no header (a --- block with the fields in .meta/schema.md)"], []
+    f = entry.fields
+    problems, warnings = [], []
+    for key in REQUIRED:
+        if key not in f:
+            problems.append("no %s field" % key)
+    if "name" in f and f["name"] != entry.name:
+        problems.append("name %r does not match the file name %r" % (f["name"], entry.name))
+    if not SLUG.match(entry.name) or len(entry.name) > NAME_MAX:
+        problems.append("the file name is not a slug of at most %d characters" % NAME_MAX)
+    if "region" in f and f["region"] != entry.region:
+        problems.append("region %r but the file is in %s/" % (f["region"], entry.region))
+    if "keywords" in f and not entry.keywords:
+        problems.append("keywords is empty")
+    if "summary" in f:
+        if not f["summary"]:
+            problems.append("summary is empty")
+        if len(f["summary"]) > SUMMARY_MAX:
+            problems.append("summary is %d characters (cap %d)" % (len(f["summary"]), SUMMARY_MAX))
+        if "](" in f["summary"]:
+            problems.append("summary holds a markdown link (index lines carry one link each)")
+    if "importance" in f and f["importance"] not in ("1", "2", "3", "4", "5"):
+        problems.append("importance %r is not 1..5" % f["importance"])
+    if "last_confirmed" in f and parse_date(f["last_confirmed"]) is None:
+        problems.append("last_confirmed %r is not YYYY-MM-DD" % f["last_confirmed"])
+    status = f.get("status", "live")
+    if "status" in f and status != "live" and not re.match(r"^superseded:[a-z0-9][a-z0-9_.-]*$", status):
+        problems.append("status %r is not live or superseded:<name>" % status)
+    if status.startswith("superseded:") and status[len("superseded:"):] not in names:
+        warnings.append("superseded by %r, which does not exist" % status[len("superseded:"):])
+    if entry.region == "rules":
+        authority = f.get("authority", "")
+        if not authority:
+            problems.append("no authority (a rule needs the ledger line that set it: mem decide, then mem add --authority)")
+        elif not AUTHORITY.match(authority):
+            problems.append("authority %r is not decisions-YYYY-MM#<time> or shared:<path>" % authority)
+        elif not authority_resolves(tree, authority):
+            warnings.append("authority %s is not in the ledger or the archive" % authority)
+    elif f.get("authority") and not AUTHORITY.match(f["authority"]):
+        problems.append("authority %r is not decisions-YYYY-MM#<time> or shared:<path>" % f["authority"])
+    if f.get("repo_ref"):
+        if entry.region != "topics":
+            problems.append("repo_ref is for topics only")
+        elif not re.match(r"^[a-z0-9_-]+:\S+(\s+[A-Z][A-Z0-9]+-\d+)*$", f["repo_ref"]) or \
+                re.search(r"(?i)(^|[/:])index\.md|#L?\d", f["repo_ref"].split()[0]):
+            problems.append("repo_ref %r is not <repo>:<chunk path> [JIRA-KEY] (never an index line)" % f["repo_ref"])
+    for link in links_of(f.get("links", "")) if f.get("links") else []:
+        if link not in names:
+            warnings.append("links to [[%s]], which does not exist" % link)
+    return problems, warnings
+
+
+def drain_plan(tree, when, entries=None):
+    """What drain would move, without moving anything: one list per rule."""
+    plan = {"asks": [], "ledger": [], "sweeps": [], "candidates": [], "superseded": []}
+    asks, _ = load_state(tree, "open-asks")
+    for ask in asks:
+        closed = safe_time(str(ask.get("closed", ""))) if isinstance(ask, dict) else None
+        if isinstance(ask, dict) and ask.get("status") == "closed" and closed and when - closed > datetime.timedelta(days=7):
+            plan["asks"].append(ask)
+    keep = (month_of(when), previous_month(when))
+    for rel in tree.files("ledger"):
+        match = LEDGER_FILE.match(os.path.basename(rel))
+        if match and rel.count("/") == 1 and match.group(2) not in keep:
+            plan["ledger"].append((rel, match.group(2)))
+    for month in keep:
+        rel = ledger_rel("sweeps", month)
+        if tree.has(rel):
+            old = [line for line in tree.read(rel).decode("utf-8", "replace").split("\n") if sweep_is_old(line, when)]
+            if old:
+                plan["sweeps"].append((rel, len(old)))
+    entries = region_entries(tree, ("topics", "teams")) if entries is None else entries
+    live = [e for e in entries if e.region in ("topics", "teams") and e.live and e.fields is not None]
+    refs = last_references(tree, [e.name for e in live])
+    for entry in live:
+        confirmed = entry.confirmed
+        if entry.importance > 3 or confirmed is None:
+            continue
+        age = (when.date() - confirmed).days
+        last = refs.get(entry.name)
+        if age > 30 and (last is None or when - last > datetime.timedelta(days=30)):
+            plan["candidates"].append((entry, age, (when - last).days if last else None))
+    for entry in entries:
+        if entry.region not in ("topics", "teams") or entry.fields is None or entry.importance >= 5:
+            continue
+        if entry.status.startswith("superseded:"):
+            since = parse_date(entry.get("superseded_on")) or datetime.datetime.fromtimestamp(entry.mtime, UTC).date()
+            if (when.date() - since).days > 7:
+                plan["superseded"].append((entry, (when.date() - since).days))
+    return plan
+
+
+def sweep_is_old(line, when):
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return False
+    if not isinstance(record, dict) or record.get("summary"):
+        return False
+    at = safe_time(str(record.get("time", "")))
+    return at is not None and when - at > datetime.timedelta(days=14)
+
+
+def run_check(tree, when, quiet=False):
+    """Lint, file auto-memory, regenerate MEMORY.md, refresh the card. (problems, warnings, lines)."""
+    lines = []
+    counts = {"PROBLEM": 0, "WARN": 0}
+
+    def report(level, message):
+        if level in counts:
+            counts[level] += 1
+        lines.append("%-7s %s" % (level, message))
+
+    file_auto_memory(tree, when, report)
+    entries = region_entries(tree)
+    names = set(e.name for e in entries)
+    for region in REGIONS:
+        for rel in tree.files(region):
+            if rel.count("/") != 1 or not rel.endswith(".md"):
+                report("WARN", "%s is not a <name>.md file directly in its region" % rel)
+    for entry in entries:
+        problems, warnings = entry_problems(tree, entry, names)
+        for problem in problems:
+            report("PROBLEM", "%s: %s" % (entry.rel, problem))
+        for warning in warnings:
+            report("WARN", "%s: %s" % (entry.rel, warning))
+    seen = {}
+    for entry in entries:
+        if entry.name in seen:
+            report("PROBLEM", "%s and %s have the same name; names are unique across regions" % (seen[entry.name], entry.rel))
+        seen[entry.name] = entry.rel
+    live = [e for e in entries if e.live and e.fields is not None]
+    for i, first in enumerate(live):
+        for second_entry in live[i + 1:]:
+            share = overlap(first.keywords, second_entry.keywords)
+            if share >= OVERLAP:
+                report("WARN", "%s and %s share %d%% of their keywords; merge them or tell them apart"
+                       % (first.rel, second_entry.rel, round(share * 100)))
+    for entry in entries:
+        if entry.region == "rules" and entry.get("pointer"):
+            target = entry.get("pointer")
+            if not os.path.exists(target):
+                report("WARN", "%s points at %s, which is gone" % (entry.rel, target))
+            elif entry.confirmed and datetime.datetime.fromtimestamp(os.path.getmtime(target), UTC).date() > entry.confirmed:
+                report("WARN", "%s: its shared target %s changed after last_confirmed %s; read it and confirm"
+                       % (entry.rel, target, entry.confirmed))
+    for name, _ in STATE_DEFAULTS:
+        try:
+            load_state(tree, name)
+        except Refused as error:
+            report("PROBLEM", str(error))
+    try:
+        for ask in open_asks(tree):
+            touched = safe_time(str(ask.get("updated") or ask.get("opened") or ""))
+            if touched and when - touched > datetime.timedelta(days=14):
+                report("WARN", "open ask %s untouched for %d days (%s waits on %s)" % (
+                    ask.get("id"), (when - touched).days, ask.get("who"), ask.get("waiting_on")))
+    except Refused:
+        pass
+    boot = tree.read_or_none("core/boot.md")
+    if boot is None:
+        report("PROBLEM", "core/boot.md is missing (mem init writes the template)")
+    elif len(boot) > BOOT_MAX:
+        report("PROBLEM", "core/boot.md is %d bytes (cap %d)" % (len(boot), BOOT_MAX))
+    for path in mode_paths(tree):
+        mode = os.stat(path).st_mode & 0o777
+        want = wanted_mode(tree, path)
+        if mode != want:
+            report("PROBLEM", "%s has mode %o, want %o (mem init sets modes)" % (tree.rel(path) if path != tree.root else ".", mode, want))
+    current = tree.read_or_none("MEMORY.md")
+    if current is not None:
+        for problem in lint_index(current.decode("utf-8", "replace"), "MEMORY.md (as found)"):
+            report("PROBLEM", problem)
+    try:
+        plan = drain_plan(tree, when, entries)
+        for entry, days in plan["superseded"]:
+            report("INFO", "superseded %d days ago, drain archives it: %s" % (days, entry.rel))
+        total = sum(len(plan[k]) for k in plan)
+        report("INFO", "drain candidates (dry run): %d (asks %d, ledger months %d, sweeps files %d, rule 4 %d, superseded %d)" % (
+            total, len(plan["asks"]), len(plan["ledger"]), len(plan["sweeps"]), len(plan["candidates"]), len(plan["superseded"])))
+    except Refused:
+        pass
+    index = build_index(tree, entries, when)
+    for problem in lint_index(index, "MEMORY.md (generated)"):
+        report("PROBLEM", problem)
+    write_file(tree, "MEMORY.md", index.encode("utf-8"))
+    card = ""
+    try:
+        card = write_card(tree, when)
+    except Refused as error:
+        report("PROBLEM", "the card was not refreshed: %s" % error)
+    if len(card.encode("utf-8")) > CARD_MAX:
+        report("PROBLEM", "core/card.md is %d bytes (cap %d)" % (len(card.encode("utf-8")), CARD_MAX))
+    lines.append("index: %d bytes, %d lines (caps %d / %d); card: %d bytes (cap %d)" % (
+        len(index.encode("utf-8")), index.count("\n"), INDEX_MAX_BYTES, INDEX_MAX_LINES, len(card.encode("utf-8")), CARD_MAX))
+    lines.append("result: %d problems, %d warnings" % (counts["PROBLEM"], counts["WARN"]))
+    return counts["PROBLEM"], counts["WARN"], lines
+
+
+def mode_paths(tree):
+    out = [tree.root]
+    for rel in TREE_DIRS + TREE_FILES:
+        base = os.path.join(tree.root, rel)
+        if not os.path.lexists(base) or os.path.islink(base):
+            continue
+        out.append(base)
+        if os.path.isdir(base):
+            for folder, dirs, names in os.walk(base):
+                out.extend(os.path.join(folder, d) for d in dirs)
+                out.extend(os.path.join(folder, n) for n in names
+                           if os.path.join(folder, n) != tree.lock and not n.startswith(".mem-"))
+    return sorted(p for p in set(out) if not os.path.islink(p))
+
+
+def cmd_check(tree, args):
+    problems, _, lines = run_check(tree, now())
+    print("mem check: %s" % tree.root)
+    for line in lines:
+        print(line)
+    return 1 if problems else 0
+
+
+def quiet_check(tree):
+    """After a command that changed the regions: the index and the card follow at once."""
+    problems, warnings, _ = run_check(tree, now())
+    if problems:
+        print("mem check: %d problems; run mem check to see them" % problems)
+
+
+# --- recall --------------------------------------------------------------------------------
+
+def hits(words, name, keywords, summary):
+    name_low = name.lower()
+    name_tokens = set(tokens(name))
+    keyword_tokens = set(t for k in keywords for t in tokens(k))
+    hay = " ".join([name_low, " ".join(keywords), summary.lower()])
+    score = 0
+    for word in words:
+        if word == name_low or word in name_tokens or word in keywords or word in keyword_tokens:
+            score += 2
+        elif word in hay:
+            score += 1
+    return score
+
+
+def shared_entries(folder):
+    """Read-only: the shared folder's MEMORY.md lines and file headers, two levels deep."""
+    out = {}
+    if not folder or not os.path.isdir(folder):
+        return []
+    base = os.path.realpath(folder)
+    for current, dirs, names in os.walk(base):
+        depth = os.path.relpath(current, base).count(os.sep) + (0 if current == base else 1)
+        dirs[:] = sorted(d for d in dirs if not d.startswith(".")) if depth < 2 else []
+        for name in sorted(names):
+            if not name.endswith(".md") or name == "MEMORY.md":
+                continue
+            path = os.path.join(current, name)
+            try:
+                with open(path, "rb") as handle:
+                    fields, _, _ = split_header(handle.read(65536))
+            except (IOError, OSError):
+                continue
+            if fields is None:
+                continue
+            out[path] = (fields.get("name") or name[:-3], keywords_of(fields.get("keywords", "")),
+                         fields.get("summary") or fields.get("description", ""), os.path.getmtime(path))
+    index = os.path.join(base, "MEMORY.md")
+    if os.path.isfile(index):
+        with open(index, "rb") as handle:
+            for line in handle.read().decode("utf-8", "replace").split("\n"):
+                match = re.match(r"^\s*-\s*\[([^\]]+)\]\(([^)\s]+)\)\s*[-—:]*\s*(.*)$", line)
+                if not match:
+                    continue
+                path = os.path.realpath(os.path.join(base, match.group(2)))
+                if path not in out:
+                    out[path] = (match.group(1), [], match.group(3), os.path.getmtime(index))
+    return [(path,) + value for path, value in out.items()]
+
+
+def cmd_recall(tree, args):
+    words = [w.lower() for w in " ".join(args.words).split() if w]
+    when = now()
+    results = []
+
+    def consider(label, shown, name, keywords, summary, importance, confirmed):
+        score = hits(words, name, keywords, summary)
+        if score:
+            age = (when.date() - confirmed).days if confirmed else 9999
+            results.append((-score, -importance, age, label, shown, summary))
+
+    for entry in region_entries(tree):
+        if entry.live and entry.fields is not None:
+            consider("", entry.rel, entry.name, entry.keywords, entry.summary, entry.importance, entry.confirmed)
+    if args.archive:
+        for entry in archive_entries(tree):
+            consider("ARCHIVE ", entry.rel, entry.name, entry.keywords, entry.summary, entry.importance, entry.confirmed)
+    if args.shared:
+        folder = shared_folder(tree)
+        if not folder:
+            print("(no shared folder set: mem set shared-folder <path>)")
+        for path, name, keywords, summary, mtime in shared_entries(folder):
+            consider("SHARED ", path, name, keywords, summary, 3, datetime.datetime.fromtimestamp(mtime, UTC).date())
+    results.sort()
+    if not results:
+        print("no match for: %s" % " ".join(words))
+        return 1
+    for _, _, _, label, shown, summary in results[:5]:
+        head = "%s%s: " % (label, shown)
+        print(head + cut(summary, max(100 - len(head), 20)))
+    return 0
+
+
+# --- add -----------------------------------------------------------------------------------
+
+def read_body(args):
+    if getattr(args, "body_file", None):
+        with open(args.body_file, "rb") as handle:
+            return handle.read()
+    if sys.stdin is None or sys.stdin.isatty():
+        return None
+    data = sys.stdin.buffer.read()
+    return data if data else None
+
+
+def cmd_add(tree, args):
+    region = args.region
+    if region not in REGIONS:
+        raise Refused("region %r is not one of %s" % (region, ", ".join(REGIONS)))
+    name = check_name(args.name)
+    keywords = keywords_of(args.keywords)
+    if not keywords:
+        raise Refused("--keywords is empty; recall greps them")
+    summary = one_line(args.summary)
+    if not summary or len(summary) > SUMMARY_MAX:
+        raise Refused("--summary must be one line of 1 to %d characters (it is %d)" % (SUMMARY_MAX, len(summary)))
+    if "](" in summary:
+        raise Refused("--summary must not hold a markdown link")
+    if args.importance is not None and args.importance not in range(1, 6):
+        raise Refused("--importance is 1..5")
+    if args.authority and not AUTHORITY.match(args.authority):
+        raise Refused("--authority %r is not decisions-YYYY-MM#<time> (mem decide prints it) or shared:<path>" % args.authority)
+    if region == "rules" and not args.authority:
+        raise Refused("rules need --authority: the ledger line that set the rule (record it with mem decide first)")
+    if args.repo_ref and region != "topics":
+        raise Refused("--repo-ref is for topics only")
+    body = read_body(args)
+    today = now().date().isoformat()
+    entries = region_entries(tree)
+    by_name = dict((e.name, e) for e in entries)
+    dry = "would " if args.dry_run else ""
+
+    if args.supersedes:
+        old = by_name.get(args.supersedes)
+        if old is None:
+            raise Refused("--supersedes %s: no file has that name" % args.supersedes)
+        if name in by_name:
+            raise Refused("%s already exists; a superseding file needs a new name" % by_name[name].rel)
+        fields = new_fields(args, name, region, keywords, summary, today, old.importance)
+        rel = "%s/%s.md" % (region, name)
+        tree.abs(rel)
+        print("%sSUPERSEDE %s replaces %s" % (dry, rel, old.rel))
+        if args.dry_run:
+            return 0
+        write_file(tree, rel, render_header(fields) + (body or b""), expect=MISSING)
+        old_fields = dict(old.fields or {})
+        old_fields["status"] = "superseded:%s" % name
+        old_fields["superseded_on"] = today
+        write_file(tree, old.rel, render_header(old_fields) + old.body, expect=old.data)
+        quiet_check(tree)
+        return 0
+
+    target, why = by_name.get(name), "same name"
+    if target is not None and target.region != region:
+        raise Refused("%s already has the name %s; names are unique across regions" % (target.rel, name))
+    if target is None:
+        best = 0.0
+        for entry in entries:
+            if entry.region == region and entry.live and entry.fields is not None:
+                share = overlap(keywords, entry.keywords)
+                if share >= OVERLAP and share > best:
+                    target, best = entry, share
+        if target is not None:
+            why = "keywords overlap %d%% with --name %s" % (round(best * 100), name)
+    if target is None:
+        rel = "%s/%s.md" % (region, name)
+        tree.abs(rel)
+        print("%sADD %s" % (dry, rel))
+        if not args.dry_run:
+            write_file(tree, rel, render_header(new_fields(args, name, region, keywords, summary, today, None)) + (body or b""),
+                       expect=MISSING)
+            quiet_check(tree)
+        return 0
+
+    tree.abs(target.rel)
+    old = dict(target.fields or {})
+    fields = dict(old)
+    fields.update({"name": target.name, "region": region, "keywords": ", ".join(keywords), "summary": summary})
+    for key, value in (("importance", args.importance), ("authority", args.authority), ("repo_ref", args.repo_ref)):
+        if value is not None:
+            fields[key] = str(value)
+    if args.links is not None:
+        fields["links"] = render_links(links_of(args.links))
+    fields.setdefault("links", "")
+    fields.setdefault("importance", "3")
+    fields.setdefault("status", "live")
+    new_body = target.body
+    if args.replace is not None:
+        if body is None:
+            raise Refused("--replace needs the corrected text on stdin or in --body-file")
+        old_text = args.replace.encode("utf-8")
+        found = target.body.count(old_text)
+        if found != 1:
+            raise Refused("--replace text occurs %d times in %s; it must occur exactly once" % (found, target.rel))
+        new_text = body[:-1] if body.endswith(b"\n") and not old_text.endswith(b"\n") else body
+        new_body = target.body.replace(old_text, new_text)
+    elif body is not None:
+        new_body = body
+    unchanged = dict(fields, last_confirmed="") == dict(old, last_confirmed="") and new_body == target.body
+    if unchanged and old.get("last_confirmed") == today:
+        print("%sNOOP %s (nothing new; confirmed today already)" % (dry, target.rel))
+        return 0
+    fields["last_confirmed"] = today
+    print("%sUPDATE %s (%s%s)" % (dry, target.rel, why, "; only last_confirmed changes" if unchanged else ""))
+    if not args.dry_run:
+        write_file(tree, target.rel, render_header(fields) + new_body, expect=target.data)
+        quiet_check(tree)
+    return 0
+
+
+def new_fields(args, name, region, keywords, summary, today, importance):
+    fields = {
+        "name": name, "region": region, "keywords": ", ".join(keywords), "summary": summary,
+        "links": render_links(links_of(args.links)) if args.links else "",
+        "importance": str(args.importance or importance or 3), "last_confirmed": today, "status": "live",
+    }
+    if args.authority:
+        fields["authority"] = args.authority
+    if args.repo_ref:
+        fields["repo_ref"] = args.repo_ref
+    return fields
+
+
+# --- set -----------------------------------------------------------------------------------
+
+def cmd_set(tree, args):
+    key = args.key
+    if key == "shared-folder":
+        path = os.path.abspath(os.path.expanduser(args.value))
+        write_file(tree, ".meta/shared-folder", (path + "\n").encode("utf-8"))
+        print("shared-folder = %s" % path)
+        return 0
+    parts = key.split(".")
+    if parts[0] not in state_names():
+        raise Refused("%r: the first part names a state file (%s) or is shared-folder" % (key, ", ".join(state_names())))
+    if len(parts) < 2 or not all(parts):
+        raise Refused("%r: give a path inside the file, for example cursors.slack_dm" % key)
+    name = parts[0]
+    data, raw = load_state(tree, name)
+    value = parse_value(args.value, args.string)
+    stamp_now = minute(now())
+    if isinstance(data, list):
+        ident_key = LIST_IDS[name]
+        item = find_item(data, ident_key, parts[1])
+        if item is None:
+            if name == "open-asks":
+                raise Refused("no open ask %s; mem ask open makes one" % parts[1])
+            item = {ident_key: parts[1]}
+            data.append(item)
+        path = parts[2:]
+        if not path:
+            raise Refused("%r: name a field of %s %s" % (key, name, parts[1]))
+        if path[0] == ident_key:
+            raise Refused("the %s of an entry is not changed by set" % ident_key)
+        set_path(item, path, value, key)
+        if name == "open-asks":
+            item["updated"] = stamp_now
+    else:
+        if name == "machine":
+            if len(parts) == 2 and not isinstance(value, dict):
+                value = {"line": value}
+            if len(parts) == 2:
+                value["set_at"] = stamp_now
+        set_path(data, parts[1:], value, key)
+        if name == "machine" and len(parts) > 2 and isinstance(data.get(parts[1]), dict):
+            data[parts[1]]["set_at"] = stamp_now
+    save_state(tree, name, data, raw)
+    print("%s = %s" % (key, json.dumps(value, ensure_ascii=False)))
+    return 0
+
+
+def set_path(target, path, value, key):
+    for part in path[:-1]:
+        nxt = target.get(part)
+        if nxt is None:
+            nxt = target[part] = {}
+        if not isinstance(nxt, dict):
+            raise Refused("%r: %s holds a value, not an object" % (key, part))
+        target = nxt
+    target[path[-1]] = value
+
+
+# --- the ledger commands --------------------------------------------------------------------
+
+SOURCE = re.compile(r"^(chat|slack:\S+|bead:\S+)$")
+
+
+def cmd_decide(tree, args):
+    when = parse_time(args.time)
+    if not SOURCE.match(args.source):
+        raise Refused("--source is chat, slack:<ts> or bead:<id>, not %r" % args.source)
+    quote = read_body(args)
+    if not quote or not quote.strip():
+        raise Refused("the owner's words come on stdin, verbatim; nothing arrived")
+    month = month_of(when)
+    rel = ledger_rel("decisions", month)
+    taken = set()
+    for existing in (rel, "archive/%s/ledger/decisions-%s.md" % (month, month)):
+        data = tree.read_or_none(existing)
+        if data is not None:
+            taken.update(a for a, _, _, _ in decision_blocks(data.decode("utf-8", "replace")))
+    anchor, n = minute(when), 1
+    while anchor in taken:
+        n += 1
+        anchor = "%s-%d" % (minute(when), n)
+    text = quote.decode("utf-8", "replace")
+    slug = check_name(args.slug, "--slug") if args.slug else (slugify(" ".join(text.split()[:6])) or "decision")
+    runs = re.findall(r"`+", text)
+    fence = "`" * max([3] + [len(r) + 1 for r in runs])
+    block = ("\n## %s\nslug: %s\nsource: %s\nbytes: %d\n%s\n" % (anchor, slug, args.source, len(quote), fence)).encode("utf-8")
+    block += quote + (b"" if quote.endswith(b"\n") else b"\n") + (fence + "\n").encode("utf-8")
+    ledger_append(tree, "decisions", month, block)
+    ref = "decisions-%s#%s" % (month, anchor)
+    print(ref)
+    if args.shared:
+        shared_instruction(tree, args.shared, ref, args.source, when, text)
+    return 0
+
+
+def shared_instruction(tree, shared, ref, source, when, text):
+    folder = shared_folder(tree)
+    if os.path.isabs(os.path.expanduser(shared)):
+        path = os.path.expanduser(shared)
+    elif folder:
+        path = os.path.join(folder, shared)
+    else:
+        raise Refused("--shared %s is relative and no shared folder is set (mem set shared-folder <path>)" % shared)
+    real = os.path.realpath(path)
+    print("shared file (mem never writes there; edit it yourself): %s" % real)
+    print("  suggested line, under its rule: - Owner, %s (%s; %s): \"%s\"" % (
+        when.date().isoformat(), source, ref, cut(text, 200)))
+    for entry in region_entries(tree, ("rules",)):
+        target = entry.get("pointer")
+        if target and os.path.realpath(target) == real:
+            fields = dict(entry.fields)
+            fields["last_confirmed"] = now().date().isoformat()
+            write_file(tree, entry.rel, render_header(fields) + entry.body, expect=entry.data)
+            print("pointer %s: last_confirmed %s" % (entry.rel, fields["last_confirmed"]))
+            return
+    print("no pointer file in rules/ points at it; add one with mem add --region rules (pointer: %s)" % real)
+
+
+def single_line(value, flag, width=200):
+    if value is None or "\n" in value or "\r" in value or not value.strip():
+        raise Refused("%s must be one non-empty line" % flag)
+    if len(value) > width:
+        raise Refused("%s is %d characters (cap %d)" % (flag, len(value), width))
+    return value.strip()
+
+
+def cmd_sent(tree, args):
+    when = now()
+    line = "- %s | to: %s | channel: %s | ref: %s | %s\n" % (
+        minute(when), single_line(args.to, "--to", 80), single_line(args.channel, "--channel", 60),
+        single_line(args.ref, "--ref", 300), single_line(args.subject, "--subject", 160))
+    ledger_append(tree, "sends", month_of(when), line.encode("utf-8"))
+    print("sent %s -> %s" % (minute(when), ledger_rel("sends", month_of(when))))
+    return 0
+
+
+def cmd_ask(tree, args):
+    when = now()
+    asks, raw = load_state(tree, "open-asks")
+    ident = check_name(args.id, "--id")
+    item = find_item(asks, "id", ident)
+    if args.op == "open":
+        for flag, value in (("--who", args.who), ("--what", args.what), ("--waiting-on", args.waiting_on)):
+            single_line(value, flag, 300)
+        if item is not None:
+            raise Refused("ask %s exists already (%s); pick another id" % (ident, item.get("status", "open")))
+        entry = {"id": ident, "who": args.who.strip(), "what": args.what.strip(), "opened": minute(when),
+                 "waiting_on": args.waiting_on.strip(),
+                 "next_check": minute(parse_time(args.next_check)) if args.next_check else None,
+                 "status": "open", "updated": minute(when)}
+        asks.append(entry)
+        save_state(tree, "open-asks", asks, raw)
+        line = "- %s | open | %s | who: %s | waiting on: %s | %s\n" % (
+            minute(when), ident, entry["who"], entry["waiting_on"], one_line(entry["what"]))
+    else:
+        if item is None or item.get("status") != "open":
+            raise Refused("no open ask %s" % ident)
+        item.update({"status": "closed", "closed": minute(when), "updated": minute(when)})
+        if args.note:
+            item["note"] = one_line(args.note)
+        save_state(tree, "open-asks", asks, raw)
+        line = "- %s | close | %s | %s\n" % (minute(when), ident, one_line(args.note or ""))
+    ledger_append(tree, "asks", month_of(when), line.encode("utf-8"))
+    print("ask %s %s" % (ident, "opened" if args.op == "open" else "closed"))
+    return 0
+
+
+def cmd_sweep_log(tree, args):
+    when = now()
+    record = {"time": minute(when), "inboxes": args.inboxes, "asks_touched": args.asks_touched,
+              "free_pct": args.free_pct, "swap_gb": args.swap_gb, "load": args.load}
+    ledger_append(tree, "sweeps", month_of(when), (json.dumps(record, sort_keys=True) + "\n").encode("utf-8"))
+    print("sweep logged %s" % record["time"])
+    return 0
+
+
+# --- backup ---------------------------------------------------------------------------------
+
+def backup_bases(tree):
+    out = {}
+    data = tree.read_or_none(".meta/drain.log") or b""
+    for line in data.decode("utf-8", "replace").split("\n"):
+        match = BACKUP_LOG.match(line)
+        if match:
+            out[match.group(1)] = match.group(3)
+    return out
+
+
+def do_backup(tree, note=None, when=None):
+    when = when or now()
+    folder = os.path.join(tree.root, ".meta", "backups")
+    if not os.path.isdir(folder):
+        os.makedirs(folder, 0o700)
+    name, n = stamp(when) + ".tar", 1
+    while os.path.exists(os.path.join(folder, name)):
+        n += 1
+        name = "%s-%d.tar" % (stamp(when), n)
+    fd, tmp = tempfile.mkstemp(prefix=".mem-", suffix=".tmp", dir=folder)
+    os.close(fd)
+    skip = (os.path.join(tree.root, ".meta", "backups"), tree.lock)
+    try:
+        with tarfile.open(tmp, "w") as tar:
+            for current, dirs, names in os.walk(tree.root):
+                dirs[:] = sorted(d for d in dirs if os.path.join(current, d) not in skip)
+                for entry in sorted(names):
+                    path = os.path.join(current, entry)
+                    if path in skip or entry.startswith(".mem-"):
+                        continue
+                    tar.add(path, arcname=tree.rel(path), recursive=False)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, os.path.join(folder, name))
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    rel = ".meta/backups/" + name
+    digest = sha256(tree.read(rel))
+    log(tree, "backup %s sha256=%s basis=%s" % (rel, digest, one_line(note) if note else ROUTINE_BASIS))
+    prune_backups(tree, when)
+    return rel, digest
+
+
+def backup_time(name, path):
+    match = BACKUP_NAME.match(name)
+    if match:
+        return parse_time(match.group(1))
+    return datetime.datetime.fromtimestamp(os.path.getmtime(path), UTC)
+
+
+def prune_backups(tree, when):
+    folder = os.path.join(tree.root, ".meta", "backups")
+    bases = backup_bases(tree)
+    for name in sorted(os.listdir(folder)):
+        path = os.path.join(folder, name)
+        if not name.endswith(".tar") or not os.path.isfile(path):
+            continue
+        basis = bases.get(name, ROUTINE_BASIS)
+        if when - backup_time(name, path) > datetime.timedelta(days=7) and basis == ROUTINE_BASIS:
+            os.unlink(path)
+            log(tree, "prune .meta/backups/%s (older than 7 days; basis: %s)" % (name, basis))
+
+
+def cmd_backup(tree, args):
+    rel, digest = do_backup(tree, args.note)
+    print("backup %s sha256=%s" % (rel, digest))
+    return 0
+
+
+# --- drain ----------------------------------------------------------------------------------
+
+def index_add(tree, to_rel, from_rel, reason):
+    if not tree.has("archive/index.md"):
+        append_file(tree, "archive/index.md", b"# Archive index\n\nOne line per archived file: date, where it is now, where it came from, why.\n\n")
+    append_file(tree, "archive/index.md", ("- %s %s from %s: %s\n" % (now().date().isoformat(), to_rel, from_rel, one_line(reason))).encode("utf-8"))
+
+
+def archive_move(tree, from_rel, to_rel, reason):
+    src = tree.abs(from_rel)
+    dest = tree.abs(to_rel)
+    if os.path.exists(dest):
+        if LEDGER_FILE.match(os.path.basename(to_rel)):
+            with open(src, "rb") as handle:
+                append_file(tree, to_rel, handle.read())
+            os.unlink(src)
+            index_add(tree, to_rel, from_rel, reason + " (appended to the archived month)")
+            log(tree, "archive %s -> %s (appended): %s" % (from_rel, to_rel, reason))
+            return to_rel
+        stem, ext = os.path.splitext(to_rel)
+        n = 2
+        while os.path.exists(tree.abs("%s-%d%s" % (stem, n, ext))):
+            n += 1
+        to_rel = "%s-%d%s" % (stem, n, ext)
+        dest = tree.abs(to_rel)
+    if not os.path.isdir(os.path.dirname(dest)):
+        os.makedirs(os.path.dirname(dest), 0o700)
+    os.rename(src, dest)
+    index_add(tree, to_rel, from_rel, reason)
+    log(tree, "archive %s -> %s: %s" % (from_rel, to_rel, reason))
+    return to_rel
+
+
+def sweep_summaries(lines):
+    days = {}
+    for line in lines:
+        record = json.loads(line)
+        day = str(record.get("time", ""))[:10]
+        days.setdefault(day, []).append(record)
+    out = []
+    for day in sorted(days):
+        records = days[day]
+
+        def values(key):
+            return [r[key] for r in records if isinstance(r.get(key), (int, float))]
+        summary = {"time": day + "T00:00Z", "day": day, "summary": True, "sweeps": len(records),
+                   "inboxes_max": max(values("inboxes") or [0]), "asks_touched": sum(values("asks_touched")),
+                   "free_pct_min": min(values("free_pct") or [0]), "swap_gb_max": max(values("swap_gb") or [0]),
+                   "load_max": max(values("load") or [0])}
+        out.append(json.dumps(summary, sort_keys=True))
+    return out
+
+
+def drain_sweeps(tree, rel, when):
+    data = tree.read(rel)
+    lines = data.decode("utf-8").split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    old = [line for line in lines if sweep_is_old(line, when)]
+    if not old:
+        return 0
+    rest = [line for line in lines if line not in old]
+    by_month = {}
+    for line in old:
+        by_month.setdefault(str(json.loads(line).get("time", ""))[:7], []).append(line)
+    for month in sorted(by_month):
+        to_rel = "archive/%s/ledger/sweeps-%s.jsonl" % (month, month)
+        append_file(tree, to_rel, ("\n".join(by_month[month]) + "\n").encode("utf-8"))
+        index_add(tree, to_rel, rel, "rule 3: %d sweep lines older than 14 days (one summary line per day stays)" % len(by_month[month]))
+    keep = sweep_summaries(old)
+
+    def sort_key(line):
+        try:
+            return str(json.loads(line).get("time", ""))
+        except ValueError:
+            return ""
+    merged = sorted(rest + keep, key=sort_key)
+    write_file(tree, rel, ("\n".join(merged) + "\n").encode("utf-8"), expect=data)
+    log(tree, "rule 3: %d sweep lines of %s archived, %d summary lines kept" % (len(old), rel, len(keep)))
+    return len(old)
+
+
+def jev_key():
+    key = os.environ.get("MEM_JEV_KEY", "")
+    if key:
+        return key
+    try:
+        out = subprocess.run(["security", "find-generic-password", "-s", JEV_KEYCHAIN_ITEM, "-w"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    key = out.stdout.decode("utf-8", "replace").strip()
+    return key if out.returncode == 0 and key else None
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the key to another address: refused, it counts as an error."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def jev_ask(tree, entry, age, ref_days, people, key, when):
+    """One Choice question for one rule-4 candidate. Returns (choice, p_archive, error)."""
+    state = {"slug": mask(entry.name, people), "region": entry.region,
+             "keywords": [mask(k, people) for k in entry.keywords], "importance": entry.importance,
+             "days_since_last_confirmed": age, "days_since_last_reference": ref_days,
+             "file_size_bytes": len(entry.data)}
+    body = {"model": os.environ.get("MEM_JEV_MODEL", JEV_MODEL), "state": state, "questions": {"drain": {
+        "type": "choice",
+        "instructions": ("This is one file in an AI agent's private working memory. Its header was last "
+                         "confirmed `days_since_last_confirmed` days ago and nothing in the agent's ledger has "
+                         "named it for `days_since_last_reference` days (null: never). Decide whether it stays in "
+                         "live memory, moves to the archive (still searchable, restored with one command), or "
+                         "waits for the owner to decide."),
+        "criteria": {
+            "keep": "Still likely to be needed soon: important, broad, or recently relevant.",
+            "archive": "Stale: unlikely to be needed in the coming month, safe to move to the searchable archive.",
+            "ask-owner": "Unclear from these facts; the owner should decide.",
+        }}}}
+    url = os.environ.get("MEM_JEV_URL", JEV_URL)
+    data = json.dumps(body).encode("utf-8")
+    opener = urllib.request.build_opener(NoRedirect)
+    backoff = float(os.environ.get("MEM_JEV_BACKOFF", "2"))
+    status, raw, error, attempts = None, b"", None, 0
+    for attempt in range(4):
+        attempts += 1
+        request = urllib.request.Request(url, data=data, method="POST",
+                                         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
+        try:
+            with opener.open(request, timeout=float(os.environ.get("MEM_JEV_TIMEOUT", "20"))) as answer:
+                status, raw, error = answer.status, answer.read(), None
+            break
+        except urllib.error.HTTPError as failure:
+            status, raw, error = failure.code, failure.read(), "HTTP %d" % failure.code
+            if failure.code in (429, 529) and attempt < 3:
+                time.sleep(backoff * (2 ** attempt))
+                continue
+            break
+        except Exception as failure:  # no answer at all: refused, timed out, bad address
+            error = "%s: %s" % (type(failure).__name__, cut(str(failure), 120))
+            break
+    try:
+        response = json.loads(raw.decode("utf-8")) if raw else None
+    except ValueError:
+        response = raw.decode("utf-8", "replace")[:2000]
+    audit = {"time": second(when), "url": url, "attempts": attempts, "status": status, "error": error,
+             "sent": body, "response": response, "local": {"file": entry.rel}}
+    rel = ".meta/jev/%s-%s.json" % (stamp(when), entry.name)
+    n = 1
+    while tree.has(rel):
+        n += 1
+        rel = ".meta/jev/%s-%s-%d.json" % (stamp(when), entry.name, n)
+    write_file(tree, rel, dump_json(audit), expect=MISSING)
+    if error or status != 200:
+        return None, 0.0, error or "HTTP %s" % status
+    try:
+        answer = response["answers"]["drain"]
+        return answer["choice"], float(answer.get("probabilities", {}).get("archive", 0.0)), None
+    except (KeyError, TypeError, ValueError):
+        return None, 0.0, "the answer had no answers.drain.choice"
+
+
+def digest_add(tree, rel, reason):
+    current = (tree.read_or_none(".meta/digest-pending.md") or b"").decode("utf-8", "replace")
+    if " %s:" % rel in current:
+        return
+    head = b"# Weekly digest: drain candidates waiting for the owner\n\n"
+    append_file(tree, ".meta/digest-pending.md", ("- %s %s: %s\n" % (now().date().isoformat(), rel, one_line(reason))).encode("utf-8"), head=head)
+
+
+def cmd_drain(tree, args):
+    when = now()
+    dry = args.dry_run
+    would = "would " if dry else ""
+    if not dry:
+        rel, _ = do_backup(tree, None, when)
+        print("backup %s" % rel)
+    plan = drain_plan(tree, when)
+    moved = 0
+    # rule 1: asks closed more than 7 days ago leave state; the ledger keeps them
+    if plan["asks"]:
+        for ask in plan["asks"]:
+            print("%sclear ask %s from state/open-asks.json (rule 1: closed %s; the ledger keeps it)" % (would, ask.get("id"), ask.get("closed")))
+        if not dry:
+            asks, raw = load_state(tree, "open-asks")
+            gone = set(str(a.get("id")) for a in plan["asks"])
+            save_state(tree, "open-asks", [a for a in asks if not (isinstance(a, dict) and str(a.get("id")) in gone)], raw)
+            log(tree, "rule 1: cleared closed asks %s from state/open-asks.json" % ", ".join(sorted(gone)))
+    # rule 2: ledger months older than this one and the one before
+    for rel, month in plan["ledger"]:
+        to_rel = "archive/%s/ledger/%s" % (month, os.path.basename(rel))
+        print("%sarchive %s -> %s (rule 2: ledger month %s)" % (would, rel, to_rel, month))
+        if not dry:
+            archive_move(tree, rel, to_rel, "rule 2: ledger month %s is older than %s" % (month, previous_month(when)))
+            moved += 1
+    # rule 3: sweep lines older than 14 days, one summary line per day stays
+    for rel, count in plan["sweeps"]:
+        print("%sarchive %d sweep lines of %s older than 14 days (rule 3)" % (would, count, rel))
+        if not dry:
+            drain_sweeps(tree, rel, when)
+            moved += 1
+    # rule 5: superseded more than 7 days ago
+    for entry, days in plan["superseded"]:
+        to_rel = "archive/%s/%s/%s.md" % (month_of(when), entry.region, entry.name)
+        print("%sarchive %s -> %s (rule 5: %s, %d days ago)" % (would, entry.rel, to_rel, entry.status, days))
+        if not dry:
+            archive_move(tree, entry.rel, to_rel, "rule 5: %s %d days ago" % (entry.status, days))
+            moved += 1
+    # rule 4: stale topics and teams; archived only when Jev says archive with p >= 0.7
+    candidates = plan["candidates"]
+    for entry, age, ref_days in candidates:
+        facts = "confirmed %d days ago, %s, importance %d" % (
+            age, "last named %d days ago" % ref_days if ref_days is not None else "never named in the ledger", entry.importance)
+        if dry:
+            print("candidate %s (rule 4: %s); Jev is not asked in a dry run" % (entry.rel, facts))
+    if candidates and not dry:
+        key = None if args.no_jev else jev_key()
+        people = people_tokens(tree)
+        down = "--no-jev" if args.no_jev else (None if key else "no Jev key (Keychain item %s)" % JEV_KEYCHAIN_ITEM)
+        for entry, age, ref_days in candidates:
+            if down:
+                print("digest %s (rule 4; %s)" % (entry.rel, down))
+                digest_add(tree, entry.rel, "rule 4 candidate; %s" % down)
+                continue
+            choice, p_archive, error = jev_ask(tree, entry, age, ref_days, people, key, when)
+            if error:
+                down = "Jev failed: %s" % error
+                print("digest %s (rule 4; %s; nothing moves)" % (entry.rel, down))
+                digest_add(tree, entry.rel, "rule 4 candidate; %s" % down)
+                log(tree, "rule 4: Jev failed (%s); candidates wait for the digest" % error)
+                continue
+            if choice == "archive" and p_archive >= JEV_THRESHOLD:
+                to_rel = "archive/%s/%s/%s.md" % (month_of(when), entry.region, entry.name)
+                print("archive %s -> %s (rule 4: Jev archive p=%.2f)" % (entry.rel, to_rel, p_archive))
+                archive_move(tree, entry.rel, to_rel, "rule 4: confirmed %d days ago; Jev archive p=%.2f" % (age, p_archive))
+                moved += 1
+            else:
+                print("digest %s (rule 4: Jev %s, p(archive)=%.2f)" % (entry.rel, choice, p_archive))
+                digest_add(tree, entry.rel, "rule 4 candidate; Jev %s, p(archive)=%.2f" % (choice, p_archive))
+                log(tree, "rule 4: %s stays (Jev %s, p(archive)=%.2f); listed for the digest" % (entry.rel, choice, p_archive))
+    total = len(plan["asks"]) + len(plan["ledger"]) + len(plan["sweeps"]) + len(plan["superseded"]) + len(candidates)
+    if not total:
+        print("nothing to drain")
+    if not dry:
+        quiet_check(tree)
+    return 0
+
+
+# --- unarchive, purge, erase ---------------------------------------------------------------
+
+def index_lines(tree):
+    data = tree.read_or_none("archive/index.md") or b""
+    return data, data.decode("utf-8", "replace").split("\n")
+
+
+def cmd_unarchive(tree, args):
+    name = args.name
+    if not SLUG.match(name) or ".." in name:
+        raise Refused("%r is not a name" % name)
+    data, lines = index_lines(tree)
+    found = None
+    for number, line in enumerate(lines):
+        match = INDEX_LINE.match(line)
+        if match and name in (os.path.splitext(os.path.basename(match.group(2)))[0],
+                              os.path.splitext(os.path.basename(match.group(3)))[0]):
+            found = (number, match.group(2), match.group(3))
+    if found is None:
+        raise Refused("archive/index.md has no file named %s" % name)
+    number, to_rel, from_rel = found
+    src, dest = tree.abs(to_rel), tree.abs(from_rel)
+    if not os.path.exists(src):
+        raise Refused("archive/index.md names %s but the file is gone" % to_rel)
+    if os.path.exists(dest):
+        raise Refused("%s exists already; move it away first" % from_rel)
+    if not os.path.isdir(os.path.dirname(dest)):
+        os.makedirs(os.path.dirname(dest), 0o700)
+    os.rename(src, dest)
+    if from_rel.split("/")[0] in REGIONS:
+        entry = Entry(tree, from_rel)
+        if entry.fields is not None:
+            fields = dict(entry.fields, last_confirmed=now().date().isoformat())
+            write_file(tree, from_rel, render_header(fields) + entry.body, expect=entry.data)
+    del lines[number]
+    write_file(tree, "archive/index.md", "\n".join(lines).encode("utf-8"), expect=data)
+    log(tree, "unarchive %s -> %s" % (to_rel, from_rel))
+    print("unarchived %s -> %s" % (to_rel, from_rel))
+    quiet_check(tree)
+    return 0
+
+
+def cmd_purge(tree, args):
+    targets = []
+    for target in args.targets:
+        if not (MONTH.match(target) or (SLUG.match(target) and ".." not in target)):
+            raise Refused("%r is neither an archived name nor YYYY-MM" % target)
+    for rel in tree.files("archive"):
+        if rel == "archive/index.md":
+            continue
+        parts = rel.split("/")
+        stem = os.path.splitext(parts[-1])[0]
+        if any((MONTH.match(t) and parts[1] == t) or stem == t for t in args.targets):
+            targets.append(rel)
+    if not targets:
+        print("nothing in archive/ matches %s" % " ".join(args.targets))
+        return 1
+    for rel in targets:
+        print("%s %s" % ("purge" if args.confirm else "would purge", rel))
+    if not args.confirm:
+        print("%d files; run again with --confirm to delete them from archive/" % len(targets))
+        return 0
+    for rel in targets:
+        os.unlink(tree.abs(rel))
+        folder = os.path.dirname(tree.abs(rel))
+        while folder != os.path.join(tree.root, "archive") and os.path.isdir(folder) and not os.listdir(folder):
+            os.rmdir(folder)
+            folder = os.path.dirname(folder)
+    data, lines = index_lines(tree)
+    gone = set(targets)
+    kept = [line for line in lines if not (INDEX_LINE.match(line) and INDEX_LINE.match(line).group(2) in gone)]
+    write_file(tree, "archive/index.md", "\n".join(kept).encode("utf-8"), expect=data)
+    log(tree, "purge on the owner's word: deleted %d archived files: %s" % (len(targets), ", ".join(targets)))
+    print("purged %d files" % len(targets))
+    return 0
+
+
+def erase_lines(data, needle, marker, jsonl=False):
+    """(new bytes, numbers of the lines that held the subject)."""
+    text = data.decode("utf-8", "replace")
+    lines = text.split("\n")
+    hit = []
+    for number, line in enumerate(lines):
+        if needle in line.casefold():
+            hit.append(number + 1)
+            lines[number] = json.dumps({"erased": marker}) if jsonl else "[erased %s]" % marker
+    return "\n".join(lines).encode("utf-8"), hit
+
+
+def erase_state(value, needle):
+    """(new value, removed ids) for a state file: entries whose JSON names the subject go."""
+    removed = []
+    if isinstance(value, list):
+        kept = []
+        for item in value:
+            if needle in canonical(item).casefold():
+                removed.append(str(item.get("id") or item.get("name") or "?") if isinstance(item, dict) else "?")
+            else:
+                kept.append(item)
+        return kept, removed
+    kept = {}
+    for key in value:
+        if needle in canonical({key: value[key]}).casefold():
+            removed.append(key)
+        else:
+            kept[key] = value[key]
+    return kept, removed
+
+
+def erase_plan(rel, data, needle, marker):
+    """What erase does to one file, in the live tree or inside a backup tar:
+    (None | "drop" | "edit", new bytes, [where the subject is])."""
+    if needle in rel.casefold():
+        return "drop", None, [rel]
+    text = data.decode("utf-8", "replace")
+    if needle not in text.casefold():
+        return None, data, []
+    parts = rel.split("/")
+    if parts[0] in REGIONS or (parts[0] == "archive" and len(parts) > 3 and parts[2] in REGIONS) or rel.startswith(".meta/jev/"):
+        return "drop", None, [rel]
+    if parts[0] == "state" and rel.endswith(".json"):
+        try:
+            value = json.loads(text)
+        except ValueError:
+            value = None
+        if isinstance(value, (list, dict)):
+            kept, removed = erase_state(value, needle)
+            return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed]
+    new, hit = erase_lines(data, needle, marker, rel.endswith(".jsonl"))
+    return "edit", new, ["%s:%d" % (rel, n) for n in hit]
+
+
+# MEMORY.md and the card are regenerated once the rest is gone; the lock holds no data.
+ERASE_REGENERATED = ("MEMORY.md", "core/card.md", ".meta/lock")
+
+
+def cmd_erase(tree, args):
+    subject = one_line(args.subject)
+    if len(subject) < 3:
+        raise Refused("the subject must be at least 3 characters, or it matches everything")
+    needle = subject.casefold()
+    marker = "%s on owner's word" % now().date().isoformat()
+    plans = []
+    for rel in walk_tree(tree):
+        if rel.startswith(".meta/backups/") or rel in ERASE_REGENERATED:
+            continue
+        data = tree.read(rel)
+        action, new, where = erase_plan(rel, data, needle, marker)
+        if action:
+            plans.append((rel, data, action, new, where))
+    tars = []
+    for rel in tree.files(".meta/backups"):
+        if rel.endswith(".tar"):
+            members = tar_plan(tree.abs(rel), needle, marker)
+            if members:
+                tars.append((rel, members))
+    for rel, _, action, _, where in plans:
+        kind = "file" if action == "drop" else ("state" if rel.startswith("state/") else "line")
+        for place in where:
+            print("%-6s %s" % (kind, place))
+    for rel, members in tars:
+        for name, action in members:
+            print("tar    %s: %s %s" % (rel, "drop" if action == "drop" else "redact", name))
+    for path in glob_home_backups():
+        if tar_plan(path, needle, marker):
+            print("outside the tree, not changed (erase it by hand): %s" % path)
+    if not plans and not tars:
+        print("nothing in the tree names that subject")
+        return 0
+    if not args.confirm:
+        print("run again with --confirm to erase these (no backup is made first)")
+        return 0
+    files = lines = entries = 0
+    for rel, data, action, new, where in plans:
+        if action == "drop":
+            os.unlink(tree.abs(rel))
+            files += 1
+            continue
+        write_file(tree, rel, new, expect=data)
+        if rel.startswith("state/") and rel.endswith(".json") and any("#" in w for w in where):
+            entries += len(where)
+        else:
+            lines += len(where)
+    for rel, _ in tars:
+        rebuild_tar(tree, rel, needle, marker)
+    log(tree, "erase on the owner's word: subject sha256:%s; %d files removed, %d lines and %d state entries erased, %d backups rebuilt"
+        % (sha256(needle.encode("utf-8"))[:12], files, lines, entries, len(tars)))
+    run_check(tree, now())
+    print("erased: %d files, %d lines, %d state entries; %d backups rebuilt" % (files, lines, entries, len(tars)))
+    return 0
+
+
+def walk_tree(tree):
+    """Every file erase looks at: the top level and mem's folders, never bin/."""
+    out = []
+    for name in sorted(os.listdir(tree.root)):
+        path = os.path.join(tree.root, name)
+        if os.path.isfile(path) and not os.path.islink(path):
+            out.append(name)
+    for rel in TREE_DIRS:
+        if "/" not in rel and rel != "bin":
+            out.extend(tree.files(rel))
+    return out
+
+
+def tar_plan(path, needle, marker):
+    """[(member name, action)] for the members of one tar that name the subject."""
+    out = []
+    try:
+        with tarfile.open(path) as tar:
+            for member in tar.getmembers():
+                if not member.isfile():
+                    if needle in member.name.casefold():
+                        out.append((member.name, "drop"))
+                    continue
+                action, _, _ = erase_plan(member.name, tar.extractfile(member).read(), needle, marker)
+                if action:
+                    out.append((member.name, action))
+    except (IOError, OSError, tarfile.TarError):
+        return []
+    return out
+
+
+def rebuild_tar(tree, rel, needle, marker):
+    path = tree.abs(rel)
+    bases = backup_bases(tree)
+    fd, tmp = tempfile.mkstemp(prefix=".mem-", suffix=".tmp", dir=os.path.dirname(path))
+    os.close(fd)
+    with tarfile.open(path) as old, tarfile.open(tmp, "w") as new:
+        for member in old.getmembers():
+            if not member.isfile():
+                if needle not in member.name.casefold():
+                    new.addfile(member)
+                continue
+            action, data, _ = erase_plan(member.name, old.extractfile(member).read(), needle, marker)
+            if action == "drop":
+                continue
+            member.size = len(data)
+            new.addfile(member, io.BytesIO(data))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    log(tree, "backup %s sha256=%s basis=%s (rebuilt by erase)" % (rel, sha256(tree.read(rel)), bases.get(os.path.basename(rel), ROUTINE_BASIS)))
+
+
+def glob_home_backups():
+    folder = os.path.join(os.path.expanduser("~"), ".wolfmux", "backups")
+    if not os.path.isdir(folder):
+        return []
+    return [os.path.join(folder, n) for n in os.listdir(folder) if n.startswith("memory-pre-migration-") and n.endswith(".tar")]
+
+
+# --- migrate --------------------------------------------------------------------------------
+
+MAP_COLUMNS = ("source", "source_type", "dest", "region", "action", "hold", "name", "keywords", "summary",
+               "importance", "authority", "links", "repo_ref", "notes")
+PREFIX_TYPES = (("rules:", "rules-file"), ("state:", "state-key"), ("archive:", "archive-file"), ("hub:", "hub-line"))
+
+
+def under(base, rel):
+    """base/rel, refused when it climbs out of base."""
+    path = os.path.realpath(os.path.join(base, rel))
+    if path != base and not path.startswith(base + os.sep):
+        raise Refused("%s climbs out of %s" % (rel, base))
+    return path
+
+
+def state_lookup(value, key):
+    for part in key.split("."):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list):
+            item = None
+            for candidate in value:
+                if isinstance(candidate, dict) and str(candidate.get("id", candidate.get("name"))) == part:
+                    item = candidate
+            if item is None and re.match(r"^\d+$", part) and int(part) < len(value):
+                item = value[int(part)]
+            if item is None:
+                raise KeyError(key)
+            value = item
+        else:
+            raise KeyError(key)
+    return value
+
+
+def plan_row(tree, row, line, ctx):
+    item = {"line": line, "source": row.get("source", ""), "dest": row.get("dest", ""), "action": row.get("action", ""),
+            "status": "hold", "reason": "", "payload": None, "sha": "", "kind": "", "bytes_in": 0}
+    source, source_type, dest = item["source"].strip(), row.get("source_type", "").strip(), item["dest"].strip()
+    action = item["action"].strip()
+    try:
+        if action not in ("copy", "pointer", "hold", "skip"):
+            raise Refused("action %r is not copy, pointer, hold or skip" % action)
+        expected = "file"
+        for prefix, kind in PREFIX_TYPES:
+            if source.startswith(prefix):
+                expected = kind
+        if source_type != expected:
+            raise Refused("source_type %r does not fit the source %r (want %s)" % (source_type, source, expected))
+        if action == "skip":
+            item.update(status="skip", reason=row.get("notes", "").strip() or "skip row")
+            if expected in ("file", "rules-file", "archive-file"):
+                ctx["exclude"].add(source_path(ctx, source, expected))
+            return item
+        if action == "hold" or row.get("hold", "no").strip().lower() == "yes":
+            item.update(status="hold", reason=row.get("notes", "").strip() or "held by the map")
+            return item
+        if dest in ctx["dests"]:
+            raise Refused("dest %s is already the dest of line %d" % (dest, ctx["dests"][dest]))
+        ctx["dests"][dest] = line
+        dest_file, _, dest_key = dest.partition("#")
+        tree.abs(dest_file)
+        top = dest_file.split("/")[0]
+        if expected == "state-key":
+            if ctx["state"] is None:
+                raise Refused("a state: row needs --state <comms-state.json>")
+            try:
+                value = state_lookup(ctx["state"], source[len("state:"):])
+            except KeyError:
+                raise Refused("--state has no key %s" % source[len("state:"):])
+            item.update(value=value, payload=canonical(value).encode("utf-8"))
+            item["bytes_in"] = len(item["payload"])
+            item["sha"] = sha256(item["payload"])
+            if top == "state":
+                name = os.path.splitext(os.path.basename(dest_file))[0]
+                if dest_file != "state/%s.json" % name or name not in state_names() or not dest_key:
+                    raise Refused("dest %s is not state/<file>.json#<key>" % dest)
+                item.update(kind="state", state_name=name, state_key=dest_key, status=action)
+            elif top == "ledger" and LEDGER_FILE.match(os.path.basename(dest_file)):
+                pretty = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
+                item["append"] = ("\n## migrated %s at %s\n```json\n%s\n```\n" % (source, minute(ctx["when"]), pretty)).encode("utf-8")
+                item.update(kind="ledger", dest=dest_file, status=action, payload=pretty.encode("utf-8"))
+            else:
+                raise Refused("a state key goes to state/<file>.json#<key> or ledger/<file>")
+            return item
+        path = source_path(ctx, source, expected)
+        if not os.path.isfile(path):
+            raise Refused("source %s is not a file" % source)
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        item["source_path"] = path
+        item["bytes_in"] = len(raw)
+        if expected == "hub-line":
+            number = int(source.rsplit("#", 1)[1])
+            lines = raw.split(b"\n")
+            if number < 1 or number > len(lines) or (number == len(lines) and not lines[-1]):
+                raise Refused("%s has no line %d" % (source.rsplit("#", 1)[0], number))
+            payload = lines[number - 1] + b"\n"
+            item["bytes_in"] = len(payload)
+        else:
+            fields, body, _ = split_header(raw)
+            payload = body if fields is not None and top in REGIONS else raw
+            if fields is not None and top in REGIONS:
+                item["frontmatter"] = len(raw) - len(body)
+        item.update(payload=payload, sha=sha256(payload))
+        if action == "pointer":
+            if top != "rules":
+                raise Refused("a pointer goes to rules/<name>.md")
+            item.update(kind="region", status="pointer", bytes_in=0, dest=dest_file)
+            item["content"] = region_content(tree, row, dest_file, ctx, pointer=path)
+            if tree.has(dest_file):
+                if Entry(tree, dest_file).get("pointer") != path:
+                    raise Refused("dest %s exists and points elsewhere" % dest_file)
+                item.update(status="exists", reason="already migrated")
+            return item
+        if top in REGIONS:
+            item.update(kind="region", status="copy")
+            item["content"] = region_content(tree, row, dest_file, ctx, payload=payload, mtime=os.path.getmtime(path))
+        elif top == "archive":
+            if dest_file.count("/") < 2:
+                raise Refused("dest %s is not archive/<folder>/<file>" % dest_file)
+            item.update(kind="archive", status="copy", content=payload)
+        elif top == "ledger":
+            if not LEDGER_FILE.match(os.path.basename(dest_file)) or dest_file.count("/") != 1:
+                raise Refused("dest %s is not ledger/<kind>-YYYY-MM.<md|jsonl>" % dest_file)
+            item.update(kind="ledger", status="copy", append=payload)
+        else:
+            raise Refused("dest %s is not in a region, archive/, ledger/ or state/" % dest_file)
+        if item["kind"] in ("region", "archive") and tree.has(dest_file):
+            current = tree.read(dest_file)
+            if current == item["content"] or (item["kind"] == "region" and split_header(current)[1] == payload):
+                item.update(status="exists", reason="already migrated")
+            else:
+                raise Refused("dest %s exists with other content" % dest_file)
+        item["dest"] = dest_file
+    except (Refused, ValueError, IOError, OSError) as error:
+        item.update(status="hold", reason=str(error))
+    return item
+
+
+def source_path(ctx, source, kind):
+    if kind == "rules-file":
+        if not ctx["rules"]:
+            raise Refused("a rules: row needs --rules-from <dir>")
+        return under(ctx["rules"], source[len("rules:"):])
+    if kind == "archive-file":
+        return under(ctx["from"], source[len("archive:"):])
+    if kind == "hub-line":
+        return under(ctx["from"], source[len("hub:"):].rsplit("#", 1)[0])
+    return under(ctx["from"], source)
+
+
+def region_content(tree, row, dest_file, ctx, payload=b"", mtime=None, pointer=None):
+    parts = dest_file.split("/")
+    if len(parts) != 2 or not parts[1].endswith(".md"):
+        raise Refused("dest %s is not <region>/<name>.md" % dest_file)
+    region, stem = parts[0], parts[1][:-3]
+    check_name(stem)
+    name = (row.get("name") or "").strip() or stem
+    if name != stem:
+        raise Refused("name %r differs from the dest file %s" % (name, dest_file))
+    if (row.get("region") or "").strip() not in ("", region):
+        raise Refused("region %r but the dest is in %s/" % (row.get("region"), region))
+    keywords = keywords_of(row.get("keywords", ""))
+    summary = one_line(row.get("summary", ""))
+    if not keywords or not summary:
+        raise Refused("the map gives no keywords or no summary")
+    if len(summary) > SUMMARY_MAX:
+        raise Refused("summary is %d characters (cap %d)" % (len(summary), SUMMARY_MAX))
+    importance = (row.get("importance") or "3").strip()
+    if importance not in ("1", "2", "3", "4", "5"):
+        raise Refused("importance %r is not 1..5" % importance)
+    authority = (row.get("authority") or "").strip()
+    if pointer and not authority:
+        authority = "shared:%s" % pointer
+    if authority and not AUTHORITY.match(authority):
+        raise Refused("authority %r is not decisions-YYYY-MM#<time> or shared:<path>" % authority)
+    if region == "rules" and not authority:
+        raise Refused("a rules dest needs an authority")
+    repo_ref = (row.get("repo_ref") or "").strip()
+    if repo_ref and region != "topics":
+        raise Refused("repo_ref is for topics only")
+    confirmed = datetime.datetime.fromtimestamp(mtime, UTC).date().isoformat() if mtime else ctx["when"].date().isoformat()
+    fields = {"name": name, "region": region, "keywords": ", ".join(keywords), "summary": summary,
+              "links": render_links(links_of(row.get("links", ""))), "importance": importance,
+              "authority": authority, "last_confirmed": confirmed, "status": "live", "repo_ref": repo_ref,
+              "origin": "migrated %s from %s" % (ctx["when"].date().isoformat(), row.get("source", "").strip())}
+    if pointer:
+        fields["pointer"] = pointer
+        payload = ("Pointer: %s\n%s\n" % (pointer, summary)).encode("utf-8")
+    return render_header(fields) + payload
+
+
+def apply_row(tree, item):
+    kind = item["kind"]
+    if kind in ("region", "archive"):
+        write_file(tree, item["dest"], item["content"], expect=MISSING)
+        if kind == "archive":
+            index_add(tree, item["dest"], "shared:" + item["source"], "migrated (archive file)")
+        return len(item["content"])
+    if kind == "ledger":
+        append_file(tree, item["dest"], item["append"])
+        return len(item["append"])
+    data, raw = load_state(tree, item["state_name"])
+    value = item["value"]
+    if isinstance(data, list):
+        ident_key = LIST_IDS[item["state_name"]]
+        if not isinstance(value, dict):
+            raise Refused("%s holds entries; the value of %s is not an object" % (item["state_name"], item["source"]))
+        value = dict(value)
+        value.setdefault(ident_key, item["state_key"])
+        existing = find_item(data, ident_key, str(value[ident_key]))
+        item["placed"] = value
+        if existing is not None:
+            if canonical(existing) == canonical(value):
+                return 0
+            raise Refused("%s already has an entry %s" % (item["state_name"], value[ident_key]))
+        data.append(value)
+    else:
+        try:
+            here = state_lookup(data, item["state_key"])
+        except KeyError:
+            here = MISSING
+        item["placed"] = value
+        if here is not MISSING:
+            if canonical(here) == canonical(value):
+                return 0
+            raise Refused("%s already holds %s" % (item["state_name"], item["state_key"]))
+        set_path(data, item["state_key"].split("."), value, item["dest"])
+    save_state(tree, item["state_name"], data, raw)
+    return len(canonical(value))
+
+
+def tree_shas(tree):
+    """sha256 -> [files] over the regions and the archive: the body of a headered file, every file whole."""
+    out = {}
+    for d in REGIONS + ("archive",):
+        for rel in tree.files(d):
+            data = tree.read(rel)
+            fields, body, _ = split_header(data)
+            for digest in set([sha256(data)] + ([sha256(body)] if fields is not None else [])):
+                out.setdefault(digest, []).append(rel)
+    return out
+
+
+def ledger_text(tree):
+    parts = []
+    for d in ("ledger", "archive"):
+        for rel in tree.files(d):
+            if LEDGER_FILE.match(os.path.basename(rel)):
+                parts.append(tree.read(rel))
+    return b"\n".join(parts)
+
+
+def state_count(tree, value):
+    want = canonical(value)
+    count = 0
+
+    def walk(node):
+        nonlocal count
+        if canonical(node) == want:
+            count += 1
+        if isinstance(node, dict):
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+    for name in state_names():
+        walk(load_state(tree, name)[0])
+    return count
+
+
+def verify(tree, items, dry):
+    failures = []
+    shas = {} if dry else tree_shas(tree)
+    ledgers = b"" if dry else ledger_text(tree)
+    for item in items:
+        if item["status"] not in ("copy", "pointer", "exists"):
+            continue
+        if dry:
+            if item["status"] == "exists":
+                item["check"] = "already in the tree"
+            elif item["kind"] == "region" and item["status"] == "copy":
+                body = split_header(item["content"])[1]
+                item["check"] = "sha256 match (in memory)" if sha256(body) == item["sha"] else "MISMATCH"
+            elif item["kind"] == "archive":
+                item["check"] = "sha256 match (in memory)" if sha256(item["content"]) == item["sha"] else "MISMATCH"
+            else:
+                item["check"] = "would place it"
+            if item["check"] == "MISMATCH":
+                failures.append(item)
+            continue
+        if item["action"].strip() == "pointer":
+            entry = Entry(tree, item["dest"])
+            item["check"] = "pointer ok" if entry.get("pointer") == item["source_path"] else "MISSING"
+        elif item["kind"] in ("region", "archive"):
+            found = shas.get(item["sha"], [])
+            item["check"] = "found once" if found == [item["dest"]] else "found %d times: %s" % (len(found), ", ".join(found) or "-")
+        elif item["kind"] == "ledger":
+            found = ledgers.count(item["payload"])
+            item["check"] = "found once" if found == 1 else "found %d times" % found
+        else:
+            if isinstance(item["value"], (dict, list)):
+                found = state_count(tree, item.get("placed", item["value"]))
+                item["check"] = "found once" if found == 1 else "found %d times" % found
+            else:
+                data = load_state(tree, item["state_name"])[0]
+                try:
+                    here = state_lookup(data, item["state_key"]) if isinstance(data, dict) else None
+                except KeyError:
+                    here = None
+                item["check"] = "found at the dest (a plain value)" if canonical(here) == canonical(item["value"]) else "MISSING"
+        if not (item["check"].startswith("found once") or item["check"].startswith("found at") or item["check"] == "pointer ok"):
+            failures.append(item)
+    return failures
+
+
+def pre_migration_tar(ctx, when):
+    folder = os.path.join(os.path.expanduser("~"), ".wolfmux", "backups")
+    if not os.path.isdir(folder):
+        os.makedirs(folder, 0o700)
+    path = os.path.join(folder, "memory-pre-migration-%s.tar" % stamp(when))
+    sums = []
+    fd, tmp = tempfile.mkstemp(prefix=".mem-", suffix=".tmp", dir=folder)
+    os.close(fd)
+    with tarfile.open(tmp, "w") as tar:
+        for label, base in (("source", ctx["from"]), ("rules", ctx["rules"])):
+            if not base:
+                continue
+            for current, dirs, names in os.walk(base):
+                dirs.sort()
+                for name in sorted(names):
+                    full = os.path.join(current, name)
+                    if os.path.realpath(full) in ctx["exclude"] or not os.path.isfile(full):
+                        continue
+                    arc = "%s/%s" % (label, os.path.relpath(full, base))
+                    tar.add(full, arcname=arc, recursive=False)
+                    with open(full, "rb") as handle:
+                        sums.append("%s  %s" % (sha256(handle.read()), arc))
+        if ctx["state_path"]:
+            arc = "state/%s" % os.path.basename(ctx["state_path"])
+            tar.add(ctx["state_path"], arcname=arc, recursive=False)
+            with open(ctx["state_path"], "rb") as handle:
+                sums.append("%s  %s" % (sha256(handle.read()), arc))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    with open(path, "rb") as handle:
+        sums.append("%s  %s" % (sha256(handle.read()), os.path.basename(path)))
+    listing = path[:-4] + ".sha256"
+    fd = os.open(listing, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write("\n".join(sums) + "\n")
+    return path, listing
+
+
+def cmd_migrate(tree, args):
+    when = now()
+    source = os.path.realpath(os.path.expanduser(args.source))
+    if not os.path.isdir(source):
+        raise Refused("--from %s is not a folder" % args.source)
+    if tree.root == source or tree.root.startswith(source + os.sep):
+        raise Refused("the memory root is inside --from; mem never writes into the source folder")
+    rules = os.path.realpath(os.path.expanduser(args.rules_from)) if args.rules_from else None
+    if rules and not os.path.isdir(rules):
+        raise Refused("--rules-from %s is not a folder" % args.rules_from)
+    state, state_path = None, None
+    if args.state:
+        state_path = os.path.realpath(os.path.expanduser(args.state))
+        with open(state_path, "rb") as handle:
+            try:
+                state = json.loads(handle.read().decode("utf-8"))
+            except ValueError:
+                raise Refused("--state %s is not valid JSON" % args.state)
+    with open(args.map, "r", newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        missing = [c for c in MAP_COLUMNS if c not in (reader.fieldnames or [])]
+        if missing:
+            raise Refused("the map has no column %s (the header is %s)" % (", ".join(missing), ",".join(MAP_COLUMNS)))
+        rows = list(reader)
+    ctx = {"from": source, "rules": rules, "state": state, "state_path": state_path, "when": when,
+           "exclude": set(), "dests": {}}
+    items = [plan_row(tree, row, number, ctx) for number, row in enumerate(rows, 2)]
+    out = []
+    if not args.dry_run:
+        backup_rel, _ = do_backup(tree, "migration rollback; delete 7 days after the restart test on the owner's word", when)
+        tar_path, sums = pre_migration_tar(ctx, when)
+        out.append("rollback: %s, and %s (sha256 list %s)" % (backup_rel, tar_path, sums))
+        for item in items:
+            if item["status"] in ("copy", "pointer"):
+                try:
+                    item["bytes_out"] = apply_row(tree, item)
+                except (Refused, IOError, OSError) as error:
+                    item.update(status="hold", reason="not written: %s" % error)
+        set_modes(tree)
+    failures = verify(tree, items, args.dry_run)
+    report = migrate_report(tree, args, items, failures, out, when)
+    if not args.dry_run:
+        write_file(tree, ".meta/migrate-%s.md" % stamp(when), report.encode("utf-8"), expect=MISSING)
+        run_check(tree, now())
+    sys.stdout.write(report)
+    return 1 if failures else 0
+
+
+def migrate_report(tree, args, items, failures, extra, when):
+    dry = args.dry_run
+    lines = ["# Migration %s%s" % (minute(when), " (dry run: nothing was written)" if dry else ""),
+             "from: %s" % os.path.realpath(args.source), "map: %s" % os.path.realpath(args.map),
+             "rules from: %s" % (args.rules_from or "-"), "state: %s" % (args.state or "-"), ""]
+    lines.extend(extra)
+    counts = {}
+    for item in items:
+        counts[item["status"]] = counts.get(item["status"], 0) + 1
+        check = item.get("check", "")
+        head = "line %d %-7s %s -> %s" % (item["line"], item["status"], item["source"], item.get("dest", ""))
+        detail = " sha256 %s" % item["sha"][:16] if item["sha"] else ""
+        if item.get("frontmatter"):
+            detail += " (source frontmatter of %d bytes replaced by the header)" % item["frontmatter"]
+        lines.append(head + detail + (": " + check if check else "") + (": " + item["reason"] if item["reason"] else ""))
+    lines.append("")
+    lines.append("rows: %d (%s)" % (len(items), ", ".join("%s %d" % (k, counts[k]) for k in sorted(counts))))
+    lines.append("bytes in: %d; bytes out: %d" % (sum(i["bytes_in"] for i in items if i["status"] in ("copy", "pointer", "exists")),
+                                                 sum(i.get("bytes_out", 0) for i in items)))
+    if dry:
+        lines.append("verification: %s" % ("every payload keeps its sha256 in memory" if not failures else "%d MISMATCHES" % len(failures)))
+    else:
+        bad = [tree.rel(p) for p in mode_paths(tree) if os.stat(p).st_mode & 0o777 != wanted_mode(tree, p)]
+        lines.append("modes: %s" % ("all 700/600" if not bad else "wrong on " + ", ".join(bad)))
+        lines.append("verification: %s" % ("every source body and state value found exactly once in the new tree"
+                                           if not failures else "%d FAILED: %s" % (len(failures), ", ".join("line %d" % i["line"] for i in failures))))
+    held = [i for i in items if i["status"] in ("hold", "skip")]
+    if held:
+        lines.append("held or skipped:")
+        lines.extend("- line %d %s %s: %s" % (i["line"], i["status"], i["source"], i["reason"]) for i in held)
+    return "\n".join(lines) + "\n"
+
+
+# --- status ---------------------------------------------------------------------------------
+
+def cmd_status(tree, args):
+    when = now()
+    total = count = 0
+    for current, dirs, names in os.walk(tree.root):
+        for name in names:
+            total += os.path.getsize(os.path.join(current, name))
+            count += 1
+    print("mem status: %s" % tree.root)
+    print("size: %d bytes in %d files" % (total, count))
+    entries = region_entries(tree)
+    parts = []
+    for region in REGIONS:
+        here = [e for e in entries if e.region == region]
+        superseded = len([e for e in here if not e.live])
+        parts.append("%s %d%s" % (region, len(here) - superseded, " (+%d superseded)" % superseded if superseded else ""))
+    print("live: " + ", ".join(parts))
+    print("archive: %d files" % len([r for r in tree.files("archive") if r != "archive/index.md"]))
+    index = tree.read_or_none("MEMORY.md") or b""
+    card = tree.read_or_none("core/card.md") or b""
+    print("index: %d / %d bytes, %d / %d lines; card: %d / %d bytes" % (
+        len(index), INDEX_MAX_BYTES, index.count(b"\n"), INDEX_MAX_LINES, len(card), CARD_MAX))
+    plan = drain_plan(tree, when, entries)
+    print("drain candidates: rule 4 %d, superseded %d, closed asks %d, ledger months %d, sweeps files %d" % (
+        len(plan["candidates"]), len(plan["superseded"]), len(plan["asks"]), len(plan["ledger"]), len(plan["sweeps"])))
+    print("open asks: %d; crons: %d" % (len(open_asks(tree)), len(load_state(tree, "crons")[0])))
+    tars = sorted(r for r in tree.files(".meta/backups") if r.endswith(".tar"))
+    bases = backup_bases(tree)
+    kept = [r for r in tars if bases.get(os.path.basename(r), ROUTINE_BASIS) != ROUTINE_BASIS]
+    print("last backup: %s%s" % (tars[-1] if tars else "none", "; kept on their own basis: %s" % ", ".join(kept) if kept else ""))
+    match = re.match(r"^# Memory \(checked (\S+) by mem check", index.decode("utf-8", "replace"))
+    print("last check: %s" % (match.group(1) if match else "never"))
+    return 0
+
+
+# --- main -----------------------------------------------------------------------------------
+
+def build_parser():
+    parser = Parser(prog="mem", add_help=False, allow_abbrev=False)
+    sub = parser.add_subparsers(dest="command")
+    for name in ("init", "boot", "check", "status", "help"):
+        sub.add_parser(name, add_help=False)
+    p = sub.add_parser("recall", add_help=False)
+    p.add_argument("words", nargs="+")
+    p.add_argument("--archive", action="store_true")
+    p.add_argument("--shared", action="store_true")
+    p = sub.add_parser("add", add_help=False, allow_abbrev=False)
+    p.add_argument("--region", required=True)
+    p.add_argument("--name", required=True)
+    p.add_argument("--keywords", required=True)
+    p.add_argument("--summary", required=True)
+    p.add_argument("--importance", type=int)
+    p.add_argument("--authority")
+    p.add_argument("--links")
+    p.add_argument("--repo-ref", dest="repo_ref")
+    p.add_argument("--supersedes")
+    p.add_argument("--replace")
+    p.add_argument("--body-file", dest="body_file")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p = sub.add_parser("set", add_help=False)
+    p.add_argument("key")
+    p.add_argument("value")
+    p.add_argument("--string", action="store_true")
+    p = sub.add_parser("decide", add_help=False, allow_abbrev=False)
+    p.add_argument("--time", required=True)
+    p.add_argument("--source", required=True)
+    p.add_argument("--slug")
+    p.add_argument("--shared")
+    p = sub.add_parser("sent", add_help=False, allow_abbrev=False)
+    for flag in ("--to", "--channel", "--ref", "--subject"):
+        p.add_argument(flag, required=True)
+    p = sub.add_parser("ask", add_help=False, allow_abbrev=False)
+    p.add_argument("op", choices=("open", "close"))
+    p.add_argument("--id", required=True)
+    p.add_argument("--who")
+    p.add_argument("--what")
+    p.add_argument("--waiting-on", dest="waiting_on")
+    p.add_argument("--next-check", dest="next_check")
+    p.add_argument("--note")
+    p = sub.add_parser("sweep-log", add_help=False, allow_abbrev=False)
+    p.add_argument("--inboxes", type=int, required=True)
+    p.add_argument("--asks-touched", dest="asks_touched", type=int, required=True)
+    p.add_argument("--free-pct", dest="free_pct", type=float, required=True)
+    p.add_argument("--swap-gb", dest="swap_gb", type=float, required=True)
+    p.add_argument("--load", type=float, required=True)
+    p = sub.add_parser("drain", add_help=False, allow_abbrev=False)
+    p.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p.add_argument("--no-jev", dest="no_jev", action="store_true")
+    p = sub.add_parser("backup", add_help=False, allow_abbrev=False)
+    p.add_argument("--note")
+    p = sub.add_parser("unarchive", add_help=False)
+    p.add_argument("name")
+    p = sub.add_parser("erase", add_help=False, allow_abbrev=False)
+    p.add_argument("subject")
+    p.add_argument("--confirm", action="store_true")
+    p = sub.add_parser("purge", add_help=False, allow_abbrev=False)
+    p.add_argument("--confirm", action="store_true")
+    p.add_argument("targets", nargs="+")
+    p = sub.add_parser("migrate", add_help=False, allow_abbrev=False)
+    p.add_argument("--from", dest="source", required=True)
+    p.add_argument("--map", required=True)
+    p.add_argument("--rules-from", dest="rules_from")
+    p.add_argument("--state")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true")
+    return parser
+
+
+COMMANDS = {
+    "init": cmd_init, "boot": cmd_boot, "check": cmd_check, "recall": cmd_recall, "add": cmd_add,
+    "set": cmd_set, "decide": cmd_decide, "sent": cmd_sent, "ask": cmd_ask, "sweep-log": cmd_sweep_log,
+    "drain": cmd_drain, "backup": cmd_backup, "unarchive": cmd_unarchive, "erase": cmd_erase,
+    "purge": cmd_purge, "migrate": cmd_migrate, "status": cmd_status,
+}
+
+
+def split_root(argv):
+    root, rest, i = None, [], 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--root":
+            if i + 1 >= len(argv):
+                sys.stderr.write("mem: --root needs a folder\n")
+                sys.exit(EXIT_USAGE)
+            root, i = argv[i + 1], i + 2
+            continue
+        if arg.startswith("--root="):
+            root = arg[len("--root="):]
+        else:
+            rest.append(arg)
+        i += 1
+    if not root:
+        root = os.environ.get("MEM_ROOT") or os.path.join(os.path.dirname(SELF), "..")
+    return os.path.realpath(os.path.expanduser(root)), rest
+
+
+def main(argv):
+    os.umask(0o077)
+    root, rest = split_root(argv)
+    if not rest or rest[0] in ("help", "-h", "--help"):
+        sys.stdout.write(USAGE)
+        return 0 if rest else EXIT_USAGE
+    args = build_parser().parse_args(rest)
+    tree = Tree(root)
+    try:
+        if args.command not in READERS:
+            if args.command == "init":
+                refuse_wide_root(root)
+                if not os.path.isdir(root):
+                    os.makedirs(root, 0o700)
+            elif not tree.is_tree():
+                raise Refused("%s is not a memory tree (no .meta/); run mem init first" % root)
+            run_locked(tree, rest)
+        elif not tree.is_tree():
+            raise Refused("%s is not a memory tree (no .meta/); run mem init first" % root)
+        return COMMANDS[args.command](tree, args)
+    except Refused as error:
+        sys.stderr.write("mem: %s\n" % error)
+        return EXIT_REFUSED
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
