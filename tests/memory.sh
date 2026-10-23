@@ -200,6 +200,10 @@ check "  ... the shared project memory folder is Claude Code's own name for the 
   'teamctl _prompt lead --team mem | grep -qF "$WOLFMUX_CLAUDE_PROJECTS/$(printf "%s" "$PROJECT" | sed "s|[^A-Za-z0-9]|-|g")/memory/"'
 check "the other team's lead and the mem team's worker get no block" \
   '! teamctl _prompt lead --team other | grep -q "^## Team memory" && ! teamctl _prompt w1 --team mem | grep -q "^## Team memory"'
+/bin/chmod 600 "$DIR/bin/mem"
+check "no runnable bin/mem in the folder (missing, or edited by hand): no block" \
+  '! teamctl _prompt lead --team mem | grep -q "^## Team memory"'
+/bin/chmod 700 "$DIR/bin/mem"
 BEFORE="$(launches mem lead)"
 teamctl restart lead --team mem >/dev/null 2>&1
 check "a fresh restart of the mem lead: its first prompt is the boot" \
@@ -227,10 +231,37 @@ BEFORE="$(launches mem lead)"
 OUT="$(teamctl restart lead --team mem --continue 2>&1)"
 check "refused for the mem lead: claude --continue would open the newest conversation of the shared folder" \
   '! teamctl restart lead --team mem --continue >/dev/null 2>&1 && printf "%s" "$OUT" | grep -q "no stored conversation id" && sleep 1 && [ "$(launches mem lead)" = "$BEFORE" ]'
+# The last stop is the pane's own `_run-agent … --continue` (a pane run again by hand). Should it ever not refuse,
+# it would exec the stand-in, which never exits: in the background, killed after a few seconds.
+WOLFMUX_TEAM=mem "$REPO/bin/teamctl" _run-agent "$PROJECT" lead --continue >"$WORK/run-agent.out" 2>&1 &
+PID=$!
+for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$PID" 2>/dev/null || break; sleep 0.5; done
+if kill -0 "$PID" 2>/dev/null; then kill "$PID" 2>/dev/null; echo killed >>"$WORK/run-agent.out"; fi
+wait "$PID" 2>/dev/null
+check "  ... and by _run-agent itself, the last stop before the CLI: it ends with the reason and launches nothing" \
+  'grep -q "no stored conversation id" "$WORK/run-agent.out" && ! grep -q killed "$WORK/run-agent.out" && [ "$(launches mem lead)" = "$BEFORE" ] && [ ! -f "$FAKE/argv-mem-x" ]'
 tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$(jq -r .session "$(STATE)/teams/mem/meta.json")" >/dev/null 2>&1
 check "  ... and as teamctl start --continue too (no session)" \
   '! teamctl start opus --team mem --continue --no-attach --skip-beads >/dev/null 2>&1 && [ "$(launches mem lead)" = "$BEFORE" ]'
-teamctl start opus --team mem --no-attach --skip-beads >/dev/null 2>&1
+teamctl start opus --team mem --no-attach --skip-beads --handover demo-abc1 >/dev/null 2>&1
+check "a fresh start with a handover: one first prompt, the boot first, then the handover" \
+  'launched_after mem lead "$BEFORE" && last_argv mem lead | jq -e ".[-1] | startswith(\"Team memory is on. Run \") and contains(\" After that, your handover: \") and contains(\"bd show demo-abc1\")"'
+# A crash, not a stop: the record and the snapshot survive, and teamctl restore brings the team back (tests/lead-model.sh)
+printf '#!/bin/bash\necho "System-wide memory free percentage: 80%%"\n' >"$FAKE/memory_pressure"
+/bin/chmod 755 "$FAKE/memory_pressure"
+SID="$(record lead mem | jq -r .session_id)"
+: >"$(transcript_of lead mem)"
+jq -cn --arg key "$KEY" --arg root "$(jq -r .root "$(STATE)/teams/mem/meta.json")" --arg session "$(jq -r .session "$(STATE)/teams/mem/meta.json")" --arg sid "$SID" \
+  '{epoch:100,ts:"2026-01-01T00:00:00Z",server:"old-server 1",tabs:[],
+    teams:[{key:$key,team:"mem",root:$root,session:$session,model:"opus",family:"claude",label:"Opus",session_id:$sid,founder:"operator"}]}' >"$WOLFMUX_DATA/state/running.json"
+tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t "=$(jq -r .session "$(STATE)/teams/mem/meta.json")" >/dev/null 2>&1
+BEFORE="$(launches mem lead)"
+WOLFMUX_RESTORE_TEAMCTL="$REPO/bin/teamctl" WOLFMUX_MEMORY_PRESSURE="$FAKE/memory_pressure" WOLFMUX_RESTORE_LOAD=1 WOLFMUX_RESTORE_WAIT_MAX=0 \
+  WOLFMUX_RESTORE_UP_MAX=10 WOLFMUX_RESTORE_POLL=1 WOLFMUX_RESTORE_LIMIT_WAIT=0 teamctl restore --yes --no-tabs >"$WORK/restore.out" 2>&1
+check "teamctl restore after a crash: the lead resumes its own conversation, and its first prompt is the boot (no handover again)" \
+  'launched_after mem lead "$BEFORE" && last_argv mem lead | jq -e --arg id "$SID" "(index(\"--resume\") as \$i | .[\$i + 1] == \$id) and (.[-1] | startswith(\"Team memory is on. Run \")) and (.[-1] | contains(\"handover\") | not)" ||
+   { cat "$WORK/restore.out"; exit 1; }'
+teamctl restart w1 --team mem >/dev/null 2>&1
 jq '.session_id = ""' "$(STATE)/teams/other/agents/lead.json" >"$WORK/r" && cat "$WORK/r" >"$(STATE)/teams/other/agents/lead.json"
 BEFORE="$(launches other lead)"
 check "the other team's lead still continues without an id (the old newest-transcript guess)" \
@@ -249,6 +280,19 @@ check "  ... warns when two processes carry the lead's conversation id" \
   'WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_TABLE="$WORK/ps-table" teamctl memory status 2>&1 | grep -q "2 lead sessions of team mem are alive"'
 check "teamctl memory check runs mem check and passes its exit code" \
   'teamctl memory check | grep -q "0 problems" && FAKE_MEM_CHECK_RC=1 teamctl memory check >/dev/null 2>&1; [ $? -eq 1 ]'
+check "check (it writes, and prints names) and path are the owner's: a worker and the other team's lead get 77" \
+  'for who in "mem w1" "other lead"; do for c in check path; do as_agent $who memory $c >"$WORK/o" 2>&1; [ $? -eq 77 ] && ! grep -qF "$DIR" "$WORK/o" || { echo "not refused: $who memory $c"; exit 1; }; done; done'
+check "  ... the mem lead runs both: path is the folder, check passes on mem check's answer" \
+  '[ "$(as_agent mem lead memory path)" = "$DIR" ] && as_agent mem lead memory check | grep -q "0 problems"'
+check "  ... status stays open to anyone: sizes and counts, never what a note says" \
+  'as_agent mem w1 memory status >"$WORK/o" 2>&1 && grep -q "^team-memory:  mem" "$WORK/o" && ! grep -q "my note" "$WORK/o"'
+
+echo "== teamctl capture of the mem lead's pane is yours alone (mem boot prints the card there)"
+check "a worker and the other team's lead get 77 for that pane" \
+  'as_agent mem w1 capture lead >"$WORK/o" 2>&1; [ $? -eq 77 ] && grep -q "private team memory" "$WORK/o" &&
+   as_agent other lead capture lead --team mem >"$WORK/o" 2>&1; [ $? -eq 77 ] && grep -q "private team memory" "$WORK/o"'
+check "  ... you capture it, and the mem lead still captures its worker" \
+  'teamctl capture lead --team mem >/dev/null && as_agent mem lead capture w1 >/dev/null'
 
 echo "== the card is never in the prompt (ps and teamctl _prompt show a prompt to anyone)"
 printf '# Card\nCARD-MARKER-7f3e work this way\n' >"$DIR/core/card.md"
