@@ -1035,9 +1035,10 @@ $prompt
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
       session_id="$(reg_field "$role" session_id)"
       if [ "$resume" -eq 1 ]; then
-        if [ -z "$session_id" ] && [ -n "$memdir" ]; then
-          # start and restart refuse this before a pane exists (memory_require_pinned); a pane run by hand gets here.
-          die "the memory team's lead has no stored conversation id, and --continue would open the newest conversation in $workdir, which may be another lead's: its private memory would be read into that one. Pin one: teamctl restart $role --team $TEAM --resume <session-id>"
+        if [ -z "$session_id" ] && [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && [ -n "$(memory_team)" ]; then
+          # Any lead while team memory is on: start and restart refuse this before a pane exists (memory_require_pinned);
+          # a pane run by hand gets here.
+          die "$(memory_unpinned_reason "$(memory_team)" "$workdir") Pin one: teamctl restart $role --team $TEAM --resume <session-id>"
         elif [ -z "$session_id" ]; then
           # A record from before conversation ids were stored.
           warn "no stored conversation id for '$role': resuming the newest transcript in $workdir. With another agent working in the same folder that may be its conversation, not this one. Pin one: teamctl restart $role --resume <session-id>"

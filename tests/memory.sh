@@ -264,8 +264,10 @@ check "teamctl restore after a crash: the lead resumes its own conversation, and
 teamctl restart w1 --team mem >/dev/null 2>&1
 jq '.session_id = ""' "$(STATE)/teams/other/agents/lead.json" >"$WORK/r" && cat "$WORK/r" >"$(STATE)/teams/other/agents/lead.json"
 BEFORE="$(launches other lead)"
-check "the other team's lead still continues without an id (the old newest-transcript guess)" \
-  'teamctl restart lead --team other --continue >/dev/null 2>&1 && launched_after other lead "$BEFORE" && last_argv other lead | jq -e "index(\"--continue\") != null"'
+OUT="$(teamctl restart lead --team other --continue 2>&1)"
+check "while team memory is on, the other team's lead is refused too: its --continue could open the mem lead's conversation" \
+  '! teamctl restart lead --team other --continue >/dev/null 2>&1 && printf "%s" "$OUT" | grep -q "no stored conversation id" &&
+   printf "%s" "$OUT" | grep -q "team '\''mem'\'' keeps it" && sleep 1 && [ "$(launches other lead)" = "$BEFORE" ]'
 
 echo "== teamctl memory status and check"
 printf '%04000d\n' 0 >>"$DIR/MEMORY.md"
@@ -457,6 +459,14 @@ check "uninstall.sh --purge refuses while a memory folder holds anything, says w
    [ -f "$IHOME/.wolfmux/memory/proj-abc123/mem/MEMORY.md" ] && [ -d "$IHOME/.config/wolfmux" ] && [ -f "$IHOME/bin/teamctl" ]'
 check "uninstall.sh --purge --purge-memory goes ahead: ~/.wolfmux is gone, memory included" \
   'env HOME="$IHOME" $NOSOCK "$COPY/uninstall.sh" --purge --purge-memory >/dev/null 2>&1 && [ ! -e "$IHOME/.wolfmux" ] && [ ! -e "$IHOME/.config/wolfmux" ]'
+
+# Round 3 (review 3): the command side. Appended here; the guard checks above belong to the guard lane.
+echo "== --continue with the policy off: the old guess, for every lead"
+jq '.session_id = ""' "$(STATE)/teams/other/agents/lead.json" >"$WORK/r" && cat "$WORK/r" >"$(STATE)/teams/other/agents/lead.json"
+BEFORE="$(launches other lead)"
+check "team memory off: a lead with no stored id continues again, as before team memory (the newest-transcript guess)" \
+  '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ] && teamctl restart lead --team other --continue >/dev/null 2>&1 &&
+   launched_after other lead "$BEFORE" && last_argv other lead | jq -e "index(\"--continue\") != null"'
 
 echo
 echo "memory: $passed passed, $failed failed"

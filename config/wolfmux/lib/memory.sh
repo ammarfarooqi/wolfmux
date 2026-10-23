@@ -286,14 +286,26 @@ memory_check() {
   MEM_ROOT="$dir" "$dir/bin/mem" check
 }
 
-# memory_require_pinned <role> <resume 0|1> <pinned id> <stored id> <family> — `start --continue` and `restart
-# --continue` of the memory team's Claude lead need a conversation id, stored or named, as restore does. Without one
-# the CLI's own --continue opens the NEWEST conversation in the folder every lead of the project shares, and this
-# lead's private memory would be read into another lead's conversation. Refused before anything is changed.
+# memory_unpinned_reason <memory team> <folder> — why a lead may not --continue without a conversation id while
+# team memory is on: the one sentence memory_require_pinned and _run-agent both say
+memory_unpinned_reason() {
+  printf "team memory is on for this project (team '%s' keeps it), and the lead of team '%s' has no stored conversation id: --continue would open the newest conversation in %s, which may be another lead's, and a lead's private memory (mem boot prints its card into that lead's own conversation) would be read into another one." \
+    "$1" "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$(short_path "$2")"
+}
+
+# memory_require_pinned <role> <resume 0|1> <pinned id> <stored id> <family> — while team memory is on for the project,
+# `start --continue` and `restart --continue` of EVERY Claude lead of it need a conversation id, stored or named, as
+# restore does. Every lead of the project works in its root, so they share one transcripts folder, and the CLI's own
+# --continue opens the NEWEST conversation in it: the memory team's lead could be handed another lead's conversation,
+# and any other lead the memory lead's, where mem boot printed the card. Refused before anything is changed. With the
+# policy off, nothing here refuses (_run-agent warns and guesses, as before team memory). Codex resumes with
+# `resume --last` whatever is said here; memory_status warns about a Codex memory lead.
 memory_require_pinned() {
-  [ "$2" -eq 1 ] && [ -z "$3" ] && [ -z "$4" ] && [ "$5" != "codex" ] || return 0
-  memory_lead_dir "$1" >/dev/null || return 0
-  die "team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}' keeps team memory, and its lead has no stored conversation id: --continue would open the newest conversation in $(short_path "$ROOT"), which may be another lead's. Name the conversation: teamctl restart $1 --team ${TEAM:-$WOLFMUX_DEFAULT_TEAM} --resume <session-id> (teamctl status --json shows the ids), or start it fresh: its memory brings it back up to date (mem boot)."
+  local team
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] && [ "$2" -eq 1 ] && [ -z "$3" ] && [ -z "$4" ] && [ "$5" != "codex" ] || return 0
+  team="$(memory_team)"
+  [ -n "$team" ] || return 0
+  die "$(memory_unpinned_reason "$team" "$ROOT") Name the conversation: teamctl restart $1 --team ${TEAM:-$WOLFMUX_DEFAULT_TEAM} --resume <session-id> (teamctl status --json shows the ids), or start it fresh$([ "$team" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ] && printf ': its memory brings it back up to date (mem boot)')."
 }
 
 # memory_policy_set <value> — `teamctl policy team-memory <team>|off`, the same as enable and disable
