@@ -64,6 +64,8 @@ NAME_MAX = 80
 OVERLAP = 0.7
 JEV_THRESHOLD = 0.7
 ROUTINE_BASIS = "kept 7 days"
+# A tar with no basis= line in drain.log (gone, unreadable, never written): kept, never routine.
+UNKNOWN_BASIS = "unknown (no log line; kept)"
 
 EXIT_REFUSED = 1
 EXIT_USAGE = 64
@@ -1975,7 +1977,7 @@ def prune_backups(tree, when):
         path = os.path.join(folder, name)
         if not name.endswith(".tar") or not os.path.isfile(path):
             continue
-        basis = bases.get(name, ROUTINE_BASIS)
+        basis = bases.get(name, UNKNOWN_BASIS)
         if when - backup_time(name, path) > datetime.timedelta(days=7) and basis == ROUTINE_BASIS:
             os.unlink(path)
             log(tree, "prune .meta/backups/%s (older than 7 days; basis: %s)" % (name, basis))
@@ -2435,6 +2437,32 @@ class Subject(object):
     def search(self, text):
         return self.pattern.search(erase_norm(text))
 
+    def sub(self, text, repl):
+        """text with each hit replaced by repl; the rest keeps its own spelling. The pattern runs
+        over the normalised text, and a hit maps back to the characters it came from (a letter
+        and the combining marks after it are one unit)."""
+        units = []
+        for char in text:
+            if units and unicodedata.combining(char):
+                units[-1] += char
+            else:
+                units.append(char)
+        owner = []
+        for index, unit in enumerate(units):
+            owner.extend([index] * len(erase_norm(unit)))
+        cut = {}
+        for found in self.pattern.finditer("".join(erase_norm(unit) for unit in units)):
+            cut[owner[found.start()]] = owner[found.end() - 1] + 1
+        out, index = [], 0
+        while index < len(units):
+            if index in cut:
+                out.append(repl)
+                index = cut[index]
+            else:
+                out.append(units[index])
+                index += 1
+        return "".join(out)
+
 
 def json_hits(match, value):
     """(a value names the subject, a key names it), at any depth of a decoded JSON value. Decoded,
@@ -2469,13 +2497,14 @@ def redact_json(value, match, marker):
 
 def erase_lines(data, match, marker, jsonl=False, drain_log=False):
     """(new bytes, numbers of the lines that hold the subject, numbers of the lines where only a
-    key names it). A .jsonl line is decoded first and its values count, at any depth; a key (a
-    field name like free_pct) erases nothing and is left behind. In drain.log a `backup ...
-    basis=` line keeps its shape and only its basis text is erased: a tar kept on the owner's
-    word must keep a basis that is not routine, or the next backup would prune it."""
+    key names it, numbers of the backup lines that still name it). A .jsonl line is decoded
+    first and its values count, at any depth; a key (a field name like free_pct) erases nothing
+    and is left behind. A `backup ... basis=` line in drain.log is never replaced: the subject
+    is replaced inside its basis text only (a routine basis is mem's own words and stays), so
+    the tar keeps the basis it was kept on; a hit in the rest of the line is left behind."""
     text = data.decode("utf-8", "replace")
     lines = text.split("\n")
-    hit, keys = [], []
+    hit, keys, kept = [], [], []
     for number, line in enumerate(lines):
         named = match.search(line)
         if jsonl:
@@ -2487,13 +2516,20 @@ def erase_lines(data, match, marker, jsonl=False, drain_log=False):
                 keys.append(number + 1)
         if not named:
             continue
-        hit.append(number + 1)
         backup = BACKUP_LOG.match(line) if drain_log else None
-        if backup and not match.search(line[:backup.start(3)]):
-            lines[number] = line[:backup.start(3)] + "[erased %s]" % marker + line[backup.end(3):]
-        else:
-            lines[number] = json.dumps({"erased": marker}, ensure_ascii=False) if jsonl else "[erased %s]" % marker
-    return "\n".join(lines).encode("utf-8"), hit, keys
+        if backup:
+            basis = backup.group(3)
+            if basis != ROUTINE_BASIS:
+                basis = match.sub(basis, "[erased %s]" % marker)
+            lines[number] = line[:backup.start(3)] + basis + line[backup.end(3):]
+            if lines[number] != line:
+                hit.append(number + 1)
+            if match.search(lines[number]):
+                kept.append(number + 1)
+            continue
+        hit.append(number + 1)
+        lines[number] = json.dumps({"erased": marker}, ensure_ascii=False) if jsonl else "[erased %s]" % marker
+    return "\n".join(lines).encode("utf-8"), hit, keys, kept
 
 
 def erase_decisions(data, match, marker):
@@ -2554,7 +2590,7 @@ def erase_state(value, match):
 def erase_plan(rel, data, match, marker):
     """What erase does to one file, in the live tree or inside a backup tar: (None | "drop" |
     "edit", new bytes, [where the subject is], [what names it and stays, each with its kind:
-    "<rel> (key)", "<rel> (file name)"]). A path counts by its file stem only, and only for a
+    "<rel> (key)", "<rel> (file name)", "<rel>:<n> (backup line)"]). A path counts by its file stem only, and only for a
     file erase removes whole (listed with "(stem)", or with the first line that names the
     subject): folder names and extensions never match, and `erase drain` never takes
     .meta/drain.log with it. A rules file is edited line by line; its stem and name: line stay
@@ -2594,10 +2630,10 @@ def erase_plan(rel, data, match, marker):
         return "edit", dump_json(new), ["%s (%d JSON value%s)" % (rel, count, "" if count == 1 else "s")], left
     ledger = LEDGER_FILE.match(os.path.basename(rel))
     if ledger and ledger.group(1) == "decisions":
-        (new, hit), keys = erase_decisions(data, match, marker), []
+        (new, hit), keys, kept = erase_decisions(data, match, marker), [], []
     else:
-        new, hit, keys = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
-    left = ["%s (key)" % rel] if keys else []
+        new, hit, keys, kept = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
+    left = (["%s (key)" % rel] if keys else []) + ["%s:%d (backup line)" % (rel, n) for n in kept]
     if not hit:
         return None, data, [], left
     return "edit", new, ["%s:%d" % (rel, n) for n in hit], left
@@ -2748,7 +2784,7 @@ def rebuild_tar(tree, rel, needle, marker):
             new.addfile(member, io.BytesIO(data))
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
-    log(tree, "backup %s sha256=%s basis=%s (rebuilt by erase)" % (rel, sha256(tree.read(rel)), bases.get(os.path.basename(rel), ROUTINE_BASIS)))
+    log(tree, "backup %s sha256=%s basis=%s (rebuilt by erase)" % (rel, sha256(tree.read(rel)), bases.get(os.path.basename(rel), UNKNOWN_BASIS)))
 
 
 def glob_home_backups():
@@ -3428,7 +3464,7 @@ def cmd_status(tree, args):
     print("open asks: %d; crons: %d" % (len(open_asks(tree)), len(load_state(tree, "crons")[0])))
     tars = sorted(r for r in tree.files(".meta/backups") if r.endswith(".tar"))
     bases = backup_bases(tree)
-    kept = [r for r in tars if bases.get(os.path.basename(r), ROUTINE_BASIS) != ROUTINE_BASIS]
+    kept = [r for r in tars if bases.get(os.path.basename(r), UNKNOWN_BASIS) != ROUTINE_BASIS]
     print("last backup: %s%s" % (tars[-1] if tars else "none", "; kept on their own basis: %s" % ", ".join(kept) if kept else ""))
     match = re.match(r"^# Memory \(checked (\S+) by mem check", index.decode("utf-8", "replace"))
     print("last check: %s" % (match.group(1) if match else "never"))

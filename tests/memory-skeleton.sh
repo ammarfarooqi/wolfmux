@@ -870,8 +870,8 @@ ERASE_ID="$(printf '%s\n' "$OUT" | sed -n 's/.*(erase id \([0-9a-f]\{8\}\) in .m
 SUBJECT_HASH="$(printf 'dana smith' | python3 -I -c "import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:12])")"
 check "drain.log says what erase did under a random 8-hex erase id (the one erase printed), never the subject or its hash" \
   '[ -n "$ERASE_ID" ] && grep -q "erase on the owner'"'"'s word: erase id $ERASE_ID; 3 files removed" "$T/.meta/drain.log" && ! grep -q "$SUBJECT_HASH" "$T/.meta/drain.log"'
-check "a backup kept on the owner's word keeps its drain.log line: only the basis text is erased, so it stays non-routine" \
-  'grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=\[erased 2026-10-23 on owner.s word\]$" "$T/.meta/drain.log" && grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=\[erased 2026-10-23 on owner.s word\] (rebuilt by erase)$" "$T/.meta/drain.log"'
+check "a backup kept on the owner's word keeps its drain.log line: only the subject inside the basis is erased, so it stays non-routine" \
+  'grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=kept on \[erased 2026-10-23 on owner.s word\].s word$" "$T/.meta/drain.log" && grep -q "backup .meta/backups/20261022T090000Z.tar sha256=[0-9a-f]* basis=kept on \[erased 2026-10-23 on owner.s word\].s word (rebuilt by erase)$" "$T/.meta/drain.log"'
 check "8 days on, backup pruning drops the routine tar and keeps the one kept on the owner's word" \
   'MEM_NOW=2026-10-31T09:00Z "$T/bin/mem" backup >/dev/null && [ -f "$T/.meta/backups/20261022T090000Z.tar" ] && [ ! -e "$T/.meta/backups/20261023T090000Z.tar" ]'
 check "the pre-migration tar outside the tree is untouched" '[ "$HOME_TAR_SUM" = "$(tree_sum "$HOME/.wolfmux/backups")" ]'
@@ -923,6 +923,28 @@ check "a subject that is only the stem of a .meta file takes nothing: digest-pen
   '"$T/bin/mem" erase digest-pending | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase shared-folder | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase migrate-20261001T000000Z | grep -qx "nothing in the tree names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 check "drain.log keeps every backup basis= line, so the owner's-word tar stays non-routine" \
   '[ "$(grep -c " backup .meta/backups/[0-9TZ]*\.tar sha256=[0-9a-f]* basis=" "$T/.meta/drain.log")" -eq 2 ] && grep -q "basis=migration rollback; kept on the owner.s word$" "$T/.meta/drain.log"'
+# A backup line in drain.log is never replaced: the subject goes out of its basis text only, a
+# hit in the rest of the line is left behind, and a tar with no basis line is kept, not routine.
+T="$WORK/erase-basis"
+fresh "$T"
+MEM_NOW=2026-10-10T09:00Z "$T/bin/mem" backup --note "$(printf 'kept for the audit Dana Smith and Jose\314\201 asked for')" >/dev/null
+MEM_NOW=2026-10-12T09:00Z "$T/bin/mem" backup >/dev/null
+( cd "$T" && tar -cf .meta/backups/20261002T090000Z.tar core/boot.md && chmod 600 .meta/backups/20261002T090000Z.tar )
+/bin/cp "$T/.meta/backups/20261012T090000Z.tar" "$T/.meta/backups/20261001T090000Z.tar"
+SUM_BEFORE="$(tree_sum "$T")"
+OUT="$("$T/bin/mem" erase sha256 --confirm 1 2>&1)"; RC=$?
+check "erase sha256 (the reviewer's repro) replaces no backup line: a hit outside the basis is left behind and nothing changes" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: .meta/drain.log:1 (backup line)" && printf "%s\n" "$OUT" | grep -qx "left behind: .meta/backups/20261012T090000Z.tar: .meta/drain.log:1 (backup line)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+N="$("$T/bin/mem" erase "Dana Smith" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase "Dana Smith" --confirm "$N" >/dev/null
+N="$("$T/bin/mem" erase "José" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase "José" --confirm "$N" >/dev/null
+check "erase replaces the subject inside a basis and keeps the rest of it (an accent written as a combining mark too)" \
+  'grep -q "^2026-10-10T09:00:00Z backup .meta/backups/20261010T090000Z.tar sha256=[0-9a-f]* basis=kept for the audit \[erased 2026-10-23 on owner.s word\] and \[erased 2026-10-23 on owner.s word\] asked for$" "$T/.meta/drain.log"'
+check "a tar erase rebuilds with no basis line in drain.log is logged as unknown and kept, not routine" \
+  'grep -q " backup .meta/backups/20261001T090000Z.tar sha256=[0-9a-f]* basis=unknown (no log line; kept) (rebuilt by erase)$" "$T/.meta/drain.log" && grep -q " backup .meta/backups/20261012T090000Z.tar sha256=[0-9a-f]* basis=kept 7 days (rebuilt by erase)$" "$T/.meta/drain.log"'
+check "8 days on, pruning drops only the routine tar: the erased basis, the unknown one and the tar with no log line stay, and status lists them as kept" \
+  'MEM_NOW=2026-10-31T09:00Z "$T/bin/mem" backup >/dev/null && [ ! -e "$T/.meta/backups/20261012T090000Z.tar" ] && [ -f "$T/.meta/backups/20261010T090000Z.tar" ] && [ -f "$T/.meta/backups/20261001T090000Z.tar" ] && [ -f "$T/.meta/backups/20261002T090000Z.tar" ] && MEM_NOW=2026-10-31T09:10Z "$T/bin/mem" status | grep -q "^last backup: .meta/backups/20261031T090000Z.tar; kept on their own basis: .meta/backups/20261001T090000Z.tar, .meta/backups/20261002T090000Z.tar, .meta/backups/20261010T090000Z.tar$"'
 # Every rules file carries an authority: erase edits it line by line (role.md too), never drops
 # it for one mention. Other region files go whole, and the listing says why.
 T="$WORK/erase-rules"

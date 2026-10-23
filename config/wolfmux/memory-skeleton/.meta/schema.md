@@ -167,7 +167,9 @@ and failures), `unarchive <from> -> <to>`, `erase on the owner's word: erase id 
 
 `.meta/backups/<YYYYMMDDTHHMMSSZ>[-n].tar`, mode 600, the tree minus `.meta/backups` and the
 lock. The routine basis is `kept 7 days`: only those are pruned, after 7 days. Any other basis
-(the migration rollback tar says "on the owner's word") is never pruned automatically.
+(the migration rollback tar says "on the owner's word") is never pruned automatically. A tar
+with no `basis=` line in drain.log (lost or unreadable) is kept too, never taken as routine;
+when erase rebuilds such a tar it logs `basis=unknown (no log line; kept)`.
 
 ## Jev (drain rule 4)
 
@@ -215,8 +217,10 @@ field, a folder, a ledger label, a common word). What it does:
   `name:` line and the file name stay and are listed as `left behind: <path> (file name)`;
 - a ledger, index or log line: replaced by `[erased <YYYY-MM-DD> on owner's word]`
   (`{"erased": "<YYYY-MM-DD> on owner's word"}` in a `.jsonl` file);
-- a `backup ... basis=` line in drain.log: never replaced whole; only its basis text becomes
-  the marker, so a tar kept on the owner's word stays non-routine and is never pruned;
+- a `backup ... basis=` line in drain.log: never replaced; the subject is replaced inside its
+  basis text only and the rest of the basis stays, so a tar kept on the owner's word stays
+  non-routine and is never pruned. A hit elsewhere in the line (its time, tar name or sha256)
+  is listed as `left behind: .meta/drain.log:<n> (backup line)`;
 - a state entry: removed;
 - any other JSON file (a migrated archive copy): each value that names it becomes
   `[erased <YYYY-MM-DD> on owner's word]`, and the file stays valid JSON;
