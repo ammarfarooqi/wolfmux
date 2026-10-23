@@ -242,6 +242,9 @@ reasons with their values taken out, each with its count and line numbers.
 A dest is a plain path in the tree as written: no leading slash, no `.` or `..` segment.
 `--from`, `--rules-from` and `--claude-mem-from` may neither lie inside the root nor hold it.
 Several rows may append to one ledger month; any other dest takes one row. A ledger row whose
-payload the ledger already holds byte for byte is `exists`, so a re-run appends nothing. A
+payload the ledger already holds as whole lines (from a line start to a line end, never part
+of a longer line) is `exists`, so a re-run appends nothing; verification counts it the same
+way, and a state key in the ledger by its whole `## migrated` block, so a short value (`[]`,
+`true`) is never counted where it merely appears. A
 real run that refused any row writes its report, then exits 1 unless `--allow-refused` is
 given; a dry run exits 0. A re-run in the same second writes `migrate-<UTC>-2.md`.

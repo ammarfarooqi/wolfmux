@@ -2684,6 +2684,7 @@ def plan_row(tree, row, line, ctx):
                 item.update(kind="ledger", dest=dest_file, status=action, payload=pretty.encode("utf-8"))
                 # The same block from an earlier run differs only in its time.
                 held = re.compile(re.escape(head) + rb"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z" + re.escape(tail))
+                item["held"] = held  # verify counts the whole block: a short value ([], true) alone is everywhere
                 ledger_held(tree, item, ctx, dest_file, held)
                 return item
             if top not in REGIONS:
@@ -2740,11 +2741,28 @@ def plan_row(tree, row, line, ctx):
     return item
 
 
+def line_count(text, payload):
+    """How many times payload is in text as whole lines: from a line start to a line end (a
+    payload without a final newline still ends a line). Never a part of a longer line."""
+    if not payload:
+        return 0
+    hay = b"\n" + text + (b"" if text.endswith(b"\n") or not text else b"\n")
+    needle = b"\n" + payload + (b"" if payload.endswith(b"\n") else b"\n")
+    count, at = 0, hay.find(needle)
+    while at >= 0:  # two payloads in a row share one newline: the next search starts on it
+        count += 1
+        at = hay.find(needle, at + len(needle) - 1)
+    return count
+
+
 def ledger_held(tree, item, ctx, dest_file, pattern=None):
-    """A ledger row whose payload the ledger already holds byte for byte (from an earlier run, or
-    an earlier row of this one) is 'exists': a re-run appends nothing and the payload stays once."""
-    current = (tree.read_or_none(dest_file) or b"") + b"".join(ctx["appends"].get(dest_file, []))
-    if (pattern.search(current) if pattern is not None else item["append"] in current):
+    """A ledger row whose payload the ledger already holds as whole lines (from an earlier run,
+    or an earlier row of this one) is 'exists': a re-run appends nothing and the payload stays
+    once. A payload that is only part of a longer line is not held."""
+    current = tree.read_or_none(dest_file) or b""
+    for chunk in ctx["appends"].get(dest_file, []):  # as append_file will write them
+        current += (b"\n" if current and not current.endswith(b"\n") else b"") + chunk
+    if (pattern.search(current) if pattern is not None else line_count(current, item["append"])):
         item.update(status="exists", reason="already in the ledger")
     elif item["status"] == "copy":
         ctx["appends"].setdefault(dest_file, []).append(item["append"])
@@ -2985,7 +3003,7 @@ def verify(tree, items, dry):
             else:
                 item["check"] = "found %d times: %s" % (len(found), ", ".join(found) or "-")
         elif item["kind"] == "ledger":
-            found = ledgers.count(item["payload"])
+            found = len(item["held"].findall(ledgers)) if item.get("held") else line_count(ledgers, item["payload"])
             item["check"] = "found once" if found == 1 else "found %d times" % found
         else:
             if isinstance(item["value"], (dict, list)):

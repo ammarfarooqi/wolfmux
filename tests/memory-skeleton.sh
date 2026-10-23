@@ -1157,6 +1157,22 @@ fresh "$T"
 OUT="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map-front.csv" 2>&1)"; RC=$?
 check "a --- block of only # and - lines is no frontmatter: the whole source is the body, nothing is stripped" \
   '[ "$RC" -eq 0 ] && python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(d.split(b\"\n---\n\",1)[1] != open(sys.argv[2],\"rb\").read())" "$T/topics/hash-list.md" "$SRC/hash_list.md" && ! printf "%s" "$OUT" | grep -q "^line 2 .*source frontmatter" && printf "%s" "$OUT" | grep -q "^line 2 copy .*: found once$"'
+# The ledger holds a payload only as whole lines: a short payload inside a longer line is still
+# appended, and short state values ([] twice, true) are each found once, by their whole block.
+printf 'resent\n' >"$SRC/short_send.md"
+printf '{"empty_a": [], "empty_b": [], "flag": true}\n' >"$WORK/short-state.json"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nshort_send.md,file,ledger/sends-2026-10.md,,copy,no,,,,,,,,\nstate:empty_a,state-key,ledger/asks-2026-10.md,,copy,no,,,,,,,,\nstate:empty_b,state-key,ledger/asks-2026-10.md,,copy,no,,,,,,,,\nstate:flag,state-key,ledger/asks-2026-10.md,,copy,no,,,,,,,,\n' >"$WORK/map-short.csv"
+T2="$WORK/migrate-short"
+fresh "$T2"
+MEM_NOW=2026-10-09T09:00Z "$T2/bin/mem" sent --to sam --channel c --ref r --subject "resent" >/dev/null
+SHORT_OUT="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-short.csv" --state "$WORK/short-state.json" 2>&1)"; RC=$?
+check "a payload that is only part of a longer ledger line is appended, not marked exists, and found once as a whole line" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$SHORT_OUT" | grep -q "^line 2 copy    short_send.md -> ledger/sends-2026-10.md.*: found once$" && [ "$(grep -cx "resent" "$T2/ledger/sends-2026-10.md")" -eq 1 ] && grep -q "| resent$" "$T2/ledger/sends-2026-10.md"'
+check "short state values ([] twice, true) into one ledger are each found once, by their whole block" \
+  'for n in 3 4 5; do printf "%s" "$SHORT_OUT" | grep -q "^line $n copy    state:.* -> ledger/asks-2026-10.md.*: found once$" || exit 1; done && printf "%s" "$SHORT_OUT" | grep -q "^verification: every source body and state value found exactly once"'
+SHORT_OUT="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-short.csv" --state "$WORK/short-state.json" 2>&1)"
+check "a re-run finds all four as exists and appends nothing" \
+  'for n in 2 3 4 5; do printf "%s" "$SHORT_OUT" | grep -q "^line $n exists .*: found once: already in the ledger$" || exit 1; done && [ "$(grep -cx "resent" "$T2/ledger/sends-2026-10.md")" -eq 1 ] && [ "$(grep -c "^## migrated state:" "$T2/ledger/asks-2026-10.md")" -eq 3 ]'
 # A decisions payload that leaves a fence open would swallow the decisions after it: refused.
 printf -- '## 2026-10-05T09:00Z\nslug: open-fence\nsource: chat\nbytes: 6\n```\nquote\n' >"$SRC/decisions_open.md"
 printf -- '## 2026-10-06T09:00Z\nslug: closed-fence\nsource: chat\nbytes: 4\n```\nok.\n```\n' >"$SRC/decisions_closed.md"
