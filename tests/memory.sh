@@ -278,6 +278,11 @@ ID="$(record lead mem | jq -r .session_id)"
 printf '9001\t1\tclaude --resume %s\n9002\t1\tclaude --resume %s\n' "$ID" "$ID" >"$WORK/ps-table"
 check "  ... warns when two processes carry the lead's conversation id" \
   'WOLFMUX_PS_BIN="$REPO/tests/fake-ps" WOLFMUX_FAKE_PS_TABLE="$WORK/ps-table" teamctl memory status 2>&1 | grep -q "2 lead sessions of team mem are alive"'
+cp "$(STATE)/teams/mem/agents/lead.json" "$WORK/lead.json"
+jq '.family = "codex"' "$WORK/lead.json" >"$(STATE)/teams/mem/agents/lead.json"
+check "  ... warns when the lead runs Codex (no autoMemoryDirectory; resume --last opens the shared folder's newest)" \
+  'teamctl memory status 2>&1 | grep -q "the lead of mem runs Codex"'
+cat "$WORK/lead.json" >"$(STATE)/teams/mem/agents/lead.json"
 check "teamctl memory check runs mem check and passes its exit code" \
   'teamctl memory check | grep -q "0 problems" && FAKE_MEM_CHECK_RC=1 teamctl memory check >/dev/null 2>&1; [ $? -eq 1 ]'
 check "check (it writes, and prints names) and path are the owner's: a worker and the other team's lead get 77" \
