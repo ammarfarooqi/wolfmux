@@ -1423,7 +1423,7 @@ cmd_model() {
     say "  $role runs $running_label until then; it switches at its next restart: teamctl restart $role$scope --continue"
     return 0
   fi
-  info "switching $role now by a resume-restart on $model: conversation $session_id goes on, and ~/.claude/settings.json is not touched."
+  info "switching $role now by a resume-restart on $model: conversation $(memory_shown_id "$role" "$session_id") goes on, and ~/.claude/settings.json is not touched."
   cmd_restart "$role" --resume "$session_id"
 }
 

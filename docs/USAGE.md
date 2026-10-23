@@ -928,8 +928,8 @@ conversation, then `restart` each teammate. To end a team on purpose: `teamctl d
 **Which conversation comes back.** Every Claude-family agent is given its own conversation id
 when it starts, and `--continue` reopens exactly that one. So with several teams in one
 project each lead comes back in its own conversation, not in whichever was written to last.
-`teamctl status --json` prints the stored id per agent (`.agents[].session_id`), and
-`--resume <session-id>` pins a different one; it is stored, and it wins over `--continue`.
+`teamctl status --json` prints the stored id per agent (`.agents[].session_id`; the team-memory
+lead's is `hidden` to anyone but the human and that lead), and `--resume <session-id>` pins a different one; it is stored, and it wins over `--continue`.
 The lead's id is kept with the team, so `teamctl destroy` in the evening and `teamctl start
 <model> --continue` in the morning is the same conversation. Four cases are worth knowing:
 

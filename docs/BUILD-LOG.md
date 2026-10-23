@@ -2081,7 +2081,10 @@ the path and the id to the owner and that lead only. SECURITY.md now says plainl
 gate is a pane proof a process can drop, which forms the worker guard refuses, that leads are not
 guarded, and that `uninstall.sh --purge --purge-memory` checks no identity. Still open, and named
 there: a `cd` to a folder known only at run time, `CDPATH`, a `cd` to a wildcard, code in another
-language, a script the command runs, and `teamctl status --json` listing every conversation id.
+language, a script the command runs, and the memory lead's id in its records under `~/.wolfmux/state`,
+which the guard closes to workers and not to leads. A follow-up in the same round hides that id
+everywhere a view prints it: `teamctl status` (plain and `--json`, the id and the agent-view chat it
+continued in), `model --now` and `restore` print `hidden` to anyone but the owner and that lead.
 
 ## Footprint on the machine
 

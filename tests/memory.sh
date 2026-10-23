@@ -555,6 +555,33 @@ teamctl memory disable >/dev/null 2>&1
 check "off: the kept folders' names are anyone's, their place only yours" \
   'teamctl memory status | grep -q "^kept folders: .*(under " && as_agent other lead memory status >"$WORK/o" 2>&1 && grep -q "^kept folders: " "$WORK/o" && ! grep -q "under " "$WORK/o"'
 
+echo "== the memory lead's conversation id: hidden in every view, for anybody but you and that lead"
+teamctl memory enable agt >/dev/null 2>&1
+teamctl spawn w9 opus --team agt --no-kickoff >/dev/null 2>&1
+AID="$(record lead agt | jq -r .session_id)"
+WID="$(record w9 agt | jq -r .session_id)"
+sid_seen() { # <teamctl args…> as the caller in $WHO ("" = you): the agt lead's session_id in status --json
+  if [ -z "$WHO" ]; then teamctl status --json --team agt; else as_agent $WHO status --json --team agt; fi 2>/dev/null |
+    jq -r '.agents[] | select(.role == "lead") | .session_id'
+}
+check "status --json: you see the memory lead's id" \
+  '[ -n "$AID" ] && [ "$(WHO="" sid_seen)" = "$AID" ]'
+check "  ... and so does the memory lead itself" \
+  '[ "$(WHO="agt lead" sid_seen)" = "$AID" ]'
+check "  ... another team's lead and a worker get \"hidden\"" \
+  '[ "$(WHO="other lead" sid_seen)" = hidden ] && [ "$(WHO="agt w9" sid_seen)" = hidden ]'
+check "  ... a worker's id stays visible to them (leads need ids for --resume); plain status shows the memory lead's to nobody else" \
+  '[ -n "$WID" ] && [ "$(as_agent other lead status --json --team agt | jq -r ".agents[] | select(.role == \"w9\") | .session_id")" = "$WID" ] &&
+   ! as_agent other lead status --team agt 2>&1 | grep -qF "$AID"'
+teamctl policy orphan-steward other >/dev/null 2>&1
+check "  ... the orphan steward (the other team's lead) gets \"hidden\" too" \
+  'teamctl policy --team agt | grep -Eq "^  orphan-steward +other " && [ "$(WHO="other lead" sid_seen)" = hidden ]'
+teamctl policy orphan-steward off >/dev/null 2>&1
+check "teams --json and dashboard --json carry no conversation id at all (model ids only)" \
+  'as_agent other lead teams --json >"$WORK/o" 2>&1 && ! grep -qF "$AID" "$WORK/o" && ! grep -qF "$WID" "$WORK/o" &&
+   as_agent other lead dashboard --once --json --full >"$WORK/o" 2>&1 && ! grep -qF "$AID" "$WORK/o" &&
+   teamctl dashboard --once --json --full >"$WORK/o" 2>&1 && ! grep -qF "$AID" "$WORK/o"'
+
 echo
 echo "memory: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

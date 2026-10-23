@@ -1029,7 +1029,8 @@ ls ~/.wolfmux/state ~/.wolfmux/worktrees    # per-project state and worktrees
   there. Teammates are apart in worktrees; leads are not. Let one lead integrate at a time.
 - Each Claude-family agent is given its own conversation id when it starts, and `--continue`
   reopens that id, so two leads in one folder come back in their own conversations. The
-  stored id is in `teamctl status --json` (`.agents[].session_id`), the lead's is kept with
+  stored id is in `teamctl status --json` (`.agents[].session_id`; the team-memory lead's shows
+  `hidden` to anyone but you and that lead), the lead's is kept with
   the team across `teamctl destroy`, and `teamctl restart <role> --resume <session-id>` pins a
   different one (an id without a transcript is refused). An agent that never said a word has
   nothing to resume: `--continue` starts its conversation fresh under the same id. An agent

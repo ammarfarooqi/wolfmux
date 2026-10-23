@@ -232,6 +232,23 @@ memory_caller_is_owner() {
   (team_paths "$team" && memory_lead_dir "$CALLER_ROLE") >/dev/null 2>&1
 }
 
+# memory_id_hidden <role> — 0 when a view must not print the conversation id of <role> of the loaded team: it is the
+# lead that has team memory (memory_lead_dir), or still holds it after the policy moved (memory_lead_started_with),
+# and the caller is neither you, nor the memory team's lead (memory_caller_is_owner), nor that lead itself. That id is
+# what `claude --resume` opens, card and all. Every other agent's id stays visible: leads need them for --resume.
+memory_id_hidden() {
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  memory_lead_dir "$1" >/dev/null || memory_lead_started_with "$1" || return 1
+  memory_caller_is_owner && return 1
+  [ -z "$CALLER_NOT_HERE" ] && [ "$CALLER_ROLE" = "$1" ] && [ "${CALLER_TEAM:-$WOLFMUX_DEFAULT_TEAM}" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ] && return 1
+  return 0
+}
+
+# memory_shown_id <role> <id> — the id as a view prints it: "hidden" where memory_id_hidden says so, else unchanged
+memory_shown_id() {
+  if [ -n "$2" ] && memory_id_hidden "$1"; then printf 'hidden\n'; else printf '%s\n' "$2"; fi
+}
+
 memory_status() {
   local team dir index card files kb settings session pane state started id sessions folders="" path founder family owner=0 where="" restart
   memory_caller_is_owner && owner=1

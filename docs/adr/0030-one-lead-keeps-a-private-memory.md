@@ -140,7 +140,10 @@ session id) and the pane says so.
   `teamctl memory path` hands out the path for `$(teamctl memory path)`, which the guard cannot read: both
   are the owner's and that lead's only (exit 77 for anyone else). `teamctl memory status` stays open and
   prints sizes, counts and the policy; the folder's path and the lead's conversation id only to the owner
-  and that lead (since round 3; `teamctl status --json` still lists every agent's id to any caller).
+  and that lead (since round 3). Every view that prints conversation ids (`teamctl status`, plain and
+  `--json`, `model --now`, `restore`, also when the orphan steward runs it) prints the memory lead's as
+  `hidden` to anyone else; the records under `~/.wolfmux/state` still hold it (closed to workers, not to
+  leads).
 - `destroy --purge --memory` is protected by the pane proof, not by the typed team name: a process can
   get a terminal from a piped `script -q /dev/null` and type the name itself.
 - The boot prompt with `--resume` is documented, not yet observed on a live pane: the first real
