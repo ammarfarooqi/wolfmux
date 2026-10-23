@@ -207,7 +207,7 @@ check "200 topics and 30 rules: check exits 0, MEMORY.md stays within 80 lines a
 check "the overflow is a WARN per cut region, naming how many are listed" \
   'printf "%s" "$OUT" | grep -q "^WARN .*MEMORY.md lists [0-9]* of 200 live topics (the index caps); mem recall finds the rest" && printf "%s" "$OUT" | grep -q "^WARN .*MEMORY.md lists [0-9]* of 30 live rules"'
 check "a cut region ends with ONE line: N more <region>: mem recall <words>" \
-  '[ "$(grep -c "^- [0-9]* more topics: mem recall <words>$" "$T/MEMORY.md")" -eq 1 ] && [ "$(grep -c "^- 11 more rules: mem recall <words>$" "$T/MEMORY.md")" -eq 1 ] && n="$(grep -c "(topics/filler-" "$T/MEMORY.md")" && grep -q "^- $((200 - n)) more topics:" "$T/MEMORY.md"'
+  '[ "$(grep -c "^- [0-9]* more topics: mem recall <words>$" "$T/MEMORY.md")" -eq 1 ] && [ "$(grep -c "^- 17 more rules: mem recall <words>$" "$T/MEMORY.md")" -eq 1 ] && n="$(grep -c "(topics/filler-" "$T/MEMORY.md")" && grep -q "^- $((200 - n)) more topics:" "$T/MEMORY.md"'
 check "listed topics are the most important first, then the most recently confirmed" \
   'python3 -I - "$T" <<'"'"'EOF'"'"'
 import re, sys
@@ -220,7 +220,39 @@ keys = [key(n) for n in shown]
 best = sorted((key("filler-%d" % i) for i in range(1, 201)), reverse=True)[:len(keys)]
 sys.exit(not (keys and keys == sorted(keys, reverse=True) and keys == best and all(k[0] == 5 for k in keys)))
 EOF'
-check "the caps are written in schema.md" 'grep -q "rules 20, people 8, teams 6, topics 12" "$SKEL/.meta/schema.md"'
+check "the caps and their byte sum are written in schema.md" \
+  'grep -q "rules 14, people 6, teams 4, topics 7" "$SKEL/.meta/schema.md" && grep -q "^| total | ~4,600 of 5,000; 50 of 80 lines |$" "$SKEL/.meta/schema.md"'
+check "the legend (with the boot line) is at most 500 bytes, and the skeleton ships the index mem generates" \
+  '[ "$(sed -n "/^## Legend$/,/^## Rules$/p" "$T/MEMORY.md" | sed "\$d" | wc -c)" -le 500 ] && fresh "$WORK/legend" && MEM_NOW=2026-10-23T16:00Z "$WORK/legend/bin/mem" check >/dev/null && cmp -s "$WORK/legend/MEMORY.md" "$SKEL/MEMORY.md"'
+# full_tree <dir> <rules> <people> <teams> <topics>: files with 160-character summaries, and one
+# ledger file of each kind this month (four ledger pointers): the widest ASCII index there is.
+full_tree() {
+  fresh "$1"
+  python3 -I - "$@" <<'EOF'
+import os, sys
+t = sys.argv[1]
+for region, count in zip(("rules", "people", "teams", "topics"), map(int, sys.argv[2:6])):
+    for i in range(1, count + 1):
+        name = "%s-%02d" % (region, i)
+        path = os.path.join(t, region, name + ".md")
+        with open(path, "w") as out:
+            out.write("---\nname: %s\nregion: %s\nkeywords: %s, k%s\nsummary: %s\nlinks:\nimportance: 3\n%slast_confirmed: 2026-10-%02d\nstatus: live\n---\nbody\n"
+                      % (name, region, name, name, ("%s " % name * 20)[:160], "authority: shared:RULES.md\n" if region == "rules" else "", i))
+        os.chmod(path, 0o600)
+EOF
+  printf 'A decision.' | MEM_NOW=2026-10-23T09:00Z "$1/bin/mem" decide --time 2026-10-23T09:00Z --source chat >/dev/null
+  MEM_NOW=2026-10-23T09:00Z "$1/bin/mem" sent --to sam --channel dm --ref r --subject s >/dev/null
+  MEM_NOW=2026-10-23T09:00Z "$1/bin/mem" ask open --id a1 --who sam --what w --waiting-on owner >/dev/null
+  MEM_NOW=2026-10-23T09:00Z "$1/bin/mem" sweep-log --inboxes 1 --asks-touched 1 --free-pct 40 --swap-gb 1 --load 2 >/dev/null
+}
+full_tree "$WORK/full" 14 6 4 7
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$WORK/full/bin/mem" check)"
+check "a full tree at the caps (14 rules, 6 people, 4 teams, 7 topics, 4 ledger pointers) fits 5,000 bytes without shrinking" \
+  '[ "$(wc -c <"$WORK/full/MEMORY.md")" -le 5000 ] && [ "$(grep -c "^- \[" "$WORK/full/MEMORY.md")" -eq 35 ] && ! grep -q " more [a-z]*: mem recall" "$WORK/full/MEMORY.md" && ! printf "%s" "$OUT" | grep -q -e "MEMORY.md lists" -e "over budget" -e PROBLEM'
+full_tree "$WORK/past" 20 10 8 12
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$WORK/past/bin/mem" check)"
+check "past the caps only the caps cut (13 of 20 rules, 5 of 10 people, 3 of 8 teams, 6 of 12 topics); the byte shrink never runs" \
+  '[ "$(wc -c <"$WORK/past/MEMORY.md")" -le 5000 ] && printf "%s" "$OUT" | grep -q "lists 13 of 20 live rules" && printf "%s" "$OUT" | grep -q "lists 5 of 10 live people" && printf "%s" "$OUT" | grep -q "lists 3 of 8 live teams" && printf "%s" "$OUT" | grep -q "lists 6 of 12 live topics" && ! printf "%s" "$OUT" | grep -q PROBLEM'
 /bin/rm -f "$T"/topics/filler-*.md "$T"/rules/rule-*.md
 # The reviewer's tree: 20 rules, 8 people, 6 teams, ONE topic, every summary 160 characters. With
 # é (2 bytes) in the summaries the index must shrink, and the single topic gives way first.

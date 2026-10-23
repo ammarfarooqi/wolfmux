@@ -74,8 +74,23 @@ a long name is cut in the link text so the summary keeps 20 characters, never in
 and `## Ledger pointers` (this month's ledger files with line counts). A line with more than
 one link (a hub of hubs) is a problem.
 
-Index caps, in lines per region section: rules 20, people 8, teams 6, topics 12 (with the
-title, legend, headings and ledger pointers that is at most 80 lines). Rules come newest
+The legend is one line per part of the tree (core, state, rules, people/teams/topics, ledger,
+archive) and one boot line, no examples: at most 500 bytes.
+
+Index caps, in lines per region section: rules 14, people 6, teams 4, topics 7. The sum, with
+every line at its 120-character cap:
+
+| part | bytes |
+| --- | --- |
+| 31 region lines x 121 (120 characters + newline) | 3,751 |
+| legend and boot line | <= 500 |
+| title `# Memory (checked <UTC> by mem check, NNNN bytes)` | 62 |
+| five headings (Rules, People, Teams, Topics, Ledger pointers) | 57 |
+| four ledger pointers, ~58 each | ~231 |
+| total | ~4,600 of 5,000; 50 of 80 lines |
+
+So a full tree fits without the byte shrink below; the shrink is the exception, for lines of
+wide characters (an `é` is 2 bytes, most CJK 3). Rules come newest
 first; people, teams and topics most important first, then newest `last_confirmed`. A region
 with more live files than its cap shows the first ones and ONE line
 `- N more <region>: mem recall <words>`. If the index still passes 5,000 bytes, one region
