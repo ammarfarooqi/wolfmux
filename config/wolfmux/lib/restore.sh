@@ -300,7 +300,7 @@ restore_verdict() {
   elif [ -z "$RV_SID" ]; then
     RV="missingid" RV_WHY="no stored conversation id: --continue could open another lead's conversation. Bring it back by hand: teamctl restart lead --team $TEAM --resume <session-id>"
   elif [ -z "$(session_transcript "$RV_SID" "$(reg_field "$WOLFMUX_LEAD_ROLE" workdir 2>/dev/null || true)")" ]; then
-    RV_HOW="continue" RV_NOTE="conversation $RV_SID has no transcript here: it starts fresh under the same id"
+    RV_HOW="continue" RV_NOTE="conversation $(memory_shown_id "$WOLFMUX_LEAD_ROLE" "$RV_SID") has no transcript here: it starts fresh under the same id"
   else
     RV_HOW="resume"
   fi
@@ -533,7 +533,7 @@ _restore_tab_order() {
 cmd_restore() {
   local dry=0 yes=0 tabs=1 snap kind key team root seen session model family label sid founder
   local n i j answer tag marker rc out bead busy=0 policy limit transcript since clients names
-  local -a T_KEY=() T_TEAM=() T_ROOT=() T_SEEN=() T_HOW=() T_SID=() T_FAMILY=() T_NOTE=() T_LABEL=()
+  local -a T_KEY=() T_TEAM=() T_ROOT=() T_SEEN=() T_HOW=() T_SID=() T_FAMILY=() T_NOTE=() T_LABEL=() T_SHOWN=()
   local -a U_KEY=() U_TEAM=() U_ROOT=() R_KEY=() R_TEAM=() R_ROOT=() R_SID=() R_FAMILY=() R_SINCE=() R_LABEL=()
   local -a B_KEY=() B_TEAM=() P_KEY=() P_TEAM=() P_ROOT=() ORDER=()
   local -a SKIPS=() FAILS=() LIMITS=() MOVED=() NOTES=() TAB_CMDS=() ATTACHED=()
@@ -573,6 +573,9 @@ cmd_restore() {
           restore)
             T_KEY+=("$key") T_TEAM+=("$team") T_ROOT+=("$root") T_SEEN+=("$seen") T_HOW+=("$RV_HOW")
             T_SID+=("$RV_SID") T_FAMILY+=("$RV_FAMILY") T_NOTE+=("$RV_NOTE") T_LABEL+=("${label:-$model}")
+            # The memory lead's id is printed "hidden" to anybody but you and that lead (the orphan steward restores
+            # teams you founded): asked here, while that team is the loaded one (memory_id_hidden).
+            if memory_id_hidden "$WOLFMUX_LEAD_ROLE"; then T_SHOWN+=(hidden); else T_SHOWN+=(""); fi
             ;;
           up) U_KEY+=("$key") U_TEAM+=("$team") U_ROOT+=("$root") ;;
           *) SKIPS+=("$team ($(short_path "$root")): $RV_WHY") ;;
@@ -590,7 +593,7 @@ cmd_restore() {
   else
     say "  will restore $n team(s), one at a time:"
     for ((i = 0; i < n; i++)); do
-      if [ "${T_HOW[$i]}" = "resume" ]; then tag="--resume ${T_SID[$i]}"; else tag="--continue"; fi
+      if [ "${T_HOW[$i]}" = "resume" ]; then tag="--resume ${T_SHOWN[$i]:-${T_SID[$i]}}"; else tag="--continue"; fi
       say "    ${T_TEAM[$i]}  ($(short_path "${T_ROOT[$i]}"), ${T_LABEL[$i]:-?})  teamctl restart lead --team ${T_TEAM[$i]} $tag"
       [ -z "${T_NOTE[$i]}" ] || say "      note: ${T_NOTE[$i]}"
     done
@@ -673,7 +676,7 @@ cmd_restore() {
     restore_wait_up "${T_FAMILY[$i]}" "${T_SID[$i]}" "${marker:-/dev/null}" || rc=$?
     [ -z "$marker" ] || /bin/rm -f "$marker"
     case "$rc" in
-      0) say "    up: conversation ${RU_SID:-?} is running" ;;
+      0) say "    up: conversation ${T_SHOWN[$i]:-${RU_SID:-?}} is running" ;;
       1)
         if [ "${T_FAMILY[$i]}" = "codex" ]; then
           say "    up: its pane runs (${RESTORE_UP_MAX}s passed; Codex keeps no session record to look at)"

@@ -17,13 +17,15 @@
 # is a decision about your own work. Disabling only narrows, so the memory team's own lead may do it
 # too. Neither deletes anything; the folder goes only with `teamctl destroy --purge --memory`, which
 # is yours alone too (the pane proof, require_operator), or with `uninstall.sh --purge --purge-memory`.
-# `memory check` and `memory path` are yours and that lead's (memory_may_disable): check runs
-# `mem check`, which writes and names notes, and path is the folder handed to a script.
+# `memory check` and `memory path` are yours and that lead's (memory_require_owner): check runs
+# `mem check`, which writes and names notes, and path is the folder handed to a script. Enable refuses
+# a team an agent founded; `memory adopt <team>`, yours alone, makes you its founder first.
 #
 # The folder's contents (bin/mem, the templates, the schema) are the memory skeleton, installed to
-# ~/.config/wolfmux/memory-skeleton/ and copied once by `enable`. teamctl calls only `mem init`,
-# `mem boot` and `mem check`, and reads nothing in the folder but file sizes: nothing else crosses
-# that line.
+# ~/.config/wolfmux/memory-skeleton/ and copied once by `enable`. teamctl runs only `mem init` (enable)
+# and `mem check` (memory check); `mem boot` is run by the lead itself, told to by its first prompt
+# (memory_boot_text) and by the prompt block (after every compaction, which nothing enforces). teamctl
+# reads nothing in the folder but file sizes: nothing else crosses that line.
 
 MEMORY_INDEX_CAP=25000 # bytes of MEMORY.md that Claude Code's auto memory loads
 
@@ -52,6 +54,15 @@ memory_lead_dir() {
   dir="$(memory_dir_for "$team")"
   [ -x "$dir/bin/mem" ] || return 1
   printf '%s\n' "$dir"
+}
+
+# memory_lead_started_with <role> — 0 when <role> is the loaded team's lead and its settings file (written at its last
+# start, write_agent_settings) carries autoMemoryDirectory. A running lead keeps the memory it was started with until
+# its next restart, whatever the policy says now (memory disable, another team named, a lost x bit on bin/mem): what
+# its screen may show follows what it holds, not what memory_lead_dir would give it next time.
+memory_lead_started_with() {
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  [ -n "$("$JQ_BIN" -r '.autoMemoryDirectory // empty' "$STATE_DIR/settings/$1.json" 2>/dev/null || true)" ]
 }
 
 # project_memory_dir — Claude Code's own memory of this repository, which every session in it shares:
@@ -95,9 +106,10 @@ memory_prompt_block() {
   printf 'Run `%s/bin/mem boot` before anything else, and again after every compaction. The card wins over a re-sent handover on HOW to work; the handover is a task.\n' "$dir"
 }
 
-# memory_log <action> <team> <previous> — one line in the project's team-memory.jsonl and one in the
-# event log, BEFORE the policy moves: a change of who keeps private notes that nobody can look up is
-# not made (the steward's record works the same way, lib/policy.sh).
+# memory_log <action> <team> <previous> [<event detail>] — one line in the project's team-memory.jsonl and one in
+# the event log, BEFORE the policy moves: a change of who keeps private notes that nobody can look up is
+# not made (the steward's record works the same way, lib/policy.sh). With an event detail (adopt), the event
+# is that action, not a policy change.
 memory_log() {
   local file="$PROJECT_STATE/team-memory.jsonl" by
   by="${EVENT_BY:-$(caller_identity 2>/dev/null || printf operator)}"
@@ -108,7 +120,11 @@ memory_log() {
   } 2>/dev/null; then
     die "the team-memory record cannot be written ($(short_path "$file")); the policy was not changed."
   fi
-  EVENT_BY="$by" event_log policy "" "team-memory=$2 (was $3; $1)" || true
+  if [ -n "${4:-}" ]; then
+    EVENT_BY="$by" event_log "$1" "" "$4" || true
+  else
+    EVENT_BY="$by" event_log policy "" "team-memory=$2 (was $3; $1)" || true
+  fi
 }
 
 # memory_may_disable — you, or the lead of the memory team itself (proven in its own pane)
@@ -137,7 +153,7 @@ memory_copy_skeleton() {
 }
 
 memory_enable() {
-  local team="$1" skel="$WOLFMUX_HOME/memory-skeleton" dir previous teams id
+  local team="$1" skel="$WOLFMUX_HOME/memory-skeleton" dir previous teams id founder
   require_operator "memory enable" "a private memory folder for one team's lead of this project (policy team-memory)" \
     "nothing to set: teamctl memory status says whether it is on. If your team needs it, tell the human"
   valid_team_name "$team" || die_usage "$(team_name_error "$team")"
@@ -146,6 +162,12 @@ memory_enable() {
     *" $team "*) ;;
     *) die_usage "team-memory: '$team' is not a team of this project (teams: ${teams% })" ;;
   esac
+  # A memory is handed only to a lead you started (memory_lead_dir), and a team keeps its founder through every
+  # restart, restore and model change (lead_restore): on a team an agent founded it would never reach the lead.
+  founder="$( (team_paths "$team" && team_founder) 2>/dev/null || true)"
+  if [ -n "$founder" ] && [ "$founder" != "operator" ]; then
+    die "team $team was founded by $founder, not by you, and a team memory is only ever handed to the lead of a team you founded: its lead would never get it, at any restart. Make the team yours first: teamctl memory adopt $team   then again: teamctl memory enable $team   (nothing was changed)"
+  fi
   dir="$(memory_dir_for "$team")"
   if [ -d "$dir" ]; then
     say "folder:      $(short_path "$dir")   (kept as it is: an existing folder is never overwritten)"
@@ -196,35 +218,70 @@ memory_lead_sessions() {
   "$WOLFMUX_PS_BIN" -axo pid=,command= 2>/dev/null | MEMORY_SID="$1" /usr/bin/awk 'index($0, ENVIRON["MEMORY_SID"]) { n++ } END { print n + 0 }'
 }
 
+# memory_caller_is_owner — 0 for you and for the memory team's own lead (the one that HAS the memory, as
+# memory_require_owner asks); 1 for everybody else, a caller that fails the pane proof included. It never dies:
+# status is open to anyone, and this only decides which of its lines carry the folder's path and the lead's
+# conversation id (a path feeds a script; an id feeds `claude --resume`, which opens that conversation, card and all).
+memory_caller_is_owner() {
+  local team
+  caller_resolve
+  [ -z "$CALLER_NOT_HERE" ] || return 1
+  [ -n "$CALLER_ROLE" ] || return 0
+  team="${CALLER_TEAM:-$WOLFMUX_DEFAULT_TEAM}"
+  [ "$CALLER_ROLE" = "$WOLFMUX_LEAD_ROLE" ] && [ "$team" = "$(memory_team)" ] || return 1
+  (team_paths "$team" && memory_lead_dir "$CALLER_ROLE") >/dev/null 2>&1
+}
+
+# memory_id_hidden <role> — 0 when a view must not print the conversation id of <role> of the loaded team: it is the
+# lead that has team memory (memory_lead_dir), or still holds it after the policy moved (memory_lead_started_with),
+# and the caller is neither you, nor the memory team's lead (memory_caller_is_owner), nor that lead itself. That id is
+# what `claude --resume` opens, card and all. Every other agent's id stays visible: leads need them for --resume.
+memory_id_hidden() {
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  memory_lead_dir "$1" >/dev/null || memory_lead_started_with "$1" || return 1
+  memory_caller_is_owner && return 1
+  [ -z "$CALLER_NOT_HERE" ] && [ "$CALLER_ROLE" = "$1" ] && [ "${CALLER_TEAM:-$WOLFMUX_DEFAULT_TEAM}" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ] && return 1
+  return 0
+}
+
+# memory_shown_id <role> <id> — the id as a view prints it: "hidden" where memory_id_hidden says so, else unchanged
+memory_shown_id() {
+  if [ -n "$2" ] && memory_id_hidden "$1"; then printf 'hidden\n'; else printf '%s\n' "$2"; fi
+}
+
 memory_status() {
-  local team dir index card files kb settings session pane state started id sessions folders="" path founder family
+  local team dir index card files kb settings session pane state started id sessions folders="" path founder family owner=0 where="" restart
+  memory_caller_is_owner && owner=1
   team="$(memory_team)"
   if [ -z "$team" ]; then
     say "team-memory:  off   (policy, for the whole project: no lead has a private memory folder)"
     for path in "$WOLFMUX_DATA/memory/$PROJECT_KEY"/*/; do
       [ -d "$path" ] && folders="$folders $(basename "$path")"
     done
-    [ -z "$folders" ] || say "kept folders:$folders   (under $(short_path "$WOLFMUX_DATA/memory/$PROJECT_KEY")/; nothing reads them while it is off)"
+    [ "$owner" -eq 0 ] || where="under $(short_path "$WOLFMUX_DATA/memory/$PROJECT_KEY")/; "
+    [ -z "$folders" ] || say "kept folders:$folders   (${where}nothing reads them while it is off)"
     say "turn it on:   teamctl memory enable <team>   (yours alone, from your own terminal)"
     return 0
   fi
   dir="$(memory_dir_for "$team")"
+  # The folder's path and the lead's conversation id: to you and that lead only (memory_caller_is_owner).
+  if [ "$owner" -eq 1 ]; then where="$(short_path "$dir")   "; fi
   say "team-memory:  $team   (policy, for the whole project: its lead keeps a private memory folder)"
   if [ ! -d "$dir" ]; then
-    say "folder:       $(short_path "$dir")   MISSING: teamctl memory enable $team creates it"
+    say "folder:       ${where}MISSING: teamctl memory enable $team creates it"
   else
     files="$(/usr/bin/find "$dir" -type f 2>/dev/null | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
     kb="$(disk_kb "$dir")"
-    say "folder:       $(short_path "$dir")   $files files, $(human_size "$kb")"
+    say "folder:       $where$files files, $(human_size "$kb")"
     index="$(memory_bytes "$dir/MEMORY.md")"
     say "index:        MEMORY.md $index of $MEMORY_INDEX_CAP bytes$([ "$index" -le "$MEMORY_INDEX_CAP" ] || printf '   OVER THE CAP: Claude Code loads only the start of it')"
     card="$(memory_bytes "$dir/core/card.md")"
     say "card:         core/card.md $card bytes   (mem boot reads it in the lead's conversation; it is never in a prompt)"
-    [ -x "$dir/bin/mem" ] || warn "$(short_path "$dir")/bin/mem is missing or not executable: the lead gets no memory until it is back (teamctl memory enable $team)"
+    [ -x "$dir/bin/mem" ] || warn "the folder's bin/mem is missing or not executable: the lead gets no memory until it is back (teamctl memory enable $team)"
   fi
   founder="$( (team_paths "$team" && team_founder) 2>/dev/null || true)"
   if [ -n "$founder" ] && [ "$founder" != "operator" ]; then
-    warn "team $team was started by $founder, not by you: its lead gets no memory. Start the team yourself to give it one."
+    warn "team $team was founded by $founder, not by you: its lead gets no memory, and no restart or restore changes a team's founder. Make the team yours: teamctl memory adopt $team   (yours alone)"
   fi
   family="$("$JQ_BIN" -r '.family // empty' "$(memory_team_state "$team")/agents/$WOLFMUX_LEAD_ROLE.json" 2>/dev/null || true)"
   if [ "$family" = "codex" ]; then
@@ -248,10 +305,14 @@ memory_status() {
   if [ -n "$id" ]; then
     sessions="$(memory_lead_sessions "$id")"
     if [ "$sessions" -gt 1 ]; then
-      warn "$sessions lead sessions of team $team are alive (processes with conversation $id): two sessions write over each other's memory. Keep one."
+      warn "$sessions lead sessions of team $team are alive$([ "$owner" -eq 0 ] || printf ' (processes with conversation %s)' "$id"): two sessions write over each other's memory. Keep one."
     fi
   fi
-  say "note:         enable and disable reach a running lead only at its next restart (a card edit, at its next mem boot): teamctl restart lead --team $team $([ -n "$id" ] && printf -- '--resume %s' "$id" || printf -- '--continue')"
+  restart=""
+  if [ "$owner" -eq 1 ]; then
+    restart=": teamctl restart lead --team $team $([ -n "$id" ] && printf -- '--resume %s' "$id" || printf -- '--continue')"
+  fi
+  say "note:         enable and disable reach a running lead only at its next restart (a card edit, at its next mem boot)$restart"
 }
 
 # memory_require_owner <subcommand> — check and path are yours and the memory team's lead's, as disable is:
@@ -286,14 +347,57 @@ memory_check() {
   MEM_ROOT="$dir" "$dir/bin/mem" check
 }
 
-# memory_require_pinned <role> <resume 0|1> <pinned id> <stored id> <family> — `start --continue` and `restart
-# --continue` of the memory team's Claude lead need a conversation id, stored or named, as restore does. Without one
-# the CLI's own --continue opens the NEWEST conversation in the folder every lead of the project shares, and this
-# lead's private memory would be read into another lead's conversation. Refused before anything is changed.
+# memory_unpinned_reason <memory team> <folder> — why a lead may not --continue without a conversation id while
+# team memory is on: the one sentence memory_require_pinned and _run-agent both say
+memory_unpinned_reason() {
+  printf "team memory is on for this project (team '%s' keeps it), and the lead of team '%s' has no stored conversation id: --continue would open the newest conversation in %s, which may be another lead's, and a lead's private memory (mem boot prints its card into that lead's own conversation) would be read into another one." \
+    "$1" "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$(short_path "$2")"
+}
+
+# memory_require_pinned <role> <resume 0|1> <pinned id> <stored id> <family> — while team memory is on for the project,
+# `start --continue` and `restart --continue` of EVERY Claude lead of it need a conversation id, stored or named, as
+# restore does. Every lead of the project works in its root, so they share one transcripts folder, and the CLI's own
+# --continue opens the NEWEST conversation in it: the memory team's lead could be handed another lead's conversation,
+# and any other lead the memory lead's, where mem boot printed the card. Refused before anything is changed. With the
+# policy off, nothing here refuses (_run-agent warns and guesses, as before team memory). Codex resumes with
+# `resume --last` whatever is said here; memory_status warns about a Codex memory lead.
 memory_require_pinned() {
-  [ "$2" -eq 1 ] && [ -z "$3" ] && [ -z "$4" ] && [ "$5" != "codex" ] || return 0
-  memory_lead_dir "$1" >/dev/null || return 0
-  die "team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}' keeps team memory, and its lead has no stored conversation id: --continue would open the newest conversation in $(short_path "$ROOT"), which may be another lead's. Name the conversation: teamctl restart $1 --team ${TEAM:-$WOLFMUX_DEFAULT_TEAM} --resume <session-id> (teamctl status --json shows the ids), or start it fresh: its memory brings it back up to date (mem boot)."
+  local team
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] && [ "$2" -eq 1 ] && [ -z "$3" ] && [ -z "$4" ] && [ "$5" != "codex" ] || return 0
+  team="$(memory_team)"
+  [ -n "$team" ] || return 0
+  die "$(memory_unpinned_reason "$team" "$ROOT") Name the conversation: teamctl restart $1 --team ${TEAM:-$WOLFMUX_DEFAULT_TEAM} --resume <session-id> (teamctl status --json shows the ids), or start it fresh$([ "$team" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ] && printf ': its memory brings it back up to date (mem boot)')."
+}
+
+# memory_adopt <team> — `teamctl memory adopt <team>`: the team becomes yours, as if you had founded it, so that its
+# lead may be given team memory (memory_enable refuses a team an agent founded). The lead's record (spawned_by) and
+# meta.json (founder, kept for when that record is gone) both say operator from now on; every later start, restart
+# and restore carries that on (lead_restore). The founding agent loses what a founder may do while the lead is down
+# (FOUNDER_COMMANDS). Logged in team-memory.jsonl and the team's event log, and you are told. Yours alone.
+memory_adopt() {
+  local team="$1" teams founder
+  require_operator "memory adopt" "who founded a team of this project (a founder acts on it while its lead is down, and only a team you founded may keep team memory)" \
+    "nothing to adopt: a team's founder is the human's to change. If your team needs it, tell the human"
+  valid_team_name "$team" || die_usage "$(team_name_error "$team")"
+  teams="$(team_list | tr '\n' ' ')"
+  case " $teams " in
+    *" $team "*) ;;
+    *) die_usage "memory adopt: '$team' is not a team of this project (teams: ${teams% })" ;;
+  esac
+  team_paths "$team"
+  founder="$(team_founder)"
+  if [ "$founder" = "operator" ]; then
+    say "team $team is already yours (you founded it): nothing to adopt."
+    return 0
+  fi
+  memory_log adopt "$team" "$founder" "team $team adopted by the human: founder $founder -> operator"
+  lock_acquire
+  if reg_exists "$WOLFMUX_LEAD_ROLE"; then reg_set "$WOLFMUX_LEAD_ROLE" spawned_by operator; fi
+  meta_put founder operator
+  lock_release
+  say "founder:     team $team is yours now (was $founder): $founder no longer acts on it as its founder."
+  say "next:        teamctl memory enable $team   gives its lead team memory, at its next restart"
+  (WOLFMUX_TEAM="$team" notify_deliver "$WOLFMUX_LEAD_MARK you adopted team '$team', which $founder founded: it is yours now." >/dev/null 2>&1) || true
 }
 
 # memory_policy_set <value> — `teamctl policy team-memory <team>|off`, the same as enable and disable
@@ -335,7 +439,7 @@ memory_purge() {
   fi
 }
 
-# teamctl memory [status|enable <team>|disable|path|check]
+# teamctl memory [status|enable <team>|disable|adopt <team>|path|check]
 cmd_memory() {
   local sub="${1:-status}"
   [ "$#" -eq 0 ] || shift
@@ -354,6 +458,10 @@ cmd_memory() {
       [ "$#" -eq 0 ] || die_usage "usage: teamctl memory disable   (it turns off whichever team has it)"
       memory_disable
       ;;
+    adopt)
+      [ "$#" -eq 1 ] || die_usage "usage: teamctl memory adopt <team>   (yours alone)"
+      memory_adopt "$1"
+      ;;
     path)
       [ "$#" -eq 0 ] || die_usage "usage: teamctl memory path"
       memory_path
@@ -362,6 +470,6 @@ cmd_memory() {
       [ "$#" -eq 0 ] || die_usage "usage: teamctl memory check"
       memory_check
       ;;
-    *) die_usage "usage: teamctl memory [status | enable <team> | disable | path | check]" ;;
+    *) die_usage "usage: teamctl memory [status | enable <team> | disable | adopt <team> | path | check]" ;;
   esac
 }

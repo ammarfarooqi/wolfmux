@@ -264,8 +264,10 @@ check "teamctl restore after a crash: the lead resumes its own conversation, and
 teamctl restart w1 --team mem >/dev/null 2>&1
 jq '.session_id = ""' "$(STATE)/teams/other/agents/lead.json" >"$WORK/r" && cat "$WORK/r" >"$(STATE)/teams/other/agents/lead.json"
 BEFORE="$(launches other lead)"
-check "the other team's lead still continues without an id (the old newest-transcript guess)" \
-  'teamctl restart lead --team other --continue >/dev/null 2>&1 && launched_after other lead "$BEFORE" && last_argv other lead | jq -e "index(\"--continue\") != null"'
+OUT="$(teamctl restart lead --team other --continue 2>&1)"
+check "while team memory is on, the other team's lead is refused too: its --continue could open the mem lead's conversation" \
+  '! teamctl restart lead --team other --continue >/dev/null 2>&1 && printf "%s" "$OUT" | grep -q "no stored conversation id" &&
+   printf "%s" "$OUT" | grep -q "team '\''mem'\'' keeps it" && sleep 1 && [ "$(launches other lead)" = "$BEFORE" ]'
 
 echo "== teamctl memory status and check"
 printf '%04000d\n' 0 >>"$DIR/MEMORY.md"
@@ -599,6 +601,128 @@ check "uninstall.sh --purge refuses while a memory folder holds anything, says w
    [ -f "$IHOME/.wolfmux/memory/proj-abc123/mem/MEMORY.md" ] && [ -d "$IHOME/.config/wolfmux" ] && [ -f "$IHOME/bin/teamctl" ]'
 check "uninstall.sh --purge --purge-memory goes ahead: ~/.wolfmux is gone, memory included" \
   'env HOME="$IHOME" $NOSOCK "$COPY/uninstall.sh" --purge --purge-memory >/dev/null 2>&1 && [ ! -e "$IHOME/.wolfmux" ] && [ ! -e "$IHOME/.config/wolfmux" ]'
+
+# Round 3 (review 3): the command side. Appended here; the guard checks above belong to the guard lane.
+echo "== --continue with the policy off: the old guess, for every lead"
+jq '.session_id = ""' "$(STATE)/teams/other/agents/lead.json" >"$WORK/r" && cat "$WORK/r" >"$(STATE)/teams/other/agents/lead.json"
+BEFORE="$(launches other lead)"
+check "team memory off: a lead with no stored id continues again, as before team memory (the newest-transcript guess)" \
+  '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ] && teamctl restart lead --team other --continue >/dev/null 2>&1 &&
+   launched_after other lead "$BEFORE" && last_argv other lead | jq -e "index(\"--continue\") != null"'
+
+echo "== capture follows what the running lead holds, not only the policy"
+teamctl start opus --team mem --no-attach --skip-beads >/dev/null 2>&1
+teamctl memory enable mem >/dev/null 2>&1
+BEFORE="$(launches mem lead)"
+teamctl restart lead --team mem >/dev/null 2>&1
+check "the mem lead runs with the memory: the other team's lead may not capture its pane (77)" \
+  'launched_after mem lead "$BEFORE" && [ "$(settings_of lead mem | jq -r .autoMemoryDirectory)" = "$DIR" ] &&
+   as_agent other lead capture lead --team mem >"$WORK/o" 2>&1; [ $? -eq 77 ] && grep -q "private team memory" "$WORK/o"'
+teamctl memory disable >/dev/null 2>&1
+check "  ... after memory disable, the lead still holds it until its restart: capture stays refused (77)" \
+  '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ] && [ "$(settings_of lead mem | jq -r .autoMemoryDirectory)" = "$DIR" ] &&
+   as_agent other lead capture lead --team mem >/dev/null 2>&1; [ $? -eq 77 ]'
+check "  ... you still capture it" 'teamctl capture lead --team mem >/dev/null'
+BEFORE="$(launches mem lead)"
+teamctl restart lead --team mem >/dev/null 2>&1
+check "  ... restarted without it (its settings carry no autoMemoryDirectory): the pane is an ordinary pane again" \
+  'launched_after mem lead "$BEFORE" && sleep 1 && settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not" && as_agent other lead capture lead --team mem >/dev/null'
+
+echo "== enable refuses a team an agent founded; adopt makes it yours"
+as_agent other lead start opus --team agt --no-attach --skip-beads >/dev/null 2>&1
+ADIR="$WOLFMUX_DATA/memory/$KEY/agt"
+OUT="$(teamctl memory enable agt 2>&1)"
+check "teamctl memory enable on a team the other lead founded: refused with the reason and the way out, nothing changed" \
+  '[ "$(record lead agt | jq -r .spawned_by)" = other.lead ] && ! teamctl memory enable agt >/dev/null 2>&1 &&
+   printf "%s" "$OUT" | grep -q "founded by other.lead, not by you" && printf "%s" "$OUT" | grep -q "teamctl memory adopt agt" &&
+   [ ! -d "$ADIR" ] && [ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ]'
+check "  ... and teamctl policy team-memory agt is refused the same way" \
+  '! teamctl policy team-memory agt >"$WORK/o" 2>&1 && grep -q "teamctl memory adopt agt" "$WORK/o" && [ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ]'
+check "adopt is yours alone: the founding lead and the team's own lead get 77, the founder stays" \
+  'as_agent other lead memory adopt agt >/dev/null 2>&1; [ $? -eq 77 ] && as_agent agt lead memory adopt agt >/dev/null 2>&1; [ $? -eq 77 ] &&
+   [ "$(record lead agt | jq -r .spawned_by)" = other.lead ] && [ "$(jq -r .founder "$(STATE)/teams/agt/meta.json")" = other.lead ]'
+: >"$WORK/tty"
+check "you adopt it: the lead record and meta.json say operator, it is logged twice, and you are told" \
+  'teamctl memory adopt agt >/dev/null && [ "$(record lead agt | jq -r .spawned_by)" = operator ] && [ "$(jq -r .founder "$(STATE)/teams/agt/meta.json")" = operator ] &&
+   jq -e "select(.action == \"adopt\" and .team == \"agt\" and .previous == \"other.lead\" and .by == \"operator\")" "$(STATE)/team-memory.jsonl" &&
+   jq -e "select(.type == \"adopt\")" "$(STATE)/teams/agt/events.jsonl" && grep -q "adopted team" "$WORK/tty"'
+check "  ... adopt again: nothing to adopt; a team you founded is said to be yours" \
+  'teamctl memory adopt agt | grep -q "already yours" && teamctl memory adopt nosuchteam >/dev/null 2>&1; [ $? -eq 64 ]'
+check "  ... now enable is accepted, and a restart keeps you the founder and gives its lead the memory" \
+  'teamctl memory enable agt >/dev/null && [ -x "$ADIR/bin/mem" ] && BEFORE="$(launches agt lead)" && teamctl restart lead --team agt >/dev/null 2>&1 &&
+   launched_after agt lead "$BEFORE" && [ "$(record lead agt | jq -r .spawned_by)" = operator ] && [ "$(settings_of lead agt | jq -r .autoMemoryDirectory)" = "$ADIR" ]'
+
+echo "== no owner, no memory: after finish too"
+teamctl memory enable mem >/dev/null 2>&1
+teamctl finish --team mem >/dev/null 2>&1
+BEFORE="$(launches mem lead)"
+as_agent other lead start opus --team mem --no-attach --skip-beads >"$WORK/o" 2>&1
+check "a mem team that another lead founds after finish gets no block, no setting, no boot (the policy still names mem)" \
+  '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = mem ] && [ "$(record lead mem | jq -r .spawned_by)" = other.lead ] && launched_after mem lead "$BEFORE" &&
+   ! teamctl _prompt lead --team mem | grep -q "^## Team memory" && settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not" &&
+   ! last_argv mem lead | grep -q "Team memory is" || { cat "$WORK/o"; exit 1; }'
+check "  ... and status says why, with the way out (adopt), not \"start the team yourself\"" \
+  'teamctl memory status 2>&1 | grep -q "founded by other.lead, not by you: its lead gets no memory.*teamctl memory adopt mem" && ! teamctl memory status 2>&1 | grep -q "Start the team yourself"'
+
+echo "== memory status: the folder's path and the lead's conversation id for you and the memory lead only"
+teamctl memory enable agt >/dev/null 2>&1
+AID="$(record lead agt | jq -r .session_id)"
+check "you see the folder's path and the lead's conversation id" \
+  '[ -n "$AID" ] && teamctl memory status >"$WORK/o" 2>&1 && grep -q "^team-memory:  agt" "$WORK/o" && grep -qF "$ADIR" "$WORK/o" && grep -qF "$AID" "$WORK/o"'
+check "  ... and so does the memory team's own lead" \
+  'as_agent agt lead memory status >"$WORK/o" 2>&1 && grep -qF "$ADIR" "$WORK/o" && grep -qF "$AID" "$WORK/o"'
+check "everyone else gets the sizes and counts without them: another team's lead, a caller outside its pane (no 77: status is open)" \
+  'for who in "other lead" "mem lead"; do as_agent $who memory status >"$WORK/o" 2>&1 || exit 1
+     grep -q "^folder: .*files" "$WORK/o" && grep -Eq "^index: .*MEMORY.md [0-9]+ of 25000 bytes" "$WORK/o" && ! grep -qF "$ADIR" "$WORK/o" && ! grep -qF "$AID" "$WORK/o" ||
+       { echo "shown to: $who"; cat "$WORK/o"; exit 1; }; done &&
+   TEAM_ROLE=lead WOLFMUX_TEAM=agt "$REPO/bin/teamctl" memory status >"$WORK/o" 2>&1 && grep -q "^team-memory:  agt" "$WORK/o" && ! grep -qF "$ADIR" "$WORK/o" && ! grep -qF "$AID" "$WORK/o"'
+
+echo "== no runnable bin/mem: no setting, no boot, no block at the next start (not only the prompt)"
+/bin/chmod 600 "$ADIR/bin/mem"
+check "the running lead still holds the memory (its settings): capture of its pane stays refused (77)" \
+  '[ "$(settings_of lead agt | jq -r .autoMemoryDirectory)" = "$ADIR" ] && as_agent other lead capture lead --team agt >/dev/null 2>&1; [ $? -eq 77 ]'
+BEFORE="$(launches agt lead)"
+teamctl restart lead --team agt >/dev/null 2>&1
+check "  ... restarted: no autoMemoryDirectory in its settings, no boot prompt in its argv, no block in its prompt" \
+  'launched_after agt lead "$BEFORE" && sleep 1 && settings_of lead agt | jq -e "has(\"autoMemoryDirectory\") | not" &&
+   ! last_argv agt lead | grep -q "Team memory is" && ! teamctl _prompt lead --team agt | grep -q "^## Team memory"'
+check "  ... and its pane is an ordinary pane again: the other team's lead captures it" \
+  'as_agent other lead capture lead --team agt >/dev/null'
+/bin/chmod 700 "$ADIR/bin/mem"
+BEFORE="$(launches agt lead)"
+teamctl restart lead --team agt >/dev/null 2>&1
+check "bin/mem runnable again: the next start has the setting and the boot prompt back" \
+  'launched_after agt lead "$BEFORE" && [ "$(settings_of lead agt | jq -r .autoMemoryDirectory)" = "$ADIR" ] && last_argv agt lead | jq -e ".[-1] | startswith(\"Team memory is on. Run \")"'
+teamctl memory disable >/dev/null 2>&1
+check "off: the kept folders' names are anyone's, their place only yours" \
+  'teamctl memory status | grep -q "^kept folders: .*(under " && as_agent other lead memory status >"$WORK/o" 2>&1 && grep -q "^kept folders: " "$WORK/o" && ! grep -q "under " "$WORK/o"'
+
+echo "== the memory lead's conversation id: hidden in every view, for anybody but you and that lead"
+teamctl memory enable agt >/dev/null 2>&1
+teamctl spawn w9 opus --team agt --no-kickoff >/dev/null 2>&1
+AID="$(record lead agt | jq -r .session_id)"
+WID="$(record w9 agt | jq -r .session_id)"
+sid_seen() { # <teamctl args…> as the caller in $WHO ("" = you): the agt lead's session_id in status --json
+  if [ -z "$WHO" ]; then teamctl status --json --team agt; else as_agent $WHO status --json --team agt; fi 2>/dev/null |
+    jq -r '.agents[] | select(.role == "lead") | .session_id'
+}
+check "status --json: you see the memory lead's id" \
+  '[ -n "$AID" ] && [ "$(WHO="" sid_seen)" = "$AID" ]'
+check "  ... and so does the memory lead itself" \
+  '[ "$(WHO="agt lead" sid_seen)" = "$AID" ]'
+check "  ... another team's lead and a worker get \"hidden\"" \
+  '[ "$(WHO="other lead" sid_seen)" = hidden ] && [ "$(WHO="agt w9" sid_seen)" = hidden ]'
+check "  ... a worker's id stays visible to them (leads need ids for --resume); plain status shows the memory lead's to nobody else" \
+  '[ -n "$WID" ] && [ "$(as_agent other lead status --json --team agt | jq -r ".agents[] | select(.role == \"w9\") | .session_id")" = "$WID" ] &&
+   ! as_agent other lead status --team agt 2>&1 | grep -qF "$AID"'
+teamctl policy orphan-steward other >/dev/null 2>&1
+check "  ... the orphan steward (the other team's lead) gets \"hidden\" too" \
+  'teamctl policy --team agt | grep -Eq "^  orphan-steward +other " && [ "$(WHO="other lead" sid_seen)" = hidden ]'
+teamctl policy orphan-steward off >/dev/null 2>&1
+check "teams --json and dashboard --json carry no conversation id at all (model ids only)" \
+  'as_agent other lead teams --json >"$WORK/o" 2>&1 && ! grep -qF "$AID" "$WORK/o" && ! grep -qF "$WID" "$WORK/o" &&
+   as_agent other lead dashboard --once --json --full >"$WORK/o" 2>&1 && ! grep -qF "$AID" "$WORK/o" &&
+   teamctl dashboard --once --json --full >"$WORK/o" 2>&1 && ! grep -qF "$AID" "$WORK/o"'
 
 echo
 echo "memory: $passed passed, $failed failed"

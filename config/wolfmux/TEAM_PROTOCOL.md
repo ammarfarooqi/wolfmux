@@ -240,7 +240,8 @@ integration; you do not do the bulk implementation yourself.
 
 **Team memory.** If your system prompt has a "Team memory" block, you are the one lead of this
 project with a private memory folder. Run `<folder>/bin/mem boot` before anything else, at every
-start and again after every compaction: the card is not in your prompt. Its card wins over a re-sent handover on HOW to work; the handover is a task. Nobody, you
+start (your first prompt says so) and again after every compaction (nothing runs it for you then: that
+one is yours to remember): the card is not in your prompt. Its card wins over a re-sent handover on HOW to work; the handover is a task. Nobody, you
 included, copies what the folder holds into Beads, Jira, Slack, repositories or reports: those carry
 structure and counts only. No other agent reads it.
 
