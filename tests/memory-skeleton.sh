@@ -1024,6 +1024,22 @@ SUM_BEFORE="$(tree_sum "$T")"
 OUT="$("$T/bin/mem" erase zed --confirm 1 2>&1)"; RC=$?
 check "a subject that only a JSON key names (nested in state, a field in a .jsonl line) erases nothing; each file is left behind once" \
   '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: state/watches.json (key)" && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-08/ledger/sweeps-2026-08.jsonl (key)" && [ "$(printf "%s\n" "$OUT" | grep -c "^left behind: ")" -eq 2 ] && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+# A JSON file that is one scalar: a string is edited inside and dumped again, so it stays JSON,
+# whether the name is written as \u escapes or plainly; any other scalar is never edited.
+TS="$WORK/erase-scalar"
+fresh "$TS"
+/bin/mkdir -p "$TS/archive/state" "$TS/archive/2026-09"
+printf '"Jos\\u00e9 Ruiz is the contact"\n' >"$TS/archive/state/scalar.json"
+printf '"ask José Ruiz first"\n' >"$TS/archive/2026-09/plain.json"
+printf 'NaN\n' >"$TS/archive/2026-09/number.json"
+chmod 600 "$TS"/archive/state/*.json "$TS"/archive/2026-09/*.json
+LISTS="$("$TS/bin/mem" erase "José Ruiz")"
+"$TS/bin/mem" erase "José Ruiz" --confirm 2 >/dev/null
+check "a JSON file that is one string (the name escaped, or plain): the subject is replaced inside the string and the file stays valid JSON" \
+  'printf "%s\n" "$LISTS" | grep -qx "line   archive/state/scalar.json (1 JSON value)" && printf "%s\n" "$LISTS" | grep -qx "line   archive/2026-09/plain.json (1 JSON value)" && python3 -I -c "import json, sys; a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2])); sys.exit(not (a.startswith(\"[erased 2026-10-23 on owner\") and a.endswith(\"s word] is the contact\") and b.startswith(\"ask [erased 2026-10-23 on owner\") and b.endswith(\"s word] first\")))" "$TS/archive/state/scalar.json" "$TS/archive/2026-09/plain.json"'
+OUT="$("$TS/bin/mem" erase nan --confirm 1 2>&1)"; RC=$?
+check "a JSON file that is another scalar (NaN, read as nan) is never edited: listed as left behind (value), still JSON" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-09/number.json (value)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject" && [ "$(cat "$TS/archive/2026-09/number.json")" = NaN ]'
 "$T/bin/mem" backup >/dev/null
 LIST="$("$T/bin/mem" erase "José Ruiz")"
 check "erase finds an escaped name in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \

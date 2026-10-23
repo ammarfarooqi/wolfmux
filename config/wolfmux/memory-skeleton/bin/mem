@@ -2634,6 +2634,11 @@ def erase_plan(rel, data, match, marker):
     if isinstance(value, (list, dict)):  # any other JSON: the values are erased in place, the file stays JSON
         new, count = redact_json(value, match, marker)
         return "edit", dump_json(new), ["%s (%d JSON value%s)" % (rel, count, "" if count == 1 else "s")], left
+    if value is not MISSING:  # one JSON scalar: a string is edited inside and stays JSON; any other stays
+        if not isinstance(value, str):
+            return None, data, [], left + ["%s (value)" % rel]
+        new = match.sub(value, "[erased %s]" % marker)
+        return "edit", dump_json("[erased %s]" % marker if match.search(new) else new), ["%s (1 JSON value)" % rel], left
     ledger = LEDGER_FILE.match(os.path.basename(rel))
     if ledger and ledger.group(1) == "decisions":
         (new, hit), keys, kept = erase_decisions(data, match, marker), [], []

@@ -227,7 +227,9 @@ field, a folder, a ledger label, a common word). What it does:
   is listed as `left behind: .meta/drain.log:<n> (backup line)`;
 - a state entry: removed;
 - any other JSON file (a migrated archive copy): each value that names it becomes
-  `[erased <YYYY-MM-DD> on owner's word]`, and the file stays valid JSON;
+  `[erased <YYYY-MM-DD> on owner's word]`, and the file stays valid JSON. A file that is one
+  string has the subject replaced inside the string; a file that is one other scalar (a
+  number) is never edited and is listed as `left behind: <path> (value)`;
 - each backup tar under `.meta/backups/`: rebuilt the same way. Pre-migration tars under
   `~/.wolfmux/backups/` are listed, never changed; a `.sha256` list beside one whose path
   lines name the subject is listed as `left behind outside the tree: <path>`.
