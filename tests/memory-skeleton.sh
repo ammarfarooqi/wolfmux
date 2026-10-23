@@ -286,6 +286,11 @@ check "add refuses a name another region already has" \
   '! echo x | "$T/bin/mem" add --region people --name quiet-hours --keywords "q, r" --summary "clash" && [ ! -e "$T/people/quiet-hours.md" ]'
 check "add refuses a name that is not a slug (no path tricks)" \
   '! echo x | "$T/bin/mem" add --region topics --name "../escape" --keywords "q" --summary "s" && [ ! -e "$WORK/escape.md" ]'
+LONG80="$(printf 'a%.0s' $(seq 1 69))-long-names"   # 80 characters
+check "add takes an 80-character name; MEMORY.md keeps the whole path, cuts the link text, stays within 120 characters" \
+  'echo x | "$T/bin/mem" add --region topics --name "$LONG80" --keywords "longname" --summary "a summary long enough to be cut down in the index line" >/dev/null && LINE="$(grep -F "(topics/$LONG80.md)" "$T/MEMORY.md")" && python3 -I -c "import sys; sys.exit(len(sys.argv[1]) > 120)" "$LINE" && printf "%s" "$LINE" | grep -q "^- \[a*…\](topics/$LONG80.md) a summary" && "$T/bin/mem" check'
+check "add refuses an 81-character name" \
+  '! echo x | "$T/bin/mem" add --region topics --name "${LONG80}x" --keywords "q" --summary "s" 2>/dev/null && [ ! -e "$T/topics/${LONG80}x.md" ]'
 
 echo "== set"
 T="$WORK/set"

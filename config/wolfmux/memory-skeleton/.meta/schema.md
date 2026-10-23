@@ -53,7 +53,7 @@ repo_ref: fe:src/features/x/agent-log/0007.md AFD-2129     (optional, topics onl
 ```
 
 - The body is every byte after the closing `---` line, untouched. mem adds no blank line.
-- `name` is a slug (`a-z 0-9 _ . -`, at most 50 characters) and matches the file name.
+- `name` is a slug (`a-z 0-9 _ . -`, at most 80 characters) and matches the file name.
 - `authority` is `decisions-YYYY-MM#<anchor>` (a block in the decisions ledger, live or
   archived) or `shared:<path>` (a rule that lives in the shared folder). Malformed is a
   problem; not found is a warning.
@@ -67,7 +67,8 @@ repo_ref: fe:src/features/x/agent-log/0007.md AFD-2129     (optional, topics onl
 
 Title line `# Memory (checked <UTC> by mem check, <bytes> bytes)`, then `## Legend`,
 `## Boot (every start)`, one section per region with one line per live file
-(`- [name](region/file.md) summary-cut-to-fit`, newest `last_confirmed` first within rules),
+(`- [name](region/file.md) summary-cut-to-fit`, newest `last_confirmed` first within rules;
+a long name is cut in the link text so the summary keeps 20 characters, never in the path),
 and `## Ledger pointers` (this month's ledger files with line counts). A line with more than
 one link (a hub of hubs) is a problem.
 

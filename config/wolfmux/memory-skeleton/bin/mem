@@ -52,7 +52,7 @@ INDEX_LINE_MAX = 120
 CARD_MAX = 2000
 BOOT_MAX = 2000
 SUMMARY_MAX = 160
-NAME_MAX = 50
+NAME_MAX = 80
 OVERLAP = 0.7
 JEV_THRESHOLD = 0.7
 ROUTINE_BASIS = "kept 7 days"
@@ -678,7 +678,12 @@ REGION_TITLES = (("rules", "Rules"), ("people", "People"), ("teams", "Teams"), (
 
 
 def index_line(entry):
-    prefix = "- [%s](%s/%s.md) " % (entry.name, entry.region, entry.name)
+    target = "%s/%s.md" % (entry.region, entry.name)
+    room = INDEX_LINE_MAX - len("- [](%s) " % target)
+    label = entry.name
+    if len(label) + 20 > room:  # a long slug: the link text gives way so the summary keeps 20; the path is never cut
+        label = cut(label, max(room - 20, room // 2))
+    prefix = "- [%s](%s) " % (label, target)
     room = INDEX_LINE_MAX - len(prefix)
     summary = re.sub(r"\[\[([^\]]+)\]\]", r"\1", entry.summary)
     return (prefix + cut(summary, room)).rstrip()
