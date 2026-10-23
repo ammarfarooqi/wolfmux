@@ -496,6 +496,25 @@ check "drain --no-jev never calls Jev and moves no rule-4 file" \
   '"$T/bin/mem" drain --no-jev | grep -q "^digest topics/stale-x.md (rule 4; --no-jev)" && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && [ -f "$T/topics/stale-x.md" ]'
 check "with no key (no MEM_JEV_KEY, no Keychain item) nothing is sent and nothing moves" \
   '(unset MEM_JEV_KEY; PATH="$WORK/nosec:$PATH"; /bin/mkdir -p "$WORK/nosec"; printf "#!/bin/sh\nexit 44\n" >"$WORK/nosec/security"; chmod +x "$WORK/nosec/security"; "$T/bin/mem" drain | grep -q "no Jev key") && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && [ -f "$T/topics/stale-x.md" ]'
+# A key that cannot go in a header is "no key"; an error is logged by its type name only.
+T="$WORK/drain-key"
+fresh "$T"
+topic "$T" stale-k "stale, k" 3 2026-09-01
+BADKEY="$(printf 'bad\nLEAKEDKEY99')"
+NL=$'\n'
+OUT="$(MEM_JEV_KEY="$BADKEY" "$T/bin/mem" drain 2>&1)"
+check "a key with a newline is never sent: the candidate goes to the digest, jev key rejected (format)" \
+  'printf "%s" "$OUT" | grep -q "^digest topics/stale-k.md (rule 4; jev key rejected (format))" && grep -q "jev key rejected (format)" "$T/.meta/drain.log" && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && [ -f "$T/topics/stale-k.md" ]'
+check "the bad key reaches no output, log, digest or audit file" \
+  '! printf "%s" "$OUT" | grep -q LEAKEDKEY99 && ! grep -rq LEAKEDKEY99 "$T"'
+check "a key with a space or a trailing newline is rejected the same way" \
+  'MEM_JEV_KEY="bad LEAKEDKEY98" "$T/bin/mem" drain | grep -q "jev key rejected (format)" && MEM_JEV_KEY="LEAKEDKEY97$NL" "$T/bin/mem" drain | grep -q "jev key rejected (format)" && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && ! grep -rq LEAKEDKEY9 "$T"'
+T="$WORK/drain-unreachable"
+fresh "$T"
+topic "$T" stale-u "stale, u" 3 2026-09-01
+OUT="$(MEM_JEV_URL="http://127.0.0.1:9/v1/systemone" "$T/bin/mem" drain 2>&1)"
+check "Jev unreachable: only the exception's type name is logged, never its text" \
+  'printf "%s" "$OUT" | grep -q "^digest topics/stale-u.md (rule 4; Jev failed: URLError; nothing moves)" && grep -q "rule 4: Jev failed (URLError)" "$T/.meta/drain.log" && grep -q "Jev failed: URLError$" "$T/.meta/digest-pending.md" && ! grep -rqi "refused" "$T/.meta/drain.log" "$T/.meta/digest-pending.md" "$T/.meta/jev" && [ -f "$T/topics/stale-u.md" ]'
 
 echo "== backup and unarchive"
 T="$WORK/backup"

@@ -64,6 +64,7 @@ EXIT_BUSY = 75
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 JEV_MODEL = "jev-latest"
 JEV_KEYCHAIN_ITEM = "typesafe-api-key"
+JEV_KEY_FORMAT = re.compile(r"[\x21-\x7e]+")  # fullmatch: "$" would let a trailing newline through
 
 SLUG = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
 MONTH = re.compile(r"^\d{4}-\d{2}$")
@@ -1828,7 +1829,8 @@ def jev_ask(tree, entry, age, ref_days, people, key, when):
                 continue
             break
         except Exception as failure:  # no answer at all: refused, timed out, bad address
-            error = "%s: %s" % (type(failure).__name__, cut(str(failure), 120))
+            # The type name only: the text of some errors (http.client's bad header) carries the key.
+            error = type(failure).__name__
             break
     try:
         response = json.loads(raw.decode("utf-8")) if raw else None
@@ -1908,6 +1910,10 @@ def cmd_drain(tree, args):
         key = None if args.no_jev else jev_key()
         people = people_tokens(tree)
         down = "--no-jev" if args.no_jev else (None if key else "no Jev key (Keychain item %s)" % JEV_KEYCHAIN_ITEM)
+        if key and not JEV_KEY_FORMAT.fullmatch(key):
+            # A key with a space, a newline or a non-ASCII byte is never put in a header.
+            key, down = None, "jev key rejected (format)"
+            log(tree, "rule 4: jev key rejected (format); candidates wait for the digest")
         for entry, age, ref_days in candidates:
             if down:
                 print("digest %s (rule 4; %s)" % (entry.rel, down))
