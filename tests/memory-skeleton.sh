@@ -936,6 +936,26 @@ check "migrate refuses a map without the contract columns" '! "$T/bin/mem" migra
 /bin/rm -rf "$HOME/.wolfmux"
 unset MEM_NOW
 
+echo "== scale: add skips the full lint; one token pass over the ledger"
+T="$WORK/scale"
+fresh "$T"
+topic "$T" pair-one "alpha, beta, gamma"
+topic "$T" pair-two "alpha, beta, gamma"
+chmod 644 "$T/topics/pair-one.md"
+OUT="$(echo "Zinc and copper." | "$T/bin/mem" add --region topics --name lone --keywords "zinc, copper" --summary "metals" 2>&1)"
+check "add regenerates MEMORY.md but runs no full lint: a problem elsewhere is left to mem check" \
+  '[ "$OUT" = "ADD topics/lone.md" ] && grep -q "(topics/lone.md)" "$T/MEMORY.md"'
+OUT="$("$T/bin/mem" check)"
+check "mem check still finds that problem and the pair that shares its keywords" \
+  'printf "%s" "$OUT" | grep -q "^PROBLEM topics/pair-one.md has mode 644, want 600" && printf "%s" "$OUT" | grep -q "^WARN    topics/pair-one.md and topics/pair-two.md share 100% of their keywords"'
+T="$WORK/refs"
+fresh "$T"
+for f in ref-plain ref-longer ref.dot ref_under; do topic "$T" "$f" "$f, refs" 3 2026-09-01; done
+printf 'Keep REF-PLAIN, and ref-longer-still; see ref.dot.' | MEM_NOW=2026-10-20T08:00Z "$T/bin/mem" decide --time 2026-10-20T08:00Z --source chat >/dev/null
+DRY="$(MEM_NOW=2026-10-23T09:00Z "$T/bin/mem" drain --dry-run)"
+check "ledger references: any case and whole names only; a name with . or _ still matches" \
+  'printf "%s" "$DRY" | grep -q "^candidate topics/ref-longer.md (rule 4" && printf "%s" "$DRY" | grep -q "^candidate topics/ref_under.md (rule 4" && ! printf "%s" "$DRY" | grep -q -e "topics/ref-plain.md" -e "topics/ref.dot.md"'
+
 echo "== the lock, paths outside the root, status"
 T="$WORK/lock"
 fresh "$T"

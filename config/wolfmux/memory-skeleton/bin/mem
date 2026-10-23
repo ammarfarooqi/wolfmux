@@ -703,10 +703,16 @@ def last_references(tree, names):
     found = {}
     if not names:
         return found
-    patterns = dict((name, re.compile(r"(?<![a-z0-9-])%s(?![a-z0-9-])" % re.escape(name), re.I)) for name in names)
+    # A name of [a-z0-9-] only is referenced when it is a whole run of those characters: one
+    # tokenising pass per ledger entry finds them all. A name with _ or . keeps its own regex.
+    plain = set(name for name in names if re.match(r"^[a-z0-9-]+$", name))
+    patterns = dict((name, re.compile(r"(?<![a-z0-9-])%s(?![a-z0-9-])" % re.escape(name), re.I))
+                    for name in names if name not in plain)
     for when, text in ledger_entries(tree):
-        for name, pattern in patterns.items():
-            if pattern.search(text) and (name not in found or when > found[name]):
+        named = plain.intersection(re.findall(r"[a-z0-9-]+", text.lower()))
+        named.update(name for name, pattern in patterns.items() if pattern.search(text))
+        for name in named:
+            if name not in found or when > found[name]:
                 found[name] = when
     return found
 
@@ -1253,8 +1259,13 @@ def run_check(tree, when, quiet=False):
             report("PROBLEM", "%s and %s have the same name; names are unique across regions" % (seen[entry.name], entry.rel))
         seen[entry.name] = entry.rel
     live = [e for e in entries if e.live and e.fields is not None]
+    sharing = {}  # keyword -> the live files that have it: only files that share one are compared
+    for i, entry in enumerate(live):
+        for keyword in entry.keywords:
+            sharing.setdefault(keyword, []).append(i)
     for i, first in enumerate(live):
-        for second_entry in live[i + 1:]:
+        others = sorted(set(j for keyword in first.keywords for j in sharing[keyword] if j > i))
+        for second_entry in (live[j] for j in others):
             share = overlap(first.keywords, second_entry.keywords)
             if share >= OVERLAP:
                 report("WARN", "%s and %s share %d%% of their keywords; merge them or tell them apart"
@@ -1303,20 +1314,7 @@ def run_check(tree, when, quiet=False):
             total, len(plan["asks"]), len(plan["ledger"]), len(plan["sweeps"]), len(plan["candidates"]), len(plan["superseded"])))
     except Refused:
         pass
-    cuts = []
-    index = build_index(tree, entries, when, cuts)
-    for region, shown, live in cuts:
-        report("WARN", "MEMORY.md lists %d of %d live %s (the index caps); mem recall finds the rest" % (shown, live, region))
-    for problem in lint_index(index, "MEMORY.md (generated)"):
-        report("PROBLEM", problem)
-    write_file(tree, "MEMORY.md", index.encode("utf-8"))
-    card = ""
-    try:
-        card = write_card(tree, when)
-    except Refused as error:
-        report("PROBLEM", "the card was not refreshed: %s" % error)
-    if len(card.encode("utf-8")) > CARD_MAX:
-        report("PROBLEM", "core/card.md is %d bytes (cap %d)" % (len(card.encode("utf-8")), CARD_MAX))
+    index, card = refresh_index(tree, entries, when, report)
     lines.append("index: %d bytes, %d lines (caps %d / %d); card: %d bytes (cap %d)" % (
         len(index.encode("utf-8")), index.count("\n"), INDEX_MAX_BYTES, INDEX_MAX_LINES, len(card.encode("utf-8")), CARD_MAX))
     lines.append("result: %d problems, %d warnings" % (counts["PROBLEM"], counts["WARN"]))
@@ -1346,11 +1344,32 @@ def cmd_check(tree, args):
     return 1 if problems else 0
 
 
+def refresh_index(tree, entries, when, report):
+    """MEMORY.md and core/card.md, regenerated from `entries`. (index text, card text)."""
+    cuts = []
+    index = build_index(tree, entries, when, cuts)
+    for region, shown, live in cuts:
+        report("WARN", "MEMORY.md lists %d of %d live %s (the index caps); mem recall finds the rest" % (shown, live, region))
+    for problem in lint_index(index, "MEMORY.md (generated)"):
+        report("PROBLEM", problem)
+    write_file(tree, "MEMORY.md", index.encode("utf-8"))
+    card = ""
+    try:
+        card = write_card(tree, when)
+    except Refused as error:
+        report("PROBLEM", "the card was not refreshed: %s" % error)
+    if len(card.encode("utf-8")) > CARD_MAX:
+        report("PROBLEM", "core/card.md is %d bytes (cap %d)" % (len(card.encode("utf-8")), CARD_MAX))
+    return index, card
+
+
 def quiet_check(tree):
-    """After a command that changed the regions: the index and the card follow at once."""
-    problems, warnings, _ = run_check(tree, now())
-    if problems:
-        print("mem check: %d problems; run mem check to see them" % problems)
+    """After add, drain or unarchive: the index and the card follow at once. The full lint (the
+    overlap and ledger passes, auto-memory filing) is mem check's, not every write's."""
+    problems = []
+    refresh_index(tree, region_entries(tree), now(), lambda level, message: problems.append(level == "PROBLEM"))
+    if any(problems):
+        print("mem check: %d problems; run mem check to see them" % sum(problems))
 
 
 # --- recall --------------------------------------------------------------------------------

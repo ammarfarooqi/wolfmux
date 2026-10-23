@@ -80,6 +80,9 @@ with more live files than its cap shows the first ones and ONE line
 `- N more <region>: mem recall <words>`. If the index still passes 5,000 bytes, topics give
 way first, then teams, people and rules. A cut region is a WARN in `check`, never a problem.
 
+`add`, `drain` and `unarchive` regenerate MEMORY.md and the card at once but do not run the
+full lint (keyword overlap, ledger references, modes, auto-memory filing): that is `mem check`.
+
 ## Ledger formats (append-only)
 
 - decisions: one block per decision.
