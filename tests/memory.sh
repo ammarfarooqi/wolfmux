@@ -363,6 +363,10 @@ check "the worker's own work is untouched by the rule" \
 echo "== disable: you, or the mem team's own lead; nothing is deleted"
 check "a worker may not disable it (77), nor the other team's lead (77)" \
   'as_agent mem w1 memory disable; [ $? -eq 77 ] && as_agent other lead memory disable; [ $? -eq 77 ] && [ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = mem ]'
+check "teamctl policy team-memory off: a worker (77); TEAM_ROLE=lead from outside any pane (77), for policy and disable alike" \
+  'as_agent mem w1 policy team-memory off >/dev/null 2>&1; [ $? -eq 77 ] &&
+   TEAM_ROLE=lead WOLFMUX_TEAM=mem "$REPO/bin/teamctl" policy team-memory off >/dev/null 2>&1; [ $? -eq 77 ] &&
+   TEAM_ROLE=lead WOLFMUX_TEAM=mem "$REPO/bin/teamctl" memory disable >/dev/null 2>&1; [ $? -eq 77 ] && [ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = mem ]'
 : >"$WORK/tty"
 check "the mem team's own lead may: the policy is off, the folder stays, it is logged, and you are told" \
   'as_agent mem lead memory disable >/dev/null && [ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ] && [ -f "$DIR/MEMORY.md" ] &&
@@ -371,6 +375,12 @@ check "off: teamctl memory path prints nothing and exits 1; status lists the kep
   'out="$(teamctl memory path)"; [ $? -eq 1 ] && [ -z "$out" ] && teamctl memory status | grep -q "^kept folders: mem"'
 check "off: the mem lead's prompt and settings are back to plain at its next start" \
   '! teamctl _prompt lead --team mem | grep -q "^## Team memory" && teamctl restart lead --team mem >/dev/null 2>&1 && sleep 1 && settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not"'
+check "off stays off: WOLFMUX_TEAM_MEMORY=mem in the environment turns nothing on" \
+  'WOLFMUX_TEAM_MEMORY=mem teamctl memory status | grep -q "^team-memory:  off" && ! WOLFMUX_TEAM_MEMORY=mem teamctl _prompt lead --team mem | grep -q "^## Team memory"'
+/bin/rm "$CONF/config" && /bin/cp "$REPO/config/wolfmux/config" "$CONF/config" && echo "WOLFMUX_TEAM_MEMORY=mem" >>"$CONF/config"
+check "  ... nor WOLFMUX_TEAM_MEMORY=mem in the config file" \
+  'teamctl memory status | grep -q "^team-memory:  off" && teamctl policy --team mem | grep -Eq "^  team-memory +off " && ! teamctl _prompt lead --team mem | grep -q "^## Team memory"'
+/bin/rm "$CONF/config" && /bin/ln -s "$REPO/config/wolfmux/config" "$CONF/config"
 teamctl policy team-memory mem >/dev/null 2>&1
 check "teamctl policy team-memory mem, by you, is enable: the same folder, kept" \
   '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = mem ] && [ -f "$DIR/MEMORY.md" ]'
@@ -379,11 +389,25 @@ echo "== the folder outlives destroy --purge and finish"
 teamctl destroy --team mem --purge --yes >/dev/null 2>&1
 check "teamctl destroy --purge: the team is gone, its memory folder is not" \
   '[ ! -d "$(STATE)/teams/mem/agents" ] && [ -f "$DIR/MEMORY.md" ] && [ -x "$DIR/bin/mem" ]'
+BEFORE="$(launches mem lead)"
+as_agent other lead start opus --team mem --no-attach --skip-beads >"$WORK/o" 2>&1
+check "no owner, no memory: a mem team that another lead founds after the purge gets no block, no setting, no boot" \
+  '[ "$(record lead mem | jq -r .spawned_by)" != operator ] && launched_after mem lead "$BEFORE" && ! teamctl _prompt lead --team mem | grep -q "^## Team memory" &&
+   settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not" && ! last_argv mem lead | grep -q "Team memory is" || { cat "$WORK/o"; exit 1; }'
+check "  ... nor the folder's path: that lead's memory path and check get 77" \
+  'as_agent mem lead memory path >/dev/null 2>&1; [ $? -eq 77 ] && as_agent mem lead memory check >/dev/null 2>&1; [ $? -eq 77 ]'
+teamctl destroy --team mem --purge --yes >/dev/null 2>&1
 teamctl start opus --team mem --no-attach --skip-beads >/dev/null 2>&1
 teamctl finish --team mem >/dev/null 2>&1
 check "teamctl finish: the team is taken, its memory folder is not" \
   '[ ! -f "$(STATE)/teams/mem/meta.json" ] && [ -f "$DIR/MEMORY.md" ]'
 teamctl start opus --team mem --no-attach --skip-beads >/dev/null 2>&1
+check "--memory without --purge: a usage error (64), nothing deleted" \
+  'teamctl destroy --team mem --memory --yes </dev/null >/dev/null 2>&1; [ $? -eq 64 ] && [ -f "$(STATE)/teams/mem/meta.json" ] && [ -f "$DIR/MEMORY.md" ]'
+check "destroy --purge --memory from an agent's pane, the mem lead's own: refused (77), even on a terminal that types the name" \
+  'as_agent mem lead destroy --team mem --purge --memory --yes </dev/null >/dev/null 2>&1; [ $? -eq 77 ] &&
+   typed mem env TEAM_ROLE=lead WOLFMUX_TEAM=mem "$REPO/tests/in-pane" destroy --team mem --purge --memory --yes >/dev/null 2>&1; [ $? -eq 77 ] &&
+   [ -d "$(STATE)/teams/mem/agents" ] && [ -f "$(STATE)/teams/mem/meta.json" ] && [ -f "$DIR/MEMORY.md" ]'
 check "destroy --purge --memory with nobody to type the name: refused, nothing deleted" \
   '! teamctl destroy --team mem --purge --memory --yes </dev/null >/dev/null 2>&1 && [ -f "$(STATE)/teams/mem/meta.json" ] && [ -f "$DIR/MEMORY.md" ]'
 check "  ... the wrong name typed: refused, nothing deleted" \
@@ -416,6 +440,11 @@ check "  ... and a re-run leaves an existing memory folder exactly as it was" \
 /bin/rm -rf "$COPY/config/wolfmux/memory-skeleton"
 check "a checkout without a skeleton still installs, silently" \
   'install_into "$COPY" >"$WORK/install-3.log" 2>&1 && ! grep -i "memory-skeleton" "$WORK/install-3.log"'
+OUT="$(env HOME="$IHOME" $NOSOCK "$COPY/uninstall.sh" --purge-memory 2>&1)"
+RC=$?
+check "uninstall.sh --purge-memory alone: a usage error (64), one line that names --purge, nothing removed" \
+  '[ "$RC" -eq 64 ] && [ "$(printf "%s\n" "$OUT" | wc -l | tr -d " ")" = 1 ] && printf "%s" "$OUT" | grep -q -- "--purge --purge-memory" &&
+   [ -f "$IHOME/.wolfmux/memory/proj-abc123/mem/MEMORY.md" ] && [ -d "$IHOME/.config/wolfmux" ] && [ -f "$IHOME/bin/teamctl" ]'
 OUT="$(env HOME="$IHOME" $NOSOCK "$COPY/uninstall.sh" --purge 2>&1)"
 RC=$?
 check "uninstall.sh --purge refuses while a memory folder holds anything, says what it would delete, removes nothing" \
