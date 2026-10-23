@@ -310,9 +310,9 @@ guard_follow() {
   GUARD_EXTRA="" GUARD_FOLLOWED="" GUARD_HERES="" GUARD_WILD=""
   guard_inside "$here" "$GUARD_OWN" || outside=1
   while IFS= read -r line; do
-    count=$((count + 1))
-    if [ "$count" -gt 4000 ]; then GUARD_WILD="that command is too long for the guard to follow (over 4000 words); split it." && return 0; fi
     kind="${line:0:1}" tok="${line:1}"
+    if [ "$kind" = w ]; then count=$((count + 1)); fi
+    if [ "$count" -gt 4000 ]; then GUARD_WILD="that command is too long for the guard to follow (over 4000 words); split it." && return 0; fi
     if [ "$kind" = o ]; then
       # a redirection: the next word is a file, and the command goes on
       if [ "$tok" = ">" ]; then redir=1 GUARD_FOLLOWED="$GUARD_FOLLOWED >" && continue; fi

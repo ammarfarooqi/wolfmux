@@ -312,9 +312,9 @@ check "  ... and status no longer compares the prompt with the card" \
 
 echo "== the worktree guard keeps workers out of the folder"
 W1="$(record w1 mem | jq -r .workdir)"
-guard() { # <tool> <tool_input json> [<data dir>]: the decision for worker w1
+guard() { # <tool> <tool_input json> [<data dir>] [<cwd>]: the decision for worker w1
   local answer
-  answer="$(jq -cn --arg tool "$1" --argjson input "$2" --arg cwd "$W1" '{hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $input, cwd: $cwd}' |
+  answer="$(jq -cn --arg tool "$1" --argjson input "$2" --arg cwd "${4:-$W1}" '{hook_event_name: "PreToolUse", tool_name: $tool, tool_input: $input, cwd: $cwd}' |
     WOLFMUX_DATA="${3:-$WOLFMUX_DATA}" TEAM_ROLE=w1 WOLFMUX_TEAM=mem WOLFMUX_ROOT="$PROJECT" WOLFMUX_WORKTREE="$W1" WOLFMUX_BRANCH="$(record w1 mem | jq -r .branch)" "$REPO/bin/teamctl" _guard)"
   if printf '%s' "$answer" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null 2>&1; then echo deny; else echo allow; fi
 }
@@ -339,6 +339,18 @@ check "a command that names .wolfmux/memory is denied, quoted or not; prose that
    [ "$(guard Bash "$(sh "git commit -m \"docs: mention .wolfmux/memory\"")")" = allow ] && [ "$(guard Bash "$(sh "bd comment x-1 \"the folder is .wolfmux/memory\"")")" = allow ] &&
    [ "$(guard Bash "$(printf "cat >notes.md <<EOF\nsee .wolfmux/memory/x\nEOF\n" | jq -Rsc "{command: .}")")" = allow ]'
 pat() { jq -cn --arg p "$1" '{pattern: $p}'; }
+pat_in() { jq -cn --arg p "$1" --arg d "$2" '{pattern: $p, path: $d}'; }
+at() { jq -cn --arg p "$1" '{path: $p}'; }
+# denied_all / allowed_all <command>…: every Bash command gets that decision (the lists are arrays, built below
+# with ordinary quoting: inside a check's eval'd string, nested quotes are hard to read)
+denied_all() {
+  local c
+  for c in "$@"; do [ "$(guard Bash "$(sh "$c")")" = deny ] || { echo "allowed: $c" && return 1; }; done
+}
+allowed_all() {
+  local c
+  for c in "$@"; do [ "$(guard Bash "$(sh "$c")")" = allow ] || { echo "denied: $c" && return 1; }; done
+}
 check "letter case and /./ do not slip past: ~/HDATA/MEMORY, \$HOME/HDATA/Memory and ~/hdata/./memory are the folder" \
   '[ "$(guard Bash "$(sh "cat ~/HDATA/MEMORY/p/t/MEMORY.md")" "$HOME/hdata")" = deny ] && [ "$(guard Read "$(file "$HOME/HDATA/Memory/p/t/MEMORY.md")" "$HOME/hdata")" = deny ] &&
    [ "$(guard Bash "$(sh "cat ~/hdata/./memory/p/t/MEMORY.md")" "$HOME/hdata")" = deny ] && [ "$(guard Read "$(file "$HOME/hdata/./memory/p/t/MEMORY.md")" "$HOME/hdata")" = deny ]'
@@ -360,8 +372,68 @@ check "  ... and a Grep of a folder that holds it (as ~/.claude holds projects/)
    [ "$(guard Bash "$(sh "cat $TDIR/x.jsonl")")" = deny ] && [ "$(guard Bash "$(sh "tail -5 \"$TRANSCRIPT\"")")" = deny ]'
 check "  ... its memory/ (Claude Code's shared project memory) stays open to them" \
   '[ "$(guard Read "$(file "$TDIR/memory/MEMORY.md")")" = allow ] && [ "$(guard Bash "$(sh "cat $TDIR/memory/MEMORY.md")")" = allow ]'
-check "the honest gap, pinned: a relative path after a cd is not seen (docs/SECURITY.md)" \
-  '[ "$(guard Bash "$(sh "cd \"$WOLFMUX_DATA\" && cat memory/x")")" = allow ]'
+# Review round 3: what sh -c and eval run, paths that climb, a dropped identity, Claude Code's own records,
+# grep's pattern, wildcards and ~user, and the folder a cd moves to (guard_follow)
+MEM="$DIR/MEMORY.md"
+UP="../../../../.." # from W1 (worktrees/<key>/teams/mem/<lane>) up to the data directory
+/bin/mkdir -p "$HOME/.claude/file-history/abc" "$HOME/.claude/todos" "$HOME/.claude/paste-cache" "$HOME/Documents"
+INNER_DENY=("bash -c \"cat $MEM\"" "sh -c 'cat ~/.wolfmux/memory/x'" "zsh -c 'cat $MEM'" "dash -lc 'cat ~/.wolfmux/memory/x'"
+  "bash -ic 'cat $MEM'" "eval \"cat $MEM\"" "eval 'cat' '$MEM'" "bash -c 'bash -c \"cat $MEM\"'" "bash -c 'tmux capture-pane -p'"
+  "$(printf 'bash <<EOF\ncat %s\nEOF' "$MEM")" "bash <<< 'cat $MEM'" "sh -c 'sh -c \"sh -c \\\"sh -c ls\\\"\"'")
+INNER_ALLOW=("bash -c 'npm test'" 'sh -c "git status && ls src"' 'eval "$(ssh-agent -s)"' "bash tests/memory.sh")
+check "R1: the text sh -c, bash -lc, zsh -c, eval, a here-string or a heredoc runs is a command (three levels deep at most)" \
+  'denied_all "${INNER_DENY[@]}" && allowed_all "${INNER_ALLOW[@]}"'
+CLIMB_DENY=("cat $UP/memory/$KEY/mem/MEMORY.md" "grep -r x $UP" "cat ../other-lane/README.md" "cat $W1/$UP/memory/$KEY/mem/MEMORY.md"
+  "cat $TDIR/memory/../x.jsonl" "cat $TDIR/memory/..")
+CLIMB_ALLOW=("cat ./README.md ../$(basename "$W1")/README.md" "git log main..HEAD && git diff HEAD~3..HEAD" "cd src && cat ../README.md")
+check "R2: a word that climbs (..) is the path it climbs to; ./x and main..HEAD are what they look like" \
+  'denied_all "${CLIMB_DENY[@]}" && allowed_all "${CLIMB_ALLOW[@]}"'
+check "  ... a relative Glob pattern that climbs is refused, from the cwd or from its path; one that stays home is not" \
+  '[ "$(guard Glob "$(pat "$UP/memory/**/*.md")")" = deny ] && [ "$(guard Glob "$(pat_in "../../memory/**" "$W1/../../..")")" = deny ] &&
+   [ "$(guard Glob "$(pat "src/**/*.sh")")" = allow ] && [ "$(guard Glob "$(pat "../$(basename "$W1")/src/*.sh")")" = allow ]'
+check "  ... and a shell that runs inside the memory folder is refused whatever it says" \
+  '[ "$(guard Bash "$(sh "cat MEMORY.md")" "" "$DIR")" = deny ] && [ "$(guard Bash "$(sh "ls")" "" "$TDIR")" = deny ]'
+IDENTITY_DENY=("env -u TMUX_PANE -u TEAM_ROLE teamctl capture lead --team mem" "env -i PATH=/usr/bin teamctl memory path"
+  "unset TEAM_ROLE; teamctl memory check" "unset -v FOO TMUX_PANE && teamctl status" "TEAM_ROLE= teamctl memory path"
+  "TMUX_PANE=%9 teamctl capture lead" "export WOLFMUX_TEAM=other; teamctl status" "export -n BEADS_ACTOR; bd list" "env - teamctl status"
+  "/opt/homebrew/bin/tmux capture-pane -p -t %1" "'tmux' capture-pane -p" '"tmux" list-panes' '"/opt/homebrew/bin/tmux" ls' '\tmux ls')
+IDENTITY_ALLOW=("env LC_ALL=C grep -i foo src/x" 'echo "$TEAM_ROLE" && teamctl status' 'git commit -m "unset TEAM_ROLE is refused now"'
+  'git commit -m "fix: the tmux rule"' "cat ~/.config/tmux/tmux.conf")
+check "R3: a command that drops or rewrites TEAM_ROLE, TMUX_PANE, WOLFMUX_TEAM or BEADS_ACTOR is refused; so is tmux by path or in quotes" \
+  'denied_all "${IDENTITY_DENY[@]}" && allowed_all "${IDENTITY_ALLOW[@]}"'
+check "R4: Claude Code's file-history, todos and paste-cache are closed to Read, Grep, LS, Write, Glob, MCP and Bash" \
+  '[ "$(guard Read "$(file "$HOME/.claude/file-history/abc/x@v1")")" = deny ] && [ "$(guard Grep "$(search "$HOME/.claude/todos")")" = deny ] &&
+   [ "$(guard LS "$(at "$HOME/.claude/paste-cache")")" = deny ] && [ "$(guard Write "$(file "$HOME/.claude/file-history/abc/y")")" = deny ] &&
+   [ "$(guard Glob "$(pat "$HOME/.claude/file-history/**")")" = deny ] && [ "$(guard mcp__fs__read "$(at "$HOME/.claude/todos/a.json")")" = deny ] &&
+   denied_all "cat ~/.claude/file-history/abc/x@v1" "ls \$HOME/.claude/paste-cache" "grep -r x ~/.claude" &&
+   [ "$(guard Write "$(file "$HOME/.claude/settings-note.md")")" = allow ]'
+check "  ... under CLAUDE_CONFIG_DIR too" \
+  '/bin/mkdir -p "$WORK/ccfg/file-history" && [ "$(CLAUDE_CONFIG_DIR="$WORK/ccfg" guard Read "$(file "$WORK/ccfg/file-history/abc/x")")" = deny ] &&
+   [ "$(CLAUDE_CONFIG_DIR="$WORK/ccfg" guard Bash "$(sh "cat $WORK/ccfg/todos/a.json")")" = deny ]'
+PATTERN_ALLOW=('grep -rn "/Users/" src/' 'rg "$HOME" .' 'grep -rn "/" .' 'grep -rn -A 3 "/" src')
+PATTERN_DENY=('grep -rn "TODO" ~' "grep -r -e x ~" "rg -e x ~/.claude" "rg --files ~")
+check "R8: grep's and rg's pattern is not a folder, unless -e, -f or --files says the pattern is elsewhere" \
+  'allowed_all "${PATTERN_ALLOW[@]}" && denied_all "${PATTERN_DENY[@]}"'
+WILD_DENY=("cat ~/.claude/file-hist*/abc/x" "cat $WOLFMUX_DATA/mem*/$KEY/mem/MEMORY.md" "cat $WOLFMUX_DATA/*/$KEY/mem/MEMORY.md" "grep -r x ~/.*" "ls ~/*"
+  "cat ~${USER:-me}/.claude/file-history/abc/x" "grep -r x ~/. | head" "$(printf 'grep -r x \\\n  ~ | head')")
+WILD_ALLOW=("ls src/*.sh" "ls /tmp/*.log" "ls $HOME/Documents/*.md" 'find . -name "*.sh"' "ls -la ~")
+check "R9: a wildcard that could become a private folder, ~<your name>, a mid-line ~/. and a continued line are seen" \
+  'denied_all "${WILD_DENY[@]}" && allowed_all "${WILD_ALLOW[@]}"'
+CD_DENY=("cd \"$WOLFMUX_DATA\" && cat memory/x" "cd $WOLFMUX_DATA; cat \"memory/$KEY/mem/MEMORY.md\"" "cd $WOLFMUX_DATA && ls mem*"
+  "cd ~ && grep -r x ." "cd ~ && ls *" "cd ~/.claude && cat file-history/abc/x" "cd; cat .claude/todos/a.json"
+  "cd $WOLFMUX_DATA >/dev/null 2>&1 && cat memory/x" "cd $WOLFMUX_DATA; cd /tmp; cd -; cat memory/x" "cd $WOLFMUX_DATA && bash -c 'cat memory/x'"
+  "pushd $WOLFMUX_DATA && pushd /tmp && popd && cat memory/x" "cd $WOLFMUX_DATA && (cd /tmp) && cat memory/x"
+  "cd /tmp | true; cat $UP/memory/$KEY/mem/MEMORY.md" "cd /tmp & cat $UP/memory/$KEY/mem/MEMORY.md" "cd $WOLFMUX_DATA && tar czf /tmp/m.tgz memory"
+  "$(printf 'cd %s\ncat memory/x' "$WOLFMUX_DATA")")
+CD_ALLOW=("cd src && cat ../README.md" "(cd $WOLFMUX_DATA); cat memory.txt" "cd $WOLFMUX_DATA | true; cat memory.txt" "cd /tmp && ls -la && git status"
+  "cd src && make 2>&1 | tail -5" "cd src; cd ..; cat README.md" "cd ~/Documents && grep -rn x ." 'cd /tmp && git commit -m "the memory folder"')
+check "a relative path counts in the folder a cd, pushd, popd or cd - moved to; a cd in ( ), a pipe or & stays there" \
+  'denied_all "${CD_DENY[@]}" && allowed_all "${CD_ALLOW[@]}"'
+LONG="echo"
+for i in $(seq 4001); do LONG="$LONG w$i"; done
+check "  ... a command too long to follow (over 4000 words) is refused" '[ "$(guard Bash "$(sh "$LONG")")" = deny ]'
+check "the honest gap, pinned: a cd to a folder built at run time is not followed (docs/SECURITY.md)" \
+  'allowed_all "d=$WOLFMUX_DATA; cd \$d && cat memory/x"'
 check "the worker's own work is untouched by the rule" \
   '[ "$(guard Bash "$(sh "cat README.md && git status")")" = allow ] && [ "$(guard Read "$(file "$W1/README.md")")" = allow ]'
 
