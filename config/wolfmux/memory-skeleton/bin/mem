@@ -2267,6 +2267,16 @@ def index_lines(tree):
     return data, data.decode("utf-8", "replace").split("\n")
 
 
+def archived_at(tree, rel):
+    """Where archive/index.md says rel went (its last line for rel whose file is still there), or None."""
+    found = None
+    for line in index_lines(tree)[1]:
+        match = INDEX_LINE.match(line)
+        if match and match.group(3) == rel and tree.has(match.group(2)):
+            found = match.group(2)
+    return found
+
+
 def cmd_unarchive(tree, args):
     name = args.name
     if not SLUG.match(name) or ".." in name:
@@ -2841,10 +2851,13 @@ def plan_row(tree, row, line, ctx):
             path = item["source_path"]
             item.update(kind="region", status="pointer", bytes_in=0, dest=dest_file)
             item["content"] = region_content(tree, row, dest_file, ctx, pointer=path)
-            if tree.has(dest_file):
-                if Entry(tree, dest_file).get("pointer") != path:
-                    raise Refused("dest %s exists and points elsewhere" % dest_file)
-                item.update(status="exists", reason="already migrated")
+            # A dest that drain archived since an earlier run is placed: never placed again.
+            placed = dest_file if tree.has(dest_file) else archived_at(tree, dest_file)
+            if placed:
+                if Entry(tree, placed).get("pointer") != path:
+                    raise Refused("dest %s exists%s and points elsewhere" % (dest_file, "" if placed == dest_file else " (archived as %s)" % placed))
+                item.update(status="exists", reason="already migrated" if placed == dest_file else "placed earlier, archived (now %s)" % placed)
+                item["placed_at"] = placed
             return item
         if top in REGIONS:
             item.update(kind="region", status="copy")
@@ -2879,12 +2892,17 @@ def plan_row(tree, row, line, ctx):
             ledger_held(tree, item, ctx, dest_file)
         else:
             raise Refused("dest %s is not in a region, archive/, ledger/ or state/" % dest_file)
-        if item["kind"] in ("region", "archive") and tree.has(dest_file):
-            current = tree.read(dest_file)
+        placed = None
+        if item["kind"] in ("region", "archive"):
+            placed = dest_file if tree.has(dest_file) else (archived_at(tree, dest_file) if item["kind"] == "region" else None)
+        if placed:
+            current = tree.read(placed)
+            where = "" if placed == dest_file else " (archived as %s)" % placed
             if current == item["content"] or (item["kind"] == "region" and split_header(current)[1] == payload):
-                item.update(status="exists", reason="already migrated")
+                item.update(status="exists", reason="already migrated" if not where else "placed earlier, archived (now %s)" % placed)
+                item["placed_at"] = placed
             else:
-                raise Refused("dest %s exists with other content" % dest_file)
+                raise Refused("dest %s exists%s with other content" % (dest_file, where))
         item["dest"] = dest_file
     except (Refused, ValueError, IOError, OSError) as error:
         item.update(status="refused", reason=str(error))
@@ -2908,12 +2926,21 @@ def line_count(text, payload):
 def ledger_held(tree, item, ctx, dest_file, pattern=None):
     """A ledger row whose payload the ledger already holds as whole lines (from an earlier run,
     or an earlier row of this one) is 'exists': a re-run appends nothing and the payload stays
-    once. A payload that is only part of a longer line is not held."""
+    once. A payload that is only part of a longer line is not held. The month's archived copy
+    counts too (drain rule 2 moves an old month to archive/<m>/ledger/ and appends any later
+    copy there): a re-run after a drain appends nothing."""
     current = tree.read_or_none(dest_file) or b""
     for chunk in ctx["appends"].get(dest_file, []):  # as append_file will write them
         current += (b"\n" if current and not current.endswith(b"\n") else b"") + chunk
-    if (pattern.search(current) if pattern is not None else line_count(current, item["append"])):
+    archived_rel = "archive/%s/ledger/%s" % (LEDGER_FILE.match(os.path.basename(dest_file)).group(2), os.path.basename(dest_file))
+    archived = tree.read_or_none(archived_rel) or b""
+
+    def held(text):
+        return pattern.search(text) if pattern is not None else line_count(text, item["append"])
+    if held(current):
         item.update(status="exists", reason="already in the ledger")
+    elif archived and held(archived):
+        item.update(status="exists", reason="placed earlier, archived (in %s)" % archived_rel)
     elif item["status"] == "copy":
         ctx["appends"].setdefault(dest_file, []).append(item["append"])
 
@@ -3137,18 +3164,20 @@ def verify(tree, items, dry):
             if item["check"].startswith("MISMATCH"):
                 failures.append(item)
             continue
+        # A dest drain has archived since an earlier run is looked for where it is now.
+        place = item.get("placed_at", item["dest"])
         if problem:
             item["check"] = "MISMATCH: %s" % problem
         elif item["action"].strip() == "pointer":
-            entry = Entry(tree, item["dest"])
+            entry = Entry(tree, place)
             item["check"] = "pointer ok" if entry.get("pointer") == item["source_path"] else "MISSING"
         elif item["kind"] == "region" and item["payload"] == b"":
             # An empty body (a source that was all frontmatter) is not unique to anything: look at the dest.
-            placed = tree.read_or_none(item["dest"])
+            placed = tree.read_or_none(place)
             item["check"] = "found at the dest (an empty body)" if placed is not None and split_header(placed)[1] == b"" else "MISSING"
         elif item["kind"] in ("region", "archive"):
             found = shas.get(item["sha"], [])
-            if item["dest"] in found and len(found) == sharing[item["sha"]]:
+            if place in found and len(found) == sharing[item["sha"]]:
                 item["check"] = "found once" if len(found) == 1 else "found once at its dest (%d rows place this body)" % len(found)
             else:
                 item["check"] = "found %d times: %s" % (len(found), ", ".join(found) or "-")

@@ -1253,6 +1253,23 @@ fresh "$T2"
 BIG_OUT="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-big.csv" 2>&1)"; RC=$?
 check "a migrated decisions payload whose bytes: (4000) is larger than its quote is refused with the reason; nothing is appended" \
   '[ "$RC" -eq 1 ] && printf "%s" "$BIG_OUT" | grep -q "^- line 2 refused decisions_big.md: the payload.s decision at 2026-10-01T10:00Z does not match its bytes: count" && ! grep -qs "old words" "$T2/ledger/decisions-2026-10.md"'
+# A re-run after a drain: rule 2 has moved the July ledger month to archive/2026-07/ledger/, and
+# a migrated topic was archived (rule 4 or 5, done by hand here). Neither is placed again.
+SRC3="$WORK/redrain-src"
+/bin/mkdir -p "$SRC3"
+printf -- '- 2026-07-05T09:00Z | to: sam | channel: c | ref: r | a july send\n' >"$SRC3/sends-july.md"
+printf 'A topic that drain archives.\n' >"$SRC3/old-topic.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nsends-july.md,file,ledger/sends-2026-07.md,,copy,no,,,,,,,,\nold-topic.md,file,topics/old-topic.md,topics,copy,no,old-topic,"old, topic",an old topic,3,,,,\n' >"$WORK/map-redrain.csv"
+T2="$WORK/migrate-redrain"
+fresh "$T2"
+"$T2/bin/mem" migrate --from "$SRC3" --map "$WORK/map-redrain.csv" >/dev/null 2>&1
+"$T2/bin/mem" drain --no-jev >/dev/null 2>&1
+/bin/mkdir -p "$T2/archive/2026-10/topics"
+/bin/mv "$T2/topics/old-topic.md" "$T2/archive/2026-10/topics/old-topic.md"
+printf -- '- 2026-10-23 archive/2026-10/topics/old-topic.md from topics/old-topic.md: rule 4: a move by hand\n' >>"$T2/archive/index.md"
+AGAIN="$("$T2/bin/mem" migrate --from "$SRC3" --map "$WORK/map-redrain.csv" 2>&1)"; RC=$?
+check "a migrate re-run after a drain appends nothing: the archived ledger month and the archived topic count as placed, each found once" \
+  '[ -f "$T2/archive/2026-07/ledger/sends-2026-07.md" ] && [ "$RC" -eq 0 ] && printf "%s" "$AGAIN" | grep -q "^line 2 exists  sends-july.md -> ledger/sends-2026-07.md.*: found once: placed earlier, archived (in archive/2026-07/ledger/sends-2026-07.md)$" && printf "%s" "$AGAIN" | grep -q "^line 3 exists  old-topic.md -> topics/old-topic.md.*: found once: placed earlier, archived (now archive/2026-10/topics/old-topic.md)$" && [ ! -e "$T2/ledger/sends-2026-07.md" ] && [ ! -e "$T2/topics/old-topic.md" ] && [ "$(grep -c "a july send" "$T2/archive/2026-07/ledger/sends-2026-07.md")" -eq 1 ] && printf "%s" "$AGAIN" | grep -q "^verification: every source body"'
 check "a frontmatter whose first line is key: value may hold a blank line: it is stripped, its description kept" \
   'python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(not d.endswith(b\"\n---\nBody after a blank-line header.\n\") or b\"\nsource_description: with a blank line\n\" not in d)" "$T/topics/blank-front.md" && printf "%s" "$OUT" | grep -q "^line 3 copy .*(source frontmatter of [0-9]* bytes replaced by the header; its description kept as source_description): found once$"'
 /bin/rm -rf "$HOME/.wolfmux"

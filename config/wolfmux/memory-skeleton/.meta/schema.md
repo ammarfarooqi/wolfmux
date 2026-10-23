@@ -261,6 +261,9 @@ Several rows may append to one ledger month; any other dest takes one row. A led
 payload the ledger already holds as whole lines (from a line start to a line end, never part
 of a longer line) is `exists`, so a re-run appends nothing; verification counts it the same
 way, and a state key in the ledger by its whole `## migrated` block, so a short value (`[]`,
-`true`) is never counted where it merely appears. A
+`true`) is never counted where it merely appears. The month's archived copy
+(`archive/<m>/ledger/<file>`, where drain rule 2 moves it) counts as the ledger too, and a
+region or pointer dest that is missing but listed in `archive/index.md` (drain moved it) is
+`exists`, "placed earlier, archived": a re-run after a drain places nothing twice. A
 real run that refused any row writes its report, then exits 1 unless `--allow-refused` is
 given; a dry run exits 0. A re-run in the same second writes `migrate-<UTC>-2.md`.
