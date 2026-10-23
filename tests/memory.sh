@@ -476,6 +476,14 @@ check "H1: a 60 KB heredoc and one 60 KB word pass in under 0.5 s; 65 KB and a 4
   'timed 500 allow "$HD60" && timed 500 allow "$W60" && timed 300 deny "$W65" && timed 300 deny "$HD400"'
 check "H2: a worker runs its Bash tool in bash (SHELL and CLAUDE_CODE_SHELL are /bin/bash at its launch); a lead keeps its own shell" \
   '[ "$(cat "$FAKE/shell-mem-w1")" = "/bin/bash|/bin/bash" ] && case "$(cat "$FAKE/shell-mem-lead")" in *"|") true ;; *) false ;; esac'
+R5_ZSH=("cat ~/.wolfmux/(memory|x)/x" "cat ~/.wolfmux/mem(|)ory/x" "cat ~/.claude/(sessions)/1.json" "cat $WOLFMUX_DATA/(state)/x.json"
+  "cp -R ~/.wolfmux/(memory|x) /tmp/m" "cat ~/.wolfmux/@(memory|x)/x" "cat ~/.wolfmux/(\")\"|memory)/x" "cd ~/(.wolfmux|zz) && cat memory/x"
+  "bash =(echo 'cat ~/.wolfmux/memory/x')" "source =(echo 'cat ~/.wolfmux/memory/x')" "=tmux -V" "=claude -r abc" "/opt/homebrew/bin/tmu? -V"
+  "/bin/ba(s)h -c 'cat ~/.wolfmux/mem\"\"ory/x'")
+R5_ZSH_ALLOW=("f() { echo hi; }; f" "x=(a b c); echo \${x[1]}" "( cd src && ls )" "if (true); then echo y; fi" "ls src/(lib|x)"
+  'git commit -m "fix (a|b) in src"' 'case "$x" in (a|b) echo y;; esac' "echo \$((1+2))")
+check "H2: zsh glob groups ((a|b), mem(|)ory, @( ), a quoted ) inside), =( ), =cmd and a wildcard program word are read as zsh reads them; f() { }, x=( ), ( ) and case ( ) pass" \
+  'denied_all "${R5_ZSH[@]}" && allowed_all "${R5_ZSH_ALLOW[@]}"'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \

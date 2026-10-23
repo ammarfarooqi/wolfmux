@@ -221,6 +221,9 @@ function init(   n, t, k, at) {
   for (k = 1; k <= n; k++) if ((at = index(t[k], "\t")) > 1) { LINK[tolower(substr(t[k], 1, at - 1))] = substr(t[k], at + 1); NLINK++; if (at - 1 > MAXLINK) MAXLINK = at - 1 }
   IDS = "(TEAM_ROLE|TMUX_PANE|WOLFMUX_TEAM|BEADS_ACTOR)"
   SHELLS = "^(ba|z|da|k|fi|tc|c|mk|yash|posh)?sh$"
+  # the programs the rules name, for a program word with a wildcard or a group (gname)
+  NMIND = split("tmux claude claude-code sh bash zsh dash ksh fish tcsh csh mksh yash posh eval source . env sudo doas exec command xargs gxargs nice timeout gtimeout git ln gln cp gcp node nodejs bun deno npx bunx pnpx ssh watch make gmake cd pushd popd echo printf cat unset export declare typeset local read readarray mapfile find fd fdfind grep rg", MINDL, " ")
+  for (k = 1; k <= NMIND; k++) MIND[MINDL[k]] = 1
   PATS = "^(regexp|glob|iglob|include|exclude|exclude-dir|match|file-search-regex|grep|author|committer)$"
   R_TREES = "that command names another teammate\047s worktree or teamctl\047s state."
   R_MEM = "that command names a lead\047s private memory folder (~/.wolfmux/memory), which no worker reads."
@@ -292,8 +295,71 @@ function heredoc(s, p, n, delim, strip,   start, at, j, e, line) {
 }
 # glue(arr, a, z): arr[a..z] joined, the halves first (adding one piece at a time copies the whole result each time)
 function glue(arr, a, z,   m) { if (a > z) return ""; if (a == z) return arr[a]; m = int((a + z) / 2); return glue(arr, a, m) glue(arr, m + 1, z) }
-# base(w): the last part of a path (by split: sub(/.*\//) tries every start position, a long word cost its length squared)
-function base(w,   n, parts) { n = split(w, parts, "/"); while (n > 1 && parts[n] == "") n--; return parts[n] }
+# base(w): the last part of a path (by split: sub(/.*\//) tries every start position, a long word cost its length
+# squared), without the leading = of zsh (=tmux runs tmux)
+function base(w,   n, parts) { if (substr(w, 1, 1) == "=") w = substr(w, 2); n = split(w, parts, "/"); while (n > 1 && parts[n] == "") n--; return parts[n] }
+# --- zsh glob groups ((a|b), mem(|)ory) and bash extglob (@(a|b)): the lexer writes their syntax as \006 ( \007 |
+# \010 ), so a quoted ( | ) is never read as one. galts(v, f, out): the words a group word (flag G) stands for,
+# each alternative, at most 64; a nested group, a ! * ? + before the (, or more alternatives stand for "*"
+# (GSTAR, and every word then goes to wild()); a word with over 16 groups is one word, its star form
+function galts(v, f, out,   L, p, at, j, pre, lc, body, na, al, nc, cur, nw, m, i, k) {
+  GSTAR = 0; out[1] = v
+  if (!index(f, "G")) return 1
+  # over 4096 bytes it stays as it is: wild() refuses a wildcard word that long
+  if ((L = length(v)) > 4096) { GSTAR = 1; return 1 }
+  if (gsub(/\006/, "\006", v) > 16) { out[1] = gstar(v); GSTAR = 1; return 1 }
+  nc = 1; cur[1] = ""; p = 1
+  while ((at = idx(v, p, "\006")) > 0) {
+    pre = substr(v, p, at - p); lc = substr(pre, length(pre))
+    j = gclose(v, at + 1)
+    body = substr(v, at + 1, j - at - 1 - GSHUT)
+    if (lc != "" && index("!*?+@", lc)) pre = substr(pre, 1, length(pre) - 1)
+    if (GNEST || (lc != "" && index("!*?+", lc))) { na = 1; al[1] = "*"; GSTAR = 1 } else na = split(body, al, "\007")
+    if (na < 1) { na = 1; al[1] = "" }
+    if (nc * na > 64) { na = 1; al[1] = "*"; GSTAR = 1 }
+    m = 0; for (i = 1; i <= nc; i++) for (k = 1; k <= na; k++) nw[++m] = cur[i] pre al[k]
+    nc = m; for (i = 1; i <= nc; i++) cur[i] = nw[i]
+    p = j
+  }
+  for (i = 1; i <= nc; i++) { out[i] = cur[i] substr(v, p); gsub(/[\006\007\010]/, "", out[i]) }
+  return nc
+}
+# gclose(v, j): where the text goes on after the group whose body starts at j; GNEST when a group is inside it,
+# GSHUT when it is closed (by idx: one character at a time cost a long word its length squared)
+function gclose(v, j,   depth, o, c) {
+  depth = 1; GNEST = 0; GSHUT = 1; o = idx(v, j, "\006")
+  while (depth > 0) {
+    if (!(c = idx(v, j, "\010"))) { GSHUT = 0; return length(v) + 1 }
+    if (o && o < c) { depth++; GNEST = 1; j = o + 1; o = idx(v, j, "\006") } else { depth--; j = c + 1 }
+  }
+  return j
+}
+# gstar(v): v with every group (and the ! * ? + @ before it) read as "*"
+function gstar(v,   p, at, pre, k, pc) {
+  p = 1; k = 0
+  while ((at = idx(v, p, "\006")) > 0) {
+    pre = substr(v, p, at - p); if (pre != "" && index("!*?+@", substr(pre, length(pre)))) pre = substr(pre, 1, length(pre) - 1)
+    pc[++k] = pre "*"
+    p = gclose(v, at + 1)
+  }
+  pc[++k] = substr(v, p)
+  v = glue(pc, 1, k); gsub(/[\007\010]/, "", v)
+  return v
+}
+# gname(w, f): the program a program word names, lower case; for a word with a wildcard or a group
+# (/opt/homebrew/bin/tmu?, (tmux|x)) the first program the guard minds that it can match
+function gname(w, f,   b, n, k, j, re) {
+  b = tolower(base(w))
+  if ((!index(f, "g") && !index(f, "G")) || length(w) > 256) return b
+  n = galts(w, f, GN)
+  for (k = 1; k <= n; k++) {
+    b = tolower(base(GN[k]))
+    if (b !~ /[*?[{]/) { if (b in MIND) return b; continue }
+    re = globre(b)
+    for (j = 1; j <= NMIND; j++) if (MINDL[j] ~ re) return MINDL[j]
+  }
+  return tolower(base(GN[1]))
+}
 function rep(v, a, b,   at, p, n, k, pc) {
   if (!(at = index(v, a))) return v
   p = 1; n = length(a); k = 0
@@ -372,12 +438,14 @@ function endw(d,   w) {
   w = LW LB
   if (LBR && w ~ /\{[^}]*(,|\.\.)[^}]*\}/) flag("g")
   NT[d]++; TT[d, NT[d]] = "w"; TV[d, NT[d]] = w; TF[d, NT[d]] = LF; TR[d, NT[d]] = LRED; LRED = 0
-  LW = ""; LB = ""; LC = ""; LF = ""; LIN = 0; LBR = 0
+  LW = ""; LB = ""; LC = ""; LF = ""; LIN = 0; LBR = 0; GD = 0
   if (++WORDS > 4000 && DENY == "") DENY = R_LONG
   if (WORDS % 50 == 0) clock()
 }
 function op(d, o) { NT[d]++; TT[d, NT[d]] = "o"; TV[d, NT[d]] = o; TF[d, NT[d]] = ""; TR[d, NT[d]] = 0; LRED = 0 }
 function red(d, o) { NT[d]++; TT[d, NT[d]] = "r"; TV[d, NT[d]] = o; TF[d, NT[d]] = ""; TR[d, NT[d]] = 0; LRED = NT[d] }
+# cmdpos(d): a command can start at the next word (a ( there is a subshell, elsewhere a glob group)
+function cmdpos(d) { return !NT[d] || TT[d, NT[d]] == "o" || (TT[d, NT[d]] == "w" && !TR[d, NT[d]] && TV[d, NT[d]] ~ /^(!|\{|if|then|else|elif|do|while|until|time|coproc)$/) }
 function addsub(d, t, at, kind) { NS[d]++; SX[d, NS[d]] = t; SA[d, NS[d]] = at; SK[d, NS[d]] = kind }
 # what $( ) or ` ` gives in a word: which X, command -v X and type -p X give X itself; the rest is run time
 function subword(t,   name) {
@@ -537,7 +605,7 @@ function subs_in(t, d, at,   p, n, c, j) {
   }
 }
 function lex(s, d,   n, p, c, c2, j, t, hn, hi, start, strip, clk) {
-  NT[d] = 0; NS[d] = 0; LW = ""; LB = ""; LC = ""; LF = ""; LIN = 0; LRED = 0; LBR = 0; hn = 0
+  NT[d] = 0; NS[d] = 0; LW = ""; LB = ""; LC = ""; LF = ""; LIN = 0; LRED = 0; LBR = 0; GD = 0; hn = 0
   n = length(s); p = 1; clk = 1000
   if ((STEPS += n) > 262144 && DENY == "") DENY = R_BIG
   while (p <= n) {
@@ -575,6 +643,16 @@ function lex(s, d,   n, p, c, c2, j, t, hn, hi, start, strip, clk) {
       if (c2 == ">") { p += 2; if (substr(s, p, 1) == ">") p++; red(d, ">"); continue }
       op(d, "&"); p++; continue
     }
+    # a glob group: ( inside a word, or where no command starts, up to its ) with | between (zsh reads
+    # cat ~/.wolfmux/(memory|x) as one word); =( ) at the start of a word is a process substitution in zsh
+    if (c == "(" && LIN && LW == "" && LB == "=" && LF == "") {
+      j = closep(s, p + 1, n); t = j ? substr(s, p + 1, j - p - 1) : substr(s, p + 1)
+      addsub(d, t, NT[d] + 1, "p"); LB = ""; LC = ""; app("\003"); flag("$"); flag("P")
+      p = j ? j + 1 : n + 1; continue
+    }
+    if (c == "(" && (GD || (substr(s, p + 1, 1) != ")" && (LIN ? (LW != "" || LB !~ /^[A-Za-z_][A-Za-z0-9_]*\+?=$/) : !cmdpos(d))))) { GD++; app("\006"); flag("G"); LIN = 1; p++; continue }
+    if (GD && c == "|") { app("\007"); p++; continue }
+    if (GD && c == ")") { GD--; app("\010"); p++; continue }
     if (c == "|") {
       endw(d); c2 = substr(s, p + 1, 1)
       if (c2 == "|") { op(d, "||"); p += 2; continue }
@@ -637,7 +715,7 @@ function hasopt(d, p, letter, long,   k, w) {
 function prog(d, i,   m, w, b, j, c, arg) {
   m = CM[d]; PENVI = 0; PEXECC = 0; NPI[d] = 0
   while (i <= m) {
-    w = A[d, i]; b = tolower(base(w))
+    w = A[d, i]; b = gname(w, AF[d, i])
     if (w ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/ || w ~ /^(!|\{|\}|if|then|else|elif|do|while|until|builtin|nohup|setsid|noglob)$/) { i++; continue }
     if (w == "time") { i++; while (i <= m && A[d, i] ~ /^-/) i++; continue }
     if (w == "command") { if (i < m && A[d, i + 1] ~ /^-[A-Za-z]*[vV]/) return i; i++; while (i <= m && A[d, i] ~ /^-/) i++; continue }
@@ -687,7 +765,7 @@ function progrules(d, p,   m, b, k, w, start, neg) {
   m = CM[d]
   if (PENVI || PEXECC) return R_ID
   if (p < 1 || p > m) return ""
-  b = tolower(base(A[d, p]))
+  b = gname(A[d, p], AF[d, p])
   if (b == "tmux") return R_TMUX
   sub(/@.*$/, "", b)
   start = 0
@@ -729,7 +807,7 @@ function slots(d, p,   m, b, k, w, takes, longs, pats, gp, pat, gotpat, j, c, e,
   m = CM[d]; WALKS = 0; TOOL = ""
   for (k = 1; k <= m; k++) { SO[d, k] = 0; SP[d, k] = 0 }
   if (p < 1) return
-  b = tolower(base(A[d, p])); TOOL = b; k0 = p + 1
+  b = gname(A[d, p], AF[d, p]); TOOL = b; k0 = p + 1
   takes = ""; longs = ""; pats = "e"; gp = "ef"; pat = 0; isgrep = 0
   if (b ~ /^(grep|egrep|fgrep|zgrep|ggrep)$/) { takes = "ABCDdefm"; longs = "|regexp|file|include|exclude|exclude-dir|context|after-context|before-context|max-count|directories|devices|label|binary-files|"; pat = 1; isgrep = 1 }
   else if (b == "rg") { WALKS = 1; takes = "ABCEMTdefgjmrt"; pats = "eg"; longs = "|regexp|file|glob|iglob|type|type-not|type-add|type-clear|max-count|context|after-context|before-context|max-depth|maxdepth|threads|replace|sort|sortr|max-filesize|encoding|ignore-file|pre|pre-glob|colors|color|engine|path-separator|context-separator|field-match-separator|field-context-separator|dfa-size-limit|regex-size-limit|max-columns|hostname-bin|hyperlink-format|"; pat = 1 }
@@ -952,6 +1030,8 @@ function cdto(d, p, b, here,   m, k, w) {
   w = A[d, k]
   if (w == "-") return OLD[d]
   if (index(AF[d, k], "$") || index(AF[d, k], "g")) return ""
+  # a group word is followed only when it stands for one word (cd ~/(src)); with more it is a wildcard
+  if (index(AF[d, k], "G")) { if (galts(w, AF[d, k], ALT) > 1 || GSTAR) return ""; w = ALT[1] }
   w = rpath(w, here)
   if (b == "pushd") DS[d, ND[d]++] = here
   return w
@@ -960,7 +1040,7 @@ function cdto(d, p, b, here,   m, k, w) {
 function producer(d, p,   m, b, k, n, pc) {
   m = CM[d]
   if (p < 1) return ""
-  b = tolower(base(A[d, p]))
+  b = gname(A[d, p], AF[d, p])
   if (b == "echo") { k = p + 1; while (k <= m && A[d, k] ~ /^-[neE]+$/) k++; return join(d, k, m) }
   if (b == "printf") { k = p + 1; if (k <= m && A[d, k] == "-v") k += 2; n = 0; for (; k <= m; k++) pc[++n] = A[d, k] "\n"; return glue(pc, 1, n) }
   if (b == "cat" && p == m) return stdintext(d)
@@ -990,7 +1070,7 @@ function inner(d, p, b, here, inp,   m, k, j, w, hasc, stdin, r, t) {
   for (k = 1; k <= NPI[d]; k++) if ((r = run(PI[d, k], d + 1, here)) != "") return r
   for (k = 1; k <= m; k++) {
     w = A[d, k]
-    if (isprose(w, AF[d, k]) || tolower(base(w)) !~ SHELLS) continue
+    if (isprose(w, AF[d, k]) || gname(w, AF[d, k]) !~ SHELLS) continue
     hasc = 0; stdin = 0; j = k + 1
     while (j <= m) {
       w = A[d, j]
@@ -1028,14 +1108,21 @@ function inner(d, p, b, here, inp,   m, k, j, w, hasc, stdin, r, t) {
 }
 
 # --- the two passes
-function checkA(d, here,   m, k, j, v, r, p, q, b) {
+# alit(v, f, here): lit() on the word, and on every word a group word stands for
+function alit(v, f, here,   n, k, r) {
+  if ((r = lit(rep(v, "\002", here))) != "" || !index(f, "G")) return r
+  n = galts(v, f, ALT)
+  for (k = 1; k <= n; k++) if ((r = lit(rep(ALT[k], "\002", here))) != "") return r
+  return ""
+}
+function checkA(d, here,   m, k, j, v, r, p, q, b, n, i) {
   m = CM[d]
-  for (k = 1; k <= m; k++) { v = A[d, k]; if (!isprose(v, AF[d, k]) && (r = lit(rep(v, "\002", here))) != "") return r }
-  for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) { v = TV[d, j]; if (!isprose(v, TF[d, j]) && (r = lit(rep(v, "\002", here))) != "") return r }
+  for (k = 1; k <= m; k++) { v = A[d, k]; if (!isprose(v, AF[d, k]) && (r = alit(v, AF[d, k], here)) != "") return r }
+  for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) { v = TV[d, j]; if (!isprose(v, TF[d, j]) && (r = alit(v, TF[d, j], here)) != "") return r }
   p = prog(d, 1)
   if ((r = progrules(d, p)) != "" || (r = identity(d)) != "") return r
   if (p < 1) return ""
-  b = tolower(base(A[d, p]))
+  b = gname(A[d, p], AF[d, p])
   for (k = p + 1; k <= m; k++) if (A[d, k] ~ /^-(exec|execdir|ok|okdir)$/ || ((b == "fd" || b == "fdfind") && A[d, k] ~ /^(-x|-X|--exec|--exec-batch)$/)) {
     q = prog(d, k + 1)
     if ((r = progrules(d, q)) != "") return r
@@ -1044,8 +1131,8 @@ function checkA(d, here,   m, k, j, v, r, p, q, b) {
   if (WALKS) for (k = p + 1; k <= m; k++) {
     v = A[d, k]
     if (SO[d, k] == 1 || SO[d, k] == 3 || SP[d, k] || isprose(v, AF[d, k]) || index(AF[d, k], "$")) continue
-    v = rep(v, "\002", here)
-    if (substr(v, 1, 1) == "/" && holds(tolower(canon(v)))) return walkmsg(TOOL, A[d, k])
+    n = galts(v, AF[d, k], ALT)
+    for (i = 1; i <= n; i++) { v = rep(ALT[i], "\002", here); if (substr(v, 1, 1) == "/" && holds(tolower(canon(v)))) return walkmsg(TOOL, A[d, k]) }
   }
   return ""
 }
@@ -1059,34 +1146,47 @@ function phaseA(d, here,   i, e, r) {
   }
   return ""
 }
-function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, tgt, any, rp) {
+# globby(v, f, gs): the word goes to wild() (a wildcard written out, or a group read as "*")
+function globby(v, f, gs) { return gs || (index(f, "g") && v ~ /[*?[]|\{[^}]*(,|\.\.)/) }
+function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, tgt, any, rp, n, i, gs) {
   m = CM[d]; NEWHERE = ""
   inp = PROD[d]; PROD[d] = ""
   for (k = 1; k <= NS[d]; k++) if (SA[d, k] >= s && SA[d, k] < e && (r = run(SX[d, k], d + 1, here)) != "") return r
   collect(d, s)
-  p = prog(d, 1); b = (p ? tolower(base(A[d, p])) : "")
+  p = prog(d, 1); b = (p ? gname(A[d, p], AF[d, p]) : "")
   slots(d, p); walks = WALKS; tool = TOOL; any = 0
+  # every word a group word stands for is checked; with more than one, the group is also a wildcard
   for (k = 1; k <= m; k++) {
     RP[d, k] = ""; v = A[d, k]
     if (isprose(v, AF[d, k]) || SP[d, k] || SO[d, k] == 3 || (SO[d, k] == 1 && !index(v, "=")) || index(AF[d, k], "$")) continue
-    if (index(AF[d, k], "g")) { if ((r = wild(v, here)) != "") return r; continue }
-    rp = wpath(v, here)
-    if (rp == "") continue
-    RP[d, k] = rp
-    if ((r = lit(rp)) != "") return r
-    cand(rp)
-    if (walks && k > p && SO[d, k] != 1) { if (SO[d, k] == 0) any = 1; if (holds(tolower(rp))) return walkmsg(tool, v) }
+    n = galts(v, AF[d, k], ALT); gs = GSTAR
+    if (n > 1 && (r = wild(gstar(v), here)) != "") return r
+    for (i = 1; i <= n; i++) {
+      v = ALT[i]
+      if (globby(v, AF[d, k], gs)) { if ((r = wild(v, here)) != "") return r; continue }
+      rp = wpath(v, here)
+      if (rp == "") continue
+      if (RP[d, k] == "" || inroot(rp)) RP[d, k] = rp
+      if ((r = lit(rp)) != "") return r
+      cand(rp)
+      if (walks && k > p && SO[d, k] != 1) { if (SO[d, k] == 0) any = 1; if (holds(tolower(rp))) return walkmsg(tool, v) }
+    }
   }
   if (DENY != "") return DENY
   if (walks && !any && p > 0 && tool !~ /tar$/ && holds(tolower(here))) return walkmsg(tool, here)
   for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) {
     v = TV[d, j]
     if (isprose(v, TF[d, j]) || index(TF[d, j], "$")) continue
-    if (index(TF[d, j], "g")) { if ((r = wild(v, here)) != "") return r; continue }
-    rp = rpath(v, here)
-    if ((r = lit(rp)) != "") return r
-    if (TV[d, CRD[d, k]] ~ />/ && inroot(rp)) return R_ROOT
-    cand(rp)
+    n = galts(v, TF[d, j], ALT); gs = GSTAR
+    if (n > 1 && (r = wild(gstar(v), here)) != "") return r
+    for (i = 1; i <= n; i++) {
+      v = ALT[i]
+      if (globby(v, TF[d, j], gs)) { if ((r = wild(v, here)) != "") return r; continue }
+      rp = rpath(v, here)
+      if ((r = lit(rp)) != "") return r
+      if (TV[d, CRD[d, k]] ~ />/ && inroot(rp)) return R_ROOT
+      cand(rp)
+    }
   }
   if (b == "git" && (r = gitrules(d, p)) != "") return r
   if ((r = rootrules(d, p, b, here)) != "") return r
