@@ -54,6 +54,9 @@ repo_ref: fe:src/features/x/agent-log/0007.md AFD-2129     (optional, topics onl
 ```
 
 - The body is every byte after the closing `---` line, untouched. mem adds no blank line.
+- A hand-written header may hold blank lines, `# comments`, `- items`, indented continuations
+  and `key:value` without the space. A rewrite changes only the lines whose value changed and
+  keeps the file's line ends (CRLF stays CRLF).
 - `name` is a slug (`a-z 0-9 _ . -`, at most 80 characters) and matches the file name.
 - `authority` is `decisions-YYYY-MM#<anchor>` (a block in the decisions ledger, live or
   archived) or `shared:<path>` (a rule that lives in the shared folder). Malformed is a
@@ -202,8 +205,9 @@ keywords,summary,importance,authority,links,repo_ref,notes`. What a row carries:
   --from, `claude-mem:<path>` under --claude-mem-from, default
   `~/claude-mem-export-2026-10-22`): its bytes; going to a region, only what follows its own
   frontmatter. source_type is `file`, `rules-file`, `archive-file` or `claude-mem`. A leading
-  `---` block is frontmatter only when every line in it is `key: value`, an indented
-  continuation, a `- item` or a `# comment`; otherwise the whole source is the body. A
+  `---` block is frontmatter only when its FIRST line is `key: value` and every line in it is
+  `key: value`, an indented continuation, a `- item`, a `# comment` or blank; otherwise (a
+  block of only headings and lists, or one with prose) the whole source is the body. A
   stripped frontmatter's `description` is kept as the `source_description:` header field.
   `hub:<file>#<n>`: line n of that file.
 - `state:<key>` (a key of --state): to `state/<file>.json#<key>` or a ledger file, the JSON

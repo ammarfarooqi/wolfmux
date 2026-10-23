@@ -424,6 +424,20 @@ echo "Kept, but newer." | MEM_NOW=2026-10-07T09:00Z "$H/bin/mem" add --region to
 kept_header 2026-10-06 'status: superseded:kept-two\nsuperseded_on: 2026-10-07\n' 'New body.\n' >"$WORK/kept-superseded.md"
 check "a supersede edits status in place and puts superseded_on after it; the comment and the block stay" \
   'cmp -s "$WORK/kept-superseded.md" "$H/topics/kept.md"'
+# crlf_file <summary> <last_confirmed>: a header and a body with CRLF line ends throughout.
+crlf_file() {
+  printf -- '---\r\nname: crlf\r\nregion: topics\r\nkeywords: crlf, ends\r\nsummary: %s\r\nlinks:\r\nimportance: 3\r\nlast_confirmed: %s\r\nstatus: live\r\n---\r\nBody line.\r\n' "$1" "$2"
+}
+crlf_file "windows line ends" 2026-10-01 >"$H/topics/crlf.md"
+MEM_NOW=2026-10-06T10:00Z "$H/bin/mem" add --region topics --name crlf --keywords "crlf, ends" --summary "windows line ends, kept" </dev/null >/dev/null
+crlf_file "windows line ends, kept" 2026-10-06 >"$WORK/crlf-update.md"
+check "a CRLF header stays CRLF through a rewrite: the rewritten lines end in CRLF too, the rest is byte for byte" \
+  'cmp -s "$WORK/crlf-update.md" "$H/topics/crlf.md"'
+printf -- '---\nname: spaced\nregion:topics\n\nkeywords: spaced, blank\nsummary:a hand-typed header\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nBody.\n' >"$H/topics/spaced.md"
+chmod 600 "$H/topics/spaced.md"
+OUT="$("$H/bin/mem" check)"
+check "a live header may hold a blank line and key:value without a space: check reads every field" \
+  '! printf "%s" "$OUT" | grep -q "topics/spaced.md" && grep -q "^- \[spaced\](topics/spaced.md) a hand-typed header$" "$H/MEMORY.md"'
 OUT="$(echo "Never send at night." | "$T/bin/mem" add --region rules --name quiet-hours --keywords "night, send" --summary "no sends at night" 2>&1)"; RC=$?
 check "add --region rules without --authority is refused and writes nothing" \
   '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "rules need --authority" && [ ! -e "$T/rules/quiet-hours.md" ]'
@@ -1062,6 +1076,17 @@ check "a state key with action pointer, into state/ or the ledger, is refused by
   '[ "$RC1" -eq 0 ] && [ "$RC2" -eq 1 ] && for out in "$DRY" "$OUT"; do for n in 2 3; do printf "%s" "$out" | grep -q "^- line $n refused state:.*: a state key is never a pointer: set action copy$" || exit 1; done; ! printf "%s" "$out" | grep -q -e Traceback -e "would place it" || exit 1; done'
 check "that real run still writes its report and changes no state file and no ledger" \
   'ls "$T"/.meta/migrate-*.md >/dev/null 2>&1 && grep -qx "copy 0, pointer 0, hold 0, skip 0, refused 2 (2 rows)" "$T"/.meta/migrate-*.md && [ "$STATE_BEFORE" = "$(tree_sum "$T/state")" ] && [ ! -e "$T/ledger/decisions-2026-10.md" ]'
+# A source's frontmatter starts with a key: value line: a --- block of only # and - lines is body.
+printf -- '---\n# Heading\n- one\n- two\n---\nAfter.\n' >"$SRC/hash_list.md"
+printf -- '---\nname: Blank\n\ndescription: with a blank line\n---\nBody after a blank-line header.\n' >"$SRC/blank_front.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nhash_list.md,file,topics/hash-list.md,topics,copy,no,hash-list,hash list,a heading and a list,3,,,,\nblank_front.md,file,topics/blank-front.md,topics,copy,no,blank-front,blank front,a blank line in the frontmatter,3,,,,\n' >"$WORK/map-front.csv"
+T="$WORK/migrate-front"
+fresh "$T"
+OUT="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map-front.csv" 2>&1)"; RC=$?
+check "a --- block of only # and - lines is no frontmatter: the whole source is the body, nothing is stripped" \
+  '[ "$RC" -eq 0 ] && python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(d.split(b\"\n---\n\",1)[1] != open(sys.argv[2],\"rb\").read())" "$T/topics/hash-list.md" "$SRC/hash_list.md" && ! printf "%s" "$OUT" | grep -q "^line 2 .*source frontmatter" && printf "%s" "$OUT" | grep -q "^line 2 copy .*: found once$"'
+check "a frontmatter whose first line is key: value may hold a blank line: it is stripped, its description kept" \
+  'python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(not d.endswith(b\"\n---\nBody after a blank-line header.\n\") or b\"\nsource_description: with a blank line\n\" not in d)" "$T/topics/blank-front.md" && printf "%s" "$OUT" | grep -q "^line 3 copy .*(source frontmatter of [0-9]* bytes replaced by the header; its description kept as source_description): found once$"'
 /bin/rm -rf "$HOME/.wolfmux"
 unset MEM_NOW
 

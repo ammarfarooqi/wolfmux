@@ -384,14 +384,18 @@ def log(tree, message):
 
 # --- headers -------------------------------------------------------------------------------
 
-HEADER_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t](.*))?$")
+# A live header line: `key: value`, and the hand-typed `key:value` too.
+HEADER_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(.*)$")
+# The first line of a migration source's frontmatter: `key: value` (or `key:` for a block), as YAML wants.
+SOURCE_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t](.*))?$")
 
 
 def split_header(data):
     """(fields, body, raw header text). fields is None when the file has no --- header. The body
     is every byte after the closing --- line, untouched. A block counts as a header only when
-    every line in it is `key: value`, an indented continuation, a `- item` or a `# comment`;
-    anything else (a rule line, then prose, then a rule) is all body."""
+    every line in it is `key: value` (or `key:value`), an indented continuation, a `- item`, a
+    `# comment` or blank; anything else (a rule line, then prose, then a rule) is all body.
+    A migration source must pass a stricter test as well: see read_source."""
     if not (data.startswith(b"---\n") or data.startswith(b"---\r\n")):
         return None, data, ""
     pos = data.index(b"\n") + 1
@@ -408,7 +412,7 @@ def split_header(data):
         match = HEADER_KEY.match(line)
         if match:
             fields[match.group(1)] = (match.group(2) or "").strip()
-        elif not re.match(r"^([ \t]+\S|- |-$|#)", line):
+        elif line.strip() and not re.match(r"^([ \t]+\S|- |-$|#)", line):
             return None, data, ""
         pos = end + 1
 
@@ -2661,6 +2665,10 @@ def read_source(item, ctx, source, kind, top):
         item["bytes_in"] = len(payload)
     else:
         fields, body, header = split_header(raw)
+        # Stricter than a live header: a source's frontmatter starts with a `key: value` line. A
+        # --- block of only headings, list items or blank lines is the start of the body.
+        if fields is not None and not SOURCE_KEY.match(header.split("\n", 1)[0]):
+            fields = None
         payload = body if fields is not None and top in REGIONS else raw
         if fields is not None and top in REGIONS:
             item["frontmatter"] = len(raw) - len(body)
