@@ -264,9 +264,13 @@ check "a correction replaces the old sentence in place; nothing is appended" \
   'python3 -I -c "import sys; d=open(sys.argv[1]).read(); b=d.split(\"---\n\",2)[2]; sys.exit(b != \"Line one.\nThe deploy goes at 14:00 UTC.\nLine three.\n\")" "$T/topics/deploys.md"'
 OUT="$(MEM_NOW=2026-10-05T10:00Z "$T/bin/mem" add --region topics --name deploys --keywords "deploy, fly, noon" --summary "when deploys go out" </dev/null)"
 check "add with nothing new on the same day says NOOP and changes nothing" '[ "$OUT" = "NOOP topics/deploys.md (nothing new; confirmed today already)" ]'
-OUT="$(MEM_NOW=2026-10-06T10:00Z "$T/bin/mem" add --region topics --name deploy-times --keywords "deploy, fly, noon, times" --summary "deploy times" </dev/null)"
-check "add of a new name with >= 70% keyword overlap updates the existing file instead" \
-  'printf "%s" "$OUT" | grep -q "^UPDATE topics/deploys.md (keywords overlap 75% with --name deploy-times" && [ ! -e "$T/topics/deploy-times.md" ]'
+SUM_BEFORE="$(tree_sum "$T")"
+OUT="$(printf 'A whole new body.\n' | MEM_NOW=2026-10-06T10:00Z "$T/bin/mem" add --region topics --name deploy-times --keywords "deploy, fly, noon, times" --summary "deploy times" 2>&1)"; RC=$?
+check "add of a new name with >= 70% keyword overlap names the candidate, writes nothing, and exits 1" \
+  '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "^CANDIDATE topics/deploys.md (keywords overlap 75% with --name deploy-times)" && printf "%s" "$OUT" | grep -q "use --name deploys to update it, or --supersedes deploys" && [ ! -e "$T/topics/deploy-times.md" ] && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+OUT="$(printf 'Line one.\nDeploys go at 14:00 UTC, on weekdays.\n' | MEM_NOW=2026-10-06T10:00Z "$T/bin/mem" add --region topics --name deploys --keywords "deploy, fly, noon, times" --summary "deploy times")"
+check "the same add under the matched name is an UPDATE that carries its body" \
+  '[ "$OUT" = "UPDATE topics/deploys.md (same name)" ] && python3 -I -c "import sys; d=open(sys.argv[1]).read(); sys.exit(d.split(\"---\n\",2)[2] != \"Line one.\nDeploys go at 14:00 UTC, on weekdays.\n\" or \"\nsummary: deploy times\n\" not in d)" "$T/topics/deploys.md"'
 SUM_BEFORE="$(tree_sum "$T")"
 OUT="$(echo body | "$T/bin/mem" add --region topics --name brand-new --keywords "zinc, copper" --summary "metals" --dry-run)"
 check "add --dry-run shows the decision and writes nothing" '[ "$OUT" = "would ADD topics/brand-new.md" ] && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'

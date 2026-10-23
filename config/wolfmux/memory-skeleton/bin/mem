@@ -1351,7 +1351,9 @@ def cmd_add(tree, args):
                 if share >= OVERLAP and share > best:
                     target, best = entry, share
         if target is not None:
-            why = "keywords overlap %d%% with --name %s" % (round(best * 100), name)
+            # Another file covers this already: never write over it under a name it does not have.
+            print("CANDIDATE %s (keywords overlap %d%% with --name %s)" % (target.rel, round(best * 100), name))
+            raise Refused("nothing written: use --name %s to update it, or --supersedes %s" % (target.name, target.name))
     if target is None:
         rel = "%s/%s.md" % (region, name)
         tree.abs(rel)
