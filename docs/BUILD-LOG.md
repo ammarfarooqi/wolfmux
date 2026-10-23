@@ -2024,11 +2024,11 @@ never runs `mem boot` itself), and reads only the size of `core/card.md` (since 
 | Piece | Where |
 |-------|-------|
 | policy `team-memory <team>\|off`, project-level, owner-only on, lead-allowed off, logged to `team-memory.jsonl` and `events.jsonl` | `lib/policy.sh`, `lib/memory.sh` |
-| `teamctl memory status\|enable\|disable\|path\|check` | `lib/memory.sh` |
+| `teamctl memory status\|enable\|disable\|adopt\|path\|check` (`adopt` since review round 3) | `lib/memory.sh` |
 | the "Team memory" prompt block: the folder, the rules, the boot line; never the card (review round 2) | `build_role_prompt` |
 | `autoMemoryDirectory` for that lead only | `write_agent_settings` |
 | the boot prompt at every launch | `cmd_run_agent` |
-| `--continue` refused with no stored id; `destroy --purge --memory` | `cmd_start`, `cmd_restart`, `cmd_destroy` |
+| `--continue` refused with no stored id (for every lead while the policy is on, since review round 3); `destroy --purge --memory` | `cmd_start`, `cmd_restart`, `cmd_run_agent`, `cmd_destroy` |
 | guard: the folder for every file tool, searches of a folder that holds it, `.wolfmux/memory` in a command, `~` / `$HOME` / `${HOME}` expanded (also for `~/.wolfmux/state`) | `lib/guard.sh` |
 | the skeleton installed to `~/.config/wolfmux/memory-skeleton/`; `uninstall.sh --purge` refused while memory exists, `--purge-memory` | `install.sh`, `uninstall.sh` |
 
@@ -2056,6 +2056,32 @@ gone (a commit message passes, a quoted path does not); `uninstall.sh --purge-me
 `memory status` warns about a Codex lead. The suite unsets `BEADS_DIR` and gives the test project a
 `.beads` of its own: the caller's `BEADS_DIR` had decided whether `teamctl finish` could take the team.
 `tests/memory.sh` has 75 checks.
+
+**Review round 3.** A read-only re-review of round 2 confirmed its eleven fixes and found eleven more.
+R1, a regression: `bash -c "…"`, `sh -c`, `zsh -c` and `eval "…"` passed the guard again, because the
+prose stripper ran before the memory rules and dropped the quoted command. R2: from a lane under
+`~/.wolfmux/worktrees/`, a `..` climb (`cat ../../../../../memory/…`, a Glob with `..`) reached the
+folder with no `cd` at all. R3: an agent that unset `TEAM_ROLE` and `TMUX_PANE` was taken for the owner
+by every owner-only gate, and a quoted or pathed `tmux` slipped past the tmux rule. R4: Claude Code's
+`file-history/`, `todos/` and `paste-cache/` under `~/.claude` were open to workers, and `memory status`
+printed the folder's path and the lead's conversation id to anyone. R5: since round 2 the card lives
+only in the lead's conversation, so ANOTHER lead's `--continue` without a stored id could open it. R6:
+`capture` opened to everyone after `memory disable` while the running lead still held the memory. R7:
+`enable` accepted a team an agent founded and promised a memory its lead would never get. R8: a grep or
+rg pattern such as `"/Users/"` was taken for a folder and refused. R9: wildcards, `~<name>`, a mid-line
+`/.` and a `\` line continuation slipped past. R10: comments and documents said `mem boot` runs after
+every compaction (the lead is only told to) and that teamctl calls it (it passes the prompt). R11:
+tests the re-review listed as missing. How they closed: the guard items (R1, R2, R3's guard part, R4's
+folders, R8, R9) are in `lib/guard.sh` (commit 9bc7c1d, plus `guard_follow`, which follows a literal
+`cd` or `pushd`, from the guard lane); the command items in `lib/memory.sh`, `lib/agents.sh` and
+`lib/views.sh`: `--continue` without an id is refused for every lead while the policy is on, `capture`
+also while the lead's settings carry `autoMemoryDirectory`, `enable` refuses an agent-founded team and
+the new owner-only `teamctl memory adopt <team>` makes the owner its founder, and `memory status` gives
+the path and the id to the owner and that lead only. SECURITY.md now says plainly that every owner-only
+gate is a pane proof a process can drop, which forms the worker guard refuses, that leads are not
+guarded, and that `uninstall.sh --purge --purge-memory` checks no identity. Still open, and named
+there: a `cd` to a folder known only at run time, `CDPATH`, a `cd` to a wildcard, code in another
+language, a script the command runs, and `teamctl status --json` listing every conversation id.
 
 ## Footprint on the machine
 
