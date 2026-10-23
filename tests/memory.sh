@@ -505,6 +505,18 @@ R5_PROSE_ALLOW=('git commit -m "fix a/b in src"' 'git commit -m "docs: see src/l
 check "H4: a quoted word with a blank is a path when it holds a / (the review's three cases, and an MCP string); a commit message that names a private folder (see ~/.wolfmux/memory) is refused, so rephrase it; fix a/b in src passes, a 60 KB message in under 0.5 s" \
   '[ "$UPD" = "$WOLFMUX_DATA" ] && denied_all "${R5_PROSE[@]}" && [ "$(guard FooTool "$(deep "a b/../${UP}memory/$KEY/mem/MEMORY.md")")" = deny ] &&
    allowed_all "${R5_PROSE_ALLOW[@]}" && timed 500 allow "$MSG60"'
+end_link_followed() { # links where the path ends: f -> the memory index, g -> f, rx.ts -> the lead's checkout (no file there yet)
+  local r=0
+  /bin/ln -s "$DIR/MEMORY.md" "$W1/f" && /bin/ln -s "$W1/f" "$W1/g" && /bin/ln -s "$PROJECT/rx.ts" "$W1/rx.ts" || return 1
+  [ "$(guard Read "$(file f)")" = deny ] && [ "$(guard Read "$(file "$W1/g")")" = deny ] && [ "$(guard Grep "$(search f)")" = deny ] &&
+    [ "$(guard Write "$(file rx.ts)")" = deny ] && [ "$(guard Edit "$(file "$W1/rx.ts")")" = deny ] && denied_all "cat g" "echo x > rx.ts" || r=1
+  /bin/rm -f "$W1/f" "$W1/g" "$W1/rx.ts"
+  return "$r"
+}
+R5_LINKS=("ln -s ~/.wolfmux/mem\$(true)ory/$KEY/mem/MEMORY.md f" "gln -s ~ h" "xargs ln -s <<< \"$WOLFMUX_DATA h\""
+  "git update-index --add --cacheinfo 120000,\$(printf %s $WOLFMUX_DATA | git hash-object -w --stdin),h" "find . -name x -exec ln -s {} h \\;")
+check "H5: a link where the path ends is followed by Read, Grep, Write, Edit and Bash (f -> the memory index, g -> f, rx.ts -> the lead's checkout); ln with a word built at run time, gln, xargs ln, find -exec ln and git update-index 120000 are refused" \
+  'end_link_followed && denied_all "${R5_LINKS[@]}" && allowed_all "ln -s src/lib lib" "git update-index --refresh"'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \

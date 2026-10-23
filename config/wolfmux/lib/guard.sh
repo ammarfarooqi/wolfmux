@@ -37,11 +37,12 @@
 # reason an agent stops working. It is fast because Claude Code runs a tool call whose
 # hook times out (10 s, lib/agents.sh): a command too big or too slow to check is refused.
 
-# guard_phys <path> <cwd> — sets GUARD_P: the path absolute, "//" and "/./" squeezed, symlinks of the existing
-# part resolved (the builtin cd -P: no fork), the rest as written. Letter case as typed: every compare is
+# guard_phys <path> <cwd> [<links followed>] — sets GUARD_P: the path absolute, "//" and "/./" squeezed, symlinks
+# of the existing part resolved (the builtin cd -P: no fork), then a link where that part ends (to a file, or to
+# nothing yet: Read, Write and Edit follow it), the rest as written. Letter case as typed: every compare is
 # without regard to case (cmd_guard sets nocasematch), as the disk is.
 guard_phys() {
-  local path="$1" dir rest="" back="$PWD" two='//' dot='/./' one='/'
+  local path="$1" dir rest="" back="$PWD" two='//' dot='/./' one='/' first
   case "$path" in
     /*) ;;
     "~") path="$HOME" ;;
@@ -69,6 +70,12 @@ guard_phys() {
   fi
   GUARD_P="${dir%/}$rest"
   GUARD_P="${GUARD_P:-/}"
+  # at most 32 links deep, as the system follows them (a loop of links leads nowhere it could read)
+  first="${rest#/}" first="${first%%/*}"
+  if [ -n "$first" ] && [ -L "${dir%/}/$first" ] && [ "${3:-0}" -lt 32 ] && guard_link "${dir%/}/$first" $((${3:-0} + 1)); then
+    GUARD_P="${GUARD_P%/}${rest#"/$first"}"
+    GUARD_P="${GUARD_P:-/}"
+  fi
 }
 
 # guard_abspath <path> <cwd> — guard_phys, printed
@@ -83,7 +90,7 @@ guard_inside() {
   return 1
 }
 
-# guard_link <symlink> — sets GUARD_P to where it leads, physical (a link to a folder costs no fork)
+# guard_link <symlink> [<links followed>] — sets GUARD_P to where it leads, physical (a link to a folder costs no fork)
 guard_link() {
   local back="$PWD" to
   if [ -d "$1" ]; then
@@ -94,7 +101,7 @@ guard_link() {
   fi
   to="$(/usr/bin/readlink "$1" 2>/dev/null)" || return 1
   case "$to" in /*) ;; *) to="${1%/*}/$to" ;; esac
-  guard_phys "$to" /
+  guard_phys "$to" / "${2:-0}"
 }
 
 # guard_transcript <path> — inside the folder of the leads' conversations, and not in the project's shared
@@ -221,6 +228,7 @@ function init(   n, t, k, at) {
   for (k = 1; k <= n; k++) if ((at = index(t[k], "\t")) > 1) { LINK[tolower(substr(t[k], 1, at - 1))] = substr(t[k], at + 1); NLINK++; if (at - 1 > MAXLINK) MAXLINK = at - 1 }
   IDS = "(TEAM_ROLE|TMUX_PANE|WOLFMUX_TEAM|BEADS_ACTOR)"
   SHELLS = "^(ba|z|da|k|fi|tc|c|mk|yash|posh)?sh$"
+  LNS = "^(g?ln|link)$"
   # the programs the rules name, for a program word with a wildcard or a group (gname)
   NMIND = split("tmux claude claude-code sh bash zsh dash ksh fish tcsh csh mksh yash posh eval source . env sudo doas exec command xargs gxargs nice timeout gtimeout git ln gln cp gcp node nodejs bun deno npx bunx pnpx ssh watch make gmake cd pushd popd echo printf cat unset export declare typeset local read readarray mapfile find fd fdfind grep rg", MINDL, " ")
   for (k = 1; k <= NMIND; k++) MIND[MINDL[k]] = 1
@@ -244,6 +252,7 @@ function init(   n, t, k, at) {
   R_PUSH = "pushing to main, deleting or force-updating remote branches is for the lead."
   R_ROOT = "that command would change a checkout that is read-only for you (" ENVIRON["GA_RO"] "). Your work belongs in your own worktree."
   R_LINK = "that command makes a link to a place outside your worktree (your home folder, /Users or Claude Code\047s temporary folder); a later command could read a private folder through it. Copy what you need into your worktree instead."
+  R_LINKRT = "that command makes a link whose target is built at run time or comes from its input ($( ), ${ }, ` `, xargs, find -exec, git update-index 120000 or --index-info), so the guard cannot see where it leads. Write the paths out, or copy what you need into your worktree instead."
   srand(); T0 = srand(); if (ENVIRON["GA_T0"] != "") T0 = ENVIRON["GA_T0"] + 0
 }
 # list(text, arr): the newline-separated paths, lower case, squeezed, without a trailing "/", each also without
@@ -990,6 +999,8 @@ function gitrules(d, p,   m, k, j, w, sc, name) {
   if (sc == "worktree") { for (j = k + 1; j <= m; j++) if (A[d, j] !~ /^-/) { if (A[d, j] ~ /^(add|remove|move|prune|repair|lock|unlock)$/) return R_WT; break } }
   if (sc == "branch") for (j = k + 1; j <= m; j++) { w = A[d, j]; if (w ~ /^--(delete|move|copy|force)$/ || (w ~ /^-[A-Za-z]*[dDmMcCf]/ && w !~ /^--/)) return R_BRANCH }
   if (sc == "update-ref") return R_BRANCH
+  # an index entry of mode 120000 is a link, made in the worktree by the next checkout
+  if (sc == "update-index") for (j = k + 1; j <= m; j++) { w = A[d, j]; if (w == "--index-info" || w ~ /^(--cacheinfo=)?120000(,|$)/ || (A[d, j - 1] == "--cacheinfo" && index(AF[d, j], "$"))) return R_LINKRT }
   if (sc == "switch") return R_SWITCH
   if (sc == "checkout") {
     name = ""
@@ -1040,11 +1051,15 @@ function roottext(d, p, b,   k, j, w, r, sp, n, pc) {
   if (b ~ /^(cp|rsync|ditto)$/ && w ~ /@root@[^ ]*$/) return R_ROOT
   return ""
 }
+# a link (ln, gln, link, cp -s or -l): refused when it leads outside the worktree, when a word of it is built at
+# run time, or when its words come from its input (xargs ln); a word with a blank is a path here too
 function lnrule(d, p, here,   m, k, w, r, l) {
   m = CM[d]
+  for (k = 1; k < p; k++) if (gname(A[d, k], AF[d, k]) ~ /^g?xargs$/) return R_LINKRT
+  for (k = p + 1; k <= m; k++) if (index(AF[d, k], "$")) return R_LINKRT
   for (k = p + 1; k <= m; k++) {
     w = A[d, k]
-    if (w ~ /^-/ || isprose(w, AF[d, k]) || index(AF[d, k], "$")) continue
+    if (w ~ /^-/) continue
     r = rpath(w, here); l = tolower(r)
     if (inown(r) || inany(r, SCR, NSCR)) continue
     if (inside(l, LHOME) || substr(l, 1, 7) == "/users/" || inany(r, CT, NCT) || holds(l) || lit(r) != "") return R_LINK
@@ -1155,6 +1170,8 @@ function checkA(d, here,   m, k, j, v, r, p, q, b, n, i) {
   for (k = p + 1; k <= m; k++) if (A[d, k] ~ /^-(exec|execdir|ok|okdir)$/ || ((b == "fd" || b == "fdfind") && A[d, k] ~ /^(-x|-X|--exec|--exec-batch)$/)) {
     q = prog(d, k + 1)
     if ((r = progrules(d, q)) != "") return r
+    # its words are filled in at run time ({})
+    if (q && gname(A[d, q], AF[d, q]) ~ LNS) return R_LINKRT
   }
   slots(d, p)
   if (WALKS) for (k = p + 1; k <= m; k++) {
@@ -1228,7 +1245,7 @@ function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, 
   }
   if (b == "git" && (r = gitrules(d, p)) != "") return r
   if ((r = rootrules(d, p, b, here)) != "") return r
-  if ((b == "ln" || (b == "cp" && hasopt(d, p, "s", "--symbolic-link"))) && (r = lnrule(d, p, here)) != "") return r
+  if ((b ~ LNS || (b ~ /^g?cp$/ && (hasopt(d, p, "s", "--symbolic-link") || hasopt(d, p, "l", "--link")))) && (r = lnrule(d, p, here)) != "") return r
   tgt = ""
   if (b == "cd" || b == "pushd" || b == "popd") {
     tgt = cdto(d, p, b, here)
