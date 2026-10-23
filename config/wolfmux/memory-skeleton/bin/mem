@@ -2556,6 +2556,9 @@ def plan_row(tree, row, line, ctx):
             ctx["dests"][dest] = line
         tree.abs(dest_file)
         if expected == "state-key":
+            # Before any dest is looked at: a pointer has no file to point at, whatever the dest.
+            if action == "pointer":
+                raise Refused("a state key is never a pointer: set action copy")
             if ctx["state"] is None:
                 raise Refused("a state: row needs --state <comms-state.json>")
             try:
@@ -2583,8 +2586,6 @@ def plan_row(tree, row, line, ctx):
                 return item
             if top not in REGIONS:
                 raise Refused("a state key goes to state/<file>.json#<key>, ledger/<file> or <region>/<name>.md")
-            if action == "pointer":
-                raise Refused("a state key is copied into %s/, never a pointer: set action copy" % top)
             # The value's text is the body: a string as is, anything else pretty-printed; no newline added.
             text = value if isinstance(value, str) else json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False)
             payload, mtime = text.encode("utf-8"), None

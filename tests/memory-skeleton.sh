@@ -961,7 +961,7 @@ sys.exit(not (body(t + "/topics/state-tone.md") == b"Plain words, short lines." 
               and b"\nregion: people\n" in open(t + "/people/dana.md", "rb").read()))
 EOF'
 check "the report finds both state-key bodies once; a state key as a pointer is refused" \
-  'grep -q "^line 14 copy    state:notes.tone -> topics/state-tone.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^line 15 copy    state:contacts.dana -> people/dana.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^- line 16 refused state:notes.tone: a state key is copied into rules/, never a pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/rules/state-tone-pointer.md" ]'
+  'grep -q "^line 14 copy    state:notes.tone -> topics/state-tone.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^line 15 copy    state:contacts.dana -> people/dana.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^- line 16 refused state:notes.tone: a state key is never a pointer: set action copy$" "$WORK/migrate-report.txt" && [ ! -e "$T/rules/state-tone-pointer.md" ]'
 check "a pointer row with region 'pointer' lands in the dest's folder and says so in its header" \
   'grep -q "^region: rules$" "$T/rules/vendors.md" && grep -q "^pointer: $SRC/project_vendors.md$" "$T/rules/vendors.md" && grep -q "^line 17 pointer project_vendors.md -> rules/vendors.md.*: pointer ok" "$WORK/migrate-report.txt"'
 check "a pointer row may land in topics/ (authority shared:<path>, no body copied)" \
@@ -1018,6 +1018,18 @@ check "migrate refuses --from, --rules-from and --claude-mem-from inside the roo
   'for flags in "--from $T/topics" "--from $SRC --rules-from $T/rules" "--from $SRC --rules-from $WORK" "--from $SRC --claude-mem-from $T" "--from $SRC --claude-mem-from $WORK"; do OUT="$("$T/bin/mem" migrate $flags --map "$WORK/map.csv" --dry-run 2>&1)" && exit 1; printf "%s" "$OUT" | grep -q "and the memory root $T overlap (one holds the other)" || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 printf 'source,source_type\nx,file\n' >"$WORK/bad.csv"
 check "migrate refuses a map without the contract columns" '! "$T/bin/mem" migrate --from "$SRC" --map "$WORK/bad.csv" --dry-run'
+# A state key as a pointer, into state/ and into the ledger: no file to point at, so refused alike
+# by the dry run and the real run (which used to place it, then crash in its verification).
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nstate:cursors.slack_dm,state-key,state/cursors.json#slack_dm,,pointer,no,,,,,,,,\nstate:decisions.0,state-key,ledger/decisions-2026-10.md,,pointer,no,,,,,,,,\n' >"$WORK/map-pointer.csv"
+T="$WORK/migrate-pointer"
+fresh "$T"
+STATE_BEFORE="$(tree_sum "$T/state")"
+DRY="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map-pointer.csv" --state "$WORK/comms-state.json" --dry-run 2>&1)"; RC1=$?
+OUT="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map-pointer.csv" --state "$WORK/comms-state.json" 2>&1)"; RC2=$?
+check "a state key with action pointer, into state/ or the ledger, is refused by the dry run and the real run alike" \
+  '[ "$RC1" -eq 0 ] && [ "$RC2" -eq 1 ] && for out in "$DRY" "$OUT"; do for n in 2 3; do printf "%s" "$out" | grep -q "^- line $n refused state:.*: a state key is never a pointer: set action copy$" || exit 1; done; ! printf "%s" "$out" | grep -q -e Traceback -e "would place it" || exit 1; done'
+check "that real run still writes its report and changes no state file and no ledger" \
+  'ls "$T"/.meta/migrate-*.md >/dev/null 2>&1 && grep -qx "copy 0, pointer 0, hold 0, skip 0, refused 2 (2 rows)" "$T"/.meta/migrate-*.md && [ "$STATE_BEFORE" = "$(tree_sum "$T/state")" ] && [ ! -e "$T/ledger/decisions-2026-10.md" ]'
 /bin/rm -rf "$HOME/.wolfmux"
 unset MEM_NOW
 
