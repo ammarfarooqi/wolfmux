@@ -203,7 +203,12 @@ count leaves it out. mem writes every JSON with the characters themselves, never
 The subject needs 3 characters and a letter, and is not a word every tree holds (a header
 field, a folder, a ledger label, a common word). What it does:
 
-- a region or archive file, or a `.meta/jev/` audit file, that names it: removed whole;
+- a people/, teams/ or topics/ file (live or archived), or a `.meta/jev/` audit file, that
+  names it: removed whole; the listing says why, `(stem)` or the first line that names it
+  (cut to 80 characters);
+- a rules file (rules/role.md too, live or archived): edited line by line, never dropped, as
+  each carries an authority. A header line keeps its field (`summary: [erased ...]`); the
+  `name:` line and the file name stay and are listed as `left behind: <path> (file name)`;
 - a ledger, index or log line: replaced by `[erased <YYYY-MM-DD> on owner's word]`
   (`{"erased": "<YYYY-MM-DD> on owner's word"}` in a `.jsonl` file);
 - a `backup ... basis=` line in drain.log: never replaced whole; only its basis text becomes

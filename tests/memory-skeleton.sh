@@ -923,6 +923,24 @@ check "a subject that is only the stem of a .meta file takes nothing: digest-pen
   '"$T/bin/mem" erase digest-pending | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase shared-folder | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase migrate-20261001T000000Z | grep -qx "nothing in the tree names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 check "drain.log keeps every backup basis= line, so the owner's-word tar stays non-routine" \
   '[ "$(grep -c " backup .meta/backups/[0-9TZ]*\.tar sha256=[0-9a-f]* basis=" "$T/.meta/drain.log")" -eq 2 ] && grep -q "basis=migration rollback; kept on the owner.s word$" "$T/.meta/drain.log"'
+# Every rules file carries an authority: erase edits it line by line (role.md too), never drops
+# it for one mention. Other region files go whole, and the listing says why.
+T="$WORK/erase-rules"
+fresh "$T"
+printf -- '---\nname: role\nregion: rules\nkeywords: role, comms\nsummary: the comms lead, next to Shaurya\nlinks:\nimportance: 5\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\nI run comms.\nI sit next to Shaurya.\n' >"$T/rules/role.md"
+printf -- '---\nname: shaurya-review\nregion: rules\nkeywords: review\nsummary: reviews go out on Fridays\nlinks:\nimportance: 3\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\nSend reviews on Friday.\n' >"$T/rules/shaurya-review.md"
+printf -- '---\nname: shaurya\nregion: people\nkeywords: design\nsummary: a designer\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nDesign.\n' >"$T/people/shaurya.md"
+topic "$T" seating "seating, office"
+printf 'Ask Shaurya about the seating plan before Monday.\n' >>"$T/topics/seating.md"
+chmod 600 "$T"/rules/*.md "$T"/people/*.md
+"$T/bin/mem" backup >/dev/null
+LIST="$("$T/bin/mem" erase Shaurya)"
+N="$(printf '%s\n' "$LIST" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase Shaurya --confirm "$N" >/dev/null
+check "erase edits rules/role.md line by line (a header line keeps its field) and never drops a rules file; the card keeps the role" \
+  'printf "%s\n" "$LIST" | grep -qx "line   rules/role.md:5" && printf "%s\n" "$LIST" | grep -qx "line   rules/role.md:13" && ! printf "%s\n" "$LIST" | grep -q "^file   rules/" && printf "%s\n" "$LIST" | grep -q "^tar    .*: redact rules/role.md$" && ! printf "%s\n" "$LIST" | grep -q "drop rules/" && [ -f "$T/rules/role.md" ] && grep -qx "summary: \[erased [0-9-]* on owner.s word\]" "$T/rules/role.md" && grep -qx "I run comms." "$T/rules/role.md" && ! grep -q Shaurya "$T/rules/role.md" && "$T/bin/mem" boot | grep -qF "[erased" && ! "$T/bin/mem" boot | grep -q "no rules/role.md yet" && ! "$T/bin/mem" check | grep -q "^PROBLEM .*rules/role.md"'
+check "a rules file whose name holds the subject stays and is listed as left behind (file name); other region files go whole with (stem) or their first matching line" \
+  'printf "%s\n" "$LIST" | grep -qx "left behind: rules/shaurya-review.md (file name)" && [ -f "$T/rules/shaurya-review.md" ] && printf "%s\n" "$LIST" | grep -qx "file   people/shaurya.md (stem)" && printf "%s\n" "$LIST" | grep -qx "file   topics/seating.md (line 12: Ask Shaurya about the seating plan before Monday.)" && printf "%s\n" "$LIST" | grep -q "^tar    .*: drop people/shaurya.md (stem)$" && [ ! -e "$T/people/shaurya.md" ] && [ ! -e "$T/topics/seating.md" ]'
 # JSON is decoded before erase matches it: names written as \u escapes (json.dumps without
 # ensure_ascii=False, as migrated files are), and keys at any depth (left behind, never erased).
 T="$WORK/erase-json"
@@ -954,7 +972,7 @@ check "a subject that only a JSON key names (nested in state, a field in a .json
 "$T/bin/mem" backup >/dev/null
 LIST="$("$T/bin/mem" erase "José Ruiz")"
 check "erase finds an escaped name in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \
-  'printf "%s\n" "$LIST" | grep -qx "state  state/open-asks.json#q1" && printf "%s\n" "$LIST" | grep -qx "line   archive/2026-08/ledger/sweeps-2026-08.jsonl:1" && printf "%s\n" "$LIST" | grep -qx "file   .meta/jev/20261001T000000Z-x.json" && printf "%s\n" "$LIST" | grep -qx "line   archive/state/comms-state.json (1 JSON value)" && [ "$(printf "%s\n" "$LIST" | grep -c "^tar    .meta/backups/.*: \(redact\|drop\) ")" -eq 4 ] && printf "%s\n" "$LIST" | grep -q "^tar    .meta/backups/.*: redact state/open-asks.json$" && printf "%s\n" "$LIST" | grep -q "^8 items; run again with --confirm 8"'
+  'printf "%s\n" "$LIST" | grep -qx "state  state/open-asks.json#q1" && printf "%s\n" "$LIST" | grep -qx "line   archive/2026-08/ledger/sweeps-2026-08.jsonl:1" && printf "%s\n" "$LIST" | grep -qx "file   .meta/jev/20261001T000000Z-x.json (a JSON value)" && printf "%s\n" "$LIST" | grep -qx "line   archive/state/comms-state.json (1 JSON value)" && [ "$(printf "%s\n" "$LIST" | grep -c "^tar    .meta/backups/.*: \(redact\|drop\) ")" -eq 4 ] && printf "%s\n" "$LIST" | grep -q "^tar    .meta/backups/.*: redact state/open-asks.json$" && printf "%s\n" "$LIST" | grep -q "^8 items; run again with --confirm 8"'
 "$T/bin/mem" erase "José Ruiz" --confirm 8 >/dev/null
 check "after it, no file and no tar member names him, decoded or raw; the other entries, lines and values stay, and JSON stays JSON" \
   'python3 -I - "$T" <<'"'"'EOF'"'"'

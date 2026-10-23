@@ -2351,12 +2351,57 @@ ERASE_STOP = set(FIELD_ORDER + REGIONS + TREE_DIRS + tuple(n for n, _ in STATE_D
     "decision", "sweep", "send", "person"))
 
 
-def whole_file(rel):
-    """A region file, an archived region file or a .meta/jev/ audit file: erase removes it whole.
-    Every other file (drain.log, the digest, a migrate report, the ledger) is edited line by line."""
+def region_of(rel):
+    """The region of a region file or of its archived copy (archive/<m>/<region>/...), else None."""
     parts = rel.split("/")
-    return (parts[0] in REGIONS or (parts[0] == "archive" and len(parts) > 3 and parts[2] in REGIONS)
-            or rel.startswith(".meta/jev/"))
+    if parts[0] in REGIONS:
+        return parts[0]
+    if parts[0] == "archive" and len(parts) > 3 and parts[2] in REGIONS:
+        return parts[2]
+    return None
+
+
+def whole_file(rel):
+    """A people/, teams/ or topics/ file (live or archived) or a .meta/jev/ audit file: erase
+    removes it whole. A rules file (role.md too) carries an authority and is edited line by
+    line, as is every other file (drain.log, the digest, a migrate report, the ledger)."""
+    return region_of(rel) not in (None, "rules") or rel.startswith(".meta/jev/")
+
+
+def first_hit(text, match):
+    """Why a whole file goes: its first line that names the subject, cut to 80 characters."""
+    for number, line in enumerate(text.split("\n")):
+        if match.search(line.casefold()):
+            return "line %d: %s" % (number + 1, cut(line.strip(), 80))
+    return "a JSON value"
+
+
+def erase_rule_lines(data, match, marker):
+    """(new bytes, numbers of the lines erased, whether the name: line names the subject) for a
+    rules file. A header line keeps its shape (`key: <marker>`, `- <marker>`, an indented
+    marker), so the file keeps its header; the name: line is the file name and stays (listed as
+    left behind). A body line becomes the marker. A CRLF line stays CRLF."""
+    text = data.decode("utf-8", "replace")
+    lines = text.split("\n")
+    close = 0
+    if split_header(data)[0] is not None:
+        close = next(n for n in range(1, len(lines)) if lines[n].rstrip("\r") == "---")
+    hit, named = [], False
+    for number, line in enumerate(lines):
+        bare = line.rstrip("\r")
+        if not match.search(bare.casefold()) or (close and number in (0, close)):
+            continue
+        end, erased = line[len(bare):], "[erased %s]" % marker
+        if 0 < number < close:
+            key = HEADER_KEY.match(bare)
+            if key and key.group(1) == "name":
+                named = True
+                continue
+            lead = re.match(r"^([ \t]+|- |#\s*)", bare)
+            erased = ("%s: %s" % (key.group(1), erased)) if key else (lead.group(1) if lead else "  ") + erased
+        hit.append(number + 1)
+        lines[number] = erased + end
+    return "\n".join(lines).encode("utf-8"), hit, named
 
 
 def erase_matcher(subject):
@@ -2481,15 +2526,25 @@ def erase_state(value, match):
 
 def erase_plan(rel, data, match, marker):
     """What erase does to one file, in the live tree or inside a backup tar: (None | "drop" |
-    "edit", new bytes, [where the subject is], [the file, when only a JSON key names it]). A
-    path counts by its file stem only, and only for a file erase removes whole: folder names
-    and extensions never match, and `erase drain` never takes .meta/drain.log with it. JSON (a
-    .json file, each .jsonl line) is decoded before it is matched: values and keys at any depth.
-    A hit that is only a key is never erased; it is listed as left behind."""
+    "edit", new bytes, [where the subject is], [what names it and stays, each with its kind:
+    "<rel> (key)", "<rel> (file name)"]). A path counts by its file stem only, and only for a
+    file erase removes whole (listed with "(stem)", or with the first line that names the
+    subject): folder names and extensions never match, and `erase drain` never takes
+    .meta/drain.log with it. A rules file is edited line by line; its stem and name: line stay
+    and are listed as left behind. JSON (a .json file, each .jsonl line) is decoded before it is
+    matched: values and keys at any depth. A hit that is only a key is never erased; it is
+    listed as left behind."""
     whole = whole_file(rel)
-    if whole and match.search(os.path.splitext(os.path.basename(rel))[0].casefold()):
-        return "drop", None, [rel], []
+    stem = match.search(os.path.splitext(os.path.basename(rel))[0].casefold())
+    if whole and stem:
+        return "drop", None, ["%s (stem)" % rel], []
     text = data.decode("utf-8", "replace")
+    if region_of(rel) == "rules":
+        new, hit, named = erase_rule_lines(data, match, marker)
+        left = ["%s (file name)" % rel] if stem or named else []
+        if not hit:
+            return None, data, [], left
+        return "edit", new, ["%s:%d" % (rel, n) for n in hit], left
     value = MISSING
     if rel.endswith(".json"):
         try:
@@ -2499,14 +2554,14 @@ def erase_plan(rel, data, match, marker):
     named, keyed = json_hits(match, value) if value is not MISSING else (match.search(text.casefold()), False)
     if isinstance(value, dict) and rel.split("/")[0] == "state":  # an object file's keys name its entries
         named = named or any(match.search(str(key).casefold()) for key in value)
-    left = [rel] if keyed and not named else []
+    left = ["%s (key)" % rel] if keyed and not named else []
     if not named and not rel.endswith(".jsonl"):  # a .jsonl line may hide a name in \u escapes
         return None, data, [], left
     if whole:
-        return "drop", None, [rel], []
+        return "drop", None, ["%s (%s)" % (rel, first_hit(text, match))], []
     if isinstance(value, (list, dict)) and rel.split("/")[0] == "state":
         kept, removed, keys = erase_state(value, match)
-        return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed], [rel] if keys else []
+        return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed], ["%s (key)" % rel] if keys else []
     if isinstance(value, (list, dict)):  # any other JSON: the values are erased in place, the file stays JSON
         new, count = redact_json(value, match, marker)
         return "edit", dump_json(new), ["%s (%d JSON value%s)" % (rel, count, "" if count == 1 else "s")], left
@@ -2515,7 +2570,7 @@ def erase_plan(rel, data, match, marker):
         (new, hit), keys = erase_decisions(data, match, marker), []
     else:
         new, hit, keys = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
-    left = [rel] if keys else []
+    left = ["%s (key)" % rel] if keys else []
     if not hit:
         return None, data, [], left
     return "edit", new, ["%s:%d" % (rel, n) for n in hit], left
@@ -2564,14 +2619,18 @@ def cmd_erase(tree, args):
     for rel, members in tars:
         for name, action in members:
             print("tar    %s: %s %s" % (rel, "drop" if action == "drop" else "redact", name))
-    # Only a JSON key names the subject there (a field name, a nested key): nothing is erased.
+    # What names the subject and stays: a JSON key (a field name, a nested key), a rules file's name.
     for place in left:
-        print("left behind: %s (key)" % place)
+        print("left behind: %s" % place)
     for path in glob_home_backups():
         if tar_plan(path, needle, marker)[0]:
             print("outside the tree, not changed (erase it by hand): %s" % path)
     if not plans and not tars:
-        print("nothing to erase: only a JSON key names that subject" if left else "nothing in the tree names that subject")
+        if left and all(place.endswith(" (key)") for place in left):
+            print("nothing to erase: only a JSON key names that subject")
+        else:
+            print("nothing to erase: only what is listed as left behind names that subject" if left
+                  else "nothing in the tree names that subject")
         return 0
     count = sum(len(where) for _, _, _, _, where in plans) + sum(len(members) for _, members in tars)
     if args.confirm is None:
@@ -2620,18 +2679,18 @@ def walk_tree(tree):
 
 
 def tar_plan(path, needle, marker):
-    """([(member name, action)] for the members of one tar that name the subject, [the members
-    only a JSON key names it in])."""
+    """([(member, action)] for the members of one tar that name the subject (a dropped member
+    with why it goes), [what names it there and stays, with its kind])."""
     out, left = [], []
     try:
         with tarfile.open(path) as tar:
             for member in tar.getmembers():
                 if not member.isfile() or erase_skips(member.name):  # a folder name never matches
                     continue
-                action, _, _, keys = erase_plan(member.name, tar.extractfile(member).read(), needle, marker)
+                action, _, where, keys = erase_plan(member.name, tar.extractfile(member).read(), needle, marker)
                 left.extend(keys)
                 if action:
-                    out.append((member.name, action))
+                    out.append((where[0] if action == "drop" else member.name, action))
     except (IOError, OSError, tarfile.TarError):
         return [], []
     return out, left
