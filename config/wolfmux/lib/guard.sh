@@ -180,9 +180,10 @@ guard_deny() {
   return 0
 }
 
-# GUARD_SCAN — the awk program that reads one shell command (stdin) as the shell would and decides whether it
+# GUARD_SCAN — the awk program that reads one shell command (GA_CMD) as the shell would and decides whether it
 # reaches outside, in ONE process: a guard that is slow is a guard that is skipped (the hook times out and the
 # call runs). Paths and names come in the environment (GA_*, set by guard_bash). It prints:
+#   T<seconds>  the clock it started from (guard_bash hands it to the next pass: GA_T0)
 #   D<reason>   refuse (and stops)
 #   L<path>     a path under the worker's worktree or /tmp that may be a symlink: guard_bash tests each with the
 #               builtin [ -L ] and runs the program again with the links it found (GA_LINKS, "path<TAB>target")
@@ -198,7 +199,11 @@ guard_deny() {
 #               outside the own worktree, symlinks from GA_LINKS); wildcards; tree walks; git; the read-only
 #               checkouts; links; then what sh -c, eval, a heredoc or pipe into a shell, env -S, ssh and watch
 #               run, as a command one level deeper (four levels refuse).
-# Budget: over 4000 words, over 300 paths resolved outside the own worktree, or 2 seconds: refuse ("split").
+# Budget, counted in steps so that it means the same on a busy machine: guard_bash refuses a command over 64 KB
+# before awk starts; awk refuses over 256 KB of text lexed (an inner command counts again), 4000 words, 300 paths
+# resolved outside the own worktree or 12,000 link candidates. Every step is linear: a search reads the text in
+# growing windows, plain characters are taken in runs. A clock (whole seconds, every 1000 characters, 50 words
+# and 50 paths) is the backstop: 5 seconds from the first pass, under the hook's 10.
 # Out of reach: a folder or path built at run time (d=~/.wolfmux; cd $d), code in a string (python3 -c),
 # CDPATH, a chain of more than three links (docs/SECURITY.md).
 GUARD_SCAN='
@@ -221,7 +226,8 @@ function init(   n, t, k, at) {
   R_CTMP = "that command names Claude Code\047s temporary folder (" ENVIRON["GA_CTSHOW"] "), which holds every session\047s tool output, the leads\047 too. Only your own scratchpad there is yours: a worker searches its worktree and its own scratchpad, never all of /tmp."
   R_LONG = "that command is too long for the guard to follow (over 4000 words); split it."
   R_SPLIT = "that command has too many paths outside your worktree for the guard to follow (over 300); split this command."
-  R_SLOW = "that command takes the guard too long to check (over 2 seconds); split this command."
+  R_SLOW = "that command takes the guard too long to check (over 4 seconds); split this command."
+  R_BIG = "that command is too big for the guard to follow (over 256 KB of text to read, the commands it runs inside counted again); split this command."
   R_NEST = "that command nests sh -c or eval more than three levels deep; run the inner command itself."
   R_TMUX = "tmux belongs to teamctl; panes of other agents are not yours to read or type into."
   R_RESUME = "that command resumes a Claude Code conversation (claude --resume, -r, --continue, -c, --session-id), which reads it whoever\047s it is. A worker never resumes a conversation; ask the lead."
@@ -232,7 +238,7 @@ function init(   n, t, k, at) {
   R_PUSH = "pushing to main, deleting or force-updating remote branches is for the lead."
   R_ROOT = "that command would change a checkout that is read-only for you (" ENVIRON["GA_RO"] "). Your work belongs in your own worktree."
   R_LINK = "that command makes a link to a place outside your worktree (your home folder, /Users or Claude Code\047s temporary folder); a later command could read a private folder through it. Copy what you need into your worktree instead."
-  srand(); T0 = srand()
+  srand(); T0 = srand(); if (ENVIRON["GA_T0"] != "") T0 = ENVIRON["GA_T0"] + 0
 }
 # list(text, arr): the newline-separated paths, lower case, squeezed, without a trailing "/", each also without
 # a leading /private (/private/tmp is /tmp); the count
@@ -246,7 +252,41 @@ function list(text, arr,   n, t, k, c, p) {
   }
   return c
 }
-function clock(   now) { srand(); now = srand(); if (now - T0 >= 2 && DENY == "") DENY = R_SLOW }
+function clock(   now) { srand(); now = srand(); if (now - T0 >= 5 && DENY == "") DENY = R_SLOW }
+# idx(s, p, t): where t is first found in s at or after p, 0 for none. It reads s in growing windows: the
+# index(substr(s, p), t) it replaces copied the whole rest of the command at every quote, comment and line
+function idx(s, p, t,   n, w, j) {
+  n = length(s); w = 256
+  while (p <= n) {
+    if ((j = index(substr(s, p, w + length(t) - 1), t)) > 0) return p + j - 1
+    p += w; w += w
+  }
+  return 0
+}
+# heredoc(s, p, n, delim, strip): the body that starts at p, up to the line that is delim (tabs taken off its
+# lines for <<-), in HBODY; it returns where the text goes on after the delimiter line
+function heredoc(s, p, n, delim, strip,   start, at, j, e, line) {
+  start = p
+  if (!strip) {
+    if (substr(s, p, length(delim) + 1) == delim "\n" || (p + length(delim) - 1 == n && substr(s, p, length(delim)) == delim)) { HBODY = ""; return p + length(delim) + 1 }
+    at = p
+    while ((j = idx(s, at, "\n" delim)) > 0) {
+      e = j + 1 + length(delim)
+      if (e > n || substr(s, e, 1) == "\n") { HBODY = substr(s, start, j - start + 1); return e + 1 }
+      at = j + 1
+    }
+    p = n + 1
+  } else while (p <= n) {
+    j = idx(s, p, "\n"); e = j ? j : n + 1
+    line = substr(s, p, e - p); sub(/^\t+/, "", line)
+    if (line == delim) break
+    p = e + 1
+  }
+  HBODY = substr(s, start, p - start); e = p
+  if (strip) { gsub(/\n\t+/, "\n", HBODY); sub(/^\t+/, "", HBODY); if (p <= n) e = (j ? j : n) + 1 }
+  if (HBODY != "" && substr(HBODY, length(HBODY)) != "\n") HBODY = HBODY "\n"
+  return e
+}
 function base(w) { sub(/\/+$/, "", w); sub(/.*\//, "", w); return w }
 function rep(v, a, b,   out, at) { out = ""; while ((at = index(v, a)) > 0) { out = out substr(v, 1, at - 1) b; v = substr(v, at + length(a)) } return out v }
 function inside(p, dir) { return p == dir || substr(p, 1, length(dir) + 1) == dir "/" }
@@ -312,8 +352,9 @@ function flag(f) { if (!index(LF, f)) LF = LF f }
 function quoted(t) { LW = LW t; flag("q"); if (t ~ /[ \t\n]/) flag("p"); LIN = 1 }
 function endw(d) {
   if (!LIN) return
+  if (LBR && LW ~ /\{[^}]*(,|\.\.)[^}]*\}/) flag("g")
   NT[d]++; TT[d, NT[d]] = "w"; TV[d, NT[d]] = LW; TF[d, NT[d]] = LF; TR[d, NT[d]] = LRED; LRED = 0
-  LW = ""; LF = ""; LIN = 0
+  LW = ""; LF = ""; LIN = 0; LBR = 0
   if (++WORDS > 4000 && DENY == "") DENY = R_LONG
   if (WORDS % 50 == 0) clock()
 }
@@ -340,14 +381,14 @@ function dollar(s, p, n, d,   c2, j, t, name) {
     return j ? j + 1 : n + 1
   }
   if (c2 == "{") {
-    j = index(substr(s, p + 2), "}"); t = j ? substr(s, p + 2, j - 1) : substr(s, p + 2)
+    j = idx(s, p + 2, "}"); t = j ? substr(s, p + 2, j - p - 2) : substr(s, p + 2)
     if (t ~ /\$\(|`/) subs_in(t, d, NT[d] + 1)
     name = t; sub(/[^A-Za-z0-9_].*$/, "", name)
     expand(name, "${" t "}")
-    return j ? p + 2 + j : n + 1
+    return j ? j + 1 : n + 1
   }
   if (c2 ~ /[A-Za-z_]/) {
-    t = substr(s, p + 1); match(t, /^[A-Za-z_][A-Za-z0-9_]*/); name = substr(t, 1, RLENGTH)
+    t = substr(s, p + 1, 256); match(t, /^[A-Za-z_][A-Za-z0-9_]*/); name = substr(t, 1, RLENGTH)
     expand(name, "$" name)
     return p + 1 + RLENGTH
   }
@@ -361,12 +402,13 @@ function tick(s, p, n, d,   c, c2, t) {
     c = substr(s, p, 1)
     if (c == "\\") { c2 = substr(s, p + 1, 1); if (c2 == "`" || c2 == "$" || c2 == "\\") { t = t c2; p += 2; continue } }
     if (c == "`") { p++; break }
+    if (match(substr(s, p, 256), /^[^`\\]+/)) { t = t substr(s, p, RLENGTH); p += RLENGTH; continue }
     t = t c; p++
   }
   addsub(d, t, NT[d] + 1, "s"); subword(t)
   return p
 }
-function dq(s, p, n, d,   c, c2) {
+function dq(s, p, n, d,   c, c2, t) {
   flag("q"); LIN = 1
   while (p <= n) {
     c = substr(s, p, 1)
@@ -379,7 +421,7 @@ function dq(s, p, n, d,   c, c2) {
     }
     if (c == "$") { p = dollar(s, p, n, d); continue }
     if (c == "`") { p = tick(s, p + 1, n, d); continue }
-    if (c == " " || c == "\t" || c == "\n") flag("p")
+    if (match(substr(s, p, 256), /^[^"\\$`]+/)) { t = substr(s, p, RLENGTH); if (t ~ /[ \t\n]/) flag("p"); LW = LW t; p += RLENGTH; continue }
     LW = LW c; p++
   }
   return p
@@ -406,13 +448,14 @@ function ansi(s, p, n,   c, c2, t, v, k) {
       else t = t c2
       continue
     }
+    if (match(substr(s, p, 256), /^[^\047\\]+/)) { t = t substr(s, p, RLENGTH); p += RLENGTH; continue }
     t = t c; p++
   }
   quoted(t)
   return p
 }
 function tilde(s, p, n,   t, name, c) {
-  t = substr(s, p + 1); match(t, /^[A-Za-z0-9._+-]*/); name = substr(t, 1, RLENGTH)
+  t = substr(s, p + 1, 256); match(t, /^[A-Za-z0-9._+-]*/); name = substr(t, 1, RLENGTH)
   c = substr(s, p + 1 + RLENGTH, 1)
   if (c != "" && c !~ /[\/ \t\n;&|()<>:]/) { LW = LW "~"; return p + 1 }
   if (name == "" || name == USERN) LW = LW HOME
@@ -423,16 +466,17 @@ function tilde(s, p, n,   t, name, c) {
 }
 # closep(s, p, n): the ) that closes the $( or <( whose text starts at p (quotes, nesting, comments and heredoc
 # bodies skipped); 0 when there is none
-function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, line, probe, t, start) {
+function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, t, start) {
   depth = 1; prev = "\n"; hn = 0
   while (p <= n) {
+    if (match(substr(s, p, 256), /^[^\\\047"`$#<\n()]+/)) { p += RLENGTH; prev = substr(s, p - 1, 1); continue }
     c = substr(s, p, 1)
     if (c == "\\") { p += 2; prev = "x"; continue }
-    if (c == "\047") { j = index(substr(s, p + 1), "\047"); if (!j) return 0; p += j + 1; prev = "x"; continue }
+    if (c == "\047") { j = idx(s, p + 1, "\047"); if (!j) return 0; p = j + 1; prev = "x"; continue }
     if (c == "\"") { p = dqskip(s, p + 1, n); if (!p) return 0; prev = "x"; continue }
     if (c == "`") { j = p + 1; while (j <= n && substr(s, j, 1) != "`") { if (substr(s, j, 1) == "\\") j++; j++ } if (j > n) return 0; p = j + 1; prev = "x"; continue }
     if (c == "$" && substr(s, p + 1, 1) == "(") { j = closep(s, p + 2, n); if (!j) return 0; p = j + 1; prev = "x"; continue }
-    if (c == "#" && prev ~ /[ \t\n;&|(]/) { j = index(substr(s, p), "\n"); if (!j) return 0; p += j - 1; continue }
+    if (c == "#" && prev ~ /[ \t\n;&|(]/) { j = idx(s, p, "\n"); if (!j) return 0; p = j; continue }
     if (c == "<" && substr(s, p + 1, 1) == "<" && substr(s, p + 2, 1) != "<") {
       p += 2; hs[hn + 1] = 0; if (substr(s, p, 1) == "-") { p++; hs[hn + 1] = 1 }
       while (substr(s, p, 1) == " " || substr(s, p, 1) == "\t") p++
@@ -441,11 +485,7 @@ function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, line, probe, t, sta
     }
     if (c == "\n" && hn) {
       p++
-      for (k = 1; k <= hn; k++) while (p <= n) {
-        j = index(substr(s, p), "\n"); line = j ? substr(s, p, j - 1) : substr(s, p); p += j ? j : n - p + 1
-        probe = line; if (hs[k]) sub(/^\t+/, "", probe)
-        if (probe == hd[k]) break
-      }
+      for (k = 1; k <= hn; k++) p = heredoc(s, p, n, hd[k], hs[k])
       hn = 0; prev = "\n"; continue
     }
     if (c == "(") depth++
@@ -456,6 +496,7 @@ function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, line, probe, t, sta
 }
 function dqskip(s, p, n,   c, j) {
   while (p <= n) {
+    if (match(substr(s, p, 256), /^[^\\"$`]+/)) { p += RLENGTH; continue }
     c = substr(s, p, 1)
     if (c == "\\") { p += 2; continue }
     if (c == "\"") return p + 1
@@ -469,44 +510,43 @@ function dqskip(s, p, n,   c, j) {
 function subs_in(t, d, at,   p, n, c, j) {
   n = length(t); p = 1
   while (p <= n) {
+    if (match(substr(t, p, 256), /^[^\\$`]+/)) { p += RLENGTH; continue }
     c = substr(t, p, 1)
     if (c == "\\") { p += 2; continue }
     if (c == "$" && substr(t, p + 1, 1) == "(") { j = closep(t, p + 2, n); addsub(d, j ? substr(t, p + 2, j - p - 2) : substr(t, p + 2), at, "s"); p = j ? j + 1 : n + 1; continue }
-    if (c == "`") { j = index(substr(t, p + 1), "`"); addsub(d, j ? substr(t, p + 1, j - 1) : substr(t, p + 1), at, "s"); p = j ? p + j + 1 : n + 1; continue }
+    if (c == "`") { j = idx(t, p + 1, "`"); addsub(d, j ? substr(t, p + 1, j - p - 1) : substr(t, p + 1), at, "s"); p = j ? j + 1 : n + 1; continue }
     p++
   }
 }
-function lex(s, d,   n, p, c, c2, j, t, hn, hi, line, probe, body, start, strip) {
-  NT[d] = 0; NS[d] = 0; LW = ""; LF = ""; LIN = 0; LRED = 0; hn = 0
-  n = length(s); p = 1
+function lex(s, d,   n, p, c, c2, j, t, hn, hi, start, strip, clk) {
+  NT[d] = 0; NS[d] = 0; LW = ""; LF = ""; LIN = 0; LRED = 0; LBR = 0; hn = 0
+  n = length(s); p = 1; clk = 1000
+  if ((STEPS += n) > 262144 && DENY == "") DENY = R_BIG
   while (p <= n) {
     if (DENY != "") return
+    if (p >= clk) { clock(); clk = p + 1000 }
+    # plain characters, taken as one run (one character at a time made a long word cost its length squared)
+    if (match(substr(s, p, 256), /^[A-Za-z0-9_.\/,+%@^!:=-]+/)) { LW = LW substr(s, p, RLENGTH); LIN = 1; p += RLENGTH; continue }
     c = substr(s, p, 1)
     if (c == "\\") {
       c2 = substr(s, p + 1, 1)
       if (c2 != "\n" && p < n) { LW = LW c2; flag("q"); LIN = 1 }
       p += 2; continue
     }
-    if (c == "\047") { j = index(substr(s, p + 1), "\047"); if (!j) j = n - p + 1; quoted(substr(s, p + 1, j - 1)); p += j + 1; continue }
+    if (c == "\047") { j = idx(s, p + 1, "\047"); if (!j) j = n + 1; quoted(substr(s, p + 1, j - p - 1)); p = j + 1; continue }
     if (c == "$" && substr(s, p + 1, 1) == "\047") { p = ansi(s, p + 2, n); continue }
     if (c == "$" && substr(s, p + 1, 1) == "\"") { p++; continue }
     if (c == "\"") { p = dq(s, p + 1, n, d); continue }
     if (c == "$") { p = dollar(s, p, n, d); LIN = 1; continue }
     if (c == "`") { p = tick(s, p + 1, n, d); LIN = 1; continue }
     if (c == " " || c == "\t" || c == "\r") { endw(d); p++; continue }
-    if (c == "#" && !LIN) { j = index(substr(s, p), "\n"); if (!j) break; p += j - 1; continue }
+    if (c == "#" && !LIN) { j = idx(s, p, "\n"); if (!j) break; p = j; continue }
     if (c == "\n") {
       endw(d); op(d, ";"); p++
       for (hi = 1; hi <= hn; hi++) {
-        body = ""
-        while (p <= n) {
-          j = index(substr(s, p), "\n"); line = j ? substr(s, p, j - 1) : substr(s, p); p += j ? j : n - p + 1
-          probe = line; if (HS[hi]) sub(/^\t+/, "", probe)
-          if (probe == HD[hi]) break
-          body = body probe "\n"
-        }
-        HB[d, HT[hi]] = body
-        if (!HQ[hi]) subs_in(body, d, HT[hi])
+        p = heredoc(s, p, n, HD[hi], HS[hi])
+        HB[d, HT[hi]] = HBODY
+        if (!HQ[hi]) subs_in(HBODY, d, HT[hi])
       }
       hn = 0; continue
     }
@@ -548,7 +588,7 @@ function lex(s, d,   n, p, c, c2, j, t, hn, hi, line, probe, body, start, strip)
     }
     if (c == "~" && (!LIN || LW ~ /[=:]$/)) { p = tilde(s, p, n); LIN = 1; continue }
     if (c == "*" || c == "?" || c == "[") flag("g")
-    if (c == "{") { j = index(substr(s, p), "}"); if (j && substr(s, p, j) ~ /,|\.\./) flag("g") }
+    if (c == "{") LBR = 1 # a brace expansion when the word has a , or .. before a } (endw)
     LW = LW c; LIN = 1; p++
   }
   endw(d)
@@ -1060,10 +1100,10 @@ function run(text, d, here,   r) {
   if ((r = phaseA(d, here)) != "") return r
   return phaseB(d, here)
 }
-{ S = S (NR > 1 ? "\n" : "") $0 }
-END {
+BEGIN {
   init()
-  r = run(S, 0, ENVIRON["GA_CWD"])
+  print "T" T0
+  r = run(ENVIRON["GA_CMD"], 0, ENVIRON["GA_CWD"])
   if (r != "") { print "D" r; exit }
   for (k = 1; k <= NB; k++) print "B" BR[k]
   print "OK"
@@ -1072,11 +1112,14 @@ END {
 # guard_bash <command> — sets GUARD_REASON when the command reaches outside (GUARD_SCAN, then the symlinks it
 # names, then git checkout of another branch)
 guard_bash() {
-  local out line path links="" new pass=0 ok name checkouts=""
+  local out line path links="" new pass=0 ok name checkouts="" t0=""
   GUARD_REASON=""
+  # the size first, before any work (cmd_guard runs with LC_ALL=C: bytes; guard_check's jq hands over \001 for one
+  # over 65536 characters, so that bash never reads it): a bigger one is no command a worker types
+  if [ "${#1}" -gt 65536 ] || [ "$1" = $'\001' ]; then GUARD_REASON="that command is over 64 KB; split this command; the guard reads at most 64 KB." && return 0; fi
   while [ "$pass" -lt 4 ]; do
     pass=$((pass + 1)) new="" ok=0 checkouts=""
-    out="$(printf '%s' "$1" | GA_LINKS="$links" GA_CWD="$GUARD_CWD" GA_HOME="$HOME" GA_USER="${USER:-}" GA_BRANCH="$GUARD_BRANCH" \
+    out="$(GA_CMD="$1" GA_T0="$t0" GA_LINKS="$links" GA_CWD="$GUARD_CWD" GA_HOME="$HOME" GA_USER="${USER:-}" GA_BRANCH="$GUARD_BRANCH" \
       GA_OWN="$GUARD_L_OWN" GA_SCR="$GUARD_L_SCR" GA_TREES="$GUARD_L_TREES" GA_STATE="$GUARD_L_STATE" GA_MEM="$GUARD_L_MEM" \
       GA_TR="$GUARD_L_TR" GA_CL="$GUARD_L_CL" GA_CT="$GUARD_L_CT" GA_ROOT="$GUARD_L_ROOT" GA_TRSHOW="$GUARD_TRANSCRIPTS" \
       GA_CTSHOW="${GUARD_CTMP[0]:-}" GA_RO="$GUARD_READONLY" LC_ALL=C /usr/bin/awk "$GUARD_SCAN" 2>/dev/null)"
@@ -1090,6 +1133,7 @@ guard_bash() {
           if guard_link "$path"; then new="$new$path"$'\t'"$GUARD_P"$'\n'; fi
           ;;
         B*) checkouts="$checkouts${line#B}"$'\n' ;;
+        T*) t0="${line#T}" ;; # the clock of the first pass: the next passes count from it
         OK) ok=1 ;;
       esac
     done <<<"$out"
@@ -1191,7 +1235,7 @@ guard_check() {
     esac
     i=$((i + 1))
   done < <("$JQ_BIN" -j '([0] | implode) as $z
-    | [.tool_name, .cwd, .tool_input.command, (.tool_input.file_path // .tool_input.notebook_path), (.tool_input.file_path // .tool_input.path), .tool_input.pattern]
+    | [.tool_name, .cwd, (.tool_input.command | if type == "string" and length > 65536 then "\u0001" else . end), (.tool_input.file_path // .tool_input.notebook_path), (.tool_input.file_path // .tool_input.path), .tool_input.pattern]
       + (if ((.tool_name // "") | tostring | startswith("mcp__")) then [.tool_input | .. | strings][:100] else [] end)
     | map((. // "" | tostring) + $z) | add' 2>/dev/null)
   [ -n "$tool" ] || return 0
