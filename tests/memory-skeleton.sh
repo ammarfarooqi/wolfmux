@@ -201,6 +201,10 @@ check "check files Claude Code auto-memory: feedback -> rules, feedback naming a
   '[ ! -e "$T/feedback_tone.md" ] && [ ! -e "$T/feedback_sam.md" ] && [ ! -e "$T/project_train.md" ] && [ -f "$T/rules/tone-of-replies.md" ] && [ -f "$T/people/sam-prefers-threads.md" ] && [ -f "$T/topics/release-train.md" ]'
 check "a filed auto-memory file gets the missing header fields and keeps its body" \
   'f="$T/topics/release-train.md" && grep -q "^region: topics" "$f" && grep -q "^keywords: " "$f" && grep -q "^summary: the release train schedule" "$f" && grep -q "^last_confirmed: " "$f" && tail -1 "$f" | grep -qx "Trains leave on Monday."'
+printf -- '---\nname: suite-tmpdir\ndescription: leave TMPDIR alone for suite runs\nmetadata:\n  type: reference\n---\nShort TMPDIR.\n' >"$T/suite-tmpdir.md"
+"$T/bin/mem" check >/dev/null
+check "the newer auto-memory shape (type: nested under metadata:) is filed too" \
+  '[ ! -e "$T/suite-tmpdir.md" ] && [ -f "$T/topics/suite-tmpdir.md" ] && grep -q "^summary: leave TMPDIR alone for suite runs" "$T/topics/suite-tmpdir.md"'
 check "a feedback filed into rules has no authority yet, so check fails until the owner gives one" \
   '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "PROBLEM .*rules/tone-of-replies.md: no authority"'
 
