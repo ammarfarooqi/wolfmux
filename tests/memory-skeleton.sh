@@ -39,10 +39,11 @@ check() { # <description> <command string>
 
 MOCK_PID=""
 cleanup() {
-  [ -n "$MOCK_PID" ] && kill "$MOCK_PID" >/dev/null 2>&1
+  [ -n "$MOCK_PID" ] && kill "$MOCK_PID" >/dev/null 2>&1 && wait "$MOCK_PID" 2>/dev/null
   /bin/rm -rf "$WORK"
 }
 trap cleanup EXIT
+[ -n "${MEM_TEST_KEEP:-}" ] && trap - EXIT
 
 # fresh <dir>: a copy of the skeleton, initialised, as `teamctl memory enable` makes it.
 fresh() {
@@ -351,6 +352,159 @@ MEM_NOW=2026-10-12T10:00Z "$T/bin/mem" sweep-log --inboxes 3 --asks-touched 1 --
 check "sweep-log writes one JSON line with the numbers" \
   'python3 -I -c "import json,sys; l=open(sys.argv[1]).read().splitlines(); r=json.loads(l[-1]); sys.exit(not (len(l)==1 and r[\"time\"]==\"2026-10-12T10:00Z\" and r[\"inboxes\"]==3 and r[\"free_pct\"]==41 and r[\"swap_gb\"]==2.5 and r[\"load\"]==3.2))" "$T/ledger/sweeps-2026-10.jsonl"'
 check "the ledger files are mode 600" '[ "$(mode_of "$T/ledger/sends-2026-10.md")" = 600 ] && [ "$(mode_of "$T/ledger/sweeps-2026-10.jsonl")" = 600 ]'
+
+
+echo "== the Jev mock"
+# A local stand-in for POST /v1/systemone. It saves every request (headers + raw body) under
+# $WORK/jev-got/, and answers by the slug it was sent: "keep" in it -> keep, "border" in it ->
+# archive at p=0.65 (under the 0.7 bar), anything else -> archive at p=0.9. $WORK/jev-mode
+# holding 429 or 500 makes it fail every request with that status instead.
+/bin/mkdir -p "$WORK/jev-got"
+echo normal >"$WORK/jev-mode"
+cat >"$WORK/jev_mock.py" <<'EOF'
+import http.server, json, os, sys
+work = sys.argv[1]
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        got = os.path.join(work, "jev-got")
+        n = len(os.listdir(got)) + 1
+        with open(os.path.join(got, "%03d.json" % n), "w") as out:
+            json.dump({"path": self.path, "auth": self.headers.get("Authorization"), "raw": raw.decode("utf-8")}, out)
+        mode = open(os.path.join(work, "jev-mode")).read().strip()
+        if mode in ("429", "500"):
+            self.send_response(int(mode)); self.end_headers(); self.wfile.write(b'{"detail":"busy"}'); return
+        slug = json.loads(raw)["state"]["slug"]
+        choice, p = ("keep", 0.1) if "keep" in slug else (("archive", 0.65) if "border" in slug else ("archive", 0.9))
+        rest = (1.0 - p) / 2
+        probs = {"keep": rest, "archive": p, "ask-owner": rest} if choice == "archive" else {"keep": 0.8, "archive": p, "ask-owner": 0.1}
+        body = json.dumps({"model": "jev-latest", "answers": {"drain": {"type": "choice", "choice": choice,
+                           "confidence": 0.8, "probabilities": probs}}}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(body)
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+open(os.path.join(work, "jev-port.tmp"), "w").write(str(server.server_address[1]))
+os.rename(os.path.join(work, "jev-port.tmp"), os.path.join(work, "jev-port"))
+server.serve_forever()
+EOF
+python3 -I "$WORK/jev_mock.py" "$WORK" >/dev/null 2>&1 &
+MOCK_PID=$!
+i=0
+while [ ! -f "$WORK/jev-port" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+export MEM_JEV_URL="http://127.0.0.1:$(cat "$WORK/jev-port" 2>/dev/null)/v1/systemone"
+check "the Jev mock is listening" '[ -f "$WORK/jev-port" ] && kill -0 "$MOCK_PID"'
+
+echo "== drain"
+export MEM_NOW=2026-10-23T09:00Z
+T="$WORK/drain"
+fresh "$T"
+printf -- '---\nname: dana-smith\nregion: people\nkeywords: dana, smith\nsummary: Dana Smith runs design\nlinks:\nimportance: 3\nlast_confirmed: 2026-01-01\nstatus: live\n---\nDana.\n' >"$T/people/dana-smith.md"
+printf -- '---\nname: old-rule\nregion: rules\nkeywords: old, rule\nsummary: an old rule\nlinks:\nimportance: 1\nauthority: shared:RULES.md\nlast_confirmed: 2026-01-01\nstatus: live\n---\nRule.\n' >"$T/rules/old-rule.md"
+for f in stale-a stale-keep stale-border stale-named; do topic "$T" "$f" "$f, things" 3 2026-09-01; done
+topic "$T" dana-onboarding "dana, smith, onboarding" 3 2026-09-01
+printf 'SECRETBODY dana smith private words\n' >>"$T/topics/dana-onboarding.md"
+topic "$T" stale-important "important, things" 4 2026-09-01
+topic "$T" fresh-topic "fresh, things" 3 2026-10-20
+printf -- '---\nname: old-team\nregion: teams\nkeywords: old, team\nsummary: an old team\nlinks:\nimportance: 2\nlast_confirmed: 2026-08-01\nstatus: live\n---\nTeam.\n' >"$T/teams/old-team.md"
+printf -- '---\nname: gone-sup\nregion: topics\nkeywords: gone, sup\nsummary: superseded long ago\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: superseded:fresh-topic\nsuperseded_on: 2026-10-10\n---\nOld.\n' >"$T/topics/gone-sup.md"
+printf -- '---\nname: new-sup\nregion: topics\nkeywords: new, sup\nsummary: superseded lately\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: superseded:fresh-topic\nsuperseded_on: 2026-10-20\n---\nNew.\n' >"$T/topics/new-sup.md"
+chmod 600 "$T"/*/*.md
+printf 'We still need stale-named next week.' | "$T/bin/mem" decide --time 2026-10-20T08:00Z --source chat >/dev/null
+MEM_NOW=2026-10-09T09:00Z "$T/bin/mem" ask open --id old-ask --who sam --what "old" --waiting-on dana >/dev/null
+MEM_NOW=2026-10-10T09:00Z "$T/bin/mem" ask close --id old-ask >/dev/null
+MEM_NOW=2026-10-19T09:00Z "$T/bin/mem" ask open --id new-ask --who sam --what "new" --waiting-on dana >/dev/null
+MEM_NOW=2026-10-20T09:00Z "$T/bin/mem" ask close --id new-ask >/dev/null
+MEM_NOW=2026-08-05T09:00Z "$T/bin/mem" sent --to sam --channel c --ref r --subject "august send" >/dev/null
+MEM_NOW=2026-09-05T09:00Z "$T/bin/mem" sent --to sam --channel c --ref r --subject "september send" >/dev/null
+for d in 01T08 01T20 02T08 20T08; do
+  MEM_NOW="2026-10-${d}:00Z" "$T/bin/mem" sweep-log --inboxes 2 --asks-touched 1 --free-pct 40 --swap-gb 1 --load 2 >/dev/null
+done
+"$T/bin/mem" set crons.sweep.schedule "*/20 * * * *" >/dev/null
+"$T/bin/mem" set machine.start.free_pct 50 >/dev/null
+SUM_BEFORE="$(tree_sum "$T")"
+GOT_BEFORE="$(ls "$WORK/jev-got" | wc -l | tr -d ' ')"
+DRY="$("$T/bin/mem" drain --dry-run)"; RC=$?
+check "drain --dry-run exits 0 and moves nothing (tree unchanged, no backup)" '[ "$RC" -eq 0 ] && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+check "the dry run does not call Jev" '[ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ]'
+check "the dry run names the rule-4 candidates: stale topics and teams, importance <= 3, not named lately" \
+  'for f in topics/stale-a topics/stale-keep topics/stale-border topics/dana-onboarding teams/old-team; do printf "%s" "$DRY" | grep -q "^candidate $f.md (rule 4" || exit 1; done'
+check "it never names a file named in the last 30 days of ledger, importance 4, fresh, rules or people" \
+  'for f in stale-named stale-important fresh-topic old-rule dana-smith; do ! printf "%s" "$DRY" | grep -q "^candidate .*/$f.md" || exit 1; done && ! printf "%s" "$DRY" | grep -q -e "rules/" -e "people/"'
+check "the dry run names rules 1, 2, 3 and 5 too" \
+  'printf "%s" "$DRY" | grep -q "^would clear ask old-ask" && ! printf "%s" "$DRY" | grep -q "clear ask new-ask" && printf "%s" "$DRY" | grep -q "^would archive ledger/sends-2026-08.md -> archive/2026-08/ledger/sends-2026-08.md" && ! printf "%s" "$DRY" | grep -q "sends-2026-09" && printf "%s" "$DRY" | grep -q "^would archive 3 sweep lines of ledger/sweeps-2026-10.jsonl" && printf "%s" "$DRY" | grep -q "^would archive topics/gone-sup.md" && ! printf "%s" "$DRY" | grep -q "new-sup"'
+OUT="$("$T/bin/mem" drain)"; RC=$?
+check "drain takes a backup first" '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | sed -n 1p | grep -q "^backup .meta/backups/20261023T090000Z.tar" && [ -f "$T/.meta/backups/20261023T090000Z.tar" ]'
+check "rule 4: Jev archive p >= 0.7 moves the file to the archive" \
+  '[ ! -e "$T/topics/stale-a.md" ] && [ -f "$T/archive/2026-10/topics/stale-a.md" ] && [ -f "$T/archive/2026-10/topics/dana-onboarding.md" ] && [ -f "$T/archive/2026-10/teams/old-team.md" ]'
+check "rule 4: Jev keep, or archive under 0.7, leaves the file and lists it for the digest" \
+  '[ -f "$T/topics/stale-keep.md" ] && [ -f "$T/topics/stale-border.md" ] && grep -q "topics/stale-keep.md: rule 4 candidate; Jev keep" "$T/.meta/digest-pending.md" && grep -q "topics/stale-border.md: rule 4 candidate; Jev archive, p(archive)=0.65" "$T/.meta/digest-pending.md"'
+check "every move is in archive/index.md and .meta/drain.log" \
+  'grep -q "^- 2026-10-23 archive/2026-10/topics/stale-a.md from topics/stale-a.md: rule 4" "$T/archive/index.md" && grep -q "archive topics/stale-a.md -> archive/2026-10/topics/stale-a.md: rule 4: confirmed 52 days ago; Jev archive p=0.90" "$T/.meta/drain.log" && grep -q "rule 4: topics/stale-border.md stays" "$T/.meta/drain.log"'
+check "rule 1: the ask closed > 7 days ago leaves state; the newer one stays; the ledger keeps both" \
+  '! grep -q old-ask "$T/state/open-asks.json" && grep -q new-ask "$T/state/open-asks.json" && grep -q "close | old-ask" "$T/ledger/asks-2026-10.md"'
+check "rule 2: a ledger month older than last month is archived; last month stays" \
+  '[ -f "$T/archive/2026-08/ledger/sends-2026-08.md" ] && [ ! -e "$T/ledger/sends-2026-08.md" ] && [ -f "$T/ledger/sends-2026-09.md" ]'
+check "rule 3: sweep lines > 14 days old go to the archive; one summary line per day stays" \
+  'python3 -I -c "import json,sys; live=[json.loads(l) for l in open(sys.argv[1])]; arch=open(sys.argv[2]).read().splitlines(); s=[r[\"day\"] for r in live if r.get(\"summary\")]; sys.exit(not (s==[\"2026-10-01\",\"2026-10-02\"] and len(arch)==3 and [r[\"time\"] for r in live if not r.get(\"summary\")]==[\"2026-10-20T08:00Z\"] and live[0][\"sweeps\"]==2))" "$T/ledger/sweeps-2026-10.jsonl" "$T/archive/2026-10/ledger/sweeps-2026-10.jsonl"'
+check "rule 5: superseded more than 7 days ago is archived; superseded lately stays" \
+  '[ -f "$T/archive/2026-10/topics/gone-sup.md" ] && [ -f "$T/topics/new-sup.md" ]'
+check "rule 6: rules, people, importance 4+, crons, machine and core are never moved" \
+  '[ -f "$T/rules/old-rule.md" ] && [ -f "$T/people/dana-smith.md" ] && [ -f "$T/topics/stale-important.md" ] && [ -f "$T/topics/stale-named.md" ] && grep -q sweep "$T/state/crons.json" && grep -q free_pct "$T/state/machine.json" && [ -f "$T/core/boot.md" ]'
+check "Jev was called with the bearer key, model jev-latest and the Choice options keep | archive | ask-owner" \
+  'python3 -I -c "import json,sys,glob; g=[json.load(open(f)) for f in sorted(glob.glob(sys.argv[1]+\"/*.json\"))]; b=[json.loads(x[\"raw\"]) for x in g]; sys.exit(not (len(g)==5 and all(x[\"auth\"]==\"Bearer test-key-not-real\" for x in g) and all(y[\"model\"]==\"jev-latest\" and sorted(y[\"questions\"][\"drain\"][\"criteria\"])==[\"archive\",\"ask-owner\",\"keep\"] and y[\"questions\"][\"drain\"][\"type\"]==\"choice\" for y in b)))" "$WORK/jev-got"'
+check "Jev gets no person name: dana and smith are masked to person, in the slug and the keywords" \
+  '! cat "$WORK"/jev-got/*.json | grep -qi -e dana -e smith && cat "$WORK"/jev-got/*.json | grep -q "person-onboarding"'
+check "Jev gets only slug, region, keywords, importance, the two ages and the size: no body, no summary" \
+  '! cat "$WORK"/jev-got/*.json | grep -q -e SECRETBODY -e "about stale" && python3 -I -c "import json,sys,glob; s=[sorted(json.loads(json.load(open(f))[\"raw\"])[\"state\"]) for f in glob.glob(sys.argv[1]+\"/*.json\")]; sys.exit(not all(x==[\"days_since_last_confirmed\",\"days_since_last_reference\",\"file_size_bytes\",\"importance\",\"keywords\",\"region\",\"slug\"] for x in s))" "$WORK/jev-got"'
+check "every Jev call is kept under .meta/jev/ with what was sent and what came back" \
+  '[ "$(ls "$T"/.meta/jev/*.json | wc -l | tr -d " ")" -eq 5 ] && python3 -I -c "import json,sys,glob; a=[json.load(open(f)) for f in glob.glob(sys.argv[1]+\"/*.json\")]; sys.exit(not all(x[\"sent\"][\"model\"]==\"jev-latest\" and x[\"response\"][\"answers\"][\"drain\"][\"choice\"] and x[\"status\"]==200 for x in a))" "$T/.meta/jev"'
+check "the key is never written into the tree" '! grep -rq test-key-not-real "$T"'
+check "after drain, check passes and MEMORY.md no longer lists the archived files" \
+  '"$T/bin/mem" check && ! grep -q "(topics/stale-a.md)" "$T/MEMORY.md"'
+check "a second drain finds nothing new to move" '"$T/bin/mem" drain | grep -q -e "nothing to drain" -e "^digest "'
+# Jev down: 429 on every try, then 500, then --no-jev, then no key at all. Nothing moves.
+T="$WORK/drain-down"
+fresh "$T"
+topic "$T" stale-x "stale, x" 3 2026-09-01
+topic "$T" stale-y "stale, y, why" 3 2026-09-01
+chmod 600 "$T"/topics/*.md
+echo 429 >"$WORK/jev-mode"
+GOT_BEFORE="$(ls "$WORK/jev-got" | wc -l | tr -d ' ')"
+OUT="$("$T/bin/mem" drain)"
+check "Jev 429: 3 retries (4 tries), then the candidates wait for the digest and nothing moves" \
+  '[ "$(( $(ls "$WORK/jev-got" | wc -l) - GOT_BEFORE ))" -eq 4 ] && [ -f "$T/topics/stale-x.md" ] && [ -f "$T/topics/stale-y.md" ] && grep -q "stale-x.md: rule 4 candidate; Jev failed: HTTP 429" "$T/.meta/digest-pending.md" && grep -q "stale-y.md: rule 4 candidate; Jev failed" "$T/.meta/digest-pending.md"'
+check "Jev 429: the failure is logged" 'grep -q "rule 4: Jev failed (HTTP 429)" "$T/.meta/drain.log"'
+echo 500 >"$WORK/jev-mode"
+check "Jev 500: nothing moves" '"$T/bin/mem" drain >/dev/null && [ -f "$T/topics/stale-x.md" ] && [ -f "$T/topics/stale-y.md" ]'
+echo normal >"$WORK/jev-mode"
+GOT_BEFORE="$(ls "$WORK/jev-got" | wc -l | tr -d ' ')"
+check "drain --no-jev never calls Jev and moves no rule-4 file" \
+  '"$T/bin/mem" drain --no-jev | grep -q "^digest topics/stale-x.md (rule 4; --no-jev)" && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && [ -f "$T/topics/stale-x.md" ]'
+check "with no key (no MEM_JEV_KEY, no Keychain item) nothing is sent and nothing moves" \
+  '(unset MEM_JEV_KEY; PATH="$WORK/nosec:$PATH"; /bin/mkdir -p "$WORK/nosec"; printf "#!/bin/sh\nexit 44\n" >"$WORK/nosec/security"; chmod +x "$WORK/nosec/security"; "$T/bin/mem" drain | grep -q "no Jev key") && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && [ -f "$T/topics/stale-x.md" ]'
+
+echo "== backup and unarchive"
+T="$WORK/backup"
+fresh "$T"
+MEM_NOW=2026-10-01T09:00Z "$T/bin/mem" backup >/dev/null
+MEM_NOW=2026-10-01T09:30Z "$T/bin/mem" backup --note "migration rollback; delete 7 days after the restart test on the owner's word" >/dev/null
+MEM_NOW=2026-10-05T09:00Z "$T/bin/mem" backup >/dev/null
+check "backup writes a mode 600 tar named by the UTC time and logs its sha256 and basis" \
+  '[ "$(mode_of "$T/.meta/backups/20261001T090000Z.tar")" = 600 ] && s="$(python3 -I -c "import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())" "$T/.meta/backups/20261005T090000Z.tar")" && grep -q "backup .meta/backups/20261005T090000Z.tar sha256=$s basis=kept 7 days" "$T/.meta/drain.log"'
+check "the tar holds the tree but not the other backups" \
+  'tar -tf "$T/.meta/backups/20261005T090000Z.tar" | grep -qx "MEMORY.md" && tar -tf "$T/.meta/backups/20261005T090000Z.tar" | grep -q "^state/cursors.json$" && ! tar -tf "$T/.meta/backups/20261005T090000Z.tar" | grep -q "^.meta/backups/"'
+OUT="$(MEM_NOW=2026-10-10T09:00Z "$T/bin/mem" backup)"
+check "backup prunes routine tars older than 7 days and logs each prune" \
+  '[ ! -e "$T/.meta/backups/20261001T090000Z.tar" ] && [ -f "$T/.meta/backups/20261005T090000Z.tar" ] && grep -q "prune .meta/backups/20261001T090000Z.tar (older than 7 days" "$T/.meta/drain.log"'
+check "a tar kept on the owner's word is never pruned automatically" '[ -f "$T/.meta/backups/20261001T093000Z.tar" ]'
+T="$WORK/drain"
+OUT="$("$T/bin/mem" unarchive stale-a)"
+check "unarchive moves a file back, refreshes last_confirmed and removes its index line" \
+  '[ -f "$T/topics/stale-a.md" ] && [ ! -e "$T/archive/2026-10/topics/stale-a.md" ] && grep -q "^last_confirmed: 2026-10-23" "$T/topics/stale-a.md" && ! grep -q "topics/stale-a.md from" "$T/archive/index.md" && grep -q "unarchive archive/2026-10/topics/stale-a.md -> topics/stale-a.md" "$T/.meta/drain.log"'
+check "unarchive lists the file in MEMORY.md again" 'grep -q "(topics/stale-a.md)" "$T/MEMORY.md"'
+check "unarchive refuses a name that is not archived, and a path" '! "$T/bin/mem" unarchive no-such-file && ! "$T/bin/mem" unarchive ../etc'
+unset MEM_NOW
 
 echo
 echo "result: $passed passed, $failed failed"
