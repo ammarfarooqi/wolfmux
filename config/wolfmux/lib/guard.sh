@@ -557,13 +557,14 @@ function lex(s, d,   n, p, c, c2, j, t, hn, hi, line, probe, body, start, strip)
 # --- one simple command: collect(d, i) puts its words in A[d,1..CM[d]] (flags AF, tokens CW) and its
 # redirections in CRD[d,1..CN[d]] (targets CRT); it returns the operator that ends it
 function collect(d, i,   n) {
-  n = NT[d]; CM[d] = 0; CN[d] = 0
+  n = NT[d]; CM[d] = 0; CN[d] = 0; CS[d] = i
   while (i <= n && TT[d, i] != "o") {
     if (TT[d, i] == "r") { CN[d]++; CRD[d, CN[d]] = i; CRT[d, CN[d]] = 0 }
     else if (TR[d, i]) CRT[d, CN[d]] = i
     else { CM[d]++; CW[d, CM[d]] = i; A[d, CM[d]] = TV[d, i]; AF[d, CM[d]] = TF[d, i] }
     i++
   }
+  CE[d] = i
   return i
 }
 function join(d, a, z,   t, k) { t = ""; for (k = a; k <= z; k++) t = t (k > a ? " " : "") A[d, k]; return t }
@@ -842,6 +843,24 @@ function rootrules(d, p, b, here,   m, k, w, v) {
     for (k = p + 1; k <= m; k++) if (RP[d, k] != "" && inroot(RP[d, k])) return R_ROOT
   }
   if (b ~ /^(cp|rsync|ditto)$/ && m > p && RP[d, m] != "" && inroot(RP[d, m])) return R_ROOT
+  return roottext(d, p, b)
+}
+# a read-only checkout whose path has a blank in it, written without quotes (rm -rf $ROOT/src): the shell splits it,
+# but the command still means that checkout (and would hit another folder). The words joined again, read as text.
+function roottext(d, p, b,   k, j, w, r, sp) {
+  sp = 0
+  for (k = 1; k <= NROOT; k++) if (index(ROOT[k], " ")) sp = 1
+  if (!sp) return ""
+  w = ""
+  for (k = CS[d]; k < CE[d]; k++) if (TT[d, k] == "r" || !isprose(TV[d, k], TF[d, k])) w = w " " TV[d, k]
+  w = tolower(w)
+  for (k = 1; k <= NROOT; k++) if (index(ROOT[k], " ")) w = rep(w, ROOT[k], "@root@")
+  if (!index(w, "@root@")) return ""
+  if (w ~ /(^| )(>|>>|>\||>&|<>) @root@/) return R_ROOT
+  gsub(/ (>|>>|>\||>&|<>|<|<&|<<<|<<) [^ ]*/, "", w)
+  if (w ~ /(^| )(cd|pushd)( -[a-z@]+)* @root@/ || w ~ /(^| )(-c ?|--git-dir[ =]|--work-tree[ =])@root@/) return R_ROOT
+  if (b ~ /^(rm|mv|rmdir|chmod|chown|ln|truncate|dd|tee|install)$/ || ((b == "sed" || b == "perl") && hasopt(d, p, "i", "--in-place"))) return R_ROOT
+  if (b ~ /^(cp|rsync|ditto)$/ && w ~ /@root@[^ ]*$/) return R_ROOT
   return ""
 }
 function lnrule(d, p, here,   m, k, w, r, l) {
