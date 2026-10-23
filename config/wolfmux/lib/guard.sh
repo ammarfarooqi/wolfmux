@@ -7,7 +7,8 @@
 # and a call that reaches outside is refused with a reason the model can act on.
 #
 #   changing files   only inside the worker's own worktree (and temporary directories)
-#   reading files    anywhere except other teammates' worktrees and teamctl's state
+#   reading files    anywhere except other teammates' worktrees, teamctl's state and the
+#                    memory folders of team memory (~/.wolfmux/memory, lib/memory.sh)
 #   shell commands   refused when they name another worktree, write into a checkout the
 #                    worker may only read, move or delete branches, switch to another
 #                    branch, touch git worktrees, push to main, or drive tmux
@@ -94,22 +95,50 @@ guard_strip_prose() {
       -e "s/$mark/\"/g"
 }
 
+# guard_home <command> — ~ and $HOME (also ${HOME}) spelled out as the home directory, so that
+# ~/.wolfmux/state and "$HOME/.wolfmux/memory" are the paths the tokens below look for. Only a ~
+# that starts a word, as the shell expands it (and a quoted one too: refusing more is the safe side).
+guard_home() {
+  local c="$1" h="${HOME%/}"
+  [ -n "$h" ] || {
+    printf '%s' "$c"
+    return 0
+  }
+  c="${c//\$\{HOME\}/$h}"
+  c="${c//\$HOME/$h}"
+  printf '%s' "$c" | LC_ALL=C /usr/bin/awk -v h="$h" '
+    { out = ""; line = $0
+      while (match(line, /(^|[[:space:]=:;&|(<>"\047`])~(\/|[[:space:];&|)"\047`]|$)/)) {
+        lead = substr(line, RSTART, 1); if (RSTART == 1 && substr(line, 1, 1) == "~") lead = ""
+        out = out substr(line, 1, RSTART - 1) lead h
+        line = substr(line, RSTART + length(lead) + 1)
+      }
+      print out line }'
+}
+
 # guard_shell <command> — prints a reason when the command reaches outside
 guard_shell() {
   local c word
+  # The memory folders of team memory are named by their text alone, before anything else: a
+  # command that spells .wolfmux/memory in any way is refused, quoted, in a heredoc or as prose.
+  case "$1" in *.wolfmux/memory*) printf "that command names a lead's private memory folder (~/.wolfmux/memory), which no worker reads." && return 0 ;; esac
   # Literal paths become tokens first, so no path can confuse a pattern below. A path can
   # be written in more than one way (as configured, with symlinks resolved, /private/tmp
-  # as /tmp, doubled slashes), so every spelling we know of is replaced.
-  c="$(guard_squeeze "$1")"
+  # as /tmp, doubled slashes, ~ or $HOME for the home directory), so every spelling we know
+  # of is replaced. What stays out of reach: a relative path after a cd (cd ~/.wolfmux &&
+  # cat memory/…) — the guard reads text, not what the shell will resolve (docs/SECURITY.md).
+  c="$(guard_squeeze "$(guard_home "$1")")"
   c="$(guard_tokenize "$c" @OWN@ "$GUARD_OWN" "${WOLFMUX_WORKTREE:-}")"
   c="$(guard_tokenize "$c" @TREES@ "$GUARD_TREES" "$WOLFMUX_DATA/worktrees")"
   c="$(guard_tokenize "$c" @STATE@ "$GUARD_STATE" "$WOLFMUX_DATA/state")"
+  c="$(guard_tokenize "$c" @MEMORY@ "$GUARD_MEMORY" "$WOLFMUX_DATA/memory")"
   c="$(guard_tokenize "$c" @ROOT@ "$GUARD_ROOT" "${WOLFMUX_ROOT:-}" "$GUARD_REPO")"
   c="$(guard_strip_prose "$c")"
   local edge='(^|[;&|(){}[:space:]])' git='git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:]]*)?)*[[:space:]]+'
 
   case "$c" in
     *@TREES@* | *@STATE@*) printf "that command names another teammate's worktree or teamctl's state." && return 0 ;;
+    *@MEMORY@*) printf "that command names a lead's private memory folder (~/.wolfmux/memory), which no worker reads." && return 0 ;;
   esac
   if printf '%s' "$c" | grep -Eq "${edge}tmux([[:space:]]|\$)"; then
     printf 'tmux belongs to teamctl; panes of other agents are not yours to read or type into.' && return 0
@@ -158,6 +187,7 @@ cmd_guard() {
   GUARD_OWN="$(cd "$WOLFMUX_WORKTREE" && pwd -P)" || return 0
   GUARD_TREES="$(guard_abspath "$WOLFMUX_DATA/worktrees" /)"
   GUARD_STATE="$(guard_abspath "$WOLFMUX_DATA/state" /)"
+  GUARD_MEMORY="$(guard_abspath "$WOLFMUX_DATA/memory" /)"
   GUARD_ROOT=""
   if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then GUARD_ROOT="$(cd "$WOLFMUX_ROOT" && pwd -P)"; fi
   # A teammate spawned with --repo has its worktree in another repository: that repository's
@@ -182,6 +212,9 @@ cmd_guard() {
       if guard_inside "$path" "$GUARD_TREES" || guard_inside "$path" "$GUARD_STATE"; then
         guard_deny "'$target' belongs to another teammate or to teamctl." && return 0
       fi
+      if guard_inside "$path" "$GUARD_MEMORY"; then
+        guard_deny "'$target' is in a lead's private memory folder; no worker writes there." && return 0
+      fi
       if [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT"; then
         guard_deny "'$target' is in the lead's checkout, which is read-only for you." && return 0
       fi
@@ -201,6 +234,8 @@ cmd_guard() {
       if guard_inside "$path" "$GUARD_OWN"; then return 0; fi
       if guard_inside "$path" "$GUARD_TREES" || guard_inside "$path" "$GUARD_STATE" || [ "$path" = "$GUARD_TREES" ] || [ "$path" = "$GUARD_STATE" ]; then
         guard_deny "'$target' is another teammate's worktree or teamctl's state; their work in progress is not yours to read."
+      elif guard_inside "$path" "$GUARD_MEMORY" || [ "$path" = "$GUARD_MEMORY" ] || guard_inside "$GUARD_MEMORY" "$path"; then
+        guard_deny "'$target' is (or holds) a lead's private memory folder (~/.wolfmux/memory), which no worker reads."
       fi
       ;;
     mcp__*)
@@ -213,6 +248,9 @@ cmd_guard() {
         if guard_inside "$path" "$GUARD_OWN"; then continue; fi
         if guard_inside "$path" "$GUARD_TREES" || guard_inside "$path" "$GUARD_STATE"; then
           guard_deny "'$target' is another teammate's worktree or teamctl's state." && return 0
+        fi
+        if guard_inside "$path" "$GUARD_MEMORY"; then
+          guard_deny "'$target' is in a lead's private memory folder." && return 0
         fi
         if { { [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT"; } ||
           { [ -n "$GUARD_REPO" ] && guard_inside "$path" "$GUARD_REPO"; }; } &&

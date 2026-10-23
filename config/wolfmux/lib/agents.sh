@@ -400,6 +400,10 @@ cmd_start() {
   fi
   require_metered_ok
   require_pin "$pin" "$MODEL_FAMILY" "$WOLFMUX_LEAD_ROLE"
+  # The conversation --continue would reopen, as the paths below find it: the lead's record, else what the team kept.
+  previous_session="$(reg_field "$WOLFMUX_LEAD_ROLE" session_id 2>/dev/null || true)"
+  [ -n "$previous_session" ] || previous_session="$(meta_get lead_session 2>/dev/null || true)"
+  memory_require_pinned "$WOLFMUX_LEAD_ROLE" "$resume" "$pin" "$previous_session" "$MODEL_FAMILY"
   # Here, in this shell: start_permitted runs in a substitution, where a refusal would only end the subshell.
   caller_require_proven
   founder="$(start_permitted)" || exit 77
@@ -792,7 +796,7 @@ path_prepend() {
 }
 
 build_role_prompt() {
-  local role="$1" kind workdir me lead repo
+  local role="$1" kind workdir me lead repo memdir
   kind="$(reg_field "$role" kind)"
   workdir="$(reg_field "$role" workdir)"
   repo="$(reg_field "$role" repo)"
@@ -845,6 +849,11 @@ build_role_prompt() {
   else
     printf 'Team protocol file is missing: %s/TEAM_PROTOCOL.md\n' "$WOLFMUX_HOME"
   fi
+  # The lead of the memory team, and nobody else: its folder, the rules and its card (lib/memory.sh)
+  if [ "$kind" = "lead" ] && memdir="$(memory_lead_dir "$role")"; then
+    printf '\n\n'
+    memory_prompt_block "$memdir"
+  fi
 }
 
 # kickoff_text <role> <beads-identity> [<provider>] — the inbox is addressed by identity (<team>.<role>
@@ -891,9 +900,10 @@ cmd_prompt() {
 # UserPromptSubmit. Nothing is added to ~/.claude/settings.json — this file is per
 # agent, written at run time, and goes when the team goes.
 write_agent_settings() {
-  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command=""
+  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command="" memdir=""
   /bin/mkdir -p "$STATE_DIR/settings"
   kind="$(reg_field "$role" kind)"
+  if [ "$kind" = "lead" ]; then memdir="$(memory_lead_dir "$role" || true)"; fi
   if notify_wanted "$kind"; then notify_command="\"$TEAMCTL_SELF\" _notify"; fi
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
   # Workers only: agent teams off, so a worker can never become a second manager.
@@ -909,7 +919,9 @@ write_agent_settings() {
   # Everyone, when the team's browser-writes policy says so (lib/policy.sh): an explicit
   # ALLOW rule for Chrome writes, so the permission check resolves before Claude Code's
   # auto-mode classifier ever runs on it (bypass mode does not switch that off).
-  "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" \
+  # The memory team's lead only (lib/memory.sh): Claude Code's auto memory is its private folder,
+  #   so the MEMORY.md there is what it loads at start (measured on Claude Code 2.1.308).
+  "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" --arg memdir "$memdir" \
     --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$(($(approval_timeout) + 30))" \
     --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" \
     --arg inbox_stop "\"$TEAMCTL_SELF\" _inbox-stop" --arg inbox_prompt "\"$TEAMCTL_SELF\" _inbox-prompt" \
@@ -931,12 +943,13 @@ write_agent_settings() {
     # It is NOT the role-level PermissionRequest hook above — different gate, different purpose,
     # kept as its own arm on purpose so a later edit cannot merge or drop one for the other.
     * (if $browser_allow == "allow"
-       then {permissions: {allow: ["mcp__claude-in-chrome__*"]}} else {} end)' >"$path"
+       then {permissions: {allow: ["mcp__claude-in-chrome__*"]}} else {} end)
+    * (if $memdir != "" then {autoMemoryDirectory: $memdir} else {} end)' >"$path"
   printf '%s\n' "$path"
 }
 
 cmd_run_agent() {
-  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id provider beads_workspace session_id
+  local root="${1:-}" role="${2:-}" resume=0 launcher family workdir prompt args permissions name model_id provider beads_workspace session_id first memdir
   [ -n "$root" ] && [ -n "$role" ] || die_usage "internal use: _run-agent <root> <role> [--continue]"
   if [ "${3:-}" = "--continue" ]; then resume=1; fi
   export WOLFMUX_ROOT="$root"
@@ -994,6 +1007,7 @@ cmd_run_agent() {
     printf "[wolfmux] key: '%s' -> %s   (a 401 in this pane means the key is rejected: teamctl doctor --probe)\n" "$PROVIDER_KEYCHAIN" "$PROVIDER_BASE_URL"
   fi
 
+  memdir="$(memory_lead_dir "$role" || true)" # the memory team's lead (lib/memory.sh), else empty
   case "$family" in
     codex)
       # TOML multi-line literal string; it cannot contain three single quotes.
@@ -1021,7 +1035,10 @@ $prompt
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
       session_id="$(reg_field "$role" session_id)"
       if [ "$resume" -eq 1 ]; then
-        if [ -z "$session_id" ]; then
+        if [ -z "$session_id" ] && [ -n "$memdir" ]; then
+          # start and restart refuse this before a pane exists (memory_require_pinned); a pane run by hand gets here.
+          die "the memory team's lead has no stored conversation id, and --continue would open the newest conversation in $workdir, which may be another lead's: its private memory would be read into that one. Pin one: teamctl restart $role --team $TEAM --resume <session-id>"
+        elif [ -z "$session_id" ]; then
           # A record from before conversation ids were stored.
           warn "no stored conversation id for '$role': resuming the newest transcript in $workdir. With another agent working in the same folder that may be its conversation, not this one. Pin one: teamctl restart $role --resume <session-id>"
           args+=(--continue)
@@ -1054,9 +1071,23 @@ $prompt
   esac
   # The lead of a team that another lead founded starts with its handover (both CLIs take
   # the first prompt as the last argument). Not on --continue: that conversation has it.
+  first=""
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && [ "$resume" -eq 0 ] && [ -n "$(reg_field "$role" handover)" ]; then
-    args+=("$(handover_text)")
+    first="$(handover_text)"
   fi
+  # The memory team's lead starts with its boot at EVERY launch: fresh, --continue, --resume and restore alike, so a
+  # lead with no kickoff and no handover does not sit idle (lib/memory.sh). One first prompt, the boot before the
+  # handover. A resumed Codex lead is the exception: `resume --last` would read the prompt as a conversation id.
+  if [ -n "$memdir" ]; then
+    if [ "$family" = "codex" ] && [ "$resume" -eq 1 ]; then
+      printf '[wolfmux] team memory: a resumed Codex lead is given no first prompt; tell it to run %s/bin/mem boot\n' "$memdir"
+    elif [ -n "$first" ]; then
+      first="$(memory_boot_text "$memdir") After that, your handover: $first"
+    else
+      first="$(memory_boot_text "$memdir")"
+    fi
+  fi
+  if [ -n "$first" ]; then args+=("$first"); fi
   # The model pins and policy this pane inherited were frozen into the tmux server's environment
   # when the team started (the environment outranks the config file). The record already says which
   # model this agent runs; the launcher reads the config file afresh for whatever else it needs.
@@ -1228,6 +1259,7 @@ cmd_restart() {
     agent_adopt_live "$role" "${MT_MODEL_AT:-}"
   fi
   require_pin "$pin" "$family" "$role"
+  memory_require_pinned "$role" "$resume" "$pin" "$(reg_field "$role" session_id)" "$family"
   workdir="$(reg_field "$role" workdir)"
   [ -d "$workdir" ] || die "cannot restart '$role': its working directory is gone ($workdir)"
   SESSION="$(session_name_for_project)"
@@ -1824,7 +1856,7 @@ _purge_team() {
 }
 
 cmd_destroy() {
-  local remove_worktrees=0 assume_yes=0 purge=0 force=0 role
+  local remove_worktrees=0 assume_yes=0 purge=0 force=0 role purge_memory=0
   PURGE_TRANSCRIPTS=1
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1832,12 +1864,14 @@ cmd_destroy() {
       --purge) purge=1 ;;
       --force) force=1 ;;
       --keep-transcripts) PURGE_TRANSCRIPTS=0 ;;
+      --memory) purge_memory=1 ;;
       --yes | -y) assume_yes=1 ;;
-      *) die_usage "usage: teamctl destroy [--worktrees | --purge [--force] [--keep-transcripts]] [--yes]" ;;
+      *) die_usage "usage: teamctl destroy [--worktrees | --purge [--force] [--keep-transcripts] [--memory]] [--yes]" ;;
     esac
     shift
   done
   [ "$force" -eq 0 ] || [ "$purge" -eq 1 ] || die_usage "--force belongs to --purge (destroy alone never discards work)"
+  [ "$purge_memory" -eq 0 ] || [ "$purge" -eq 1 ] || die_usage "--memory belongs to --purge (destroy alone never deletes a lead's memory)"
   require_tools
   load_project
   require_manager destroy
@@ -1854,10 +1888,18 @@ cmd_destroy() {
     elif [ "$force" -ne 1 ] && [ "$assume_yes" -ne 1 ]; then
       confirm "Delete team '$TEAM'?" || die "nothing was deleted (pass --yes to skip this question)"
     fi
+    # The lead's private memory folder (lib/memory.sh) is not the team's to lose with it: it goes only with --memory,
+    # and only once its name is typed, asked here, before anything is deleted.
+    if [ "$purge_memory" -eq 1 ]; then
+      memory_purge_confirm "$TEAM"
+    elif [ -d "$(memory_dir_for "$TEAM")" ]; then
+      say "  Kept: the lead's memory folder $(short_path "$(memory_dir_for "$TEAM")") (delete it too: add --memory)"
+    fi
     ensure_state_dirs
     lock_acquire
     _purge_team
     lock_release
+    if [ "$purge_memory" -eq 1 ]; then memory_purge "$TEAM"; fi
     if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then /bin/rmdir "$STATE_DIR" 2>/dev/null || true; fi # only when empty
     say "team '$TEAM' is gone. Freed about $(human_size "$PURGE_KB")."
     say "(commits of the deleted branches leave .git when git next collects garbage; now: git gc --prune=now)"
