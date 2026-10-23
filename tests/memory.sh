@@ -90,8 +90,8 @@ as_agent() { # <team> <role> <teamctl args…>: what that agent's own pane runs
 
 passed=0
 failed=0
-check() { # <description> <command string>
-  if eval "$2" >"$WORK/check.out" 2>&1; then
+check() { # <description> <command string>: in a subshell, so an exit in it fails this check, not the suite
+  if (eval "$2") >"$WORK/check.out" 2>&1; then
     passed=$((passed + 1))
     printf '  pass  %s\n' "$1"
   else
@@ -287,7 +287,7 @@ check "  ... warns when the lead runs Codex (no autoMemoryDirectory; resume --la
   'teamctl memory status 2>&1 | grep -q "the lead of mem runs Codex"'
 cat "$WORK/lead.json" >"$(STATE)/teams/mem/agents/lead.json"
 check "teamctl memory check runs mem check and passes its exit code" \
-  'teamctl memory check | grep -q "0 problems" && FAKE_MEM_CHECK_RC=1 teamctl memory check >/dev/null 2>&1; [ $? -eq 1 ]'
+  'teamctl memory check | grep -q "0 problems" && { FAKE_MEM_CHECK_RC=1 teamctl memory check >/dev/null 2>&1; [ $? -eq 1 ]; }'
 check "check (it writes, and prints names) and path are the owner's: a worker and the other team's lead get 77" \
   'for who in "mem w1" "other lead"; do for c in check path; do as_agent $who memory $c >"$WORK/o" 2>&1; [ $? -eq 77 ] && ! grep -qF "$DIR" "$WORK/o" || { echo "not refused: $who memory $c"; exit 1; }; done; done'
 check "  ... the mem lead runs both: path is the folder, check passes on mem check's answer" \
@@ -456,7 +456,7 @@ timed() { # <limit ms> <allow|deny> <command>: teamctl _guard decides so, in und
   t0="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000')"
   if printf '%s' "$input" | TEAM_ROLE=w1 WOLFMUX_TEAM=mem WOLFMUX_ROOT="$PROJECT" WOLFMUX_WORKTREE="$W1" WOLFMUX_BRANCH="$branch" "$REPO/bin/teamctl" _guard | grep -q '"deny"'; then got=deny; fi
   t1="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000')"
-  [ "$got" = "$2" ] && [ $((t1 - t0)) -lt "$1" ] || { printf '%s in %s ms: %s\n' "$got" $((t1 - t0)) "$3" | cut -c1-160 && return 1; }
+  [ "$got" = "$2" ] && [ $((t1 - t0)) -lt "$1" ] || { printf '%s in %s ms (%s bytes): %s\n' "$got" $((t1 - t0)) "${#3}" "$3" | head -1 | cut -c1-160 && return 1; }
 }
 B1="cat $MEM; cd /tmp; cd /usr; cd /var; cd /etc; sh -c 'ls"
 P99="prettier --write" P101="prettier --write"
