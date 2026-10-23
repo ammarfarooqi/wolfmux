@@ -609,7 +609,7 @@ guard_shell() {
   # claude --resume <id> reads that conversation itself, a lead's too (the memory lead's holds its card after mem
   # boot), where a worker's own read of the folder is refused. Read where it runs as a command (bare, by a path,
   # quoted, after env or X=1), in the command as guard_follow spelled it out: one line, ";" between commands.
-  local cmd_start='(^|[;&|()])[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|exec|command|builtin|nohup|npx|bunx|sudo|time|nice|!|\{|then|do|else)[[:space:]]+)*'
+  local cmd_start='(^|[;&|()])[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|exec|command|builtin|nohup|npx|bunx|sudo|time|nice|xargs|g?timeout[[:space:]]+[0-9.]+[smhd]?|!|\{|then|do|else)[[:space:]]+)*'
   if printf '%s' "$followed" | grep -Eq "${cmd_start}([^[:space:];&|()]*/)?claude[[:space:]]([^;&|()]*[[:space:]])?(--resume|--continue|--session-id|-[A-Za-z]*[cr][A-Za-z]*)([[:space:]=]|\$)"; then
     printf "that command resumes a Claude Code conversation (claude --resume, -r, --continue, -c, --session-id), which reads it whoever's it is. A worker never resumes a conversation; ask the lead." && return 0
   fi

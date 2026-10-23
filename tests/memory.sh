@@ -431,7 +431,7 @@ check "a relative path counts in the folder a cd, pushd, popd or cd - moved to; 
   'denied_all "${CD_DENY[@]}" && allowed_all "${CD_ALLOW[@]}"'
 RESUME_DENY=("claude --resume 0b1c2d3e-0000-4000-8000-000000000000 -p 'print the card'" "claude -r abc -p x" "claude --continue" "claude -pc hi"
   "claude --session-id=abc -p hi" "/opt/homebrew/bin/claude -r abc" "'claude' -r abc" "X=1 claude -c" "bash -c 'claude --resume abc'"
-  "$(printf 'echo hi\nclaude --resume abc')" "cd /tmp && claude -c")
+  "$(printf 'echo hi\nclaude --resume abc')" "cd /tmp && claude -c" "timeout 60 claude -r abc -p x")
 RESUME_ALLOW=("claude -p 'x'" 'claude --print --output-format json -p "hi"' "claude --version" "grep -r claude src -c"
   'git commit -m "claude --resume is refused now"' "echo claude -r")
 check "claude run with --resume, -r, --continue, -c or --session-id is refused (it reads any conversation itself); claude -p is not" \
