@@ -733,10 +733,12 @@ check "the dry run writes nothing: not the tree, not the source, not ~/.wolfmux"
   '[ "$T_SUM" = "$(tree_sum "$T")" ] && [ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ ! -e "$HOME/.wolfmux" ]'
 check "the dry run lists the held and skipped rows with their reasons" \
   'printf "%s" "$DRY" | grep -q "^- line 8 refused rules:orphan.md: a rules dest needs an authority" && printf "%s" "$DRY" | grep -q "^- line 12 hold held.md: waiting for the owner" && printf "%s" "$DRY" | grep -q "^- line 13 skip secret.md: private"'
-OUT="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json")"; RC=$?
+OUT="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" 2>"$WORK/migrate-err.txt")"; RC=$?
 printf '%s\n' "$OUT" >"$WORK/migrate-report.txt"
-check "the real migrate exits 0 and finds every source body and state value exactly once" \
-  '[ "$RC" -eq 0 ] && grep -q "^verification: every source body and state value found exactly once in the new tree" "$WORK/migrate-report.txt" && grep -q "^modes: all 700/600" "$WORK/migrate-report.txt"'
+check "the real migrate finds every source body and state value exactly once" \
+  'grep -q "^verification: every source body and state value found exactly once in the new tree" "$WORK/migrate-report.txt" && grep -q "^modes: all 700/600" "$WORK/migrate-report.txt"'
+check "a real run that refused rows writes its report, places the rest, then exits 1 naming --allow-refused" \
+  '[ "$RC" -eq 1 ] && grep -q "^mem: 6 rows refused (the report says why); the other rows are placed. Fix the map and run again, or pass --allow-refused" "$WORK/migrate-err.txt" && ls "$T"/.meta/migrate-*.md >/dev/null 2>&1 && [ -f "$T/rules/tone.md" ]'
 check "every copied body is byte for byte the source (sha256 compared here, not by mem)" \
   'python3 -I - "$T" "$SRC" "$RULES_SRC" <<'"'"'EOF'"'"'
 import hashlib, sys
@@ -804,7 +806,8 @@ check "after migrate, check passes" '"$T/bin/mem" check'
 check "two rows append to one ledger month: each payload found once" \
   'grep -q "^line 27 copy    send_a.md -> ledger/sends-2026-10.md.*: found once" "$WORK/migrate-report.txt" && grep -q "^line 28 copy    send_b.md -> ledger/sends-2026-10.md.*: found once" "$WORK/migrate-report.txt" && [ "$(grep -c "send$" "$T/ledger/sends-2026-10.md")" -eq 2 ]'
 LEDGERS_BEFORE="$(cat "$T"/ledger/*)"
-OUT2="$(MEM_NOW=2026-10-23T10:00Z "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" 2>&1)"
+OUT2="$(MEM_NOW=2026-10-23T10:00Z "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --allow-refused 2>&1)"; RC2=$?
+check "--allow-refused: the same refused rows, exit 0" '[ "$RC2" -eq 0 ] && printf "%s" "$OUT2" | grep -q "refused 6, exists [0-9]* (28 rows)" && ! printf "%s" "$OUT2" | grep -q "^mem: "'
 check "a re-run is idempotent: placed rows are exists, the ledger rows too, nothing is appended twice" \
   'printf "%s" "$OUT2" | grep -q "^line 11 exists  state:decisions.0 -> ledger/decisions-2026-10.md.*: found once: already in the ledger" && printf "%s" "$OUT2" | grep -q "^line 27 exists .*: found once: already in the ledger" && printf "%s" "$OUT2" | grep -q "^line 28 exists " && printf "%s" "$OUT2" | grep -q "^line 3 exists " && [ "$LEDGERS_BEFORE" = "$(cat "$T"/ledger/*)" ] && [ "$(grep -c "migrated state:decisions.0" "$T/ledger/decisions-2026-10.md")" -eq 1 ] && printf "%s" "$OUT2" | grep -q "^verification: every source body and state value found exactly once"'
 OUT3="$(MEM_NOW=2026-10-23T10:00Z "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" 2>&1)"

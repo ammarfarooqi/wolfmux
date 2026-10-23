@@ -99,7 +99,7 @@ USAGE = """usage: mem [--root <dir>] <command> [options]
   erase <subject> [--confirm <count the listing printed>]
   purge [--confirm] <archived name | YYYY-MM>...
   migrate --from <dir> --map <csv> [--rules-from <dir>] [--claude-mem-from <dir>] [--state <json>]
-      [--dry-run]
+      [--dry-run] [--allow-refused]
   status
 
 The tree: --root <dir>, else $MEM_ROOT, else the folder above this script.
@@ -2757,6 +2757,11 @@ def cmd_migrate(tree, args):
         write_file(tree, rel, report.encode("utf-8"), expect=MISSING)
         run_check(tree, now())
     sys.stdout.write(report)
+    refused = sum(1 for item in items if item["status"] == "refused")
+    if refused and not args.dry_run and not args.allow_refused:
+        sys.stderr.write("mem: %d row%s refused (the report says why); the other rows are placed. "
+                         "Fix the map and run again, or pass --allow-refused\n" % (refused, "" if refused == 1 else "s"))
+        return EXIT_REFUSED
     return 1 if failures else 0
 
 
@@ -2925,6 +2930,7 @@ def build_parser():
     p.add_argument("--claude-mem-from", dest="claude_mem_from")
     p.add_argument("--state")
     p.add_argument("--dry-run", dest="dry_run", action="store_true")
+    p.add_argument("--allow-refused", dest="allow_refused", action="store_true")
     return parser
 
 

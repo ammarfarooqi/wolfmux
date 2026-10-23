@@ -169,3 +169,8 @@ The report has one line per row with its status: copy, pointer, hold (the map ho
 skip, refused (the row breaks this contract; the reason says what to change) or exists (an
 earlier run placed it). It ends with `## Summary`: the counts by status, then the refusal
 reasons with their values taken out, each with its count and line numbers.
+
+Several rows may append to one ledger month; any other dest takes one row. A ledger row whose
+payload the ledger already holds byte for byte is `exists`, so a re-run appends nothing. A
+real run that refused any row writes its report, then exits 1 unless `--allow-refused` is
+given; a dry run exits 0. A re-run in the same second writes `migrate-<UTC>-2.md`.
