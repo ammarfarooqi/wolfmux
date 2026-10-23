@@ -29,7 +29,12 @@ rules, and "Run `<dir>/bin/mem boot` before anything else, and again after every
 first prompt at EVERY launch: `Team memory is on. Run <dir>/bin/mem boot, read what it prints, re-create
 the crons it lists, then read your Beads inboxes.` "That lead" means: the lead of the named team, while
 the owner founded that team (`team_founder` is the operator) and the folder's `bin/mem` can run. A team
-another lead founds under the same name after a `destroy --purge` or a `finish` gets nothing. Its
+another lead founds under the same name after a `destroy --purge` or a `finish` gets nothing. No
+restart, restore or model change moves a team's founder (`lead_restore` carries it on), so `enable`
+refuses a team an agent founded rather than promise a memory its lead would never get; `teamctl memory
+adopt <team>`, the owner's alone (`require_operator`), makes the owner that team's founder first (the
+lead's `spawned_by` and `meta.json`'s `founder`), logged in `team-memory.jsonl` and the team's event log,
+and the founding agent loses what a founder may do while the lead is down. Its
 `--continue` is refused while no conversation id is stored. Workers are refused the folder, and the
 folder of the leads' conversations, by the worktree guard. `teamctl memory check`, `teamctl memory path`
 and `teamctl capture` of that lead's pane are the owner's (and, for `check` and `path`, that lead's).

@@ -104,9 +104,10 @@ memory_prompt_block() {
   printf 'Run `%s/bin/mem boot` before anything else, and again after every compaction. The card wins over a re-sent handover on HOW to work; the handover is a task.\n' "$dir"
 }
 
-# memory_log <action> <team> <previous> — one line in the project's team-memory.jsonl and one in the
-# event log, BEFORE the policy moves: a change of who keeps private notes that nobody can look up is
-# not made (the steward's record works the same way, lib/policy.sh).
+# memory_log <action> <team> <previous> [<event detail>] — one line in the project's team-memory.jsonl and one in
+# the event log, BEFORE the policy moves: a change of who keeps private notes that nobody can look up is
+# not made (the steward's record works the same way, lib/policy.sh). With an event detail (adopt), the event
+# is that action, not a policy change.
 memory_log() {
   local file="$PROJECT_STATE/team-memory.jsonl" by
   by="${EVENT_BY:-$(caller_identity 2>/dev/null || printf operator)}"
@@ -117,7 +118,11 @@ memory_log() {
   } 2>/dev/null; then
     die "the team-memory record cannot be written ($(short_path "$file")); the policy was not changed."
   fi
-  EVENT_BY="$by" event_log policy "" "team-memory=$2 (was $3; $1)" || true
+  if [ -n "${4:-}" ]; then
+    EVENT_BY="$by" event_log "$1" "" "$4" || true
+  else
+    EVENT_BY="$by" event_log policy "" "team-memory=$2 (was $3; $1)" || true
+  fi
 }
 
 # memory_may_disable — you, or the lead of the memory team itself (proven in its own pane)
@@ -146,7 +151,7 @@ memory_copy_skeleton() {
 }
 
 memory_enable() {
-  local team="$1" skel="$WOLFMUX_HOME/memory-skeleton" dir previous teams id
+  local team="$1" skel="$WOLFMUX_HOME/memory-skeleton" dir previous teams id founder
   require_operator "memory enable" "a private memory folder for one team's lead of this project (policy team-memory)" \
     "nothing to set: teamctl memory status says whether it is on. If your team needs it, tell the human"
   valid_team_name "$team" || die_usage "$(team_name_error "$team")"
@@ -155,6 +160,12 @@ memory_enable() {
     *" $team "*) ;;
     *) die_usage "team-memory: '$team' is not a team of this project (teams: ${teams% })" ;;
   esac
+  # A memory is handed only to a lead you started (memory_lead_dir), and a team keeps its founder through every
+  # restart, restore and model change (lead_restore): on a team an agent founded it would never reach the lead.
+  founder="$( (team_paths "$team" && team_founder) 2>/dev/null || true)"
+  if [ -n "$founder" ] && [ "$founder" != "operator" ]; then
+    die "team $team was founded by $founder, not by you, and a team memory is only ever handed to the lead of a team you founded: its lead would never get it, at any restart. Make the team yours first: teamctl memory adopt $team   then again: teamctl memory enable $team   (nothing was changed)"
+  fi
   dir="$(memory_dir_for "$team")"
   if [ -d "$dir" ]; then
     say "folder:      $(short_path "$dir")   (kept as it is: an existing folder is never overwritten)"
@@ -233,7 +244,7 @@ memory_status() {
   fi
   founder="$( (team_paths "$team" && team_founder) 2>/dev/null || true)"
   if [ -n "$founder" ] && [ "$founder" != "operator" ]; then
-    warn "team $team was started by $founder, not by you: its lead gets no memory. Start the team yourself to give it one."
+    warn "team $team was founded by $founder, not by you: its lead gets no memory, and no restart or restore changes a team's founder. Make the team yours: teamctl memory adopt $team   (yours alone)"
   fi
   family="$("$JQ_BIN" -r '.family // empty' "$(memory_team_state "$team")/agents/$WOLFMUX_LEAD_ROLE.json" 2>/dev/null || true)"
   if [ "$family" = "codex" ]; then
@@ -317,6 +328,37 @@ memory_require_pinned() {
   die "$(memory_unpinned_reason "$team" "$ROOT") Name the conversation: teamctl restart $1 --team ${TEAM:-$WOLFMUX_DEFAULT_TEAM} --resume <session-id> (teamctl status --json shows the ids), or start it fresh$([ "$team" = "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" ] && printf ': its memory brings it back up to date (mem boot)')."
 }
 
+# memory_adopt <team> — `teamctl memory adopt <team>`: the team becomes yours, as if you had founded it, so that its
+# lead may be given team memory (memory_enable refuses a team an agent founded). The lead's record (spawned_by) and
+# meta.json (founder, kept for when that record is gone) both say operator from now on; every later start, restart
+# and restore carries that on (lead_restore). The founding agent loses what a founder may do while the lead is down
+# (FOUNDER_COMMANDS). Logged in team-memory.jsonl and the team's event log, and you are told. Yours alone.
+memory_adopt() {
+  local team="$1" teams founder
+  require_operator "memory adopt" "who founded a team of this project (a founder acts on it while its lead is down, and only a team you founded may keep team memory)" \
+    "nothing to adopt: a team's founder is the human's to change. If your team needs it, tell the human"
+  valid_team_name "$team" || die_usage "$(team_name_error "$team")"
+  teams="$(team_list | tr '\n' ' ')"
+  case " $teams " in
+    *" $team "*) ;;
+    *) die_usage "memory adopt: '$team' is not a team of this project (teams: ${teams% })" ;;
+  esac
+  team_paths "$team"
+  founder="$(team_founder)"
+  if [ "$founder" = "operator" ]; then
+    say "team $team is already yours (you founded it): nothing to adopt."
+    return 0
+  fi
+  memory_log adopt "$team" "$founder" "team $team adopted by the human: founder $founder -> operator"
+  lock_acquire
+  if reg_exists "$WOLFMUX_LEAD_ROLE"; then reg_set "$WOLFMUX_LEAD_ROLE" spawned_by operator; fi
+  meta_put founder operator
+  lock_release
+  say "founder:     team $team is yours now (was $founder): $founder no longer acts on it as its founder."
+  say "next:        teamctl memory enable $team   gives its lead team memory, at its next restart"
+  (WOLFMUX_TEAM="$team" notify_deliver "$WOLFMUX_LEAD_MARK you adopted team '$team', which $founder founded: it is yours now." >/dev/null 2>&1) || true
+}
+
 # memory_policy_set <value> — `teamctl policy team-memory <team>|off`, the same as enable and disable
 memory_policy_set() {
   if [ "$1" = "off" ]; then memory_disable; else memory_enable "$1"; fi
@@ -356,7 +398,7 @@ memory_purge() {
   fi
 }
 
-# teamctl memory [status|enable <team>|disable|path|check]
+# teamctl memory [status|enable <team>|disable|adopt <team>|path|check]
 cmd_memory() {
   local sub="${1:-status}"
   [ "$#" -eq 0 ] || shift
@@ -375,6 +417,10 @@ cmd_memory() {
       [ "$#" -eq 0 ] || die_usage "usage: teamctl memory disable   (it turns off whichever team has it)"
       memory_disable
       ;;
+    adopt)
+      [ "$#" -eq 1 ] || die_usage "usage: teamctl memory adopt <team>   (yours alone)"
+      memory_adopt "$1"
+      ;;
     path)
       [ "$#" -eq 0 ] || die_usage "usage: teamctl memory path"
       memory_path
@@ -383,6 +429,6 @@ cmd_memory() {
       [ "$#" -eq 0 ] || die_usage "usage: teamctl memory check"
       memory_check
       ;;
-    *) die_usage "usage: teamctl memory [status | enable <team> | disable | path | check]" ;;
+    *) die_usage "usage: teamctl memory [status | enable <team> | disable | adopt <team> | path | check]" ;;
   esac
 }

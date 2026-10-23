@@ -724,12 +724,18 @@ teamctl restart lead --team communication-management --resume <its id>   # the l
 teamctl memory disable                           # the human, or that lead itself: policy off, the folder stays
 teamctl memory path                              # the human, or that lead itself: the folder
 teamctl memory check                             # the human, or that lead itself: <folder>/bin/mem check
+teamctl memory adopt <team>                      # the human only: a team an agent founded becomes the human's
 ```
 
 The folder is `~/.wolfmux/memory/<project>/<team>/` (mode 700), copied once from the skeleton that
 `install.sh` puts in `~/.config/wolfmux/memory-skeleton/`. That team's lead, and nobody else, gets the
 three things below, and only while the human founded that team (a team another lead founds under the
-same name after a purge gets nothing) and the folder's `bin/mem` can run:
+same name after a purge or a `finish` gets nothing) and the folder's `bin/mem` can run. A team keeps its
+founder through every restart, restore and model change, so `enable` refuses a team an agent founded
+instead of promising a memory its lead would never get. `teamctl memory adopt <team>` makes such a team
+the human's first: the lead's record and the team's `meta.json` say `operator` from then on, the founding
+agent loses what a founder may do while the lead is down, and it is logged in `team-memory.jsonl` and the
+team's event log. Then `enable` works:
 
 - the folder as Claude Code's `autoMemoryDirectory`, so its `MEMORY.md` loads at every start;
 - a short "Team memory" block at the end of its system prompt: the folder, the rule (private to that
@@ -781,7 +787,7 @@ team's lead runs Codex; move it back with `teamctl model lead opus --team <team>
 | `teamctl restart <role> [--model <model>] [--continue] [--resume <session-id>]` | same worktree and branch, on its recorded model; `--model` records and uses a different model. `--continue` resumes that agent's own conversation, `--resume` the one you name; both require the same CLI family. Without either it starts a new one |
 | `teamctl model <role> <model> [--team <name>] [--now]` | record the model for the next start, restart or restore. `--now` also switches a Claude agent by a resume-restart when it is between turns, has a recorded conversation id, and nobody is at its pane. An unsafe switch waits until the next restart, with a reason printed. Same model keys as `spawn` |
 | `teamctl policy lead-model <model>\|default` | only the human may set this project-wide default for new leads. Default Opus, or `WOLFMUX_LEAD_MODEL` when set; `default` returns to that config value. Existing teams keep their lead's model |
-| `teamctl memory [status]` · `teamctl memory enable <team>` · `teamctl memory disable` · `teamctl memory path` · `teamctl memory check` | team memory, see [Team memory](#team-memory-one-leads-private-notes). `status` anyone; `enable` the human only (77 for an agent); `disable` the human or the memory team's own lead; `path` prints the folder (exit 1 when off) and `check` runs the folder's own `mem check` and passes its exit code: both the human's or the memory team's own lead's only (77 for anyone else; `check` writes the index and prints names) |
+| `teamctl memory [status]` · `teamctl memory enable <team>` · `teamctl memory adopt <team>` · `teamctl memory disable` · `teamctl memory path` · `teamctl memory check` | team memory, see [Team memory](#team-memory-one-leads-private-notes). `status` anyone; `enable` the human only (77 for an agent; refused for a team an agent founded); `adopt` the human only (77 for an agent): the team's founder becomes the human, logged; `disable` the human or the memory team's own lead; `path` prints the folder (exit 1 when off) and `check` runs the folder's own `mem check` and passes its exit code: both the human's or the memory team's own lead's only (77 for anyone else; `check` writes the index and prints names) |
 | `teamctl policy team-memory <team>\|off` | project-wide, default `off`: the same as `memory enable` / `memory disable` |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | for debugging: the pane notices filed for a role, oldest first. Default: the lead of this team. They are not counted in the status bar (the `📨` number is your unread Beads messages); reading them does not change whether the agent has had them. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |

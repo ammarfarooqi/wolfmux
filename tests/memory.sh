@@ -486,6 +486,42 @@ teamctl restart lead --team mem >/dev/null 2>&1
 check "  ... restarted without it (its settings carry no autoMemoryDirectory): the pane is an ordinary pane again" \
   'launched_after mem lead "$BEFORE" && sleep 1 && settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not" && as_agent other lead capture lead --team mem >/dev/null'
 
+echo "== enable refuses a team an agent founded; adopt makes it yours"
+as_agent other lead start opus --team agt --no-attach --skip-beads >/dev/null 2>&1
+ADIR="$WOLFMUX_DATA/memory/$KEY/agt"
+OUT="$(teamctl memory enable agt 2>&1)"
+check "teamctl memory enable on a team the other lead founded: refused with the reason and the way out, nothing changed" \
+  '[ "$(record lead agt | jq -r .spawned_by)" = other.lead ] && ! teamctl memory enable agt >/dev/null 2>&1 &&
+   printf "%s" "$OUT" | grep -q "founded by other.lead, not by you" && printf "%s" "$OUT" | grep -q "teamctl memory adopt agt" &&
+   [ ! -d "$ADIR" ] && [ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ]'
+check "  ... and teamctl policy team-memory agt is refused the same way" \
+  '! teamctl policy team-memory agt >"$WORK/o" 2>&1 && grep -q "teamctl memory adopt agt" "$WORK/o" && [ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ]'
+check "adopt is yours alone: the founding lead and the team's own lead get 77, the founder stays" \
+  'as_agent other lead memory adopt agt >/dev/null 2>&1; [ $? -eq 77 ] && as_agent agt lead memory adopt agt >/dev/null 2>&1; [ $? -eq 77 ] &&
+   [ "$(record lead agt | jq -r .spawned_by)" = other.lead ] && [ "$(jq -r .founder "$(STATE)/teams/agt/meta.json")" = other.lead ]'
+: >"$WORK/tty"
+check "you adopt it: the lead record and meta.json say operator, it is logged twice, and you are told" \
+  'teamctl memory adopt agt >/dev/null && [ "$(record lead agt | jq -r .spawned_by)" = operator ] && [ "$(jq -r .founder "$(STATE)/teams/agt/meta.json")" = operator ] &&
+   jq -e "select(.action == \"adopt\" and .team == \"agt\" and .previous == \"other.lead\" and .by == \"operator\")" "$(STATE)/team-memory.jsonl" &&
+   jq -e "select(.type == \"adopt\")" "$(STATE)/teams/agt/events.jsonl" && grep -q "adopted team" "$WORK/tty"'
+check "  ... adopt again: nothing to adopt; a team you founded is said to be yours" \
+  'teamctl memory adopt agt | grep -q "already yours" && teamctl memory adopt nosuchteam >/dev/null 2>&1; [ $? -eq 64 ]'
+check "  ... now enable is accepted, and a restart keeps you the founder and gives its lead the memory" \
+  'teamctl memory enable agt >/dev/null && [ -x "$ADIR/bin/mem" ] && BEFORE="$(launches agt lead)" && teamctl restart lead --team agt >/dev/null 2>&1 &&
+   launched_after agt lead "$BEFORE" && [ "$(record lead agt | jq -r .spawned_by)" = operator ] && [ "$(settings_of lead agt | jq -r .autoMemoryDirectory)" = "$ADIR" ]'
+
+echo "== no owner, no memory: after finish too"
+teamctl memory enable mem >/dev/null 2>&1
+teamctl finish --team mem >/dev/null 2>&1
+BEFORE="$(launches mem lead)"
+as_agent other lead start opus --team mem --no-attach --skip-beads >"$WORK/o" 2>&1
+check "a mem team that another lead founds after finish gets no block, no setting, no boot (the policy still names mem)" \
+  '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = mem ] && [ "$(record lead mem | jq -r .spawned_by)" = other.lead ] && launched_after mem lead "$BEFORE" &&
+   ! teamctl _prompt lead --team mem | grep -q "^## Team memory" && settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not" &&
+   ! last_argv mem lead | grep -q "Team memory is" || { cat "$WORK/o"; exit 1; }'
+check "  ... and status says why, with the way out (adopt), not \"start the team yourself\"" \
+  'teamctl memory status 2>&1 | grep -q "founded by other.lead, not by you: its lead gets no memory.*teamctl memory adopt mem" && ! teamctl memory status 2>&1 | grep -q "Start the team yourself"'
+
 echo
 echo "memory: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
