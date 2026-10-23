@@ -107,6 +107,19 @@ check "init is idempotent: a second run exits 0, creates nothing, keeps state" \
   '[ "$RC2" -eq 0 ] && printf "%s" "$INIT2" | grep -q "nothing was missing" && grep -q "\"slack_dm\": 5" "$T/state/cursors.json"'
 check "init refuses a home folder as the root" \
   '! "$T/bin/mem" --root "$HOME" init && [ ! -d "$HOME/.meta" ]'
+/bin/mkdir -p "$WORK/foreign/notes"; printf 'mine\n' >"$WORK/foreign/todo.txt"; chmod 755 "$WORK/foreign" "$WORK/foreign/notes"
+OUT="$("$T/bin/mem" --root "$WORK/foreign" init 2>&1)"; RC=$?
+check "init refuses a non-empty folder with neither .meta/ nor bin/mem, says why, changes nothing" \
+  '[ "$RC" -eq 1 ] && printf "%s" "$OUT" | grep -q "neither .meta/ nor bin/mem" && [ ! -e "$WORK/foreign/.meta" ] && [ ! -e "$WORK/foreign/core" ] && [ "$(mode_of "$WORK/foreign")" = 755 ] && [ "$(mode_of "$WORK/foreign/notes")" = 755 ]'
+check "init makes a tree of an empty folder and of a folder that does not exist yet" \
+  '/bin/mkdir -p "$WORK/empty-root" && "$T/bin/mem" --root "$WORK/empty-root" init >/dev/null && [ -d "$WORK/empty-root/.meta" ] && "$T/bin/mem" --root "$WORK/new-root/t" init >/dev/null && [ -f "$WORK/new-root/t/MEMORY.md" ]'
+# A link to bin/mem in a bin folder on PATH: the tree is the folder above the REAL script.
+/bin/mkdir -p "$HOME/.local/bin"; chmod 755 "$HOME/.local" "$HOME/.local/bin"
+ln -s "$T/bin/mem" "$HOME/.local/bin/mem"
+OUT="$("$HOME/.local/bin/mem" init 2>&1)"; RC=$?
+check "through a symlinked \$0, init and boot work on the real tree, never on the link's folder" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^mem init: $T is ready" && "$HOME/.local/bin/mem" boot | grep -q "^# Card" && [ ! -e "$HOME/.local/.meta" ] && [ ! -e "$HOME/.local/MEMORY.md" ] && [ "$(mode_of "$HOME/.local")" = 755 ] && [ "$(mode_of "$HOME/.local/bin")" = 755 ]'
+/bin/rm -rf "$HOME/.local"
 check "mem runs from any cwd with only PATH and HOME set" \
   '(cd / && env -i PATH="$PATH" HOME="$HOME" "$T/bin/mem" boot) | grep -q "^# Card"'
 check "MEM_ROOT points mem at another tree" \

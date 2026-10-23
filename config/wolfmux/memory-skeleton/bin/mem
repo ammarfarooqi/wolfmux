@@ -31,7 +31,9 @@ import time
 import urllib.error
 import urllib.request
 
-SELF = os.path.abspath(sys.argv[0])
+# realpath, not abspath: through a link at ~/.local/bin/mem the tree is still the folder above
+# the real script, never ~/.local.
+SELF = os.path.realpath(sys.argv[0])
 UTC = datetime.timezone.utc
 
 REGIONS = ("rules", "people", "teams", "topics")
@@ -901,6 +903,18 @@ def refuse_wide_root(root):
     """init sets modes on what it creates: never on / or a home folder."""
     if root in ("/", os.path.realpath(os.path.expanduser("~"))):
         raise Refused("refusing to make %s a memory tree; give --root a folder of its own" % root)
+
+
+def refuse_foreign_root(root):
+    """init makes a tree of a missing or empty folder, or of a copy of the skeleton: a folder
+    that already holds other things is not chmodded into one."""
+    if not os.path.isdir(root) or os.path.isdir(os.path.join(root, ".meta")) or os.path.isfile(os.path.join(root, "bin", "mem")):
+        return
+    others = [name for name in os.listdir(root) if name != ".DS_Store"]
+    if others:
+        raise Refused("refusing to make %s a memory tree: it holds %d other entr%s (%s) and neither .meta/ nor bin/mem; "
+                      "give --root an empty folder or a copy of the skeleton" % (
+                          root, len(others), "y" if len(others) == 1 else "ies", ", ".join(sorted(others)[:3])))
 
 
 def cmd_init(tree, args):
@@ -2926,6 +2940,7 @@ def main(argv):
         if args.command not in READERS:
             if args.command == "init":
                 refuse_wide_root(root)
+                refuse_foreign_root(root)
                 if not os.path.isdir(root):
                     os.makedirs(root, 0o700)
             elif not tree.is_tree():
