@@ -528,6 +528,30 @@ check "H6: a word is also read with every part built at run time deleted (mem\${
    [ "$(guard mcp__fs__write_file "$(at "FILE://$PROJECT/x")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "  $PROJECT/x")")" = deny ] &&
    [ "$(guard mcp__fs__write_file "$(at "file:$PROJECT/x")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "${UP}../demo project/x")")" = deny ] &&
    [ "$(guard mcp__fs__read "$(at "fIlE:$DIR/MEMORY.md")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "./src/x.ts")")" = allow ]'
+# Review round 5 (H7): the guard needs only what every Mac has, /bin/bash 3.2 and BSD awk (/usr/bin/awk)
+GAWK_ONLY='\b(gensub|asorti?|strtonum|systime|strftime|mktime|patsplit|isarray|typeof|lshift|rshift|compl)[[:space:]]*\(|IGNORECASE|PROCINFO|FPAT|BEGINFILE|ENDFILE|nextfile|\\y|re-interval'
+BASH4_ONLY='\$\{[A-Za-z_][A-Za-z_0-9]*(,,?|\^\^?)\}|declare -[a-zA-Z]*[AnNg]|local -[a-zA-Z]*[An]|mapfile|readarray|&>>|\|&|;;&|coproc|EPOCH|\[\[ -v |wait -n'
+R5_PORT=("cat > out.txt <<'EOF'
+some data
+EOF" "echo \$'a\\x41\\101\\u0041' \"dq \$x \${y:-z} \$(date) \`id\`\" 'sq' # a comment" 'ls src/(a|b).ts mem(|)o *(.) && x=( a b ) && f() { echo; }'
+  'for f in *.ts; do bash -c "echo $f"; done | sort' 'git commit -m "fix a/b in src"' 'printf %s {a,b}{1..3} ~/x <(ls) >>log 2>&1')
+bsdawk() { # <OK|D> <command>: /usr/bin/awk reads it with the guard's program ($SCAN) to the end, and prints nothing on stderr
+  local out
+  out="$(GA_CMD="$2" GA_CWD="$W1" GA_HOME="$HOME" LC_ALL=C /usr/bin/awk "$SCAN" 2>"$WORK/awk.err")" && [ ! -s "$WORK/awk.err" ] &&
+    case "$1" in OK) [ "$(printf '%s\n' "$out" | tail -1)" = OK ] ;; *) printf '%s\n' "$out" | grep -q '^D' ;; esac ||
+    { cat "$WORK/awk.err"; printf '%s: %s\n' "$1" "$2" | cut -c1-160; return 1; }
+}
+portable() { # no gawk-only feature in the awk program, none of bash 4 around it, awk and bash by their macOS paths
+  local SCAN c g="$REPO/config/wolfmux/lib/guard.sh"
+  SCAN="$(/bin/bash -c '. "$1" && printf "%s" "$GUARD_SCAN"' _ "$g")" && [ -n "$SCAN" ] &&
+    ! printf '%s\n' "$SCAN" | grep -v '^[[:space:]]*#' | grep -qE "$GAWK_ONLY" && grep -q 'LC_ALL=C /usr/bin/awk "\$GUARD_SCAN"' "$g" &&
+    [ "$(head -1 "$REPO/bin/teamctl")" = '#!/bin/bash' ] && /bin/bash -n "$g" &&
+    ! awk '/^GUARD_SCAN=/ { s = 1 } !s && !/^[[:space:]]*#/ { print } s && /^}\047$/ { s = 0 }' "$g" | grep -qE "$BASH4_ONLY" || return 1
+  for c in "${R5_PORT[@]}"; do bsdawk OK "$c" || return 1; done
+  bsdawk D "cat ~/.wolfmux/memory/x" && bsdawk D "tmux ls"
+}
+check "H7: the guard runs on what every Mac has: no gawk-only feature, /usr/bin/awk reads heredocs, \$'…', groups, \$( ) and comments to the end with nothing on stderr; teamctl is #!/bin/bash, guard.sh has no bash 4 feature" \
+  'portable'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \
