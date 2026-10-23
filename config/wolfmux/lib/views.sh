@@ -472,7 +472,8 @@ cmd_capture() {
   load_project
   # The memory team's lead reads its private memory in that pane (mem boot prints the card): its screen is
   # yours to look at, nobody else's (lib/memory.sh). The pane proof decides, as for every owner-only command.
-  if memory_lead_dir "$role" >/dev/null && ! is_operator; then
+  # Also a lead that was started with the memory and still holds it after the policy moved (memory_lead_started_with).
+  if { memory_lead_dir "$role" >/dev/null || memory_lead_started_with "$role"; } && ! is_operator; then
     die "the pane of '$role' of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}' shows that lead's private team memory, so only the human captures it, from their own terminal. Nothing to do for you: ask that lead by Beads for what you need." 77
   fi
   require_session

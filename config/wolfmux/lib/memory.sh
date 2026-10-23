@@ -54,6 +54,15 @@ memory_lead_dir() {
   printf '%s\n' "$dir"
 }
 
+# memory_lead_started_with <role> — 0 when <role> is the loaded team's lead and its settings file (written at its last
+# start, write_agent_settings) carries autoMemoryDirectory. A running lead keeps the memory it was started with until
+# its next restart, whatever the policy says now (memory disable, another team named, a lost x bit on bin/mem): what
+# its screen may show follows what it holds, not what memory_lead_dir would give it next time.
+memory_lead_started_with() {
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  [ -n "$("$JQ_BIN" -r '.autoMemoryDirectory // empty' "$STATE_DIR/settings/$1.json" 2>/dev/null || true)" ]
+}
+
 # project_memory_dir — Claude Code's own memory of this repository, which every session in it shares:
 # <transcripts>/<the root, every character but a letter or digit turned into "-">/memory/
 # (transcripts_dir; /Users/x/Documents/fpro/fanpro-studio-fe is -Users-x-Documents-fpro-fanpro-studio-fe,

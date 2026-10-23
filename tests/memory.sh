@@ -468,6 +468,24 @@ check "team memory off: a lead with no stored id continues again, as before team
   '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ] && teamctl restart lead --team other --continue >/dev/null 2>&1 &&
    launched_after other lead "$BEFORE" && last_argv other lead | jq -e "index(\"--continue\") != null"'
 
+echo "== capture follows what the running lead holds, not only the policy"
+teamctl start opus --team mem --no-attach --skip-beads >/dev/null 2>&1
+teamctl memory enable mem >/dev/null 2>&1
+BEFORE="$(launches mem lead)"
+teamctl restart lead --team mem >/dev/null 2>&1
+check "the mem lead runs with the memory: the other team's lead may not capture its pane (77)" \
+  'launched_after mem lead "$BEFORE" && [ "$(settings_of lead mem | jq -r .autoMemoryDirectory)" = "$DIR" ] &&
+   as_agent other lead capture lead --team mem >"$WORK/o" 2>&1; [ $? -eq 77 ] && grep -q "private team memory" "$WORK/o"'
+teamctl memory disable >/dev/null 2>&1
+check "  ... after memory disable, the lead still holds it until its restart: capture stays refused (77)" \
+  '[ "$(jq -r .policy_team_memory "$(STATE)/policy.json")" = off ] && [ "$(settings_of lead mem | jq -r .autoMemoryDirectory)" = "$DIR" ] &&
+   as_agent other lead capture lead --team mem >/dev/null 2>&1; [ $? -eq 77 ]'
+check "  ... you still capture it" 'teamctl capture lead --team mem >/dev/null'
+BEFORE="$(launches mem lead)"
+teamctl restart lead --team mem >/dev/null 2>&1
+check "  ... restarted without it (its settings carry no autoMemoryDirectory): the pane is an ordinary pane again" \
+  'launched_after mem lead "$BEFORE" && sleep 1 && settings_of lead mem | jq -e "has(\"autoMemoryDirectory\") | not" && as_agent other lead capture lead --team mem >/dev/null'
+
 echo
 echo "memory: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]
