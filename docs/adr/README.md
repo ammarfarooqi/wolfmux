@@ -34,3 +34,4 @@ build; superseded decisions will link to their replacement.
 | [0027](0027-every-agent-resumes-its-own-conversation.md) | Every agent resumes its own conversation, by id | accepted | 2026-10-04 |
 | [0028](0028-notices-are-filed-not-typed.md) | A notice is filed, not typed into the human's conversation | accepted, amended by [0029](0029-the-lead-pane-is-typed-into-when-it-is-quiet.md) | 2026-10-10 |
 | [0029](0029-the-lead-pane-is-typed-into-when-it-is-quiet.md) | The lead's pane is typed into when it is quiet, not never | accepted | 2026-10-12 |
+| [0030](0030-one-lead-keeps-a-private-memory.md) | One lead per project keeps a private memory, switched on by the owner alone | accepted | 2026-10-23 |

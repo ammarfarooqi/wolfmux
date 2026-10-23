@@ -171,6 +171,18 @@ if [ -d "$REPO/config/wolfmux/completion" ]; then
   done
 fi
 install_file "$REPO/config/wolfmux/hooks/beads-nudge" "$CONF_DIR/hooks/beads-nudge" 755
+# The memory skeleton (team memory, lib/memory.sh): what `teamctl memory enable` copies into a lead's
+# new memory folder. Only into ~/.config/wolfmux: a memory folder that exists is never touched here.
+# A checkout without it (a partial one) still installs everything else.
+if [ -d "$REPO/config/wolfmux/memory-skeleton" ]; then
+  while IFS= read -r path; do
+    /bin/mkdir -p "$CONF_DIR/memory-skeleton/$path"
+  done < <(cd "$REPO/config/wolfmux/memory-skeleton" && find . -type d | sed 's|^\./||')
+  while IFS= read -r path; do
+    if [ "$path" = "bin/mem" ]; then mode=755; else mode=644; fi
+    install_file "$REPO/config/wolfmux/memory-skeleton/$path" "$CONF_DIR/memory-skeleton/$path" "$mode"
+  done < <(cd "$REPO/config/wolfmux/memory-skeleton" && find . -type f | sed 's|^\./||')
+fi
 for name in tmux.conf TEAM_PROTOCOL.md README.md; do
   install_file "$REPO/config/wolfmux/$name" "$CONF_DIR/$name" 644
 done
