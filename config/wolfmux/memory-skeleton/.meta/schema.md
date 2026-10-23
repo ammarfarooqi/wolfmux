@@ -208,7 +208,12 @@ The subject matches as a whole word (`tom` finds `Tom`, not `tomorrow` or `custo
 sides are normalised the same way: NFC, then the accent fold Jev masking uses, lower case
 (`José`, its decomposed form and `Jose` are one name), and the subject's words match across
 any run of space, `-`, `_` or `.` (`Tom Smith` finds `people/tom-smith.md` and
-`[[tom-smith]]`). A subject under 3 letters and digits, or a literal once normalised (`true`,
+`[[tom-smith]]`). Two words also match reversed, and with a comma between them in either
+order (`Tom Smith` finds `Smith, Tom`; `Smith Tom` finds `tom-smith`); three or more words
+match in their own order only. The listing says which: "searched in this word order and
+reversed" or "searched in this word order only". The erase record matches the same way, so a
+migrate skips `Smith, Tom` too. A one- or two-letter name is erased as part of a two-word
+subject (`Ed Chen`), as a subject needs 3 letters and digits. A subject under 3 letters and digits, or a literal once normalised (`true`,
 `false`, `null`, `none`, `nan`, `inf`, `infinity` in any case, or a number such as `12`,
 `-2.5` or `1_000`), is refused with exit 64. Only a JSON string can name the subject: a `true`
 value is never the text `True`. A path matches on its file stem only, never a folder name or an extension, and

@@ -1095,6 +1095,25 @@ check "erase refuses a JSON literal (true, null, 12) and a subject under 3 lette
 SUM_BEFORE="$(tree_sum "$T")"
 check "erase True, FALSE, none, nan, inf and 1_000 (literals once normalised) exit 64 on a state file holding booleans; the booleans stay" \
   'for s in True FALSE none nan inf 1_000; do "$T/bin/mem" erase "$s" --confirm 1 >/dev/null 2>&1; [ $? -eq 64 ] || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ] && python3 -I -c "import json, sys; m = json.load(open(sys.argv[1])); sys.exit(not (m[\"ok\"][\"line\"] is True and m[\"off\"][\"line\"] is False))" "$T/state/machine.json"'
+# Two words also match reversed, with or without a comma (Smith, Tom); three or more match in
+# their own order only. The listing says which.
+T="$WORK/erase-order"
+fresh "$T"
+printf -- '---\nname: tom-smith\nregion: people\nkeywords: release\nsummary: a release person\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nRelease.\n' >"$T/people/tom-smith.md"
+topic "$T" ask "ask, owner"
+printf 'Ask Smith, Tom first.\n' >>"$T/topics/ask.md"
+topic "$T" three "three, names"
+printf 'Mary Ann Lee runs it.\n' >>"$T/topics/three.md"
+chmod 600 "$T"/people/*.md "$T"/topics/*.md
+LIST="$("$T/bin/mem" erase "Tom Smith")"
+LIST2="$("$T/bin/mem" erase "Smith Tom")"
+LIST3="$("$T/bin/mem" erase "Lee Ann Mary")"
+LIST4="$("$T/bin/mem" erase "Mary Ann Lee")"
+check "erase Tom Smith finds Smith, Tom; erase Smith Tom finds people/tom-smith.md; the listing says both orders were searched" \
+  'for L in "$LIST" "$LIST2"; do printf "%s\n" "$L" | grep -qx "file   people/tom-smith.md (stem)" && printf "%s\n" "$L" | grep -qx "file   topics/ask.md (line 12: Ask Smith, Tom first.)" && printf "%s\n" "$L" | grep -qx "searched in this word order and reversed" && printf "%s\n" "$L" | grep -qx "2 items; run again with --confirm 2 to erase them (no backup is made first)" || exit 1; done'
+check "three words match in their own order only, and the listing says so" \
+  'printf "%s\n" "$LIST3" | grep -qx "nothing in the tree names that subject" && printf "%s\n" "$LIST3" | grep -qx "searched in this word order only" && printf "%s\n" "$LIST4" | grep -qx "file   topics/three.md (line 12: Mary Ann Lee runs it.)" && printf "%s\n" "$LIST4" | grep -qx "searched in this word order only" && ! printf "%s\n" "$LIST4" | grep -q "and reversed"'
+"$T/bin/mem" erase "Tom Smith" --confirm 2 >/dev/null
 # JSON is decoded before erase matches it: names written as \u escapes (json.dumps without
 # ensure_ascii=False, as migrated files are), and keys at any depth (left behind, never erased).
 T="$WORK/erase-json"
@@ -1503,6 +1522,15 @@ EARLY="$("$T4/bin/mem" migrate --from "$SRC5" --map "$WORK/map-early.csv" 2>&1)"
 TAR5="$(printf '%s\n' "$EARLY" | sed -n 's/^rollback: .*, and \(.*\.tar\) (sha256 list .*)$/\1/p')"
 check "the first migrate then skips the row naming that subject and leaves its source out of the pre-migration tar" \
   '[ "$RC" -eq 0 ] && printf "%s\n" "$EARLY" | grep -q "^line 2 skip    (not shown) -> (not shown): erased earlier: skipped$" && printf "%s\n" "$EARLY" | grep -q "^line 3 copy    zinc.md -> topics/zinc.md" && [ ! -e "$T4/topics/billing.md" ] && [ -n "$TAR5" ] && [ "$(tar -tf "$TAR5")" = "source/zinc.md" ]'
+# erase "Tom Smith" (the erase-order tree) also keeps a migrate from importing "Smith, Tom".
+SRC6="$WORK/order-src"
+/bin/mkdir -p "$SRC6"
+printf 'Ask Smith, Tom about the trains.\n' >"$SRC6/ask.md"
+printf 'Copper price is up.\n' >"$SRC6/copper.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nask.md,file,topics/asked.md,topics,copy,no,asked,"asked, trains",who to ask,3,,,,\ncopper.md,file,topics/copper.md,topics,copy,no,copper,"copper, price",copper price,3,,,,\n' >"$WORK/map-order.csv"
+ORDER="$("$WORK/erase-order/bin/mem" migrate --from "$SRC6" --map "$WORK/map-order.csv" 2>&1)"; RC=$?
+check "a migrate after erase Tom Smith skips the row that says Smith, Tom (the reversed pair hashes to the record too)" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$ORDER" | grep -q "^line 2 skip    (not shown) -> (not shown): erased earlier: skipped$" && printf "%s\n" "$ORDER" | grep -q "^line 3 copy    copper.md -> topics/copper.md" && [ ! -e "$WORK/erase-order/topics/asked.md" ]'
 /bin/rm -rf "$HOME/.wolfmux"
 unset MEM_NOW
 

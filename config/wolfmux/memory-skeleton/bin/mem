@@ -2484,10 +2484,17 @@ def erase_norm(text):
 class Subject(object):
     """The erase subject as a pattern over normalised text (erase_norm, on both sides): its words
     joined by any run of space, _, . or -, so Tom Smith finds tom-smith, tom_smith and
-    [[tom-smith]]; a whole word, with no letter or digit right before or after it."""
+    [[tom-smith]]; a whole word, with no letter or digit right before or after it. Two words
+    also match reversed, and with a comma between them in either order (Smith, Tom and
+    smith-tom), so Tom Smith and Smith Tom find the same; three or more match in their own
+    order only."""
     def __init__(self, subject):
         self.words = [word for word in re.split(r"[\s_.-]+", erase_norm(subject)) if word]
-        self.pattern = re.compile(r"(?<![^\W_])%s(?![^\W_])" % r"[\s_.-]+".join(re.escape(word) for word in self.words))
+        body = r"[\s_.-]+".join(re.escape(word) for word in self.words)
+        if len(self.words) == 2:
+            first, second, gap = re.escape(self.words[0]), re.escape(self.words[1]), r"(?:,[\s_.-]*|[\s_.-]+)"
+            body = r"(?:%s%s%s|%s%s%s)" % (first, gap, second, second, gap, first)
+        self.pattern = re.compile(r"(?<![^\W_])%s(?![^\W_])" % body)
 
     def search(self, text):
         return self.pattern.search(erase_norm(text))
@@ -2755,8 +2762,9 @@ def erased_subjects(tree):
 
 
 def names_erased(key, erased, text):
-    """Whether any run of words in text hashes to an erased subject. JSON (the whole text or one
-    line of it) is read decoded as well, so a name written as \\u escapes is found too."""
+    """Whether any run of words in text hashes to an erased subject; a two-word subject in
+    reverse order too, as erase matches it (Smith, Tom). JSON (the whole text or one line of
+    it) is read decoded as well, so a name written as \\u escapes is found too."""
     if "\\u" in text:
         decoded = []
         for chunk in [text] + text.split("\n"):
@@ -2768,7 +2776,8 @@ def names_erased(key, erased, text):
     words = erase_words(text)
     for count, hashes in erased.items():
         for start in range(len(words) - count + 1):
-            if erase_hash(key, words[start:start + count]) in hashes:
+            run = words[start:start + count]
+            if erase_hash(key, run) in hashes or (count == 2 and erase_hash(key, run[::-1]) in hashes):
                 return True
     return False
 
@@ -2834,6 +2843,8 @@ def cmd_erase(tree, args):
             named = None
         if named:
             print("left behind outside the tree: %s" % path)
+    if args.confirm is None and len(needle.words) > 1:
+        print("searched in this word order and reversed" if len(needle.words) == 2 else "searched in this word order only")
     if not plans and not tars:
         if left and all(place.endswith(" (key)") for place in left):
             message = "nothing to erase: only a JSON key names that subject"
