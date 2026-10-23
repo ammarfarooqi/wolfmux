@@ -748,7 +748,7 @@ printf 'held for later\n' >"$SRC/held.md"
 printf 'Slack rule: plain names.\n' >"$RULES_SRC/slack-names.md"
 printf 'A rule without a ledger line.\n' >"$RULES_SRC/orphan.md"
 printf '{"cursors": {"slack_dm": "1761000000.1"}, "asks": [{"id": "a1", "who": "sam", "what": "logo", "status": "open", "opened": "2026-10-01T09:00Z", "waiting_on": "dana"}], "decisions": [{"time": "2026-10-09T13:50Z", "quote": "keep it short"}], "notes": {"tone": "Plain words, short lines."}, "contacts": {"dana": {"tz": "UTC+1", "role": "design"}}}\n' >"$WORK/comms-state.json"
-python3 -I - "$WORK/map.csv" <<'EOF'
+python3 -I - "$WORK/map.csv" "$WORK/migrate" <<'EOF'
 import csv, sys
 rows = [
     ("feedback_tone.md", "file", "rules/tone.md", "rules", "copy", "no", "tone", "tone, replies", "keep replies short, no jargon", "4", "decisions-2026-10#2026-10-09T13:50Z", "", "", "feedback"),
@@ -787,6 +787,10 @@ rows = [
     ("send_b.md", "file", "ledger/sends-2026-10.md", "", "copy", "no", "", "", "", "", "", "", "", ""),
     # line 29: an empty source into the ledger has nothing to append
     ("empty.md", "file", "ledger/sends-2026-10.md", "", "copy", "no", "", "", "", "", "", "", "", ""),
+    # line 30 on: dests that are not plain paths in the tree (.., an absolute path, a . segment)
+    ("dup_a.md", "file", "topics/../rules/sneak.md", "topics", "copy", "no", "sneak", "sneak", "climbs into rules", "3", "", "", "", ""),
+    ("dup_a.md", "file", sys.argv[2] + "/topics/abs.md", "topics", "copy", "no", "abs", "abs", "an absolute dest", "3", "", "", "", ""),
+    ("dup_a.md", "file", "topics/./dot.md", "topics", "copy", "no", "dot", "dot", "a dot segment", "3", "", "", "", ""),
 ]
 with open(sys.argv[1], "w", newline="") as out:
     w = csv.writer(out)
@@ -812,7 +816,7 @@ printf '%s\n' "$OUT" >"$WORK/migrate-report.txt"
 check "the real migrate finds every source body and state value exactly once" \
   'grep -q "^verification: every source body and state value found exactly once in the new tree" "$WORK/migrate-report.txt" && grep -q "^modes: all 700/600" "$WORK/migrate-report.txt"'
 check "a real run that refused rows writes its report, places the rest, then exits 1 naming --allow-refused" \
-  '[ "$RC" -eq 1 ] && grep -q "^mem: 6 rows refused (the report says why); the other rows are placed. Fix the map and run again, or pass --allow-refused" "$WORK/migrate-err.txt" && ls "$T"/.meta/migrate-*.md >/dev/null 2>&1 && [ -f "$T/rules/tone.md" ]'
+  '[ "$RC" -eq 1 ] && grep -q "^mem: 9 rows refused (the report says why); the other rows are placed. Fix the map and run again, or pass --allow-refused" "$WORK/migrate-err.txt" && ls "$T"/.meta/migrate-*.md >/dev/null 2>&1 && [ -f "$T/rules/tone.md" ]'
 check "every copied body is byte for byte the source (sha256 compared here, not by mem)" \
   'python3 -I - "$T" "$SRC" "$RULES_SRC" <<'"'"'EOF'"'"'
 import hashlib, sys
@@ -860,7 +864,9 @@ check "two sources with the same body are each found once at their own dest" \
   'grep -q "^line 25 copy .*: found once at its dest (2 rows place this body)" "$WORK/migrate-report.txt" && grep -q "^line 26 copy .*: found once at its dest (2 rows place this body)" "$WORK/migrate-report.txt"'
 sed -n '/^## Summary$/,$p' "$WORK/migrate-report.txt" >"$WORK/migrate-summary.txt"
 check "the report ends with a summary: counts by status, then refusal reasons grouped with counts and line numbers" \
-  '[ "$(tail -n "$(wc -l <"$WORK/migrate-summary.txt")" "$WORK/migrate-report.txt")" = "$(cat "$WORK/migrate-summary.txt")" ] && grep -qx "copy 17, pointer 3, hold 1, skip 1, refused 6 (28 rows)" "$WORK/migrate-summary.txt" && grep -qx "refused, by reason:" "$WORK/migrate-summary.txt" && grep -qx -- "- 2 x a rules dest needs an authority (lines 8, 22)" "$WORK/migrate-summary.txt" && grep -qx -- "- 1 x dest <path> is already the dest of line <n>: keep one row, set the others to action skip (or give each its own dest) (line 21)" "$WORK/migrate-summary.txt" && grep -qx -- "- 1 x the source is empty: nothing to append to <path>; set action skip (line 29)" "$WORK/migrate-summary.txt" && [ "$(grep -c "^- " "$WORK/migrate-summary.txt")" -eq 5 ]'
+  '[ "$(tail -n "$(wc -l <"$WORK/migrate-summary.txt")" "$WORK/migrate-report.txt")" = "$(cat "$WORK/migrate-summary.txt")" ] && grep -qx "copy 17, pointer 3, hold 1, skip 1, refused 9 (31 rows)" "$WORK/migrate-summary.txt" && grep -qx "refused, by reason:" "$WORK/migrate-summary.txt" && grep -qx -- "- 2 x a rules dest needs an authority (lines 8, 22)" "$WORK/migrate-summary.txt" && grep -qx -- "- 1 x dest <path> is already the dest of line <n>: keep one row, set the others to action skip (or give each its own dest) (line 21)" "$WORK/migrate-summary.txt" && grep -qx -- "- 1 x the source is empty: nothing to append to <path>; set action skip (line 29)" "$WORK/migrate-summary.txt" && [ "$(grep -c "^- " "$WORK/migrate-summary.txt")" -eq 6 ]'
+check "a dest with .., a leading slash or a . segment is refused as written, and nothing lands" \
+  'for n in 30 31 32; do grep -q "^- line $n refused dup_a.md: dest .* is not a plain path in the tree (no leading slash, no . or .. segments)" "$WORK/migrate-report.txt" || exit 1; done && grep -qx -- "- 3 x dest <path> is not a plain path in the tree (no leading slash, no . or .. segments) (lines 30, 31, 32)" "$WORK/migrate-summary.txt" && [ ! -e "$T/rules/sneak.md" ] && [ ! -e "$T/topics/abs.md" ] && [ ! -e "$T/topics/dot.md" ]'
 check "the source folder and the rules folder are never written" '[ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ "$RULES_SUM" = "$(tree_sum "$RULES_SRC")" ]'
 check "headers come from the map: region, keywords, authority, repo_ref, last_confirmed from the source mtime" \
   'grep -q "^authority: decisions-2026-10#2026-10-09T13:50Z" "$T/rules/tone.md" && grep -q "^repo_ref: fe:src/features/fly/agent-log/0007.md AFD-2129" "$T/topics/afd-2129.md" && grep -q "^last_confirmed: $(date -u -r "$SRC/project_fly.md" +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)" "$T/topics/afd-2129.md" && grep -q "^links: \[\[tone\]\]" "$T/rules/slack-names.md"'
@@ -881,7 +887,7 @@ check "two rows append to one ledger month: each payload found once" \
   'grep -q "^line 27 copy    send_a.md -> ledger/sends-2026-10.md.*: found once" "$WORK/migrate-report.txt" && grep -q "^line 28 copy    send_b.md -> ledger/sends-2026-10.md.*: found once" "$WORK/migrate-report.txt" && [ "$(grep -c "send$" "$T/ledger/sends-2026-10.md")" -eq 2 ]'
 LEDGERS_BEFORE="$(cat "$T"/ledger/*)"
 OUT2="$(MEM_NOW=2026-10-23T10:00Z "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --allow-refused 2>&1)"; RC2=$?
-check "--allow-refused: the same refused rows, exit 0" '[ "$RC2" -eq 0 ] && printf "%s" "$OUT2" | grep -q "refused 6, exists [0-9]* (28 rows)" && ! printf "%s" "$OUT2" | grep -q "^mem: "'
+check "--allow-refused: the same refused rows, exit 0" '[ "$RC2" -eq 0 ] && printf "%s" "$OUT2" | grep -q "refused 9, exists [0-9]* (31 rows)" && ! printf "%s" "$OUT2" | grep -q "^mem: "'
 check "a re-run is idempotent: placed rows are exists, the ledger rows too, nothing is appended twice" \
   'printf "%s" "$OUT2" | grep -q "^line 11 exists  state:decisions.0 -> ledger/decisions-2026-10.md.*: found once: already in the ledger" && printf "%s" "$OUT2" | grep -q "^line 27 exists .*: found once: already in the ledger" && printf "%s" "$OUT2" | grep -q "^line 28 exists " && printf "%s" "$OUT2" | grep -q "^line 3 exists " && [ "$LEDGERS_BEFORE" = "$(cat "$T"/ledger/*)" ] && [ "$(grep -c "migrated state:decisions.0" "$T/ledger/decisions-2026-10.md")" -eq 1 ] && printf "%s" "$OUT2" | grep -q "^verification: every source body and state value found exactly once"'
 OUT3="$(MEM_NOW=2026-10-23T10:00Z "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" 2>&1)"
@@ -889,6 +895,9 @@ check "a re-run in the same second writes its report as migrate-<UTC>-2.md and k
   '[ -f "$T/.meta/migrate-20261023T100000Z.md" ] && [ -f "$T/.meta/migrate-20261023T100000Z-2.md" ] && grep -q "^line 11 exists" "$T/.meta/migrate-20261023T100000Z.md" && grep -q "^line 11 exists" "$T/.meta/migrate-20261023T100000Z-2.md" && printf "%s" "$OUT3" | grep -q "^verification: every source body"'
 check "a second run in the same second keeps the first pre-migration tar" '[ "$(ls "$HOME"/.wolfmux/backups/memory-pre-migration-*.tar | wc -l | tr -d " ")" -eq 3 ] && [ -f "$PRE" ] && [ -f "$HOME/.wolfmux/backups/memory-pre-migration-20261023T100000Z-2.tar" ]'
 check "migrate refuses a memory root inside --from" 'fresh "$SRC/inner" 2>/dev/null; ! "$SRC/inner/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --dry-run; /bin/rm -rf "$SRC/inner"'
+SUM_BEFORE="$(tree_sum "$T")"
+check "migrate refuses --from, --rules-from and --claude-mem-from inside the root or holding it, and writes nothing" \
+  'for flags in "--from $T/topics" "--from $SRC --rules-from $T/rules" "--from $SRC --rules-from $WORK" "--from $SRC --claude-mem-from $T" "--from $SRC --claude-mem-from $WORK"; do OUT="$("$T/bin/mem" migrate $flags --map "$WORK/map.csv" --dry-run 2>&1)" && exit 1; printf "%s" "$OUT" | grep -q "and the memory root $T overlap (one holds the other)" || exit 1; done && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
 printf 'source,source_type\nx,file\n' >"$WORK/bad.csv"
 check "migrate refuses a map without the contract columns" '! "$T/bin/mem" migrate --from "$SRC" --map "$WORK/bad.csv" --dry-run'
 /bin/rm -rf "$HOME/.wolfmux"

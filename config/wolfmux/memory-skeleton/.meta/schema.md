@@ -184,6 +184,8 @@ skip, refused (the row breaks this contract; the reason says what to change) or 
 earlier run placed it). It ends with `## Summary`: the counts by status, then the refusal
 reasons with their values taken out, each with its count and line numbers.
 
+A dest is a plain path in the tree as written: no leading slash, no `.` or `..` segment.
+`--from`, `--rules-from` and `--claude-mem-from` may neither lie inside the root nor hold it.
 Several rows may append to one ledger month; any other dest takes one row. A ledger row whose
 payload the ledger already holds byte for byte is `exists`, so a re-run appends nothing. A
 real run that refused any row writes its report, then exits 1 unless `--allow-refused` is

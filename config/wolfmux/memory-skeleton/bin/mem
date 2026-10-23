@@ -2393,6 +2393,11 @@ def plan_row(tree, row, line, ctx):
             item.update(status="hold", reason=row.get("notes", "").strip() or "held by the map")
             return item
         dest_file, _, dest_key = dest.partition("#")
+        if not dest_file:
+            raise Refused("the row has no dest")
+        # Checked as written, not after normalising: topics/../rules/x.md must not pass as a topics dest.
+        if dest_file.startswith("/") or os.path.normpath(dest_file) != dest_file or ".." in dest_file.split("/"):
+            raise Refused("dest %s is not a plain path in the tree (no leading slash, no . or .. segments)" % dest_file)
         top = dest_file.split("/")[0]
         # Several rows may append to one ledger month; a region file, an archive file or a state key takes one.
         if top != "ledger":
@@ -2779,21 +2784,32 @@ def pre_migration_tar(ctx, when):
     return path, listing
 
 
+def refuse_overlap(root, folder, flag):
+    """A source folder inside the tree would be read while it is written; a tree inside a source
+    folder would be written into the source. Both directions are refused."""
+    if folder == root or folder.startswith(root + os.sep) or root.startswith(folder + os.sep):
+        raise Refused("%s %s and the memory root %s overlap (one holds the other); mem never writes into a "
+                      "source folder or reads its own tree as a source" % (flag, folder, root))
+
+
 def cmd_migrate(tree, args):
     when = now()
     source = os.path.realpath(os.path.expanduser(args.source))
     if not os.path.isdir(source):
         raise Refused("--from %s is not a folder" % args.source)
-    if tree.root == source or tree.root.startswith(source + os.sep):
-        raise Refused("the memory root is inside --from; mem never writes into the source folder")
+    refuse_overlap(tree.root, source, "--from")
     rules = os.path.realpath(os.path.expanduser(args.rules_from)) if args.rules_from else None
     if rules and not os.path.isdir(rules):
         raise Refused("--rules-from %s is not a folder" % args.rules_from)
+    if rules:
+        refuse_overlap(tree.root, rules, "--rules-from")
     claude_mem = os.path.realpath(os.path.expanduser(args.claude_mem_from or CLAUDE_MEM_DEFAULT))
     if not os.path.isdir(claude_mem):
         if args.claude_mem_from:
             raise Refused("--claude-mem-from %s is not a folder" % args.claude_mem_from)
         claude_mem = None  # only a claude-mem: row needs it, and that row says so
+    if claude_mem:
+        refuse_overlap(tree.root, claude_mem, "--claude-mem-from")
     state, state_path = None, None
     if args.state:
         state_path = os.path.realpath(os.path.expanduser(args.state))
