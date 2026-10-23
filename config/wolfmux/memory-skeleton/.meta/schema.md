@@ -256,7 +256,9 @@ first edit; erase never edits it, live or in a tar. A subject already recorded i
 again. When nothing in the tree names the subject, the listing says so and adds that
 `--confirm 0` records it; `erase <subject> --confirm 0` then writes the record (and the key
 on first use) and prints "nothing in the tree names that subject; recorded so that mem
-migrate skips it", so a first migrate from sources that still name it skips it too.
+migrate skips it", so a first migrate from sources that still name it skips it too. Any
+`--confirm` does the same when only what is left behind names the subject (a rules file
+name, an outside `.sha256` list): the record is written once.
 
 `.meta/schema.md` and `bin/` ship with mem and are never edited, live or in a tar.
 Without `--confirm` it lists every item and the count; `--confirm <count>` erases only when

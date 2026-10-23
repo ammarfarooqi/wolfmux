@@ -2830,13 +2830,13 @@ def cmd_erase(tree, args):
         else:
             message = ("nothing to erase: only what is listed as left behind names that subject" if left
                        else "nothing in the tree names that subject")
-        if args.confirm != 0:
+        if args.confirm is None:
             print(message)
-            if args.confirm is None:
-                print("--confirm 0 records the subject in .meta/erased (a keyed hash, never the name), so that "
-                      "mem migrate skips it")
+            print("--confirm 0 records the subject in .meta/erased (a keyed hash, never the name), so that "
+                  "mem migrate skips it")
             return 0
-        # Nothing to change, but a migrate from sources that still name the subject must skip it.
+        # Nothing to change, but a migrate from sources that still name the subject must skip it:
+        # any --confirm writes the record (once), whatever is left behind.
         erase_id = os.urandom(4).hex()
         if erase_record(tree, erase_id, subject):
             log(tree, "erase on the owner's word: erase id %s; nothing in the tree, recorded for migrate" % erase_id)

@@ -73,19 +73,41 @@ topic() {
   chmod 600 "$1/topics/$2.md"
 }
 
-# tree_sum <dir>: one digest over every path, its bytes and its mtime: equal means untouched.
+# tree_sum <dir> [<rel>...]: one digest over every path, its bytes and its mtime: equal means
+# untouched. Each <rel> given is left out.
 tree_sum() {
-  python3 -I - "$1" <<'EOF'
+  python3 -I - "$@" <<'EOF'
 import hashlib, os, sys
 h = hashlib.sha256()
+skip = set(os.path.join(sys.argv[1], rel) for rel in sys.argv[2:])
 for folder, dirs, names in os.walk(sys.argv[1]):
     dirs.sort()
     for name in sorted(names):
         path = os.path.join(folder, name)
+        if path in skip:
+            continue
         h.update(path.encode() + b"\0" + str(os.lstat(path).st_mtime_ns).encode() + b"\0")
         if os.path.isfile(path) and not os.path.islink(path):
             h.update(open(path, "rb").read())
 print(h.hexdigest())
+EOF
+}
+# record_mark <dir>: what recorded_only compares with: tree_sum without the erase record and
+# drain.log, and a copy of drain.log (<dir>.log-before).
+record_mark() {
+  /bin/cp "$1/.meta/drain.log" "$1.log-before" 2>/dev/null || : >"$1.log-before"
+  tree_sum "$1" .meta/erased .meta/erase-key .meta/drain.log
+}
+# recorded_only <dir> <record_mark before>: an erase changed nothing but its record: .meta/erased,
+# .meta/erase-key and at most one drain.log line that says so.
+recorded_only() {
+  [ "$2" = "$(tree_sum "$1" .meta/erased .meta/erase-key .meta/drain.log)" ] || return 1
+  python3 -I - "$1/.meta/drain.log" "$1.log-before" <<'EOF'
+import re, sys
+new, old = open(sys.argv[1], "rb").read(), open(sys.argv[2], "rb").read()
+added = new[len(old):]
+sys.exit(not (new.startswith(old) and (added == b"" or re.fullmatch(
+    rb"\S+ erase on the owner's word: erase id [0-9a-f]{8}; nothing in the tree, recorded for migrate\n", added))))
 EOF
 }
 # quote_of <ledger file> <anchor>: the quote of that decision block, byte for byte, on stdout.
@@ -607,7 +629,7 @@ check "after --, --root is a plain value (a recall word); a --root that is no tr
   'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" || exit 1; OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
 fresh "$WORK/after"
 check "--root after the command works as before it; the same folder twice is fine, two different ones exit 64" \
-  '"$T/bin/mem" set cursors.after_root 1 --root "$WORK/after" >/dev/null && grep -q "\"after_root\": 1" "$WORK/after/state/cursors.json" && ! grep -q after_root "$T/state/cursors.json" && "$T/bin/mem" --root "$WORK/after" boot --root "$WORK/after/../after" | grep -q "^# Card" && "$T/bin/mem" --root "$T" boot --root "$WORK/after" >/dev/null 2>&1; [ $? -eq 64 ]'
+  '"$T/bin/mem" set cursors.after_root 1 --root "$WORK/after" >/dev/null && grep -q "\"after_root\": 1" "$WORK/after/state/cursors.json" && ! grep -q after_root "$T/state/cursors.json" && "$T/bin/mem" --root "$WORK/after" boot --root "$WORK/after/../after" | grep -q "^# Card" || exit 1; "$T/bin/mem" --root "$T" boot --root "$WORK/after" >/dev/null 2>&1; [ $? -eq 64 ]'
 MEM_NOW=2026-10-12T10:00Z "$T/bin/mem" sweep-log --inboxes 3 --asks-touched 1 --free-pct 41 --swap-gb 2.5 --load 3.2 >/dev/null
 check "sweep-log writes one JSON line with the numbers" \
   'python3 -I -c "import json,sys; l=open(sys.argv[1]).read().splitlines(); r=json.loads(l[-1]); sys.exit(not (len(l)==1 and r[\"time\"]==\"2026-10-12T10:00Z\" and r[\"inboxes\"]==3 and r[\"free_pct\"]==41 and r[\"swap_gb\"]==2.5 and r[\"load\"]==3.2))" "$T/ledger/sweeps-2026-10.jsonl"'
@@ -955,10 +977,11 @@ check "erase tom --confirm 1 removes only that file" \
 SUM_BEFORE="$(tree_sum "$T")"
 check "erase dec matches nothing (a path counts by its file stem only, never decisions-YYYY-MM); erase ledger is refused (exit 1); the ledger stays" \
   '"$T/bin/mem" erase dec | grep -qx "nothing in the tree names that subject" || exit 1; OUT="$("$T/bin/mem" erase ledger --confirm 1 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "a word every tree holds" && [ -f "$T/ledger/decisions-2026-10.md" ] && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
-check "erase matches state and .jsonl values, never field names: free (free_pct) erases nothing and is left behind as a key" \
-  'OUT="$("$T/bin/mem" erase free --confirm 1 2>&1)"; [ $? -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: ledger/sweeps-2026-10.jsonl (key)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+REC_BEFORE="$(record_mark "$T")"
+check "erase matches state and .jsonl values, never field names: free (free_pct) erases nothing and is left behind as a key; --confirm writes only the record" \
+  'OUT="$("$T/bin/mem" erase free --confirm 1 2>&1)"; [ $? -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: ledger/sweeps-2026-10.jsonl (key)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject; recorded so that mem migrate skips it" && recorded_only "$T" "$REC_BEFORE"'
 check "erase refuses .md, a header field, a folder name and a bare number, and changes nothing" \
-  '! "$T/bin/mem" erase .md && ! "$T/bin/mem" erase summary && ! "$T/bin/mem" erase topics && ! "$T/bin/mem" erase 2026 && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+  '! "$T/bin/mem" erase .md && ! "$T/bin/mem" erase summary && ! "$T/bin/mem" erase topics && ! "$T/bin/mem" erase 2026 && recorded_only "$T" "$REC_BEFORE"'
 printf 'Ask danasmith on call.\n' >>"$T/topics/later.md"
 "$T/bin/mem" backup >/dev/null
 N="$("$T/bin/mem" erase danasmith | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
@@ -992,10 +1015,10 @@ MEM_NOW=2026-10-10T09:00Z "$T/bin/mem" backup --note "$(printf 'kept for the aud
 MEM_NOW=2026-10-12T09:00Z "$T/bin/mem" backup >/dev/null
 ( cd "$T" && tar -cf .meta/backups/20261002T090000Z.tar core/boot.md && chmod 600 .meta/backups/20261002T090000Z.tar )
 /bin/cp "$T/.meta/backups/20261012T090000Z.tar" "$T/.meta/backups/20261001T090000Z.tar"
-SUM_BEFORE="$(tree_sum "$T")"
+SUM_BEFORE="$(record_mark "$T")"
 OUT="$("$T/bin/mem" erase sha256 --confirm 1 2>&1)"; RC=$?
 check "erase sha256 (the reviewer's repro) replaces no backup line: a hit outside the basis is left behind and nothing changes" \
-  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: .meta/drain.log:1 (backup line)" && printf "%s\n" "$OUT" | grep -qx "left behind: .meta/backups/20261012T090000Z.tar: .meta/drain.log:1 (backup line)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: .meta/drain.log:1 (backup line)" && printf "%s\n" "$OUT" | grep -qx "left behind: .meta/backups/20261012T090000Z.tar: .meta/drain.log:1 (backup line)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject; recorded so that mem migrate skips it" && recorded_only "$T" "$SUM_BEFORE"'
 N="$("$T/bin/mem" erase "Dana Smith" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
 "$T/bin/mem" erase "Dana Smith" --confirm "$N" >/dev/null
 N="$("$T/bin/mem" erase "José" | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
@@ -1068,10 +1091,10 @@ put("archive/2026-08/ledger/sweeps-2026-08.jsonl", "".join(json.dumps(r) + "\n" 
 put(".meta/jev/20261001T000000Z-x.json", json.dumps({"local": {"file": "topics/x.md"}, "note": "José Ruiz"}, indent=2) + "\n")
 put("archive/state/comms-state.json", json.dumps({"contacts": {"c1": {"name": "José Ruiz", "tz": "UTC"}}, "other": "kept"}, indent=2) + "\n")
 EOF
-SUM_BEFORE="$(tree_sum "$T")"
+SUM_BEFORE="$(record_mark "$T")"
 OUT="$("$T/bin/mem" erase zed --confirm 1 2>&1)"; RC=$?
 check "a subject that only a JSON key names (nested in state, a field in a .jsonl line) erases nothing; each file is left behind once" \
-  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: state/watches.json (key)" && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-08/ledger/sweeps-2026-08.jsonl (key)" && [ "$(printf "%s\n" "$OUT" | grep -c "^left behind: ")" -eq 2 ] && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: state/watches.json (key)" && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-08/ledger/sweeps-2026-08.jsonl (key)" && [ "$(printf "%s\n" "$OUT" | grep -c "^left behind: ")" -eq 2 ] && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only a JSON key names that subject; recorded so that mem migrate skips it" && recorded_only "$T" "$SUM_BEFORE"'
 # A JSON file that is one scalar: a string is edited inside and dumped again, so it stays JSON,
 # whether the name is written as \u escapes or plainly; any other scalar is never edited.
 TS="$WORK/erase-scalar"
@@ -1087,7 +1110,7 @@ check "a JSON file that is one string (the name escaped, or plain): the subject 
   'printf "%s\n" "$LISTS" | grep -qx "line   archive/state/scalar.json (1 JSON value)" && printf "%s\n" "$LISTS" | grep -qx "line   archive/2026-09/plain.json (1 JSON value)" && python3 -I -c "import json, sys; a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2])); sys.exit(not (a.startswith(\"[erased 2026-10-23 on owner\") and a.endswith(\"s word] is the contact\") and b.startswith(\"ask [erased 2026-10-23 on owner\") and b.endswith(\"s word] first\")))" "$TS/archive/state/scalar.json" "$TS/archive/2026-09/plain.json"'
 OUT="$("$TS/bin/mem" erase nan --confirm 1 2>&1)"; RC=$?
 check "a JSON file that is another scalar (NaN, read as nan) is never edited: listed as left behind (value), still JSON" \
-  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-09/number.json (value)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject" && [ "$(cat "$TS/archive/2026-09/number.json")" = NaN ]'
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$OUT" | grep -qx "left behind: archive/2026-09/number.json (value)" && printf "%s\n" "$OUT" | grep -qx "nothing to erase: only what is listed as left behind names that subject; recorded so that mem migrate skips it" && [ "$(cat "$TS/archive/2026-09/number.json")" = NaN ]'
 "$T/bin/mem" backup >/dev/null
 LIST="$("$T/bin/mem" erase "José Ruiz")"
 check "erase finds a name stored only as \\u00e9 escapes (never as é on disk) in a state entry, a nested .jsonl value, a jev audit file, another JSON file, and in the tar" \
@@ -1117,6 +1140,19 @@ sys.exit(not (not any("ruiz" in x for x in decoded) and [a["id"] for a in asks] 
               and not os.path.exists(t + "/.meta/jev/20261001T000000Z-x.json")
               and state == {"contacts": {"c1": {"name": "[erased %s]" % marker, "tz": "UTC"}}, "other": "kept"}))
 EOF'
+# What names the subject and stays (a rules file name, an outside .sha256 list) is no change, but
+# any --confirm still writes the record, once, so a later migrate skips the subject.
+T="$WORK/erase-record"
+fresh "$T"
+printf -- '---\nname: kim-park-review\nregion: rules\nkeywords: review\nsummary: reviews go out on Fridays\nlinks:\nimportance: 3\nauthority: shared:RULES.md\nlast_confirmed: 2026-10-01\nstatus: live\n---\nSend reviews on Friday.\n' >"$T/rules/kim-park-review.md"
+chmod 600 "$T/rules/kim-park-review.md"
+/bin/mkdir -p "$HOME/.wolfmux/backups"
+printf '%s  source/lena-ortiz.md\n' "$(printf x | shasum -a 256 | cut -c1-64)" >"$HOME/.wolfmux/backups/memory-pre-migration-20261002T000000Z.sha256"
+REC1="$("$T/bin/mem" erase "Kim Park" --confirm 1)"; RC1=$?
+REC2="$("$T/bin/mem" erase "Lena Ortiz" --confirm 1)"; RC2=$?
+"$T/bin/mem" erase "Kim Park" --confirm 1 >/dev/null
+check "any --confirm writes the erase record when the only hits are left behind (a rules file name, an outside .sha256 list), once per subject" \
+  '[ "$RC1" -eq 0 ] && [ "$RC2" -eq 0 ] && printf "%s\n" "$REC1" | grep -qx "left behind: rules/kim-park-review.md (file name)" && printf "%s\n" "$REC1" | grep -qx "nothing to erase: only what is listed as left behind names that subject; recorded so that mem migrate skips it" && printf "%s\n" "$REC2" | grep -q "^left behind outside the tree: .*/memory-pre-migration-20261002T000000Z.sha256$" && printf "%s\n" "$REC2" | grep -qx "nothing in the tree names that subject; recorded so that mem migrate skips it" && [ "$(grep -c " words=2 hmac=[0-9a-f]\{64\}$" "$T/.meta/erased")" -eq 2 ] && [ -f "$T/rules/kim-park-review.md" ]'
 /bin/rm -rf "$HOME/.wolfmux"
 T="$WORK/purge"
 fresh "$T"
