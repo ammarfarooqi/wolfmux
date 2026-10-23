@@ -661,24 +661,71 @@ def ledger_append(tree, kind, month, data):
     append_file(tree, ledger_rel(kind, month), data, head=head)
 
 
-def decision_blocks(text):
-    """[(anchor, time, {slug, source}, block text)] from one decisions ledger. Fenced lines (the
-    owner's words as decide quotes them) are block text only: a `## <time>` or `slug:` line
-    inside a fence never starts a block or sets a field. A fence closes on a line of the same
-    character at least as long, as in CommonMark."""
+FENCE = re.compile(r"^(`{3,}|~{3,})")
+
+
+def closes_fence(line, fence):
+    """A fence closes on a line of the same character, at least as long, as in CommonMark."""
+    bare = line.rstrip()
+    return bool(bare) and set(bare) == set(fence[0]) and len(bare) >= len(fence)
+
+
+def open_fence(text):
+    """(fence lines, whether a fence is still open at the end) of a text, as CommonMark reads it."""
+    count, fence = 0, None
+    for line in text.split("\n"):
+        if fence is not None:
+            if closes_fence(line, fence):
+                count, fence = count + 1, None
+        elif FENCE.match(line):
+            count, fence = count + 1, FENCE.match(line).group(1)
+    return count, fence is not None
+
+
+def decision_blocks(text, damaged=None):
+    """[(anchor, time, {slug, source}, block text)] from one decisions ledger.
+
+    The fence decide writes (the line after a block's `bytes: N`) holds exactly N bytes of the
+    owner's words: nothing in them starts a block or sets a field, and its closing fence comes
+    right after them. Any other open fence (a stray one in a migrated payload, or a decide fence
+    whose closing fence is not where `bytes:` says) closes at a `## <time>` line followed by a
+    `slug:` line, so it never swallows the next decision. damaged, when given, gets the anchor of
+    every block whose `bytes:` count does not match its quote."""
     out = []
     current = None
     fence = None
-    for line in text.split("\n"):
-        if fence is not None:
-            if line.rstrip() and set(line.rstrip()) == set(fence[0]) and len(line.rstrip()) >= len(fence):
-                fence = None
-            if current is not None:
+    quote = None  # [bytes of the quote still to come, its fence] inside a decide-written fence
+    lines = text.split("\n")
+    for number, line in enumerate(lines):
+        if quote is not None:
+            if quote[0] > 0:
                 current[3].append(line)
-            continue
-        opening = re.match(r"^(`{3,}|~{3,})", line)
+                quote[0] -= len(line.encode("utf-8")) + 1
+                continue
+            # A quote without a final newline gets one from decide: the fence is at N or N + 1.
+            if quote[0] >= -1 and closes_fence(line, quote[1]):
+                current[3].append(line)
+                quote = None
+                continue
+            if damaged is not None:
+                damaged.append(current[0])
+            fence, quote = quote[1], None
+        if fence is not None:
+            following = lines[number + 1] if number + 1 < len(lines) else ""
+            if not (DECISION_HEAD.match(line) and re.match(r"^slug: \S", following)):
+                if closes_fence(line, fence):
+                    fence = None
+                if current is not None:
+                    current[3].append(line)
+                continue
+            fence = None  # a stray fence ends where the next decision begins
+        opening = FENCE.match(line)
         if opening:
-            fence = opening.group(1)
+            size = re.match(r"^bytes: (\d+)$", current[3][-1]) if current is not None else None
+            if size:
+                quote = [int(size.group(1)), opening.group(1)]
+            else:
+                fence = opening.group(1)
             if current is not None:
                 current[3].append(line)
             continue
@@ -692,7 +739,9 @@ def decision_blocks(text):
             meta = re.match(r"^(slug|source|bytes): (.*)$", line)
             if meta and meta.group(1) not in current[2]:
                 current[2][meta.group(1)] = meta.group(2)
-    return [(a, t, m, "\n".join(lines)) for a, t, m, lines in out]
+    if quote is not None and damaged is not None:  # the ledger ends inside a quote
+        damaged.append(current[0])
+    return [(a, t, m, "\n".join(block)) for a, t, m, block in out]
 
 
 def ledger_entries(tree):
@@ -1329,6 +1378,13 @@ def run_check(tree, when, quiet=False):
                 report("WARN", "open ask %s untouched for %d days" % (ask.get("id"), (when - touched).days))
     except Refused:
         pass
+    for rel in tree.files("ledger") + tree.files("archive"):
+        if LEDGER_FILE.match(os.path.basename(rel)) and os.path.basename(rel).startswith("decisions-"):
+            damaged = []
+            decision_blocks(tree.read(rel).decode("utf-8", "replace"), damaged)
+            for anchor in damaged:
+                report("WARN", "%s: the decision at %s does not match its bytes: count; the block is damaged, read it by hand"
+                       % (rel, anchor))
     boot = tree.read_or_none("core/boot.md")
     if boot is None:
         report("PROBLEM", "core/boot.md is missing (mem init writes the template)")
@@ -2663,6 +2719,11 @@ def plan_row(tree, row, line, ctx):
                 raise Refused("dest %s is not ledger/<kind>-YYYY-MM.<md|jsonl>" % dest_file)
             if not payload:
                 raise Refused("the source is empty: nothing to append to %s; set action skip" % dest_file)
+            if os.path.basename(dest_file).startswith("decisions-"):
+                fences, still_open = open_fence(payload.decode("utf-8", "replace"))
+                if still_open or fences % 2:
+                    raise Refused("the payload leaves a code fence open (%d fence lines): it would swallow the "
+                                  "decisions after it; close the fence in the source, or set action skip" % fences)
             item.update(kind="ledger", status="copy", append=payload)
             ledger_held(tree, item, ctx, dest_file)
         else:

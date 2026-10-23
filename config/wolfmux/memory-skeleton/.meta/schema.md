@@ -128,9 +128,14 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
 - a migrated state key (`mem migrate`, a `state:` row into a ledger file) is appended as
   `## migrated state:<key> at <UTC minute>`, then the value pretty-printed in a ```` ```json ````
   fence. A re-run finds the same block (whatever its minute) and appends nothing.
-- In the decisions ledger, fenced lines are quote only: a `## <time>` or `slug:` line inside a
-  fence never starts a block. `mem ask close` takes any id of `[A-Za-z0-9._-]` (migrated asks
-  keep theirs); `mem ask open` still needs a slug.
+- In the decisions ledger, the fence `decide` writes (the line after `bytes: N`) holds exactly
+  N bytes of quote: a `## <time>` or `slug:` line inside them never starts a block. Any other
+  open fence (a stray one, or a decide fence whose closing fence is not where `bytes:` says)
+  ends at the next `## <time>` line that is followed by a `slug:` line, so it never swallows
+  the decisions after it. `mem check` WARNs once per block whose `bytes:` count does not
+  match, naming its time. `mem migrate` refuses a decisions payload that leaves a fence open.
+- `mem ask close` takes any id of `[A-Za-z0-9._-]` (migrated asks keep theirs); `mem ask
+  open` still needs a slug.
 
 ## Archive
 

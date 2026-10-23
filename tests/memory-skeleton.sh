@@ -527,6 +527,21 @@ printf 'The owner pasted an old note:\n## 2026-10-05T10:00Z\nslug: not-a-block\n
 REF="$(printf 'A real decision.' | "$T/bin/mem" decide --time 2026-10-05T10:00Z --source chat)"
 check "a ## <time> line inside a decision's fence is quote only: the real decision at that time keeps the plain anchor" \
   '[ "$REF" = "decisions-2026-10#2026-10-05T10:00Z" ]'
+# A stray fence (a payload whose fence was never closed) must not cost the decisions after it
+# their anchors: it ends at the next `## <time>` + `slug:` pair.
+L="$WORK/stray-fence"
+fresh "$L"
+printf 'First.' | "$L/bin/mem" decide --time 2026-10-01T09:00Z --source chat --slug first >/dev/null
+printf '\n## an old payload\n```\nits fence was never closed\n' >>"$L/ledger/decisions-2026-10.md"
+for n in 2 3 4; do printf 'Decision %s.' "$n" | "$L/bin/mem" decide --time "2026-10-0${n}T09:00Z" --source chat --slug "number-$n" >/dev/null; done
+CARD="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" boot)"
+check "a stray fence before three decisions: every one of them keeps its block (the card lists all three)" \
+  'for n in 2 3 4; do printf "%s" "$CARD" | grep -qx -- "- 2026-10-0${n}T09:00Z number-$n" || exit 1; done && OUT="$("$L/bin/mem" check)" && ! printf "%s" "$OUT" | grep -q "does not match its bytes"'
+python3 -I -c 'import sys; p=sys.argv[1]; d=open(p,"rb").read(); open(p,"wb").write(d.replace(b"bytes: 11\n```\nDecision 2.", b"bytes: 3\n```\nDecision 2.", 1))' "$L/ledger/decisions-2026-10.md"
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" check)"
+CARD="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" boot)"
+check "a decide block whose bytes: count is wrong is one WARN naming its time; the decisions after it keep their blocks" \
+  '[ "$(printf "%s\n" "$OUT" | grep -c "does not match its bytes: count")" -eq 1 ] && printf "%s\n" "$OUT" | grep -qx "WARN    ledger/decisions-2026-10.md: the decision at 2026-10-02T09:00Z does not match its bytes: count; the block is damaged, read it by hand" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-03T09:00Z number-3" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-04T09:00Z number-4"'
 check "--root counts only before the command; after it, it is the command's own argument" \
   'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" && OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
 MEM_NOW=2026-10-12T10:00Z "$T/bin/mem" sweep-log --inboxes 3 --asks-touched 1 --free-pct 41 --swap-gb 2.5 --load 3.2 >/dev/null
@@ -1142,6 +1157,16 @@ fresh "$T"
 OUT="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map-front.csv" 2>&1)"; RC=$?
 check "a --- block of only # and - lines is no frontmatter: the whole source is the body, nothing is stripped" \
   '[ "$RC" -eq 0 ] && python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(d.split(b\"\n---\n\",1)[1] != open(sys.argv[2],\"rb\").read())" "$T/topics/hash-list.md" "$SRC/hash_list.md" && ! printf "%s" "$OUT" | grep -q "^line 2 .*source frontmatter" && printf "%s" "$OUT" | grep -q "^line 2 copy .*: found once$"'
+# A decisions payload that leaves a fence open would swallow the decisions after it: refused.
+printf -- '## 2026-10-05T09:00Z\nslug: open-fence\nsource: chat\nbytes: 6\n```\nquote\n' >"$SRC/decisions_open.md"
+printf -- '## 2026-10-06T09:00Z\nslug: closed-fence\nsource: chat\nbytes: 4\n```\nok.\n```\n' >"$SRC/decisions_closed.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\ndecisions_open.md,file,ledger/decisions-2026-10.md,,copy,no,,,,,,,,\ndecisions_closed.md,file,ledger/decisions-2026-10.md,,copy,no,,,,,,,,\n' >"$WORK/map-fence.csv"
+T2="$WORK/migrate-fence"
+fresh "$T2"
+DRY="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-fence.csv" --dry-run 2>&1)"
+FENCE_OUT="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-fence.csv" 2>&1)"; RC=$?
+check "a migrated decisions payload with an unclosed fence is refused with the reason; a closed one is placed and parses" \
+  'for out in "$DRY" "$FENCE_OUT"; do printf "%s" "$out" | grep -q "^- line 2 refused decisions_open.md: the payload leaves a code fence open (1 fence lines): it would swallow the decisions after it; close the fence in the source, or set action skip$" || exit 1; done && [ "$RC" -eq 1 ] && grep -q "^line 3 copy .*: found once$" "$T2"/.meta/migrate-*.md && ! grep -q "open-fence" "$T2/ledger/decisions-2026-10.md" && MEM_NOW=2026-10-23T09:00Z "$T2/bin/mem" boot | grep -qx -- "- 2026-10-06T09:00Z closed-fence"'
 check "a frontmatter whose first line is key: value may hold a blank line: it is stripped, its description kept" \
   'python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(not d.endswith(b\"\n---\nBody after a blank-line header.\n\") or b\"\nsource_description: with a blank line\n\" not in d)" "$T/topics/blank-front.md" && printf "%s" "$OUT" | grep -q "^line 3 copy .*(source frontmatter of [0-9]* bytes replaced by the header; its description kept as source_description): found once$"'
 /bin/rm -rf "$HOME/.wolfmux"
