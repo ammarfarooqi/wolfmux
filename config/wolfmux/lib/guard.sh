@@ -1230,17 +1230,35 @@ function run(text, d, here,   r) {
   if ((r = phaseA(d, here)) != "") return r
   return phaseB(d, here)
 }
+# strs(text, here): the strings of a tool call (\001 between them), each read as one quoted word: the private
+# folders by name, then the path it names from here (a leading ~/ is the home folder); prose (a blank in it) is skipped
+function strs(text, here,   n, sv, k, v, r, rp) {
+  n = split(text, sv, "\001")
+  for (k = 1; k <= n; k++) {
+    v = sv[k]
+    if (v == "" || isprose(v, (v ~ /[ \t\n]/) ? "qp" : "q")) continue
+    if (v == "~" || substr(v, 1, 2) == "~/") v = HOME substr(v, 2)
+    if ((r = lit(v)) != "") return r
+    if ((rp = wpath(v, here)) == "") continue
+    if ((r = lit(rp)) != "") return r
+    cand(rp)
+    if (DENY != "") return DENY
+  }
+  return ""
+}
 BEGIN {
   init()
   print "T" T0
-  r = run(ENVIRON["GA_CMD"], 0, ENVIRON["GA_CWD"])
+  if (ENVIRON["GA_MODE"] == "strings") r = strs(ENVIRON["GA_CMD"], ENVIRON["GA_CWD"])
+  else r = run(ENVIRON["GA_CMD"], 0, ENVIRON["GA_CWD"])
   if (r != "") { print "D" r; exit }
   for (k = 1; k <= NB; k++) print "B" BR[k]
   print "OK"
 }'
 
-# guard_bash <command> — sets GUARD_REASON when the command reaches outside (GUARD_SCAN, then the symlinks it
-# names, then git checkout of another branch)
+# guard_bash <command> [strings] — sets GUARD_REASON when the command reaches outside (GUARD_SCAN, then the
+# symlinks it names, then git checkout of another branch); with "strings", <command> is the strings of a tool
+# call, \001 after each, read as words (strs)
 guard_bash() {
   local out line path links="" new pass=0 ok name checkouts="" t0=""
   GUARD_REASON=""
@@ -1249,7 +1267,7 @@ guard_bash() {
   if [ "${#1}" -gt 65536 ] || [ "$1" = $'\001' ]; then GUARD_REASON="that command is over 64 KB; split this command; the guard reads at most 64 KB." && return 0; fi
   while [ "$pass" -lt 4 ]; do
     pass=$((pass + 1)) new="" ok=0 checkouts=""
-    out="$(GA_CMD="$1" GA_T0="$t0" GA_LINKS="$links" GA_CWD="$GUARD_CWD" GA_HOME="$HOME" GA_USER="${USER:-}" GA_BRANCH="$GUARD_BRANCH" \
+    out="$(GA_CMD="$1" GA_MODE="${2:-}" GA_T0="$t0" GA_LINKS="$links" GA_CWD="$GUARD_CWD" GA_HOME="$HOME" GA_USER="${USER:-}" GA_BRANCH="$GUARD_BRANCH" \
       GA_OWN="$GUARD_L_OWN" GA_SCR="$GUARD_L_SCR" GA_TREES="$GUARD_L_TREES" GA_STATE="$GUARD_L_STATE" GA_MEM="$GUARD_L_MEM" \
       GA_TR="$GUARD_L_TR" GA_CL="$GUARD_L_CL" GA_CT="$GUARD_L_CT" GA_ROOT="$GUARD_L_ROOT" GA_TRSHOW="$GUARD_TRANSCRIPTS" \
       GA_CTSHOW="${GUARD_CTMP[0]:-}" GA_RO="$GUARD_READONLY" LC_ALL=C /usr/bin/awk "$GUARD_SCAN" 2>/dev/null)"
@@ -1347,12 +1365,14 @@ guard_setup() {
 
 # guard_check — cmd_guard's work; the decision on stdout (nothing: allow)
 guard_check() {
-  local tool="" cwd="" command="" file="" target="" pattern="" path s i=0
-  local -a strings=()
+  local tool="" cwd="" command="" file="" target="" pattern="" path s i=0 all=""
+  local -a strings=() cmds=()
   [ -n "${TEAM_ROLE:-}" ] && [ "$TEAM_ROLE" != "$WOLFMUX_LEAD_ROLE" ] || return 0
   [ -n "$JQ_BIN" ] && [ -n "${WOLFMUX_WORKTREE:-}" ] && [ -d "$WOLFMUX_WORKTREE" ] || return 0 # cannot tell: allow
-  # one jq call reads the hook's input on stdin: the tool, its folder, the strings the checks read (an MCP
-  # tool's: every string in its input, at most 100), each ended by a NUL
+  # one jq call reads the hook's input on stdin: the tool, its folder, the strings the checks read, each ended by
+  # a NUL. A tool the guard has no rules of its own for (an MCP tool, and any other: the hook runs for all) also
+  # hands over every string in its input (s…; \001 alone when they add up to over 64 KB) and the fields named
+  # command, cmd or script at any depth (c…), which may be shell text
   while IFS= read -r -d '' s; do
     case "$i" in
       0) tool="$s" ;;
@@ -1361,12 +1381,15 @@ guard_check() {
       3) file="$s" ;;
       4) target="$s" ;;
       5) pattern="$s" ;;
-      *) strings[${#strings[@]}]="$s" ;;
+      *) case "$s" in c*) cmds[${#cmds[@]}]="${s#c}" ;; s*) strings[${#strings[@]}]="${s#s}" ;; *) strings[${#strings[@]}]="$s" ;; esac ;;
     esac
     i=$((i + 1))
   done < <("$JQ_BIN" -j '([0] | implode) as $z
     | [.tool_name, .cwd, (.tool_input.command | if type == "string" and length > 65536 then "\u0001" else . end), (.tool_input.file_path // .tool_input.notebook_path), (.tool_input.file_path // .tool_input.path), .tool_input.pattern]
-      + (if ((.tool_name // "") | tostring | startswith("mcp__")) then [.tool_input | .. | strings][:100] else [] end)
+      + (if ((.tool_name // "") | tostring | test("^(Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Bash|Monitor|PowerShell)$")) then []
+         else ([.tool_input | .. | strings]) as $s
+           | if ($s | map(length) | add // 0) > 65536 then ["s\u0001"]
+             else ($s | map("s" + .)) + [.tool_input | .. | objects | to_entries[] | select(.key | test("^(command|cmd|script)$")) | .value | strings | "c" + .] end end)
     | map((. // "" | tostring) + $z) | add' 2>/dev/null)
   [ -n "$tool" ] || return 0
   guard_setup
@@ -1430,11 +1453,22 @@ guard_check() {
         fi
       done
       ;;
-    mcp__*)
-      # An MCP tool's input has no fixed shape: every string that is an absolute path (or a file:// URL)
-      # counts. Another teammate's worktree, teamctl's state, the memory folders, the leads' conversations,
-      # Claude Code's records and its temporary folder are off limits for any of them; the lead's checkout only
-      # for a tool whose name says it changes things.
+    Bash | Monitor | PowerShell)
+      # Monitor runs its command in the same shell as Bash, and sends every line it prints back
+      [ -n "$command" ] || return 0
+      # A shell that runs inside a private folder reads it with every relative word
+      guard_private "$GUARD_CWD"
+      if [ -n "$GUARD_WHY" ]; then
+        guard_deny "this shell runs in $GUARD_CWD, a folder that is not yours to read; cd back into your worktree." && return 0
+      fi
+      guard_bash "$command"
+      if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON"; fi
+      ;;
+    *)
+      # An MCP tool, or any other tool (the hook runs for every tool): its input has no fixed shape, so every
+      # string that is an absolute path (or a file:// URL) counts. Another teammate's worktree, teamctl's state,
+      # the memory folders, the leads' conversations, Claude Code's records and its temporary folder are off
+      # limits for any of them; the lead's checkout only for a tool whose name says it changes things.
       for target in ${strings[@]+"${strings[@]}"}; do
         case "$target" in file://localhost/*) target="${target#file://localhost}" ;; file:///*) target="${target#file://}" ;; esac
         case "$target" in /* | "~"/*) ;; *) continue ;; esac
@@ -1458,16 +1492,18 @@ guard_check() {
           esac
         fi
       done
-      ;;
-    Bash)
-      [ -n "$command" ] || return 0
-      # A shell that runs inside a private folder reads it with every relative word
-      guard_private "$GUARD_CWD"
-      if [ -n "$GUARD_WHY" ]; then
-        guard_deny "this shell runs in $GUARD_CWD, a folder that is not yours to read; cd back into your worktree." && return 0
+      # every string as a quoted word of a command (the word checks of GUARD_SCAN), and command, cmd and script
+      # fields as shell text
+      for s in ${strings[@]+"${strings[@]}"}; do all="$all$s"$'\001'; done
+      [ "$all" = $'\001\001' ] && all=$'\001' # over 64 KB in all
+      if [ -n "$all" ]; then
+        guard_bash "$all" strings
+        if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON" && return 0; fi
       fi
-      guard_bash "$command"
-      if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON"; fi
+      for s in ${cmds[@]+"${cmds[@]}"}; do
+        guard_bash "$s"
+        if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON" && return 0; fi
+      done
       ;;
   esac
   return 0

@@ -484,6 +484,16 @@ R5_ZSH_ALLOW=("f() { echo hi; }; f" "x=(a b c); echo \${x[1]}" "( cd src && ls )
   'git commit -m "fix (a|b) in src"' 'case "$x" in (a|b) echo y;; esac' "echo \$((1+2))")
 check "H2: zsh glob groups ((a|b), mem(|)ory, @( ), a quoted ) inside), =( ), =cmd and a wildcard program word are read as zsh reads them; f() { }, x=( ), ( ) and case ( ) pass" \
   'denied_all "${R5_ZSH[@]}" && allowed_all "${R5_ZSH_ALLOW[@]}"'
+deep() { jq -cn --arg p "$1" '{deep: {list: ["a", $p]}}'; }
+cmdf() { jq -cn --arg c "$1" '{opts: {cmd: $c}}'; }
+check "H3: the hook runs for every tool: Monitor and PowerShell commands are shell text; any other tool has every string and its command/cmd/script fields checked" \
+  '[ "$(guard Monitor "$(sh "cat ~/.wolfmux/memory/x")")" = deny ] && [ "$(guard PowerShell "$(sh "cat $DIR/MEMORY.md")")" = deny ] &&
+   [ "$(guard Monitor "$(sh "npm test")")" = allow ] && [ "$(guard FooTool "$(deep "$DIR/MEMORY.md")")" = deny ] &&
+   [ "$(guard FooTool "$(deep "~/.wolfmux/memory/x")")" = deny ] && [ "$(guard FooTool "$(cmdf "cd $WOLFMUX_DATA && cat memory/x")")" = deny ] &&
+   [ "$(guard mcp__x__run "$(jq -cn --arg c "cat $DIR/MEMORY.md" "{script: \$c}")")" = deny ] &&
+   [ "$(guard FooTool "$(jq -cn "{p: \"src/lib/x.ts\", q: \"tests/a.sh\", note: \"see .wolfmux/memory docs\"}")")" = allow ] &&
+   [ "$(guard TodoWrite "$(jq -cn "{todos: [{content: \"fix the guard\", status: \"pending\"}]}")")" = allow ] &&
+   jq -e ".hooks.PreToolUse[0].matcher == \".*\"" "$(STATE)/teams/mem/settings/w1.json" >/dev/null'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \
