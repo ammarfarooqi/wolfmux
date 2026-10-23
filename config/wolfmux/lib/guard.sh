@@ -423,6 +423,21 @@ function lit(w, prose,   l, k) {
   for (k = 1; k <= NCT; k++) if (hit(l, CT[k])) return R_CTMP
   return ""
 }
+# rtstrip(v): the word with every part built at run time deleted ($( ) and ` ` are \003, then $name, ${ }, $1, $@ …),
+# as each may be empty (mem${x}ory); in one pass over the $ signs
+function rtstrip(v,   n, pt, k, pc, c, at) {
+  if (index(v, "\003")) gsub(/\003/, "", v)
+  if (!index(v, "$")) return v
+  n = split(v, pt, "$"); pc[1] = pt[1]
+  for (k = 2; k <= n; k++) {
+    c = substr(pt[k], 1, 1)
+    if (c == "{") { at = index(pt[k], "}"); pc[k] = at ? substr(pt[k], at + 1) : "" }
+    else if (c ~ /[A-Za-z_]/) { match(substr(pt[k], 1, 256), /^[A-Za-z_][A-Za-z0-9_]*/); pc[k] = substr(pt[k], RLENGTH + 1) }
+    else if (c ~ /[0-9@*#?!-]/) pc[k] = substr(pt[k], 2)
+    else pc[k] = (c == "" ? "" : "$") pt[k]
+  }
+  return glue(pc, 1, n)
+}
 # a folder that holds a private one: a search of it reads that too
 function holds(l,   k) {
   if (l == "" || l == "/") return 1
@@ -1055,7 +1070,7 @@ function roottext(d, p, b,   k, j, w, r, sp, n, pc) {
 # run time, or when its words come from its input (xargs ln); a word with a blank is a path here too
 function lnrule(d, p, here,   m, k, w, r, l) {
   m = CM[d]
-  for (k = 1; k < p; k++) if (gname(A[d, k], AF[d, k]) ~ /^g?xargs$/) return R_LINKRT
+  if (xargsto(d, p)) return R_LINKRT
   for (k = p + 1; k <= m; k++) if (index(AF[d, k], "$")) return R_LINKRT
   for (k = p + 1; k <= m; k++) {
     w = A[d, k]
@@ -1073,7 +1088,9 @@ function cdto(d, p, b, here,   m, k, w) {
   if (k > m) return (b == "cd") ? canon(HOME) : ""
   w = A[d, k]
   if (w == "-") return OLD[d]
-  if (index(AF[d, k], "$") || index(AF[d, k], "g")) return ""
+  if (index(AF[d, k], "g")) return ""
+  # built at run time: followed as if every run-time part were empty, unless nothing is left (cd "$(git …)")
+  if (index(AF[d, k], "$") && (w = rtstrip(w)) == "") return ""
   # a group word is followed only when it stands for one word (cd ~/(src)); with more it is a wildcard
   if (index(AF[d, k], "G")) { if (galts(w, AF[d, k], ALT) > 1 || GSTAR) return ""; w = ALT[1] }
   w = rpath(w, here)
@@ -1096,16 +1113,18 @@ function stdintext(d,   k, j, n, pc) {
   return glue(pc, 1, n)
 }
 function runstdin(d, here, inp,   t) { t = stdintext(d); if (t == "") t = inp; if (t == "") return ""; return run(t, d + 1, here) }
-# a <( ) whose output a shell or source reads: what its last command prints
-function runproc(d, tok, here,   k, i, e, t) {
-  for (k = 1; k <= NS[d]; k++) if (SA[d, k] == tok && SK[d, k] == "p") {
+# a <( ) whose output a shell or source reads, or (kind s) a $( ) or ` ` that is the text of sh -c or eval: what
+# its last command prints
+function runproc(d, tok, here, kind,   k, i, e, t, r) {
+  for (k = 1; k <= NS[d]; k++) if (SA[d, k] == tok && SK[d, k] == (kind == "" ? "p" : kind)) {
     if (d + 1 > 3) return R_NEST
     lex(SX[d, k], d + 1); t = ""; i = 1
     while (i <= NT[d + 1]) { e = collect(d + 1, i); if (CM[d + 1] > 0) t = producer(d + 1, prog(d + 1, 1)); i = e + 1 }
-    if (t != "") return run(t, d + 1, here)
+    if (t != "" && (r = run(t, d + 1, here)) != "") return r
   }
   return ""
 }
+function xargsto(d, k,   j) { for (j = 1; j < k; j++) if (gname(A[d, j], AF[d, j]) ~ /^g?xargs$/) return 1; return 0 }
 # what this command runs as another command: the script of sh -c (options before or after -c, --), a shell
 # that reads stdin (a heredoc, <<<, a pipe from echo/printf/cat, -s, -, /dev/stdin, <( )), eval, source of
 # stdin, env -S, npx -c, ssh HOST TEXT (in your home), watch TEXT, make -f - with a heredoc
@@ -1125,12 +1144,19 @@ function inner(d, p, b, here, inp,   m, k, j, w, hasc, stdin, r, t) {
       if (w ~ /^[-+][A-Za-z]+$/) { if (w ~ /^-[A-Za-z]*c/) hasc = 1; if (w ~ /^-[A-Za-z]*s/) stdin = 1; j++; continue }
       break
     }
-    if (hasc) { if (j <= m && (r = run(A[d, j], d + 1, here)) != "") return r; continue }
+    if (hasc) {
+      if (j <= m && (r = run(A[d, j], d + 1, here)) != "") return r
+      # the script is what a $( ) in it prints (bash -c "$(printf …)"); under xargs, its input may be the script
+      if (j <= m && index(AF[d, j], "$") && (r = runproc(d, CW[d, j], here, "s")) != "") return r
+      if (xargsto(d, k) && (r = runstdin(d, here, inp)) != "") return r
+      continue
+    }
     if (stdin || j > m || A[d, j] ~ /^\/dev\/(stdin|fd\/0)$/) { if ((r = runstdin(d, here, inp)) != "") return r; continue }
     if (index(AF[d, j], "P") && (r = runproc(d, CW[d, j], here)) != "") return r
   }
   if (p < 1) return ""
   if (b == "eval" && p < m && (r = run(join(d, p + 1, m), d + 1, here)) != "") return r
+  if (b == "eval") for (k = p + 1; k <= m; k++) if (index(AF[d, k], "$") && (r = runproc(d, CW[d, k], here, "s")) != "") return r
   if ((b == "source" || b == ".") && p < m) {
     if (A[d, p + 1] ~ /^(-|\/dev\/stdin|\/dev\/fd\/0)$/) { if ((r = runstdin(d, here, inp)) != "") return r }
     else if (index(AF[d, p + 1], "P") && (r = runproc(d, CW[d, p + 1], here)) != "") return r
@@ -1161,7 +1187,10 @@ function alit(v, f, here,   n, k, r) {
 }
 function checkA(d, here,   m, k, j, v, r, p, q, b, n, i) {
   m = CM[d]
-  for (k = 1; k <= m; k++) { v = A[d, k]; if (!isprose(v, AF[d, k]) && (r = alit(v, AF[d, k], here)) != "") return r }
+  for (k = 1; k <= m; k++) {
+    v = A[d, k]
+    if (!isprose(v, AF[d, k]) && ((r = alit(v, AF[d, k], here)) != "" || (index(AF[d, k], "$") && (r = alit(rtstrip(v), AF[d, k], here)) != ""))) return r
+  }
   for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) { v = TV[d, j]; if (!isprose(v, TF[d, j]) && (r = alit(v, TF[d, j], here)) != "") return r }
   p = prog(d, 1)
   if ((r = progrules(d, p)) != "" || (r = identity(d)) != "") return r
@@ -1204,7 +1233,14 @@ function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, 
   # every word a group word stands for is checked; with more than one, the group is also a wildcard
   for (k = 1; k <= m; k++) {
     RP[d, k] = ""; v = A[d, k]
-    if (SP[d, k] || SO[d, k] == 3 || (SO[d, k] == 1 && !index(v, "=")) || index(AF[d, k], "$")) continue
+    if (SP[d, k] || SO[d, k] == 3 || (SO[d, k] == 1 && !index(v, "="))) continue
+    # built at run time: the path it names when every run-time part is empty (cd ~/.wolfmux && cat mem${x}ory/x)
+    if (index(AF[d, k], "$")) {
+      v = rtstrip(v)
+      if (isprose(v, AF[d, k])) { if ((r = prosepath(v, here)) != "") return r }
+      else if ((rp = wpath(v, here)) != "" && (r = lit(rp)) != "") return r
+      continue
+    }
     # prose with a "/" is checked as a path too; a walking tool is refused when it names a folder that holds a
     # private one, but it is no path word (find -name "a b/c" in ~ still walks ~)
     if (isprose(v, AF[d, k])) {
@@ -1231,7 +1267,7 @@ function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, 
   for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) {
     # a redirection target is a path even with a blank in it: never prose
     v = TV[d, j]
-    if (index(TF[d, j], "$")) continue
+    if (index(TF[d, j], "$")) { if ((v = rtstrip(v)) != "" && (r = lit(rpath(v, here))) != "") return r; continue }
     n = galts(v, TF[d, j], ALT); gs = GSTAR
     if (n > 1 && (r = wild(gstar(v), here)) != "") return r
     for (i = 1; i <= n; i++) {
@@ -1422,7 +1458,7 @@ guard_setup() {
 
 # guard_check — cmd_guard's work; the decision on stdout (nothing: allow)
 guard_check() {
-  local tool="" cwd="" command="" file="" target="" pattern="" path s i=0 all=""
+  local tool="" cwd="" command="" file="" target="" pattern="" path s i=0 all="" slashes
   local -a strings=() cmds=()
   [ -n "${TEAM_ROLE:-}" ] && [ "$TEAM_ROLE" != "$WOLFMUX_LEAD_ROLE" ] || return 0
   [ -n "$JQ_BIN" ] && [ -n "${WOLFMUX_WORKTREE:-}" ] && [ -d "$WOLFMUX_WORKTREE" ] || return 0 # cannot tell: allow
@@ -1527,8 +1563,17 @@ guard_check() {
       # the memory folders, the leads' conversations, Claude Code's records and its temporary folder are off
       # limits for any of them; the lead's checkout only for a tool whose name says it changes things.
       for target in ${strings[@]+"${strings[@]}"}; do
-        case "$target" in file://localhost/*) target="${target#file://localhost}" ;; file:///*) target="${target#file://}" ;; esac
-        case "$target" in /* | "~"/*) ;; *) continue ;; esac
+        # leading blanks go; a file: URL in any letter case (nocasematch) with any number of slashes, localhost
+        # too, is its path; a relative path that climbs (../x, a/../../x) is read from the cwd
+        target="${target#"${target%%[![:space:]]*}"}"
+        case "$target" in
+          file:*)
+            target="${target:5}" slashes="${target%%[!/]*}" target="${target#"$slashes"}"
+            case "$target" in localhost/*) target="${target:9}" ;; esac
+            target="/$target"
+            ;;
+        esac
+        case "$target" in /* | "~" | "~"/* | . | .. | ./* | ../* | */.. | */../*) ;; *) continue ;; esac
         guard_phys "$target" "$cwd"
         path="$GUARD_P"
         if guard_inside "$path" "$GUARD_OWN"; then continue; fi

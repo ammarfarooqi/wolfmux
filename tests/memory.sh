@@ -517,6 +517,17 @@ R5_LINKS=("ln -s ~/.wolfmux/mem\$(true)ory/$KEY/mem/MEMORY.md f" "gln -s ~ h" "x
   "git update-index --add --cacheinfo 120000,\$(printf %s $WOLFMUX_DATA | git hash-object -w --stdin),h" "find . -name x -exec ln -s {} h \\;")
 check "H5: a link where the path ends is followed by Read, Grep, Write, Edit and Bash (f -> the memory index, g -> f, rx.ts -> the lead's checkout); ln with a word built at run time, gln, xargs ln, find -exec ln and git update-index 120000 are refused" \
   'end_link_followed && denied_all "${R5_LINKS[@]}" && allowed_all "ln -s src/lib lib" "git update-index --refresh"'
+R5_RT=("cat ~/.wolfmux/mem\${x}ory/x" "cat ~/.wolfmux/mem\$(true)ory/x" "cat ~/.wolfmux/mem\$@ory/x" "cat ~/.wolfmux/mem\`true\`ory/x"
+  "cat ~/.wolf\$1mux/memory/x" "cd $WOLFMUX_DATA && cat mem\${x}ory/$KEY/mem/MEMORY.md" "cd $WORK/da\${x}ta && cat memory/$KEY/mem/MEMORY.md"
+  "bash -c \"\$(printf 'cd $WOLFMUX_DATA && cat memory/$KEY/mem/MEMORY.md')\"" "eval \"\$(printf 'cd $WOLFMUX_DATA; cat memory/$KEY/mem/MEMORY.md')\""
+  "xargs -I{} sh -c '{}' <<< 'cd $WOLFMUX_DATA && cat memory/$KEY/mem/MEMORY.md'")
+R5_RT_ALLOW=('echo $HOME/x' 'cd "$(git rev-parse --show-toplevel)" && ls' 'bash -c "$(printf "echo hi")"' 'git commit -m "fix $x in a/b"'
+  'eval "$(ssh-agent -s)"' 'for f in src/*.ts; do cat "$f"; done')
+check "H6: a word is also read with every part built at run time deleted (mem\${x}ory, mem\$(true)ory, .wolf\$1mux); what \$( ) prints is the text of sh -c or eval, and xargs input the text of sh -c '{}'; an MCP string may be FILE:, file:/, have leading blanks or climb with .." \
+  'denied_all "${R5_RT[@]}" && allowed_all "${R5_RT_ALLOW[@]}" &&
+   [ "$(guard mcp__fs__write_file "$(at "FILE://$PROJECT/x")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "  $PROJECT/x")")" = deny ] &&
+   [ "$(guard mcp__fs__write_file "$(at "file:$PROJECT/x")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "${UP}../demo project/x")")" = deny ] &&
+   [ "$(guard mcp__fs__read "$(at "fIlE:$DIR/MEMORY.md")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "./src/x.ts")")" = allow ]'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \
