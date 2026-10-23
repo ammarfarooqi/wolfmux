@@ -713,6 +713,34 @@ name that is not a team of the project is refused. `teamctl teams` then names it
 `may act: you, communication-management.lead (steward)`. In an agent's pane it says "the
 human" where it says "you" to you.
 
+## Team memory: one lead's private notes
+
+One team of a project may give its lead a private memory folder. Only the human turns it on:
+
+```bash
+teamctl memory enable communication-management   # or: teamctl policy team-memory communication-management
+teamctl memory status                            # anyone: which team, sizes, index vs its 25,000-byte cap, the lead's state
+teamctl restart lead --team communication-management --resume <its id>   # the lead gets it at its next start
+teamctl memory disable                           # the human, or that lead itself: policy off, the folder stays
+```
+
+The folder is `~/.wolfmux/memory/<project>/<team>/` (mode 700), copied once from the skeleton that
+`install.sh` puts in `~/.config/wolfmux/memory-skeleton/`. That team's lead, and nobody else, gets:
+
+- the folder as Claude Code's `autoMemoryDirectory`, so its `MEMORY.md` loads at every start;
+- a "Team memory" block at the end of its system prompt: the folder, the rule (private to that lead;
+  nothing from it goes into Beads, Jira, Slack, repositories or reports, which carry counts only), the
+  shared project memory folder `~/.claude/projects/<project path>/memory/`, and `core/card.md` (at most
+  4,000 bytes; the block stays under 6,000);
+- a first prompt at every launch, fresh, `--continue`, `--resume` and restore alike: run
+  `<folder>/bin/mem boot`, re-create the crons it lists, then read the Beads inboxes.
+
+Its `start --continue` and `restart --continue` are refused while no conversation id is stored, because
+`claude --continue` would open the newest conversation in the folder every lead shares. `destroy --purge`,
+`finish` and `install.sh` leave the folder alone; `teamctl destroy --purge --memory` (you type the team's
+name) and `uninstall.sh --purge --purge-memory` delete it. Workers are refused it by the worktree guard;
+where that guard ends is in [SECURITY.md](SECURITY.md#team-memory-who-can-read-a-leads-private-folder).
+
 ## teamctl
 
 | Command | Does |
@@ -732,6 +760,8 @@ human" where it says "you" to you.
 | `teamctl restart <role> [--model <model>] [--continue] [--resume <session-id>]` | same worktree and branch, on its recorded model; `--model` records and uses a different model. `--continue` resumes that agent's own conversation, `--resume` the one you name; both require the same CLI family. Without either it starts a new one |
 | `teamctl model <role> <model> [--team <name>] [--now]` | record the model for the next start, restart or restore. `--now` also switches a Claude agent by a resume-restart when it is between turns, has a recorded conversation id, and nobody is at its pane. An unsafe switch waits until the next restart, with a reason printed. Same model keys as `spawn` |
 | `teamctl policy lead-model <model>\|default` | only the human may set this project-wide default for new leads. Default Opus, or `WOLFMUX_LEAD_MODEL` when set; `default` returns to that config value. Existing teams keep their lead's model |
+| `teamctl memory [status]` · `teamctl memory enable <team>` · `teamctl memory disable` · `teamctl memory path` · `teamctl memory check` | team memory, see [Team memory](#team-memory-one-leads-private-notes). `status` anyone; `enable` the human only (77 for an agent); `disable` the human or the memory team's own lead; `path` prints the folder (exit 1 when off); `check` runs the folder's own `mem check` and passes its exit code |
+| `teamctl policy team-memory <team>\|off` | project-wide, default `off`: the same as `memory enable` / `memory disable` |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | for debugging: the pane notices filed for a role, oldest first. Default: the lead of this team. They are not counted in the status bar (the `📨` number is your unread Beads messages); reading them does not change whether the agent has had them. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
 | `teamctl status [--json]` (alias `workers`) | team by team: role, model (the one it runs, as `teamctl models` says it; `*` = its last answer names that model and its record does not vouch for it, `?` = nobody can name it), running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
@@ -745,7 +775,7 @@ human" where it says "you" to you.
 | `teamctl diff <role> [--stat\|--names\|--commits\|--working]` | the worker's changes since its base |
 | `teamctl completion <zsh\|bash>` | print the tab-completion script of that shell, so `source <(teamctl completion zsh)` works (bash: `eval "$(teamctl completion bash)"`); `./install.sh` wires it into `~/.zshrc`, and `teamctl <Tab>` then offers commands, options and values (roles, teams, models, policy keys, layouts, approvals, branches) |
 | `teamctl destroy [--worktrees] [--yes]` | end the session; never deletes dirty worktrees, unmerged branches, source, credentials or Beads data. A lane whose task is closed and whose work is all in main is reclaimed (policy `auto-reclaim`), and every other lane says what it is holding |
-| `teamctl destroy --purge [--force] [--keep-transcripts] [--yes]` | delete the whole team and free its disk space: reports first, asks, then removes session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts ([deleting a team](#deleting-a-team-and-what-a-team-costs)) |
+| `teamctl destroy --purge [--force] [--keep-transcripts] [--memory] [--yes]` | `--memory` also deletes the lead's memory folder, after you type the team's name (no `--yes` for that part). Delete the whole team and free its disk space: reports first, asks, then removes session, worktrees, the branches teamctl created, records and its teammates' Claude Code transcripts ([deleting a team](#deleting-a-team-and-what-a-team-costs)) |
 | `teamctl doctor [--probe]` | launcher, credential, settings and login checks; `--probe` also asks each provider whose key is set up whether its endpoint accepts it. Also: which model each running agent started on, and the restart that moves it to a newer one; and the Beads store's mode, size and one call's time, with the compaction command when it is over the limit (run it once a week when doctor says so; wolfmux never runs it) |
 | `teamctl models [--json] [--refresh]` | what `fable`, `opus`, `sonnet` and `haiku` mean today (alias, model id, label, where the id came from), and the model each running agent runs, with where that is known from: `record` (its record names it, and no later answer of its says otherwise) or `transcript` (its last answer names it, and its record does not). `status`, `teams` and the dashboard show the same answer. `--refresh` asks Claude Code again now; otherwise it is asked at most once a day per alias, when an agent starts (`WOLFMUX_MODEL_POLICY`) |
 

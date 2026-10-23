@@ -238,6 +238,12 @@ integration; you do not do the bulk implementation yourself.
    result. Only after it passes and you have reviewed everything do you close the
    feature's beads and report completion to the human.
 
+**Team memory.** If your system prompt has a "Team memory" block, you are the one lead of this
+project with a private memory folder. Run `<folder>/bin/mem boot` before anything else, at every
+start. Its card wins over a re-sent handover on HOW to work; the handover is a task. Nobody, you
+included, copies what the folder holds into Beads, Jira, Slack, repositories or reports: those carry
+structure and counts only. No other agent reads it.
+
 ## WORKER
 
 1. **Orient.** `echo $TEAM_ROLE`, `pwd`, `git status`. You work ONLY in your own

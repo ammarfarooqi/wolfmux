@@ -2012,6 +2012,33 @@ The documents were edited after that pass. `tests/docs.sh` was **re-run at the f
 assert are ABSENT under `docs/` were searched for by hand in the shipping content. Neither
 appears, and each pattern was first shown to match a line that does contain it.
 
+## 37. One lead keeps a private memory (v1.22.0, team memory)
+
+Asked for by the owner for the communication-management lead, planned by `comms-memory.lead`, built
+in two lanes with disjoint files: this one (teamctl) and `memtool` (the folder's contents, under
+`config/wolfmux/memory-skeleton/`). The contract between them: teamctl calls only `mem init`,
+`mem boot` and `mem check`, and reads only `core/card.md`. Decision and findings:
+[ADR-0030](adr/0030-one-lead-keeps-a-private-memory.md).
+
+| Piece | Where |
+|-------|-------|
+| policy `team-memory <team>\|off`, project-level, owner-only on, lead-allowed off, logged to `team-memory.jsonl` and `events.jsonl` | `lib/policy.sh`, `lib/memory.sh` |
+| `teamctl memory status\|enable\|disable\|path\|check` | `lib/memory.sh` |
+| the "Team memory" prompt block (card cut at 4,000 bytes, block under 6,000) | `build_role_prompt` |
+| `autoMemoryDirectory` for that lead only | `write_agent_settings` |
+| the boot prompt at every launch | `cmd_run_agent` |
+| `--continue` refused with no stored id; `destroy --purge --memory` | `cmd_start`, `cmd_restart`, `cmd_destroy` |
+| guard: the folder for every file tool, searches of a folder that holds it, `.wolfmux/memory` in a command, `~` / `$HOME` / `${HOME}` expanded (also for `~/.wolfmux/state`) | `lib/guard.sh` |
+| the skeleton installed to `~/.config/wolfmux/memory-skeleton/`; `uninstall.sh --purge` refused while memory exists, `--purge-memory` | `install.sh`, `uninstall.sh` |
+
+Found on the way: the project memory folder Claude Code shares per repository is named by the
+existing `transcripts_dir` rule (every character but a letter or digit becomes `-`), not by `/`
+alone: `~/.wolfmux` is `--wolfmux` in such a name. Checked against the real folders under
+`~/.claude/projects/`. A live interactive pty probe of `claude --resume <id> "<prompt>"` did not
+reach a first turn in 90 s (print mode did), so the boot prompt rests on the CLI reference; see the ADR.
+
+`tests/memory.sh` (new, 51 checks) covers it end to end with a stub agent and a fake skeleton.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

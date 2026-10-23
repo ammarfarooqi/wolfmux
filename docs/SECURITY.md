@@ -168,6 +168,25 @@ so a confused agent cannot stop, approve or spawn by accident; an agent that del
 unset its environment or called `tmux` directly could get around it, because all agents
 share one user account.
 
+## Team memory: who can read a lead's private folder
+
+`teamctl memory enable <team>` (v1.22.0, [ADR-0030](adr/0030-one-lead-keeps-a-private-memory.md)) gives ONE
+team's lead `~/.wolfmux/memory/<project>/<team>/`. What keeps it private, and where that ends:
+
+| Layer | What it does | Where it ends |
+|-------|--------------|---------------|
+| Owner-only switch | only you turn it on (`require_operator`, the pane proof; an agent gets 77). Turning it off only narrows, so that lead may do it too | cooperative, like every identity check here |
+| File modes | the folder and its subfolders are 700, files 600, `bin/mem` 700 | every agent is your macOS user: modes stop other accounts, not other agents |
+| Who is given it | only that lead's settings carry `autoMemoryDirectory`, and only its prompt names the folder | another agent can still learn the path from `teamctl memory path` |
+| The worktree guard (workers) | a worker's Read, Grep, Glob, LS, Edit, Write or MCP call on the folder is refused; so is a Grep or Glob of a folder that holds it (`~/.wolfmux`, your home); a Bash command is refused when its text contains `.wolfmux/memory`, or names the folder by its full path, also spelled with `~`, `$HOME` or `${HOME}` | the guard reads TEXT. A relative path after a `cd` passes (`cd ~/.wolfmux && cat memory/…`), as does a path built at run time (`d=.wolf; cat ~/${d}mux/memory/…`). Off for a team with `worker-isolation off`. Leads are never guarded: another team's lead is held only by its protocol |
+| The rule in the prompt | nothing from the folder goes into Beads, Jira, Slack, repositories or reports; reports carry structure and counts | conduct, not enforcement |
+| `--continue` | refused for that lead while no conversation id is stored: `claude --continue` would open the newest conversation in the folder all leads share, and read the memory into it | a human running `claude --continue` by hand in the project is not stopped |
+
+`teamctl memory status` and `teamctl memory check` may be run by anyone: they print sizes, counts and
+the skeleton's own lint lines, never the notes. Nothing deletes the folder except
+`teamctl destroy --purge --memory` (the team's name typed at a terminal) and
+`uninstall.sh --purge --purge-memory`; `install.sh` never touches it.
+
 ## Trust model
 
 Every agent runs as your macOS user. That has consequences worth stating plainly:
