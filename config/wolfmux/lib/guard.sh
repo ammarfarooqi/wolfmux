@@ -400,14 +400,15 @@ function maskone(l, p,   at, n, q, k, pc) {
   pc[++k] = substr(l, q)
   return glue(pc, 1, k)
 }
-function lit(w,   l, k) {
+# lit(w, prose): the private folder w names; with prose set, the bare name .wolfmux/memory alone is no path
+function lit(w, prose,   l, k) {
   l = tolower(w)
   for (k = 1; k <= NOWN; k++) l = maskone(l, OWN[k])
   for (k = 1; k <= NSCR; k++) l = maskone(l, SCR[k])
   for (k = 1; k <= NTREES; k++) if (hit(l, TREES[k])) return R_TREES
   for (k = 1; k <= NSTATE; k++) if (hit(l, STATE[k])) return R_TREES
   for (k = 1; k <= NMEM; k++) if (hit(l, MEM[k])) return R_MEM
-  if (hit(l, ".wolfmux/memory")) return R_MEM
+  if (!prose && hit(l, ".wolfmux/memory")) return R_MEM
   for (k = 1; k <= NCL; k++) if (hit(l, CL[k])) return R_CLAUDE
   for (k = 1; k <= NTR; k++) if (trhit(l, TR[k])) return R_TRANS
   for (k = 1; k <= NCT; k++) if (hit(l, CT[k])) return R_CTMP
@@ -885,6 +886,34 @@ function lpre(pre, i, seg,   b) {
   return b "/" tolower(seg)
 }
 function rpath(v, here) { v = rep(v, "\002", here); if (substr(v, 1, 1) == "/") return canon(v); return canon(here "/" v) }
+# prosepath(v, here): prose that holds a "/" may still be a path (cat "Library/Application Support/../../x"):
+# the path the whole text names from here (PRP), then each blank-separated part with a "/" (one that starts
+# with ~ or / in full, any other from here, where naming .wolfmux/memory alone is no path)
+function prosepath(v, here,   r, n, pt, k, w, name) {
+  PRP = ""
+  if (!index(v, "/")) return ""
+  PRP = rpath(v, here)
+  if (!inown(PRP) && ++RESOLVED > 300 && DENY == "") DENY = R_SPLIT
+  if ((r = lit(PRP, 1)) != "") return r
+  cand(PRP)
+  n = split(v, pt, /[ \t\n]+/)
+  for (k = 1; k <= n; k++) {
+    w = pt[k]
+    if (!index(w, "/") || ((here, w) in PSEEN)) continue
+    PSEEN[here, w] = 1
+    if (++PATHS % 50 == 0) clock()
+    if (DENY != "") return DENY
+    if (substr(w, 1, 1) == "~" && match(substr(w, 1, 256), /^~[A-Za-z0-9._+-]*\//)) {
+      name = substr(w, 2, RLENGTH - 2)
+      if (name == "" || name == USERN) w = HOME substr(w, RLENGTH)
+      else if (name == "+") w = here substr(w, RLENGTH)
+      else if (name != "-") w = "/Users/" name substr(w, RLENGTH)
+      if ((r = lit(rpath(w, here))) != "") return r
+    } else if (substr(w, 1, 1) == "/") { if ((r = lit(canon(w))) != "") return r }
+    else if ((r = lit(rpath(w, here), 1)) != "") return r
+  }
+  return DENY
+}
 # wpath(v, here): the path a word names (an option or assignment: its value), "" for none; a path that ends
 # outside the own worktree counts against the budget
 function wpath(v, here,   r) {
@@ -1158,7 +1187,15 @@ function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, 
   # every word a group word stands for is checked; with more than one, the group is also a wildcard
   for (k = 1; k <= m; k++) {
     RP[d, k] = ""; v = A[d, k]
-    if (isprose(v, AF[d, k]) || SP[d, k] || SO[d, k] == 3 || (SO[d, k] == 1 && !index(v, "=")) || index(AF[d, k], "$")) continue
+    if (SP[d, k] || SO[d, k] == 3 || (SO[d, k] == 1 && !index(v, "=")) || index(AF[d, k], "$")) continue
+    # prose with a "/" is checked as a path too; a walking tool is refused when it names a folder that holds a
+    # private one, but it is no path word (find -name "a b/c" in ~ still walks ~)
+    if (isprose(v, AF[d, k])) {
+      if ((r = prosepath(v, here)) != "") return r
+      RP[d, k] = PRP
+      if (PRP != "" && walks && k > p && SO[d, k] != 1 && holds(tolower(PRP))) return walkmsg(tool, v)
+      continue
+    }
     n = galts(v, AF[d, k], ALT); gs = GSTAR
     if (n > 1 && (r = wild(gstar(v), here)) != "") return r
     for (i = 1; i <= n; i++) {
@@ -1175,8 +1212,9 @@ function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, 
   if (DENY != "") return DENY
   if (walks && !any && p > 0 && tool !~ /tar$/ && holds(tolower(here))) return walkmsg(tool, here)
   for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) {
+    # a redirection target is a path even with a blank in it: never prose
     v = TV[d, j]
-    if (isprose(v, TF[d, j]) || index(TF[d, j], "$")) continue
+    if (index(TF[d, j], "$")) continue
     n = galts(v, TF[d, j], ALT); gs = GSTAR
     if (n > 1 && (r = wild(gstar(v), here)) != "") return r
     for (i = 1; i <= n; i++) {
@@ -1231,12 +1269,14 @@ function run(text, d, here,   r) {
   return phaseB(d, here)
 }
 # strs(text, here): the strings of a tool call (\001 between them), each read as one quoted word: the private
-# folders by name, then the path it names from here (a leading ~/ is the home folder); prose (a blank in it) is skipped
+# folders by name, then the path it names from here (a leading ~/ is the home folder); prose (a blank in it) goes
+# to prosepath
 function strs(text, here,   n, sv, k, v, r, rp) {
   n = split(text, sv, "\001")
   for (k = 1; k <= n; k++) {
     v = sv[k]
-    if (v == "" || isprose(v, (v ~ /[ \t\n]/) ? "qp" : "q")) continue
+    if (v == "") continue
+    if (isprose(v, (v ~ /[ \t\n]/) ? "qp" : "q")) { if ((r = prosepath(v, here)) != "") return r; continue }
     if (v == "~" || substr(v, 1, 2) == "~/") v = HOME substr(v, 2)
     if ((r = lit(v)) != "") return r
     if ((rp = wpath(v, here)) == "") continue

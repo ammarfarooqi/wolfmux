@@ -494,6 +494,17 @@ check "H3: the hook runs for every tool: Monitor and PowerShell commands are she
    [ "$(guard FooTool "$(jq -cn "{p: \"src/lib/x.ts\", q: \"tests/a.sh\", note: \"see .wolfmux/memory docs\"}")")" = allow ] &&
    [ "$(guard TodoWrite "$(jq -cn "{todos: [{content: \"fix the guard\", status: \"pending\"}]}")")" = allow ] &&
    jq -e ".hooks.PreToolUse[0].matcher == \".*\"" "$(STATE)/teams/mem/settings/w1.json" >/dev/null'
+# Review round 5 (H4): UP climbs from the worktree to the data folder, so the cases name memory/... only by resolving
+UP="" UPD="$(cd "$W1" && pwd -P)"
+while [ "$UPD" != "$WOLFMUX_DATA" ] && [ "$UPD" != / ]; do UP="$UP../" UPD="$(dirname "$UPD")"; done
+MSG60="git commit -m \"$(awk 'BEGIN { for (i = 0; i < 15000; i++) printf "a/b " }')\""
+R5_PROSE=("cd $WORK && cat 'Library/Application Support/../../data/memory/$KEY/mem/MEMORY.md'"
+  "mkdir -p 'a b' && cat 'a b/../${UP}memory/$KEY/mem/MEMORY.md'" "cat 'x y'/../${UP}memory/$KEY/mem/MEMORY.md"
+  "cd $WOLFMUX_DATA && cat 'memory/$KEY/mem/core/my notes.md'" 'git commit -m "see ~/.wolfmux/memory"')
+R5_PROSE_ALLOW=('git commit -m "fix a/b in src"' 'git commit -m "docs: see src/lib/x.ts and tests/a b.sh"' 'cat "src/my file.ts"')
+check "H4: a quoted word with a blank is a path when it holds a / (the review's three cases, and an MCP string); a commit message that names a private folder (see ~/.wolfmux/memory) is refused, so rephrase it; fix a/b in src passes, a 60 KB message in under 0.5 s" \
+  '[ "$UPD" = "$WOLFMUX_DATA" ] && denied_all "${R5_PROSE[@]}" && [ "$(guard FooTool "$(deep "a b/../${UP}memory/$KEY/mem/MEMORY.md")")" = deny ] &&
+   allowed_all "${R5_PROSE_ALLOW[@]}" && timed 500 allow "$MSG60"'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \
