@@ -466,6 +466,13 @@ done
 B1="$B1'"
 check "G1: the review's B1 command is refused in under 2 s, 99 paths in the worktree pass in under 1 s, git status in under 0.3 s" \
   'timed 2000 deny "$B1" && timed 1000 allow "$P99" && timed 300 allow "git status"'
+# Review round 5 (H1): the size is capped before any work, and every step after it is linear in the command
+HD60="$(awk 'BEGIN { print "cat > out.txt <<\047EOF\047"; for (i = 0; i < 6000; i++) print "some data"; printf "EOF" }')"
+W60="echo $(awk 'BEGIN { for (i = 0; i < 60000; i++) printf "A" }')"
+W65="echo $(awk 'BEGIN { for (i = 0; i < 66000; i++) printf "A" }')"
+HD400="$(awk 'BEGIN { print "cat > out.txt <<\047EOF\047"; for (i = 0; i < 200000; i++) print "x"; printf "EOF" }')"
+check "H1: a 60 KB heredoc and one 60 KB word pass in under 0.5 s; 65 KB and a 400 KB heredoc are refused at once (under 0.3 s)" \
+  'timed 500 allow "$HD60" && timed 500 allow "$W60" && timed 300 deny "$W65" && timed 300 deny "$HD400"'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \
