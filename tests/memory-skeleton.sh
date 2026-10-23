@@ -145,6 +145,17 @@ ln -s "$REPO_SKEL/bin/mem" "$LT/bin/mem"
 OUT="$("$LT/bin/mem" init 2>&1)"
 check "a tree whose bin/mem links into a skeleton elsewhere: init, boot and check work on the tree; the target folder is untouched" \
   'printf "%s" "$OUT" | grep -q "^mem init: $LT is ready" && "$LT/bin/mem" boot | grep -q "^# Card" && (cd "$LT" && bin/mem check >/dev/null) && [ -f "$LT/core/card.md" ] && [ -f "$LT/state/cursors.json" ] && [ "$REPO_SUM" = "$(tree_sum "$REPO_SKEL")" ]'
+# A link from a folder that is NOT a tree resolves to the link target's folder: when that is the
+# repo's shipped skeleton (its path holds /memory-skeleton/), every writer refuses it.
+SHIP="$WORK/fake-repo/config/wolfmux/memory-skeleton"
+/bin/mkdir -p "$WORK/fake-repo/config/wolfmux" "$WORK/plain/bin"
+/bin/cp -R "$SKEL" "$SHIP"
+ln -s "$SHIP/bin/mem" "$WORK/plain/bin/mem"
+SHIP_SUM="$(tree_sum "$SHIP")"
+check "a link from a plain folder into the shipped skeleton: init, boot, check, backup and add refuse it (exit 1, MEM_ROOT does not count) and the skeleton is untouched" \
+  'for c in init boot check backup; do OUT="$("$WORK/plain/bin/mem" $c 2>&1 </dev/null)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -qF "$SHIP: this is the shipped skeleton; pass --root to use it" || exit 1; done && OUT="$(echo b | "$WORK/plain/bin/mem" add --region topics --name x --keywords "x, y" --summary s 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "shipped skeleton" && OUT="$(MEM_ROOT="$SHIP" "$WORK/plain/bin/mem" init 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "shipped skeleton" && [ "$SHIP_SUM" = "$(tree_sum "$SHIP")" ]'
+check "readers still run on the shipped skeleton, and --root naming it lets a writer in" \
+  '"$WORK/plain/bin/mem" status | grep -q "^last backup: none" && [ "$SHIP_SUM" = "$(tree_sum "$SHIP")" ] && "$WORK/plain/bin/mem" --root "$SHIP" init >/dev/null && [ -f "$SHIP/core/card.md" ] && "$WORK/plain/bin/mem" check --root "$SHIP" >/dev/null'
 check "mem runs from any cwd with only PATH and HOME set" \
   '(cd / && env -i PATH="$PATH" HOME="$HOME" "$T/bin/mem" boot) | grep -q "^# Card"'
 check "MEM_ROOT points mem at another tree" \

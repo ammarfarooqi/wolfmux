@@ -112,11 +112,16 @@ USAGE = """usage: mem [--root <dir>] <command> [options]
 
 The tree: --root <dir> (before or after the command), else $MEM_ROOT, else the folder above
 bin/mem (above the link when bin/mem is a link inside a tree; else above the real script).
+A writer refuses a tree whose path holds /memory-skeleton/ (the repo's shipped copy) unless
+--root names it; $MEM_ROOT does not count.
 Exit status: 0 done, 1 refused or problems found, 64 usage, 75 another writer holds the lock.
 boot never waits for the lock: while another writer holds it, boot prints a fresh card unsaved.
 """
 
 READERS = ("recall", "status", "help")
+# The repo's shipped copy (config/wolfmux/memory-skeleton): a writer touches it only when --root
+# names it. A link to the repo's bin/mem, run from a folder that is not a tree, lands here.
+SHIPPED = os.sep + "memory-skeleton" + os.sep
 
 
 class Refused(Exception):
@@ -3593,10 +3598,13 @@ def main(argv):
             sys.stderr.write("mem: two different --root folders (%s and %s)\n" % (root, after))
             return EXIT_USAGE
         root = after
+    explicit = root is not None
     root = root or os.path.realpath(os.path.expanduser(os.environ.get("MEM_ROOT") or default_root()))
     tree = Tree(root)
     try:
         if args.command not in READERS:
+            if not explicit and SHIPPED in root + os.sep:
+                raise Refused("%s: this is the shipped skeleton; pass --root to use it" % root)
             if args.command == "init":
                 refuse_wide_root(root)
                 refuse_foreign_root(root)

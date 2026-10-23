@@ -40,7 +40,9 @@ Which tree mem works on: `--root <dir>` (before the command or after it; two dif
 are a usage error), else `$MEM_ROOT`, else the folder above `bin/mem`. When `bin/mem` is a link
 and the folder above the link holds `.meta/`, that folder is the tree (a link into a repo's
 skeleton never writes the repo); otherwise (a link at `~/.local/bin/mem`) it is the folder
-above the real script.
+above the real script. A writer (every command but recall, status and help) refuses a tree
+whose path holds `/memory-skeleton/`, the repo's shipped copy: "this is the shipped skeleton;
+pass --root to use it". Only `--root` naming it lets a writer in; `$MEM_ROOT` does not.
 
 ## File header (every file in rules/ people/ teams/ topics/)
 
