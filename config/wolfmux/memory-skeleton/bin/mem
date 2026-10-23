@@ -2289,7 +2289,7 @@ def plan_row(tree, row, line, ctx):
                 raise Refused("dest %s exists with other content" % dest_file)
         item["dest"] = dest_file
     except (Refused, ValueError, IOError, OSError) as error:
-        item.update(status="hold", reason=str(error))
+        item.update(status="refused", reason=str(error))
     return item
 
 
@@ -2588,7 +2588,7 @@ def cmd_migrate(tree, args):
                 try:
                     item["bytes_out"] = apply_row(tree, item)
                 except (Refused, IOError, OSError) as error:
-                    item.update(status="hold", reason="not written: %s" % error)
+                    item.update(status="refused", reason="not written: %s" % error)
         set_modes(tree)
     failures = verify(tree, items, args.dry_run)
     report = migrate_report(tree, args, items, failures, out, when)
@@ -2616,7 +2616,6 @@ def migrate_report(tree, args, items, failures, extra, when):
             detail += " (source frontmatter of %d bytes replaced by the header)" % item["frontmatter"]
         lines.append(head + detail + (": " + check if check else "") + (": " + item["reason"] if item["reason"] else ""))
     lines.append("")
-    lines.append("rows: %d (%s)" % (len(items), ", ".join("%s %d" % (k, counts[k]) for k in sorted(counts))))
     lines.append("bytes in: %d; bytes out: %d" % (sum(i["bytes_in"] for i in items if i["status"] in ("copy", "pointer", "exists")),
                                                  sum(i.get("bytes_out", 0) for i in items)))
     if dry:
@@ -2626,11 +2625,34 @@ def migrate_report(tree, args, items, failures, extra, when):
         lines.append("modes: %s" % ("all 700/600" if not bad else "wrong on " + ", ".join(bad)))
         lines.append("verification: %s" % ("every source body and state value found exactly once in the new tree"
                                            if not failures else "%d FAILED: %s" % (len(failures), ", ".join("line %d" % i["line"] for i in failures))))
-    held = [i for i in items if i["status"] in ("hold", "skip")]
+    held = [i for i in items if i["status"] in ("hold", "skip", "refused")]
     if held:
-        lines.append("held or skipped:")
+        lines.append("held, skipped or refused:")
         lines.extend("- line %d %s %s: %s" % (i["line"], i["status"], i["source"], i["reason"]) for i in held)
+    lines.extend(["", "## Summary"])
+    order = ["copy", "pointer", "hold", "skip", "refused"] + (["exists"] if counts.get("exists") else [])
+    lines.append("%s (%d rows)" % (", ".join("%s %d" % (k, counts.get(k, 0)) for k in order), len(items)))
+    groups = {}
+    for item in items:
+        if item["status"] == "refused":
+            groups.setdefault(reason_kind(item["reason"]), []).append(item["line"])
+    if groups:
+        lines.append("refused, by reason:")
+        for kind, numbers in sorted(groups.items(), key=lambda pair: (-len(pair[1]), pair[0])):
+            shown = ", ".join(str(n) for n in numbers[:5]) + (" and %d more" % (len(numbers) - 5) if len(numbers) > 5 else "")
+            lines.append("- %d x %s (line%s %s)" % (len(numbers), kind, "s" if len(numbers) > 1 else "", shown))
     return "\n".join(lines) + "\n"
+
+
+def reason_kind(reason):
+    """A refusal reason with its values taken out, so rows refused for one cause count together."""
+    reason = re.sub(r"'[^']*'|\"[^\"]*\"", "<value>", reason)
+    words = []
+    for word in reason.split(" "):
+        if "<" not in word and re.search(r"[/#]|\.(md|json|jsonl|csv|txt)\b", word):
+            word = "<path>" + (word[-1] if word[-1] in ",:;)" else "")
+        words.append(word)
+    return re.sub(r"\b\d+\b", "<n>", " ".join(words))
 
 
 # --- status ---------------------------------------------------------------------------------

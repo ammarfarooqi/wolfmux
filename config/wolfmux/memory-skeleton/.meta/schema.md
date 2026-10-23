@@ -139,3 +139,8 @@ A region dest gets its header from the row, and its body's sha256 is checked lik
 into any region folder (`pointer: <abs path>`, authority `shared:<path>` unless the row gives
 one, body `Pointer: <path>` and the summary); on a pointer row `region: pointer` also means
 the dest's folder. A state key is never a pointer.
+
+The report has one line per row with its status: copy, pointer, hold (the map holds it),
+skip, refused (the row breaks this contract; the reason says what to change) or exists (an
+earlier run placed it). It ends with `## Summary`: the counts by status, then the refusal
+reasons with their values taken out, each with its count and line numbers.

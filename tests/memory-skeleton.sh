@@ -625,6 +625,8 @@ rows = [
     ("claude-mem:observations/obs-1.md", "claude-mem", "topics/fly-cutover.md", "topics", "copy", "no", "fly-cutover", "fly, cutover", "when the fly cutover ran", "3", "", "", "", ""),
     # line 21: a second row into line 3's dest
     ("reference_links.md", "file", "topics/afd-2129.md", "topics", "copy", "no", "afd-2129", "links", "a second row into one dest", "3", "", "", "", ""),
+    # line 22: refused for the same cause as line 8 (the summary groups them)
+    ("rules:orphan.md", "rules-file", "rules/orphan-two.md", "rules", "copy", "no", "orphan-two", "orphan", "a second rule with no authority", "3", "", "", "", ""),
 ]
 with open(sys.argv[1], "w", newline="") as out:
     w = csv.writer(out)
@@ -641,7 +643,7 @@ check "the dry run reports a sha256 match for every copied body" \
 check "the dry run writes nothing: not the tree, not the source, not ~/.wolfmux" \
   '[ "$T_SUM" = "$(tree_sum "$T")" ] && [ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ ! -e "$HOME/.wolfmux" ]'
 check "the dry run lists the held and skipped rows with their reasons" \
-  'printf "%s" "$DRY" | grep -q "^- line 8 hold rules:orphan.md: a rules dest needs an authority" && printf "%s" "$DRY" | grep -q "^- line 12 hold held.md: waiting for the owner" && printf "%s" "$DRY" | grep -q "^- line 13 skip secret.md: private"'
+  'printf "%s" "$DRY" | grep -q "^- line 8 refused rules:orphan.md: a rules dest needs an authority" && printf "%s" "$DRY" | grep -q "^- line 12 hold held.md: waiting for the owner" && printf "%s" "$DRY" | grep -q "^- line 13 skip secret.md: private"'
 OUT="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json")"; RC=$?
 printf '%s\n' "$OUT" >"$WORK/migrate-report.txt"
 check "the real migrate exits 0 and finds every source body and state value exactly once" \
@@ -672,19 +674,22 @@ sys.exit(not (body(t + "/topics/state-tone.md") == b"Plain words, short lines." 
               and b"\nregion: people\n" in open(t + "/people/dana.md", "rb").read()))
 EOF'
 check "the report finds both state-key bodies once; a state key as a pointer is refused" \
-  'grep -q "^line 14 copy    state:notes.tone -> topics/state-tone.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^line 15 copy    state:contacts.dana -> people/dana.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^- line 16 hold state:notes.tone: a state key is copied into rules/, never a pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/rules/state-tone-pointer.md" ]'
+  'grep -q "^line 14 copy    state:notes.tone -> topics/state-tone.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^line 15 copy    state:contacts.dana -> people/dana.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^- line 16 refused state:notes.tone: a state key is copied into rules/, never a pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/rules/state-tone-pointer.md" ]'
 check "a pointer row with region 'pointer' lands in the dest's folder and says so in its header" \
   'grep -q "^region: rules$" "$T/rules/vendors.md" && grep -q "^pointer: $SRC/project_vendors.md$" "$T/rules/vendors.md" && grep -q "^line 17 pointer project_vendors.md -> rules/vendors.md.*: pointer ok" "$WORK/migrate-report.txt"'
 check "a pointer row may land in topics/ (authority shared:<path>, no body copied)" \
   'grep -q "^region: topics$" "$T/topics/board.md" && grep -q "^authority: shared:$SRC/reference_board.md$" "$T/topics/board.md" && ! grep -q "The board lives here" "$T/topics/board.md" && grep -q "^line 18 pointer reference_board.md -> topics/board.md.*: pointer ok" "$WORK/migrate-report.txt"'
 check "region 'pointer' on a copy row is refused and names the fix" \
-  'grep -q "^- line 19 hold reference_board.md: region .pointer. on a copy row: set region topics, or action pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/topics/board-copy.md" ]'
+  'grep -q "^- line 19 refused reference_board.md: region .pointer. on a copy row: set region topics, or action pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/topics/board-copy.md" ]'
 check "a claude-mem: row reads the default ~/claude-mem-export-2026-10-22 and copies the body without its frontmatter" \
   'python3 -I -c "import sys; sys.exit(open(sys.argv[1], \"rb\").read().split(b\"\n---\n\", 1)[1] != b\"The cutover ran at 09:00 UTC.\n\")" "$T/topics/fly-cutover.md" && grep -q "^line 20 copy    claude-mem:observations/obs-1.md -> topics/fly-cutover.md sha256 [0-9a-f]* (source frontmatter of 45 bytes replaced by the header): found once" "$WORK/migrate-report.txt"'
 check "migrate refuses a --claude-mem-from that is not a folder; a claude-mem: row without the folder is held with the fix" \
-  '! "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --claude-mem-from "$WORK/no-such-export" --dry-run 2>/dev/null && OUT="$(HOME="$WORK/empty-home" "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --dry-run)" && printf "%s" "$OUT" | grep -q "^- line 20 hold claude-mem:observations/obs-1.md: a claude-mem: row needs --claude-mem-from <dir>"'
+  '! "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --claude-mem-from "$WORK/no-such-export" --dry-run 2>/dev/null && OUT="$(HOME="$WORK/empty-home" "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --dry-run)" && printf "%s" "$OUT" | grep -q "^- line 20 refused claude-mem:observations/obs-1.md: a claude-mem: row needs --claude-mem-from <dir>"'
 check "a second row into one dest is refused, and the message says what to do; the first row's file is kept" \
-  'grep -q "^- line 21 hold reference_links.md: dest topics/afd-2129.md is already the dest of line 3: keep one row, set the others to action skip (or give each its own dest)" "$WORK/migrate-report.txt" && grep -q "^repo_ref: fe:" "$T/topics/afd-2129.md"'
+  'grep -q "^- line 21 refused reference_links.md: dest topics/afd-2129.md is already the dest of line 3: keep one row, set the others to action skip (or give each its own dest)" "$WORK/migrate-report.txt" && grep -q "^repo_ref: fe:" "$T/topics/afd-2129.md"'
+sed -n '/^## Summary$/,$p' "$WORK/migrate-report.txt" >"$WORK/migrate-summary.txt"
+check "the report ends with a summary: counts by status, then refusal reasons grouped with counts and line numbers" \
+  '[ "$(tail -n "$(wc -l <"$WORK/migrate-summary.txt")" "$WORK/migrate-report.txt")" = "$(cat "$WORK/migrate-summary.txt")" ] && grep -qx "copy 11, pointer 3, hold 1, skip 1, refused 5 (21 rows)" "$WORK/migrate-summary.txt" && grep -qx "refused, by reason:" "$WORK/migrate-summary.txt" && grep -qx -- "- 2 x a rules dest needs an authority (lines 8, 22)" "$WORK/migrate-summary.txt" && grep -qx -- "- 1 x dest <path> is already the dest of line <n>: keep one row, set the others to action skip (or give each its own dest) (line 21)" "$WORK/migrate-summary.txt" && [ "$(grep -c "^- " "$WORK/migrate-summary.txt")" -eq 4 ]'
 check "the source folder and the rules folder are never written" '[ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ "$RULES_SUM" = "$(tree_sum "$RULES_SRC")" ]'
 check "headers come from the map: region, keywords, authority, repo_ref, last_confirmed from the source mtime" \
   'grep -q "^authority: decisions-2026-10#2026-10-09T13:50Z" "$T/rules/tone.md" && grep -q "^repo_ref: fe:src/features/fly/agent-log/0007.md AFD-2129" "$T/topics/afd-2129.md" && grep -q "^last_confirmed: $(date -u -r "$SRC/project_fly.md" +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)" "$T/topics/afd-2129.md" && grep -q "^links: \[\[tone\]\]" "$T/rules/slack-names.md"'
