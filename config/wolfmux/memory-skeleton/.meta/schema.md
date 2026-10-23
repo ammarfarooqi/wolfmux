@@ -58,8 +58,9 @@ repo_ref: fe:src/features/x/agent-log/0007.md AFD-2129     (optional, topics onl
   archived) or `shared:<path>` (a rule that lives in the shared folder). Malformed is a
   problem; not found is a warning.
 - Optional fields mem writes: `superseded_on: YYYY-MM-DD` (set by `add --supersedes`; drain
-  ages superseded files from it), `pointer: <abs path>` (a pointer file: a rule whose text
-  lives in the shared folder; `decide --shared` refreshes its `last_confirmed`), `origin:`
+  ages superseded files from it), `pointer: <abs path>` (a pointer file, in any region: an
+  item whose text lives in the shared folder; `decide --shared` refreshes its
+  `last_confirmed`), `origin:`
   (where `check` or `migrate` found the file).
 - Superseded files are left out of MEMORY.md.
 
@@ -132,3 +133,7 @@ keywords,summary,importance,authority,links,repo_ref,notes`. What a row carries:
   value pretty-printed with indent 2 and sorted keys; no newline added).
 
 A region dest gets its header from the row, and its body's sha256 is checked like a file's.
+`region` is the dest's folder (empty means the same). A `pointer` row writes a pointer file
+into any region folder (`pointer: <abs path>`, authority `shared:<path>` unless the row gives
+one, body `Pointer: <path>` and the summary); on a pointer row `region: pointer` also means
+the dest's folder. A state key is never a pointer.

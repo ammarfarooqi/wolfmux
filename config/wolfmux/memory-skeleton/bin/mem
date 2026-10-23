@@ -1104,7 +1104,7 @@ def run_check(tree, when, quiet=False):
                 report("WARN", "%s and %s share %d%% of their keywords; merge them or tell them apart"
                        % (first.rel, second_entry.rel, round(share * 100)))
     for entry in entries:
-        if entry.region == "rules" and entry.get("pointer"):
+        if entry.get("pointer"):
             target = entry.get("pointer")
             if not os.path.exists(target):
                 report("WARN", "%s points at %s, which is gone" % (entry.rel, target))
@@ -1518,7 +1518,7 @@ def shared_instruction(tree, shared, ref, source, when, text):
     print("shared file (mem never writes there; edit it yourself): %s" % real)
     print("  suggested line, under its rule: - Owner, %s (%s; %s): \"%s\"" % (
         when.date().isoformat(), source, ref, cut(text, 200)))
-    for entry in region_entries(tree, ("rules",)):
+    for entry in region_entries(tree):
         target = entry.get("pointer")
         if target and os.path.realpath(target) == real:
             fields = dict(entry.fields)
@@ -1526,7 +1526,7 @@ def shared_instruction(tree, shared, ref, source, when, text):
             write_file(tree, entry.rel, render_header(fields) + entry.body, expect=entry.data)
             print("pointer %s: last_confirmed %s" % (entry.rel, fields["last_confirmed"]))
             return
-    print("no pointer file in rules/ points at it; add one with mem add --region rules (pointer: %s)" % real)
+    print("no pointer file in the regions points at it; add one with mem add --region rules (pointer: %s)" % real)
 
 
 def single_line(value, flag, width=200):
@@ -2253,8 +2253,8 @@ def plan_row(tree, row, line, ctx):
             payload, mtime = read_source(item, ctx, source, expected, top)
         item.update(payload=payload, sha=sha256(payload))
         if action == "pointer":
-            if top != "rules":
-                raise Refused("a pointer goes to rules/<name>.md")
+            if top not in REGIONS:
+                raise Refused("a pointer goes to <region>/<name>.md (rules, people, teams or topics)")
             path = item["source_path"]
             item.update(kind="region", status="pointer", bytes_in=0, dest=dest_file)
             item["content"] = region_content(tree, row, dest_file, ctx, pointer=path)
@@ -2334,8 +2334,11 @@ def region_content(tree, row, dest_file, ctx, payload=b"", mtime=None, pointer=N
     name = (row.get("name") or "").strip() or stem
     if name != stem:
         raise Refused("name %r differs from the dest file %s" % (name, dest_file))
-    if (row.get("region") or "").strip() not in ("", region):
-        raise Refused("region %r but the dest is in %s/" % (row.get("region"), region))
+    given = (row.get("region") or "").strip()
+    if given == "pointer" and not pointer:
+        raise Refused("region 'pointer' on a %s row: set region %s, or action pointer" % (row.get("action", "").strip(), region))
+    if given not in ("", region, "pointer"):  # region 'pointer' on a pointer row means the dest's folder
+        raise Refused("region %r but the dest is in %s/: set region %s" % (given, region, region))
     keywords = keywords_of(row.get("keywords", ""))
     summary = one_line(row.get("summary", ""))
     if not keywords or not summary:

@@ -587,6 +587,8 @@ printf '# Shared memory\n\n- [Fly](project_fly.md) fly notes\n- [Tone](feedback_
 printf -- '---\nname: Tone\ndescription: keep it short\ntype: feedback\n---\nKeep replies short.\nNo jargon.\n' >"$SRC/feedback_tone.md"
 printf 'AFD-2129 notes: the fly deploy, step 1.\r\nstep 2, with ```code```\n' >"$SRC/project_fly.md"
 printf 'Shared links live here.\n' >"$SRC/reference_links.md"
+printf 'The vendor list lives here.\n' >"$SRC/project_vendors.md"
+printf 'The board lives here.\n' >"$SRC/reference_board.md"
 printf 'Archived note from July.\n' >"$SRC/old/archived.md"
 printf 'private, never copied\n' >"$SRC/secret.md"
 printf 'held for later\n' >"$SRC/held.md"
@@ -612,6 +614,10 @@ rows = [
     ("state:notes.tone", "state-key", "topics/state-tone.md", "topics", "copy", "no", "state-tone", "tone, state", "the tone note from the comms state", "3", "", "", "", ""),
     ("state:contacts.dana", "state-key", "people/dana.md", "people", "copy", "no", "dana", "dana, design", "dana works on design", "3", "", "", "", ""),
     ("state:notes.tone", "state-key", "rules/state-tone-pointer.md", "rules", "pointer", "no", "state-tone-pointer", "tone", "a pointer to a state key", "3", "", "", "", ""),
+    # line 17 on: pointers with region 'pointer' (the dest's folder), a pointer in topics/, and a copy row that says pointer
+    ("project_vendors.md", "file", "rules/vendors.md", "pointer", "pointer", "no", "vendors", "vendors", "where the vendor list lives", "3", "", "", "", ""),
+    ("reference_board.md", "file", "topics/board.md", "topics", "pointer", "no", "board", "board", "where the board lives", "3", "", "", "", ""),
+    ("reference_board.md", "file", "topics/board-copy.md", "pointer", "copy", "no", "board-copy", "board", "a copy that says pointer", "3", "", "", "", ""),
 ]
 with open(sys.argv[1], "w", newline="") as out:
     w = csv.writer(out)
@@ -660,6 +666,12 @@ sys.exit(not (body(t + "/topics/state-tone.md") == b"Plain words, short lines." 
 EOF'
 check "the report finds both state-key bodies once; a state key as a pointer is refused" \
   'grep -q "^line 14 copy    state:notes.tone -> topics/state-tone.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^line 15 copy    state:contacts.dana -> people/dana.md sha256 [0-9a-f]*: found once" "$WORK/migrate-report.txt" && grep -q "^- line 16 hold state:notes.tone: a state key is copied into rules/, never a pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/rules/state-tone-pointer.md" ]'
+check "a pointer row with region 'pointer' lands in the dest's folder and says so in its header" \
+  'grep -q "^region: rules$" "$T/rules/vendors.md" && grep -q "^pointer: $SRC/project_vendors.md$" "$T/rules/vendors.md" && grep -q "^line 17 pointer project_vendors.md -> rules/vendors.md.*: pointer ok" "$WORK/migrate-report.txt"'
+check "a pointer row may land in topics/ (authority shared:<path>, no body copied)" \
+  'grep -q "^region: topics$" "$T/topics/board.md" && grep -q "^authority: shared:$SRC/reference_board.md$" "$T/topics/board.md" && ! grep -q "The board lives here" "$T/topics/board.md" && grep -q "^line 18 pointer reference_board.md -> topics/board.md.*: pointer ok" "$WORK/migrate-report.txt"'
+check "region 'pointer' on a copy row is refused and names the fix" \
+  'grep -q "^- line 19 hold reference_board.md: region .pointer. on a copy row: set region topics, or action pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/topics/board-copy.md" ]'
 check "the source folder and the rules folder are never written" '[ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ "$RULES_SUM" = "$(tree_sum "$RULES_SRC")" ]'
 check "headers come from the map: region, keywords, authority, repo_ref, last_confirmed from the source mtime" \
   'grep -q "^authority: decisions-2026-10#2026-10-09T13:50Z" "$T/rules/tone.md" && grep -q "^repo_ref: fe:src/features/fly/agent-log/0007.md AFD-2129" "$T/topics/afd-2129.md" && grep -q "^last_confirmed: $(date -u -r "$SRC/project_fly.md" +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)" "$T/topics/afd-2129.md" && grep -q "^links: \[\[tone\]\]" "$T/rules/slack-names.md"'
