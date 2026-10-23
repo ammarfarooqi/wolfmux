@@ -1895,11 +1895,16 @@ def jev_ask(tree, entry, age, ref_days, people, key, when):
     write_file(tree, rel, dump_json(audit), expect=MISSING)
     if error or status != 200:
         return None, 0.0, error or "HTTP %s" % status
-    try:
-        answer = response["answers"]["drain"]
-        return answer["choice"], float(answer.get("probabilities", {}).get("archive", 0.0)), None
-    except (KeyError, TypeError, ValueError):
-        return None, 0.0, "the answer had no answers.drain.choice"
+    # Every level is checked for its type: an odd answer (a list, a string, NaN) is a failure, never a move.
+    answers = response.get("answers") if isinstance(response, dict) else None
+    answer = answers.get("drain") if isinstance(answers, dict) else None
+    choice = answer.get("choice") if isinstance(answer, dict) else None
+    probabilities = answer.get("probabilities", {}) if isinstance(answer, dict) else None
+    p_archive = probabilities.get("archive", 0.0) if isinstance(probabilities, dict) else None
+    if (choice not in ("keep", "archive", "ask-owner") or isinstance(p_archive, bool)
+            or not isinstance(p_archive, (int, float)) or not 0.0 <= p_archive <= 1.0):
+        return None, 0.0, "malformed answer (want answers.drain.choice keep | archive | ask-owner, p(archive) in 0..1)"
+    return choice, float(p_archive), None
 
 
 def digest_add(tree, rel, reason):
@@ -1913,10 +1918,18 @@ def digest_add(tree, rel, reason):
 def cmd_drain(tree, args):
     when = now()
     dry = args.dry_run
-    would = "would " if dry else ""
     if not dry:
         rel, _ = do_backup(tree, None, when)
         print("backup %s" % rel)
+    try:
+        return drain_moves(tree, args, when, dry)
+    finally:
+        if not dry:  # whatever stopped the moves, the index and the card follow the ones made
+            quiet_check(tree)
+
+
+def drain_moves(tree, args, when, dry):
+    would = "would " if dry else ""
     plan = drain_plan(tree, when)
     moved = 0
     # rule 1: asks closed more than 7 days ago leave state; the ledger keeps them
@@ -1987,8 +2000,6 @@ def cmd_drain(tree, args):
     total = len(plan["asks"]) + len(plan["ledger"]) + len(plan["sweeps"]) + len(plan["superseded"]) + len(candidates)
     if not total:
         print("nothing to drain")
-    if not dry:
-        quiet_check(tree)
     return 0
 
 

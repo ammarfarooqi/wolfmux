@@ -433,6 +433,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         mode = open(os.path.join(work, "jev-mode")).read().strip()
         if mode in ("429", "500"):
             self.send_response(int(mode)); self.end_headers(); self.wfile.write(b'{"detail":"busy"}'); return
+        odd = {"listbody": b'[1, 2]', "badshape": b'{"answers": {"drain": {"choice": "archive", "probabilities": [0.9]}}}',
+               "nan": b'{"answers": {"drain": {"choice": "archive", "probabilities": {"archive": NaN}}}}',
+               "badchoice": b'{"answers": {"drain": {"choice": ["archive"], "probabilities": {"archive": 0.9}}}}'}
+        if mode in odd:
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(odd[mode]); return
         slug = json.loads(raw)["state"]["slug"]
         choice, p = ("keep", 0.1) if "keep" in slug else (("archive", 0.65) if "border" in slug else ("archive", 0.9))
         rest = (1.0 - p) / 2
@@ -553,6 +558,22 @@ check "the bad key reaches no output, log, digest or audit file" \
   '! printf "%s" "$OUT" | grep -q LEAKEDKEY99 && ! grep -rq LEAKEDKEY99 "$T"'
 check "a key with a space or a trailing newline is rejected the same way" \
   'MEM_JEV_KEY="bad LEAKEDKEY98" "$T/bin/mem" drain | grep -q "jev key rejected (format)" && MEM_JEV_KEY="LEAKEDKEY97$NL" "$T/bin/mem" drain | grep -q "jev key rejected (format)" && [ "$GOT_BEFORE" = "$(ls "$WORK/jev-got" | wc -l | tr -d " ")" ] && ! grep -rq LEAKEDKEY9 "$T"'
+# A 200 with an odd shape: never a move, the candidate waits for the digest, the drain ends cleanly.
+for mode in listbody badshape nan badchoice; do
+  T="$WORK/drain-odd-$mode"
+  fresh "$T"
+  topic "$T" stale-o "stale, o" 3 2026-09-01
+  printf -- '---\nname: gone-o\nregion: topics\nkeywords: gone, o\nsummary: superseded long ago\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: superseded:stale-o\nsuperseded_on: 2026-10-10\n---\nOld.\n' >"$T/topics/gone-o.md"
+  chmod 600 "$T/topics/gone-o.md"
+  "$T/bin/mem" check >/dev/null
+  echo "$mode" >"$WORK/jev-mode"
+  OUT="$("$T/bin/mem" drain 2>&1)"; RC=$?
+  check "Jev 200 with an odd shape ($mode): drain exits 0, nothing moves on rule 4, the candidate goes to the digest" \
+    '[ "$RC" -eq 0 ] && [ -f "$T/topics/stale-o.md" ] && printf "%s" "$OUT" | grep -q "^digest topics/stale-o.md (rule 4; Jev failed: malformed answer" && grep -q "stale-o.md: rule 4 candidate; Jev failed: malformed answer" "$T/.meta/digest-pending.md" && ! printf "%s" "$OUT" | grep -q Traceback'
+  check "after the odd answer ($mode) the moves made before it are in the index (drain ended with check)" \
+    '[ -f "$T/archive/2026-10/topics/gone-o.md" ] && ! grep -q "(topics/gone-o.md)" "$T/MEMORY.md" && grep -q "(topics/stale-o.md)" "$T/MEMORY.md"'
+done
+echo normal >"$WORK/jev-mode"
 T="$WORK/drain-unreachable"
 fresh "$T"
 topic "$T" stale-u "stale, u" 3 2026-09-01
