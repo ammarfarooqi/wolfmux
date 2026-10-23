@@ -375,7 +375,7 @@ check "  ... and a Grep of a folder that holds it (as ~/.claude holds projects/)
 check "  ... its memory/ (Claude Code's shared project memory) stays open to them" \
   '[ "$(guard Read "$(file "$TDIR/memory/MEMORY.md")")" = allow ] && [ "$(guard Bash "$(sh "cat $TDIR/memory/MEMORY.md")")" = allow ]'
 # Review round 3: what sh -c and eval run, paths that climb, a dropped identity, Claude Code's own records,
-# grep's pattern, wildcards and ~user, and the folder a cd moves to (guard_follow)
+# grep's pattern, wildcards and ~user, and the folder a cd moves to (GUARD_SCAN in lib/guard.sh)
 MEM="$DIR/MEMORY.md"
 UP="../../../../.." # from W1 (worktrees/<key>/teams/mem/<lane>) up to the data directory
 /bin/mkdir -p "$HOME/.claude/file-history/abc" "$HOME/.claude/todos" "$HOME/.claude/paste-cache" "$HOME/Documents"
@@ -443,6 +443,69 @@ for i in $(seq 4001); do LONG="$LONG w$i"; done
 check "  ... a command too long to follow (over 4000 words) is refused" '[ "$(guard Bash "$(sh "$LONG")")" = deny ]'
 check "the honest gap, pinned: a cd to a folder built at run time is not followed (docs/SECURITY.md)" \
   'allowed_all "d=$WOLFMUX_DATA; cd \$d && cat memory/x"'
+# Review round 4 (GUARD_SCAN): fast enough that the hook never times out, quotes removed before any check, a
+# search pattern is no path, links followed, Claude Code's sessions, history and temporary folder closed
+export WOLFMUX_CLAUDE_TMP="$WORK/ctmp" # Claude Code's temporary folder, for this suite (lib/guard.sh)
+SCRATCH="$WOLFMUX_CLAUDE_TMP/$(printf '%s' "$W1" | LC_ALL=C sed 's|[^A-Za-z0-9]|-|g')"
+/bin/mkdir -p "$SCRATCH/s1/scratchpad" "$WOLFMUX_CLAUDE_TMP/-lead-project/s2/tasks" "$HOME/.claude/sessions" "$HOME/.claude/session-env"
+timed() { # <limit ms> <allow|deny> <command>: teamctl _guard decides so, in under <limit> ms (perl Time::HiRes)
+  local input branch t0 t1 got=allow
+  input="$(jq -cn --arg c "$3" --arg cwd "$W1" '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: {command: $c}, cwd: $cwd}')"
+  branch="$(record w1 mem | jq -r .branch)"
+  t0="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000')"
+  if printf '%s' "$input" | TEAM_ROLE=w1 WOLFMUX_TEAM=mem WOLFMUX_ROOT="$PROJECT" WOLFMUX_WORKTREE="$W1" WOLFMUX_BRANCH="$branch" "$REPO/bin/teamctl" _guard | grep -q '"deny"'; then got=deny; fi
+  t1="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000')"
+  [ "$got" = "$2" ] && [ $((t1 - t0)) -lt "$1" ] || { printf '%s in %s ms: %s\n' "$got" $((t1 - t0)) "$3" | cut -c1-160 && return 1; }
+}
+B1="cat $MEM; cd /tmp; cd /usr; cd /var; cd /etc; sh -c 'ls"
+P99="prettier --write" P101="prettier --write"
+for i in $(seq 101); do
+  P101="$P101 ./a$i"
+  if [ "$i" -le 99 ]; then B1="$B1 x/../f$i" P99="$P99 ./src/a$i.ts"; fi
+done
+B1="$B1'"
+check "G1: the review's B1 command is refused in under 2 s, 99 paths in the worktree pass in under 1 s, git status in under 0.3 s" \
+  'timed 2000 deny "$B1" && timed 1000 allow "$P99" && timed 300 allow "git status"'
+R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
+  "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
+check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \
+  'allowed_all "${R4_ALLOW[@]}"'
+R4_QUOTED=("cat ~/.wolfmux/mem\"\"ory/x" 'cat ~/.wolfmux/mem\ory/x' 'cat ~/.wolfmux/"memory"/x' "cat $WOLFMUX_DATA/sta\"\"te/x.json"
+  'cat ~/.claude/file""-history/x' "cat $WOLFMUX_DATA/mem\"\"ory/$KEY/mem/MEMORY.md" "\\cd $WOLFMUX_DATA && cat memory/x"
+  "$(printf 'cat ~/.wolfmux/mem\\\nory/x')" "bash -c -- 'cd $WOLFMUX_DATA && cat memory/x'" "bash -c -x 'cat ~/.wolfmux/memory/x'"
+  "bash -c -e 'cat ~/.wolfmux/memory/x'" "bash +x -c 'cat ~/.wolfmux/memory/x'" "bash --rcfile /dev/null -c 'cat ~/.wolfmux/memory/x'"
+  "$(printf 'cat <<X | bash\ncat ~/.wolfmux/memory/x\nX')" "echo 'cat ~/.wolfmux/memory/x' | sh" "$(printf 'bash - <<X\ncat ~/.wolfmux/memory/x\nX')")
+check "G5, G9: quotes and backslashes inside a word, a continued line, options around -c and text piped into a shell are seen" \
+  'denied_all "${R4_QUOTED[@]}"'
+R4_SEARCH=("grep -r ~ -e secret" "grep -d recurse secret ~" "grep --directories recurse secret ~" "fd card ~" "ag secret ~" "ack secret ~"
+  "git log --format=%H -- ../x" "find $WOLFMUX_CLAUDE_TMP -name x.output")
+check "G3, G4: the pattern is chosen after every option; fd, ag and ack walk; ../x after -- is a path (from the worktree root: the lanes' folder)" \
+  'denied_all "${R4_SEARCH[@]}"'
+R4_RECORDS=("cat ~/.claude/sessions/123.json" "ls \$HOME/.claude/session-env" "tail ~/.claude/history.jsonl"
+  "cat $WOLFMUX_CLAUDE_TMP/-lead-project/s2/tasks/a.output" "ls $WOLFMUX_CLAUDE_TMP/*" "ssh localhost 'cat ~/.wolfmux/memory/x'"
+  "watch -n1 'cat ~/.wolfmux/memory/x'")
+check "G7: Claude Code's sessions, session-env, history.jsonl and other sessions' temporary folders are closed; ssh and watch text is a command" \
+  'denied_all "${R4_RECORDS[@]}" && [ "$(guard Read "$(file "$HOME/.claude/history.jsonl")")" = deny ] &&
+   [ "$(guard Read "$(file "$WOLFMUX_CLAUDE_TMP/-lead-project/s2/tasks/a.output")")" = deny ] && [ "$(guard mcp__fs__read "$(at "file://$HOME/.claude/todos/a.json")")" = deny ] &&
+   [ "$(guard Write "$(file "$SCRATCH/s1/scratchpad/n.md")")" = allow ] && [ "$(guard Write "$(file "$WOLFMUX_CLAUDE_TMP/-lead-project/s2/x")")" = deny ]'
+link_followed() { # a link in the worktree that leads to the data directory: every way through it is refused
+  local r=0
+  /bin/ln -s "$WOLFMUX_DATA" "$W1/w" || return 1
+  denied_all "cat w/memory/$KEY/mem/MEMORY.md" "cd w && cat memory/$KEY/mem/MEMORY.md" && [ "$(guard Glob "$(pat "w/memory/**")")" = deny ] &&
+    [ "$(guard Read "$(file "$W1/w/memory/$KEY/mem/MEMORY.md")")" = deny ] || r=1
+  /bin/rm -f "$W1/w"
+  return "$r"
+}
+check "G6: a link to a private place is refused; one made anyway is followed by Bash, Glob and Read" \
+  'denied_all "ln -s $WOLFMUX_DATA w" "ln -sf ~/.claude/projects p" && link_followed'
+R4_CLAUDE=("timeout -s KILL 60 claude -r abc" "nice -n 5 claude -r abc" "caffeinate -i claude -r abc" "script -q /dev/null claude -r abc"
+  "nohup claude --resume abc" "echo abc | xargs -I{} claude --resume {}" "npx @anthropic-ai/claude-code --resume abc" "\$(which claude) -r abc"
+  "\$(command -v claude) --continue" 'unset "TMUX_PANE"' "env -u \"TMUX_PANE\" teamctl status" "declare +x TMUX_PANE; teamctl status"
+  "typeset +x TEAM_ROLE" 'read TMUX_PANE <<< ""' "printf -v TMUX_PANE ''" "env -S 'TMUX_PANE= teamctl status'")
+check "G8: claude --resume after timeout, nice, caffeinate, script, nohup, xargs, npx or \$(which claude); quoted and un-export identity drops" \
+  'denied_all "${R4_CLAUDE[@]}" && allowed_all "c=claude; \$c -r abc"'
+check "G10: a worktree whose name starts with yours (w1, w10) is not yours" \
+  '/bin/mkdir -p "${W1}0" && denied_all "cat ${W1}0/README.md" "ls ${W1}0"'
 check "the worker's own work is untouched by the rule" \
   '[ "$(guard Bash "$(sh "cat README.md && git status")")" = allow ] && [ "$(guard Read "$(file "$W1/README.md")")" = allow ]'
 

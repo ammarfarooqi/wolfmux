@@ -8,15 +8,21 @@
 #
 #   changing files   only inside the worker's own worktree (and temporary directories)
 #   reading files    anywhere except other teammates' worktrees, teamctl's state, the
-#                    memory folders of team memory (~/.wolfmux/memory, lib/memory.sh) and the
+#                    memory folders of team memory (~/.wolfmux/memory, lib/memory.sh), the
 #                    leads' conversations (Claude Code's folder for the project, all of it
-#                    but its shared memory/), compared without regard to letter case
+#                    but its shared memory/), Claude Code's own records of sessions
+#                    (file-history, todos, paste-cache, sessions, session-env, history.jsonl)
+#                    and Claude Code's temporary folder (/private/tmp/claude-<uid>) except the
+#                    worker's own scratchpad there, compared without regard to letter case
 #   shell commands   refused when they name another worktree, write into a checkout the
 #                    worker may only read, move or delete branches, switch to another
-#                    branch, touch git worktrees, push to main, or drive tmux; and when a
-#                    tool that walks a tree (grep -r, rg, find, ls -R, du, tar) is pointed
-#                    at a folder that holds the memory folders or the leads' conversations;
-#                    a relative path counts where the shell would be, after its cd (guard_follow)
+#                    branch, touch git worktrees, push to main, drive tmux, resume a Claude
+#                    Code conversation, drop the identity teamctl reads, link to a private
+#                    place; and when a tool that walks a tree (grep -r, rg, fd, ag, ack, find,
+#                    ls -R, du, tar) is pointed at a folder that holds a private folder.
+#                    The command is read as the shell reads it (GUARD_SCAN): words unquoted,
+#                    a relative path where the shell would be after its cd, what sh -c, eval,
+#                    a heredoc or a pipe into a shell runs, three levels deep.
 #
 # Two checkouts are read-only for a worker: the lead's (the project, WOLFMUX_ROOT) and,
 # for a teammate spawned with --repo, the main checkout of the repository its worktree
@@ -28,27 +34,47 @@
 # reviewing and merging the teammates' work is its job.
 # Policy: `teamctl policy worker-isolation on|off` (default on). Fails open: if the
 # guard cannot tell where the worker belongs, it allows, because it must never be the
-# reason an agent stops working.
+# reason an agent stops working. It is fast because Claude Code runs a tool call whose
+# hook times out (10 s, lib/agents.sh): a command too big or too slow to check is refused.
 
-# guard_abspath <path> <cwd> — absolute, without "/./", symlinks of the existing part resolved, in the
-# letter case the disk has: /bin/pwd -P asks the file system, where bash's own pwd -P keeps
-# ~/.WOLFMUX/MEMORY as it was typed, and the disk is case-insensitive
-guard_abspath() {
-  local path="$1" cwd="$2" dir rest=""
+# guard_phys <path> <cwd> — sets GUARD_P: the path absolute, "//" and "/./" squeezed, symlinks of the existing
+# part resolved (the builtin cd -P: no fork), the rest as written. Letter case as typed: every compare is
+# without regard to case (cmd_guard sets nocasematch), as the disk is.
+guard_phys() {
+  local path="$1" dir rest="" back="$PWD" two='//' dot='/./' one='/'
   case "$path" in
     /*) ;;
     "~") path="$HOME" ;;
     "~/"*) path="$HOME/${path#\~/}" ;;
-    *) path="$cwd/$path" ;;
+    *) path="${2%/}/$path" ;;
   esac
-  path="$(guard_squeeze "$path")"
-  dir="$path"
-  while [ ! -d "$dir" ] && [ "$dir" != "/" ] && [ -n "$dir" ]; do
-    rest="/$(basename "$dir")$rest"
-    dir="$(dirname "$dir")"
+  while :; do
+    case "$path" in
+      *//*) path="${path//$two/$one}" ;;
+      */./*) path="${path//$dot/$one}" ;;
+      *) break ;;
+    esac
   done
-  dir="$(cd "$dir" 2>/dev/null && /bin/pwd -P)" || dir="/"
-  printf '%s%s\n' "${dir%/}" "$rest"
+  case "$path" in */.) path="${path%/.}" ;; esac
+  dir="${path:-/}"
+  while [ "$dir" != "/" ] && [ -n "$dir" ] && [ ! -d "$dir" ]; do
+    rest="/${dir##*/}$rest"
+    dir="${dir%/*}"
+  done
+  if CDPATH='' cd -P -- "${dir:-/}" 2>/dev/null; then
+    dir="$PWD"
+    cd -- "$back" 2>/dev/null || true
+  else
+    dir="/"
+  fi
+  GUARD_P="${dir%/}$rest"
+  GUARD_P="${GUARD_P:-/}"
+}
+
+# guard_abspath <path> <cwd> — guard_phys, printed
+guard_abspath() {
+  guard_phys "$1" "$2"
+  printf '%s\n' "$GUARD_P"
 }
 
 # guard_inside <path> <directory>
@@ -57,45 +83,95 @@ guard_inside() {
   return 1
 }
 
-# guard_lower <text> — in lower case (ASCII). The memory, state, worktree and conversation folders are
-# compared in lower case: on a case-insensitive disk ~/.WOLFMUX/Memory IS ~/.wolfmux/memory.
-guard_lower() { printf '%s' "$1" | LC_ALL=C /usr/bin/tr '[:upper:]' '[:lower:]'; }
+# guard_link <symlink> — sets GUARD_P to where it leads, physical (a link to a folder costs no fork)
+guard_link() {
+  local back="$PWD" to
+  if [ -d "$1" ]; then
+    CDPATH='' cd -P -- "$1" 2>/dev/null || return 1
+    GUARD_P="$PWD"
+    cd -- "$back" 2>/dev/null || true
+    return 0
+  fi
+  to="$(/usr/bin/readlink "$1" 2>/dev/null)" || return 1
+  case "$to" in /*) ;; *) to="${1%/*}/$to" ;; esac
+  guard_phys "$to" /
+}
 
-# guard_transcript <lower-case path> — inside the folder of the leads' conversations, and not in the
-# project's shared memory/ there (which every session may read: lib/memory.sh)
+# guard_transcript <path> — inside the folder of the leads' conversations, and not in the project's shared
+# memory/ there (which every session may read: lib/memory.sh)
 guard_transcript() {
-  [ -n "$GUARD_TRANSCRIPTS_LC" ] && guard_inside "$1" "$GUARD_TRANSCRIPTS_LC" && ! guard_inside "$1" "$GUARD_TRANSCRIPTS_LC/memory"
+  [ -n "$GUARD_TRANSCRIPTS" ] && guard_inside "$1" "$GUARD_TRANSCRIPTS" && ! guard_inside "$1" "$GUARD_TRANSCRIPTS/memory"
 }
 
-# guard_holds_private <lower-case path> — the path is a folder that holds a memory folder or the leads'
-# conversations (~, ~/.wolfmux, ~/.claude): a search of it reads them too
-guard_holds_private() {
-  local private
-  [ "$1" != "/" ] || return 0
-  guard_inside "$GUARD_MEMORY_LC" "$1" && return 0
-  for private in ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"}; do
-    guard_inside "$private" "$1" && return 0
-  done
-  [ -n "$GUARD_TRANSCRIPTS_LC" ] && guard_inside "$GUARD_TRANSCRIPTS_LC" "$1"
-}
-
-# guard_claude_private <lower-case path> — inside one of Claude Code's own records of sessions outside any project:
-# file-history/ (the copy of every file a session changed with Edit or Write, from before the change), todos/ and
-# paste-cache/, under ~/.claude and under CLAUDE_CONFIG_DIR. Any session's, a lead's included: no worker reads them.
+# guard_claude_private <path> — inside one of Claude Code's own records of sessions outside any project, under
+# ~/.claude and under CLAUDE_CONFIG_DIR: file-history/ (a copy of every file a session changed, from before the
+# change), todos/, paste-cache/, sessions/ (every live session's id, folder and tmux pane), session-env/ and
+# history.jsonl (every prompt typed to any session). Any session's, a lead's included: no worker reads them.
 guard_claude_private() {
   local private
-  for private in ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"}; do
+  for private in ${GUARD_CLAUDE[@]+"${GUARD_CLAUDE[@]}"}; do
     guard_inside "$1" "$private" && return 0
   done
   return 1
 }
 
-# guard_glob_root <absolute glob pattern> — the folder it searches: everything before the first part
+# guard_ctmp <path> — inside Claude Code's temporary folder (every session's tool output and scratchpad, the
+# leads' too) and not in the worker's own scratchpad root there
+guard_ctmp() {
+  local p
+  for p in ${GUARD_SCRATCH[@]+"${GUARD_SCRATCH[@]}"}; do
+    guard_inside "$1" "$p" && return 1
+  done
+  for p in ${GUARD_CTMP[@]+"${GUARD_CTMP[@]}"}; do
+    guard_inside "$1" "$p" && return 0
+  done
+  return 1
+}
+
+# guard_private <absolute path> — sets GUARD_WHY to the private place the path is in (trees, memory, transcripts,
+# claude, ctmp), or to nothing
+guard_private() {
+  GUARD_WHY=""
+  if guard_inside "$1" "$GUARD_OWN"; then return 0; fi
+  if guard_inside "$1" "$GUARD_TREES" || guard_inside "$1" "$GUARD_STATE"; then
+    GUARD_WHY=trees
+  elif guard_inside "$1" "$GUARD_MEMORY"; then
+    GUARD_WHY=memory
+  elif guard_transcript "$1"; then
+    GUARD_WHY=transcripts
+  elif guard_claude_private "$1"; then
+    GUARD_WHY=claude
+  elif guard_ctmp "$1"; then
+    GUARD_WHY=ctmp
+  fi
+  return 0
+}
+
+# guard_holds_private <path> — the path is a folder that holds a memory folder, the leads' conversations, Claude
+# Code's records or its temporary folder (/, ~, ~/.wolfmux, ~/.claude, /tmp): a search of it reads them too
+guard_holds_private() {
+  local private
+  [ "$1" != "/" ] || return 0
+  guard_inside "$GUARD_MEMORY" "$1" && return 0
+  for private in ${GUARD_CLAUDE[@]+"${GUARD_CLAUDE[@]}"} ${GUARD_CTMP[@]+"${GUARD_CTMP[@]}"}; do
+    guard_inside "$private" "$1" && return 0
+  done
+  [ -n "$GUARD_TRANSCRIPTS" ] && guard_inside "$GUARD_TRANSCRIPTS" "$1"
+}
+
+# guard_glob_root <glob pattern> — sets GUARD_P to the folder it searches: everything before the first part
 # with a wildcard in it (/a/b/**/*.md is a search of /a/b)
 guard_glob_root() {
-  local root
-  root="$(printf '%s' "$1" | sed -E 's#/[^/]*[][*?{}].*$##')"
-  printf '%s\n' "${root:-/}"
+  local rest="$1" out="" part
+  while :; do
+    part="${rest%%/*}"
+    case "$part" in *[][*?{}]*) break ;; esac
+    out="$out$part"
+    [ "$part" != "$rest" ] || break
+    out="$out/"
+    rest="${rest#*/}"
+  done
+  GUARD_P="${out:-/}"
 }
 
 guard_deny() {
@@ -104,703 +180,1132 @@ guard_deny() {
   return 0
 }
 
-# guard_squeeze <text> — "//" becomes "/" (not after a colon: URLs stay intact), "/./" becomes "/", and a
-# word that ends in "/." loses it, mid-line too (`grep -r x ~/. | head`): "/." alone is "/"
-guard_squeeze() {
-  printf '%s' "$1" | sed -E -e 's#([^:/])/{2,}#\1/#g' -e ':a' -e 's#/\./#/#g' -e 'ta' \
-    -e 's#(^|[[:space:]=])/\.([[:space:];&|)]|$)#\1/\2#g' -e 's#([^[:space:]=])/\.([[:space:];&|)]|$)#\1\2#g'
+# GUARD_SCAN — the awk program that reads one shell command (stdin) as the shell would and decides whether it
+# reaches outside, in ONE process: a guard that is slow is a guard that is skipped (the hook times out and the
+# call runs). Paths and names come in the environment (GA_*, set by guard_bash). It prints:
+#   D<reason>   refuse (and stops)
+#   L<path>     a path under the worker's worktree or /tmp that may be a symlink: guard_bash tests each with the
+#               builtin [ -L ] and runs the program again with the links it found (GA_LINKS, "path<TAB>target")
+#   B<name>     `git checkout <name>`: guard_bash asks git whether <name> is another local branch
+#   OK          read to the end
+# How it reads (run): the text is split into words the way the shell does (lex: quotes, $'…', \x and quoted
+# parts inside a word removed, "\" + newline dropped, ~, ~user, ~+, $HOME and $PWD spelled out, heredoc bodies,
+# $( ), ` ` and <( ) cut out to be read on their own). Then two passes over the simple commands:
+#   A (checkA)  the cheap rules on every word as written: private folders, tmux and claude --resume as the
+#               program, a dropped identity, a tree walk of a folder written out. The first hit refuses.
+#   B (checkB)  in order, following the folder the shell is in (cd, pushd, popd, cd -; a cd in ( ), a pipe or &
+#               stays there): every word that is a path, resolved (.., ./, relative words while the shell is
+#               outside the own worktree, symlinks from GA_LINKS); wildcards; tree walks; git; the read-only
+#               checkouts; links; then what sh -c, eval, a heredoc or pipe into a shell, env -S, ssh and watch
+#               run, as a command one level deeper (four levels refuse).
+# Budget: over 4000 words, over 300 paths resolved outside the own worktree, or 2 seconds: refuse ("split").
+# Out of reach: a folder or path built at run time (d=~/.wolfmux; cd $d), code in a string (python3 -c),
+# CDPATH, a chain of more than three links (docs/SECURITY.md).
+GUARD_SCAN='
+function init(   n, t, k, at) {
+  HOME = ENVIRON["GA_HOME"]; sub(/\/+$/, "", HOME); LHOME = tolower(HOME)
+  USERN = ENVIRON["GA_USER"]; BRANCH = ENVIRON["GA_BRANCH"]
+  NOWN = list(ENVIRON["GA_OWN"], OWN); NSCR = list(ENVIRON["GA_SCR"], SCR)
+  NTREES = list(ENVIRON["GA_TREES"], TREES); NSTATE = list(ENVIRON["GA_STATE"], STATE)
+  NMEM = list(ENVIRON["GA_MEM"], MEM); NTR = list(ENVIRON["GA_TR"], TR)
+  NCL = list(ENVIRON["GA_CL"], CL); NCT = list(ENVIRON["GA_CT"], CT); NROOT = list(ENVIRON["GA_ROOT"], ROOT)
+  n = split(ENVIRON["GA_LINKS"], t, "\n")
+  for (k = 1; k <= n; k++) if ((at = index(t[k], "\t")) > 1) { LINK[tolower(substr(t[k], 1, at - 1))] = substr(t[k], at + 1); NLINK++ }
+  IDS = "(TEAM_ROLE|TMUX_PANE|WOLFMUX_TEAM|BEADS_ACTOR)"
+  SHELLS = "^(ba|z|da|k|fi|tc|c|mk|yash|posh)?sh$"
+  PATS = "^(regexp|glob|iglob|include|exclude|exclude-dir|match|file-search-regex|grep|author|committer)$"
+  R_TREES = "that command names another teammate\047s worktree or teamctl\047s state."
+  R_MEM = "that command names a lead\047s private memory folder (~/.wolfmux/memory), which no worker reads."
+  R_CLAUDE = "that command names Claude Code\047s own records of sessions (file-history, todos, paste-cache, sessions, session-env, history.jsonl under ~/.claude), which hold copies of other agents\047 work and their conversation ids; no worker reads them."
+  R_TRANS = "that command names the folder of the leads\047 conversations (" ENVIRON["GA_TRSHOW"] "); only its memory/ is shared."
+  R_CTMP = "that command names Claude Code\047s temporary folder (" ENVIRON["GA_CTSHOW"] "), which holds every session\047s tool output, the leads\047 too. Only your own scratchpad there is yours: a worker searches its worktree and its own scratchpad, never all of /tmp."
+  R_LONG = "that command is too long for the guard to follow (over 4000 words); split it."
+  R_SPLIT = "that command has too many paths outside your worktree for the guard to follow (over 300); split this command."
+  R_SLOW = "that command takes the guard too long to check (over 2 seconds); split this command."
+  R_NEST = "that command nests sh -c or eval more than three levels deep; run the inner command itself."
+  R_TMUX = "tmux belongs to teamctl; panes of other agents are not yours to read or type into."
+  R_RESUME = "that command resumes a Claude Code conversation (claude --resume, -r, --continue, -c, --session-id), which reads it whoever\047s it is. A worker never resumes a conversation; ask the lead."
+  R_ID = "that command unsets or overrides TEAM_ROLE, TMUX_PANE, WOLFMUX_TEAM or BEADS_ACTOR (env -i, env -u, unset, X=...): teamctl decides who may act by the identity your pane gives you, and a command without it is not you. Run it with them as they are."
+  R_WT = "git worktrees are created and removed by teamctl only."
+  R_BRANCH = "moving, renaming or deleting branches is the lead\047s business."
+  R_SWITCH = "stay on your own branch (" BRANCH "); do not switch or create branches in this worktree."
+  R_PUSH = "pushing to main, deleting or force-updating remote branches is for the lead."
+  R_ROOT = "that command would change a checkout that is read-only for you (" ENVIRON["GA_RO"] "). Your work belongs in your own worktree."
+  R_LINK = "that command makes a link to a place outside your worktree (your home folder, /Users or Claude Code\047s temporary folder); a later command could read a private folder through it. Copy what you need into your worktree instead."
+  srand(); T0 = srand()
 }
-
-# guard_tokenize <command> <token> <path>... — replace every spelling of the paths
-guard_tokenize() {
-  local c="$1" token="$2" path spelling
-  shift 2
-  for path in "$@"; do
-    [ -n "$path" ] || continue
-    path="$(guard_squeeze "${path%/}")"
-    for spelling in "$path" "${path#/private}"; do
-      if [ -n "$spelling" ] && [ "$spelling" != "/" ]; then c="${c//"$spelling"/$token}"; fi
-    done
-  done
-  printf '%s' "$c"
-}
-
-# guard_strip_prose <tokenized command> — words are not commands. A commit message or a
-# Beads description may say "tmux" or "git checkout main" or name the lead's checkout;
-# only what the shell would run counts. Heredoc bodies go, then quoted text goes, unless
-# it looks like a path (starts with one of our tokens, /, ~, ./ or ../): `cd "/some dir"`
-# is still a cd. A quoted word with no space in it that holds .wolfmux/memory is a path
-# too (`cat "x/.wolfmux/memory/y"`); a sentence that mentions the folder is not.
-# <joiner> (default a space) is what the lines are joined with: ";" keeps
-# one command per line apart for guard_tree_walk. A line that ends in a "\" goes on in the next one, as
-# in the shell. Quoted prose leaves an empty word ("") where it was, so that `grep -rn "TODO" ~` still
-# has a pattern in front of its folder (guard_tree_walk).
-guard_strip_prose() {
-  local mark=$'\001' joiner="${2:- }"
-  local -a words=()
-  # <words> (any third argument): a quoted string with no space in it stays too, for guard_follow
-  if [ -n "${3:-}" ]; then words=(-e 's/"([^"[:space:]]+)"/'"$mark"'\1'"$mark"'/g' -e "s/'([^'[:space:]]+)'/$mark\\1$mark/g"); fi
-  printf '%s\n' "$1" |
-    awk '
-      skipping { if ($0 ~ "^[[:space:]]*" marker "[[:space:]]*[)\"]*[[:space:]]*$") skipping = 0; next }
-      { if (match($0, /\\+$/) && RLENGTH % 2 == 1) printf "%s ", substr($0, 1, length($0) - 1); else print }
-      match($0, /<<-?[[:space:]]*["\047\\]?[A-Za-z_][A-Za-z0-9_]*/) {
-        marker = substr($0, RSTART, RLENGTH); sub(/^<<-?[[:space:]]*["\047\\]?/, "", marker); skipping = 1
-      }' |
-    tr '\n' "$joiner" |
-    sed -E \
-      -e 's/"((@[A-Z]+@|~|\.{0,2}\/)[^"]*)"/'"$mark"'\1'"$mark"'/g' \
-      -e "s/'((@[A-Z]+@|~|\.{0,2}\/)[^']*)'/$mark\\1$mark/g" \
-      -e 's/"([^"[:space:]]*\.wolfmux\/memory[^"[:space:]]*)"/'"$mark"'\1'"$mark"'/g' \
-      -e "s/'([^'[:space:]]*\\.wolfmux\\/memory[^'[:space:]]*)'/$mark\\1$mark/g" \
-      ${words[@]+"${words[@]}"} \
-      -e 's/"[^"]*"/""/g' \
-      -e "s/'[^']*'/\"\"/g" \
-      -e "s/$mark/\"/g"
-}
-
-# guard_inner_commands <command> — the command text that a shell or eval in it runs, one per line (its own newlines
-# as \001): the word after sh|bash|zsh|dash|ksh -c (also -lc, -ic, -ec …) or after <<<, the body of a heredoc fed to
-# one, and all that eval is given. guard_strip_prose would drop it as quoted prose; guard_shell checks it as a command.
-guard_inner_commands() {
-  printf '%s\n' "$1" | LC_ALL=C /usr/bin/awk '
-    # one shell word from s at p, unquoted as the shell would (double, single and ANSI-C quotes, \x); p ends after it
-    function word(   out, ch, q, c2) {
-      out = ""
-      while (p <= n) {
-        ch = substr(s, p, 1)
-        if (ch ~ /[ \t\n;&|()<>]/) break
-        if (ch == "\047") {
-          q = index(substr(s, p + 1), "\047")
-          if (q == 0) { out = out substr(s, p + 1); p = n + 1; break }
-          out = out substr(s, p + 1, q - 1); p += q + 1; continue
-        }
-        if (ch == "$" && substr(s, p + 1, 1) == "\047") {
-          for (p += 2; p <= n; p++) {
-            ch = substr(s, p, 1)
-            if (ch == "\\" && p < n) { c2 = substr(s, ++p, 1); out = out (c2 == "n" ? "\n" : (c2 == "t" ? "\t" : c2)); continue }
-            if (ch == "\047") { p++; break }
-            out = out ch
-          }
-          continue
-        }
-        if (ch == "\"") {
-          for (p++; p <= n; p++) {
-            ch = substr(s, p, 1)
-            if (ch == "\\" && p < n && index("\\\"$`\n", substr(s, p + 1, 1))) { out = out substr(s, ++p, 1); continue }
-            if (ch == "\"") { p++; break }
-            out = out ch
-          }
-          continue
-        }
-        if (ch == "\\" && p < n) { c2 = substr(s, p + 1, 1); if (c2 != "\n") out = out c2; p += 2; continue }
-        out = out ch; p++
-      }
-      return out
-    }
-    function emit(text) { if (text != "") { gsub(/\n/, "\001", text); print text } }
-    { s = s (NR > 1 ? "\n" : "") $0 }
-    END {
-      n = length(s); p = 1
-      shell = "(^|[^A-Za-z0-9_.-])[\"\047]?([^[:space:];&|()<>\"\047`]*/)?(ba|z|da|k|fi|tc|c)?sh[\"\047]?"
-      opts = "([ \t]+-[-A-Za-z]+([ \t]+[a-z]+)?)*"
-      kinds = 4
-      re[1] = shell opts "[ \t]+-[A-Za-z]*c[A-Za-z]*[ \t]+"
-      re[2] = shell opts "[ \t]*<<<[ \t]*"
-      re[3] = shell opts "[ \t]*<<-?[ \t]*[\"\047\\\\]?[A-Za-z_][A-Za-z0-9_]*[\"\047]?"
-      re[4] = "(^|[^A-Za-z0-9_.-])eval[ \t]+"
-      while (p <= n) {
-        rest = substr(s, p); best = 0; at = 0
-        for (k = 1; k <= kinds; k++) if (match(rest, re[k]) && (best == 0 || RSTART < at)) { best = k; at = RSTART; len = RLENGTH }
-        if (best == 0) break
-        p += at - 1 + len
-        if (best <= 2) { emit(word()); continue }
-        if (best == 4) {
-          out = ""
-          while (p <= n) {
-            while (p <= n && substr(s, p, 1) ~ /[ \t]/) p++
-            if (p > n || substr(s, p, 1) ~ /[\n;&|()<>]/) break
-            w = word(); out = out (out == "" ? "" : " ") w
-          }
-          emit(out); continue
-        }
-        # a heredoc: its marker, then the lines up to the one that is only the marker
-        marker = substr(rest, at, len); sub(/^.*<<-?[ \t]*["\047\\]?/, "", marker); sub(/["\047]$/, "", marker)
-        nl = index(substr(s, p), "\n"); if (nl == 0) break
-        p += nl; body = ""
-        while (p <= n) {
-          nl = index(substr(s, p), "\n"); line = nl ? substr(s, p, nl - 1) : substr(s, p)
-          p += nl ? nl : n
-          probe = line; sub(/^\t+/, "", probe)
-          if (probe == marker) break
-          body = body (body == "" ? "" : "\n") line
-        }
-        emit(body)
-      }
-    }'
-}
-
-# guard_home <command> — ~ and $HOME (also ${HOME}) spelled out as the home directory, so that
-# ~/.wolfmux/state and "$HOME/.wolfmux/memory" are the paths the tokens below look for. Only a ~
-# that starts a word, as the shell expands it (and a quoted one too: refusing more is the safe side).
-# ~<name> is that user's home: yours for your own name, /Users/<name> for another; ~+ is the folder the
-# command runs in (GUARD_CWD).
-guard_home() {
-  local c="$1" h="${HOME%/}"
-  [ -n "$h" ] || {
-    printf '%s' "$c"
-    return 0
+# list(text, arr): the newline-separated paths, lower case, squeezed, without a trailing "/", each also without
+# a leading /private (/private/tmp is /tmp); the count
+function list(text, arr,   n, t, k, c, p) {
+  n = split(text, t, "\n"); c = 0
+  for (k = 1; k <= n; k++) {
+    p = tolower(t[k]); gsub(/\/\/+/, "/", p); while (p ~ /\/\.\//) sub(/\/\.\//, "/", p); sub(/\/+$/, "", p)
+    if (p == "") continue
+    arr[++c] = p
+    if (substr(p, 1, 9) == "/private/") arr[++c] = substr(p, 9)
   }
-  c="${c//\$\{HOME\}/$h}"
-  c="${c//\$HOME/$h}"
-  printf '%s' "$c" | LC_ALL=C /usr/bin/awk -v h="$h" -v me="${USER:-}" -v here="${GUARD_CWD:-.}" '
-    { out = ""; line = $0
-      while (match(line, /(^|[[:space:]=:;&|(<>"\047`])~([A-Za-z_][A-Za-z0-9._-]*|\+)?(\/|[[:space:];&|)"\047`]|$)/)) {
-        lead = substr(line, RSTART, 1); if (RSTART == 1 && substr(line, 1, 1) == "~") lead = ""
-        name = substr(line, RSTART + length(lead) + 1, RLENGTH - length(lead) - 1); sub(/[\/[:space:];&|)"\047`]$/, "", name)
-        out = out substr(line, 1, RSTART - 1) lead (name == "" || name == me ? h : (name == "+" ? here : "/Users/" name))
-        line = substr(line, RSTART + length(lead) + 1 + length(name))
-      }
-      print out line }'
+  return c
+}
+function clock(   now) { srand(); now = srand(); if (now - T0 >= 2 && DENY == "") DENY = R_SLOW }
+function base(w) { sub(/\/+$/, "", w); sub(/.*\//, "", w); return w }
+function rep(v, a, b,   out, at) { out = ""; while ((at = index(v, a)) > 0) { out = out substr(v, 1, at - 1) b; v = substr(v, at + length(a)) } return out v }
+function inside(p, dir) { return p == dir || substr(p, 1, length(dir) + 1) == dir "/" }
+function inany(p, arr, n,   k, l) { l = tolower(p); for (k = 1; k <= n; k++) if (inside(l, arr[k])) return 1; return 0 }
+function inown(p) { return inany(p, OWN, NOWN) }
+function inroot(p) { return inany(p, ROOT, NROOT) }
+# quoted text with a blank in it is prose (a commit message), unless it starts like a path
+function isprose(v, f) { return index(f, "p") && v !~ /^(\/|\.\.?\/|~)/ && substr(v, 1, 1) != "\002" }
+
+# --- the private folders, by name: hit(l, p) when l holds p as a whole name (what follows is no name character)
+function namech(c) { return c ~ /[a-z0-9._-]/ }
+function hit(l, p,   at, n) {
+  n = length(p)
+  while ((at = index(l, p)) > 0) { if (!namech(substr(l, at + n, 1))) return 1; l = substr(l, at + 1) }
+  return 0
+}
+function trhit(l, p,   at, n, after) {
+  n = length(p)
+  while ((at = index(l, p)) > 0) {
+    after = substr(l, at + n)
+    if (!namech(substr(after, 1, 1)) && !(substr(after, 1, 7) == "/memory" && !namech(substr(after, 8, 1)))) return 1
+    l = substr(l, at + 1)
+  }
+  return 0
+}
+# the own worktree and the own scratchpad are blanked out first (w1 is not the start of w10)
+function maskone(l, p,   at, n, out) {
+  n = length(p); out = ""
+  while ((at = index(l, p)) > 0) {
+    if (!namech(substr(l, at + n, 1))) { out = out substr(l, 1, at - 1) "\004"; l = substr(l, at + n) }
+    else { out = out substr(l, 1, at); l = substr(l, at + 1) }
+  }
+  return out l
+}
+function lit(w,   l, k) {
+  l = tolower(w)
+  for (k = 1; k <= NOWN; k++) l = maskone(l, OWN[k])
+  for (k = 1; k <= NSCR; k++) l = maskone(l, SCR[k])
+  for (k = 1; k <= NTREES; k++) if (hit(l, TREES[k])) return R_TREES
+  for (k = 1; k <= NSTATE; k++) if (hit(l, STATE[k])) return R_TREES
+  for (k = 1; k <= NMEM; k++) if (hit(l, MEM[k])) return R_MEM
+  if (hit(l, ".wolfmux/memory")) return R_MEM
+  for (k = 1; k <= NCL; k++) if (hit(l, CL[k])) return R_CLAUDE
+  for (k = 1; k <= NTR; k++) if (trhit(l, TR[k])) return R_TRANS
+  for (k = 1; k <= NCT; k++) if (hit(l, CT[k])) return R_CTMP
+  return ""
+}
+# a folder that holds a private one: a search of it reads that too
+function holds(l,   k) {
+  if (l == "" || l == "/") return 1
+  for (k = 1; k <= NMEM; k++) if (inside(MEM[k], l)) return 1
+  for (k = 1; k <= NCL; k++) if (inside(CL[k], l)) return 1
+  for (k = 1; k <= NTR; k++) if (inside(TR[k], l)) return 1
+  for (k = 1; k <= NCT; k++) if (inside(CT[k], l)) return 1
+  return 0
 }
 
-# guard_resolve_word <word> <cwd> — the path a word names: absolute, its ".." climbed through the disk where the
-# folders exist and by the letter past them (guard_abspath leaves a/missing/../.. as it is)
-guard_resolve_word() {
-  local path
-  path="$(guard_abspath "$1" "$2")"
-  case "$path" in
-    */../* | */..)
-      path="$(printf '%s\n' "$path" | LC_ALL=C /usr/bin/awk -F/ '{ n = 0
-        for (i = 2; i <= NF; i++) { if ($i == "..") { if (n) n-- } else if ($i != "" && $i != ".") part[++n] = $i }
-        out = ""; for (i = 1; i <= n; i++) out = out "/" part[i]; print (out == "" ? "/" : out) }')"
-      ;;
-  esac
-  printf '%s\n' "${path:-/}"
+# --- the lexer: lex(s, d) fills TT[d,i] (w word, o operator, r redirection), TV[d,i] (the word unquoted),
+# TF[d,i] (flags: q quoted, p a quoted blank, g a wildcard, $ built at run time, P process substitution),
+# TR[d,i] (a redirection target: its operator), HB[d,i] (the body of a heredoc, on its << token) and the
+# substitutions SX[d,k] (text), SA[d,k] (token), SK[d,k] (s or p)
+function flag(f) { if (!index(LF, f)) LF = LF f }
+function quoted(t) { LW = LW t; flag("q"); if (t ~ /[ \t\n]/) flag("p"); LIN = 1 }
+function endw(d) {
+  if (!LIN) return
+  NT[d]++; TT[d, NT[d]] = "w"; TV[d, NT[d]] = LW; TF[d, NT[d]] = LF; TR[d, NT[d]] = LRED; LRED = 0
+  LW = ""; LF = ""; LIN = 0
+  if (++WORDS > 4000 && DENY == "") DENY = R_LONG
+  if (WORDS % 50 == 0) clock()
 }
-
-# guard_climbs <word> — the word is a path the text does not spell out: one that climbs (a ".." part) or starts
-# where the command runs ("." or "./…")
-guard_climbs() {
-  case "$1" in .. | ../* | */../* | */.. | . | ./*) return 0 ;; esac
-  return 1
+function op(d, o) { NT[d]++; TT[d, NT[d]] = "o"; TV[d, NT[d]] = o; TF[d, NT[d]] = ""; TR[d, NT[d]] = 0; LRED = 0 }
+function red(d, o) { NT[d]++; TT[d, NT[d]] = "r"; TV[d, NT[d]] = o; TF[d, NT[d]] = ""; TR[d, NT[d]] = 0; LRED = NT[d] }
+function addsub(d, t, at, kind) { NS[d]++; SX[d, NS[d]] = t; SA[d, NS[d]] = at; SK[d, NS[d]] = kind }
+# what $( ) or ` ` gives in a word: which X, command -v X and type -p X give X itself; the rest is run time
+function subword(t,   name) {
+  name = t
+  if (sub(/^[ \t]*(which|command[ \t]+-[vV]|type[ \t]+-[pP])[ \t]+/, "", name) && name ~ /^[^ \t;&|<>()`$\\"\047]+[ \t]*$/) { sub(/[ \t]+$/, "", name); LW = LW name; return }
+  LW = LW "\003"; flag("$")
 }
-
-# guard_follow <command, ~ and $HOME spelled out> — reads the command word by word and follows the folder the
-# shell is in as cd, pushd and popd move it (a cd inside ( ), $( ), a pipe or & stays there, as in the shell).
-# It sets:
-#   GUARD_EXTRA     the paths the text does not spell out, absolute: every word that climbs or starts here
-#                   (../x, ./x: guard_climbs), resolved against the folder the shell is in at that word, and
-#                   while that folder is not your own worktree, every relative word (cd ~/.wolfmux && cat
-#                   memory/x); every folder a cd moves to; the part of a wildcard word before the wildcard
-#   GUARD_FOLLOWED  the command again, one line, with those words spelled out (for guard_tree_walk)
-#   GUARD_HERES     every folder a cd moved to, one per line (what sh -c or eval runs may run there)
-#   GUARD_WILD      a reason to refuse: a wildcard that could still become a private folder or is your home
-#                   itself (cat ~/.wolfmux/mem*/…, grep -r x ~/.*), or a command too long to follow
-# A quoted word with no space in it counts as a word here (cd ~/.wolfmux && cat "memory/x"). Out of reach: a cd
-# to a folder built at run time (d=~/.wolfmux; cd $d && cat memory/x) leaves the folder where it was, and so do
-# CDPATH and a cd to a wildcard (docs/SECURITY.md).
-guard_follow() {
-  local line kind tok value raw path pre prefix lp private home outside=0 count=0 resolved=0 redir=0 at=1
-  local here="$GUARD_CWD" old="" list pipe piped=0 depth=0 cd="" cdarg="" taken=0
-  local wild='[][*?{}]*' # in a variable: bash 3.2 ends ${word%%…} at the first "}" of a literal pattern
-  local -a sub_here=() sub_list=() sub_pipe=() sub_piped=() dirs=()
-  home="$(guard_lower "${HOME%/}")"
-  list="$here" pipe="$here"
-  GUARD_EXTRA="" GUARD_FOLLOWED="" GUARD_HERES="" GUARD_WILD=""
-  guard_inside "$here" "$GUARD_OWN" || outside=1
-  while IFS= read -r line; do
-    kind="${line:0:1}" tok="${line:1}"
-    if [ "$kind" = w ]; then count=$((count + 1)); fi
-    if [ "$count" -gt 4000 ]; then GUARD_WILD="that command is too long for the guard to follow (over 4000 words); split it." && return 0; fi
-    if [ "$kind" = o ]; then
-      # a redirection: the next word is a file, and the command goes on
-      if [ "$tok" = ">" ]; then redir=1 GUARD_FOLLOWED="$GUARD_FOLLOWED >" && continue; fi
-      if [ -n "$cd" ]; then guard_follow_cd; fi
-      case "$tok" in
-        ";") if [ "$piped" -eq 1 ]; then here="$pipe"; fi && piped=0 list="$here" pipe="$here" ;;
-        a) if [ "$piped" -eq 1 ]; then here="$pipe"; fi && piped=0 pipe="$here" ;;
-        "|") here="$pipe" piped=1 ;;
-        "&") here="$list" piped=0 pipe="$list" ;;
-        "(")
-          sub_here[$depth]="$here" sub_list[$depth]="$list" sub_pipe[$depth]="$pipe" sub_piped[$depth]="$piped"
-          depth=$((depth + 1)) list="$here" pipe="$here" piped=0
-          ;;
-        ")")
-          if [ "$depth" -gt 0 ]; then
-            depth=$((depth - 1))
-            here="${sub_here[$depth]}" list="${sub_list[$depth]}" pipe="${sub_pipe[$depth]}" piped="${sub_piped[$depth]}"
-          fi
-          ;;
-      esac
-      at=1 redir=0 outside=0
-      guard_inside "$here" "$GUARD_OWN" || outside=1
-      if [ "$tok" = a ]; then tok=";"; fi
-      GUARD_FOLLOWED="$GUARD_FOLLOWED $tok"
+function expand(name, as) {
+  if (name == "HOME") LW = LW HOME
+  else if (name == "USER" || name == "LOGNAME") LW = LW USERN
+  else if (name == "PWD") LW = LW "\002"
+  else { LW = LW as; flag("$") }
+}
+function dollar(s, p, n, d,   c2, j, t, name) {
+  c2 = substr(s, p + 1, 1)
+  if (c2 == "(") {
+    j = closep(s, p + 2, n); t = j ? substr(s, p + 2, j - p - 2) : substr(s, p + 2)
+    addsub(d, t, NT[d] + 1, "s"); subword(t)
+    return j ? j + 1 : n + 1
+  }
+  if (c2 == "{") {
+    j = index(substr(s, p + 2), "}"); t = j ? substr(s, p + 2, j - 1) : substr(s, p + 2)
+    if (t ~ /\$\(|`/) subs_in(t, d, NT[d] + 1)
+    name = t; sub(/[^A-Za-z0-9_].*$/, "", name)
+    expand(name, "${" t "}")
+    return j ? p + 2 + j : n + 1
+  }
+  if (c2 ~ /[A-Za-z_]/) {
+    t = substr(s, p + 1); match(t, /^[A-Za-z_][A-Za-z0-9_]*/); name = substr(t, 1, RLENGTH)
+    expand(name, "$" name)
+    return p + 1 + RLENGTH
+  }
+  if (c2 != "" && index("0123456789@*#?$!-", c2)) { LW = LW "$" c2; flag("$"); return p + 2 }
+  LW = LW "$"
+  return p + 1
+}
+function tick(s, p, n, d,   c, c2, t) {
+  t = ""
+  while (p <= n) {
+    c = substr(s, p, 1)
+    if (c == "\\") { c2 = substr(s, p + 1, 1); if (c2 == "`" || c2 == "$" || c2 == "\\") { t = t c2; p += 2; continue } }
+    if (c == "`") { p++; break }
+    t = t c; p++
+  }
+  addsub(d, t, NT[d] + 1, "s"); subword(t)
+  return p
+}
+function dq(s, p, n, d,   c, c2) {
+  flag("q"); LIN = 1
+  while (p <= n) {
+    c = substr(s, p, 1)
+    if (c == "\"") return p + 1
+    if (c == "\\") {
+      c2 = substr(s, p + 1, 1)
+      if (c2 == "\n") { p += 2; continue }
+      if (c2 == "$" || c2 == "`" || c2 == "\"" || c2 == "\\") { LW = LW c2; p += 2; continue }
+      LW = LW c; p++; continue
+    }
+    if (c == "$") { p = dollar(s, p, n, d); continue }
+    if (c == "`") { p = tick(s, p + 1, n, d); continue }
+    if (c == " " || c == "\t" || c == "\n") flag("p")
+    LW = LW c; p++
+  }
+  return p
+}
+function hexval(s, p, most,   v, k, c) {
+  v = 0; k = 0; HEXP = p
+  while (k < most && (c = tolower(substr(s, HEXP, 1))) != "" && index("0123456789abcdef", c)) { v = v * 16 + index("0123456789abcdef", c) - 1; HEXP++; k++ }
+  return v
+}
+function ansi(s, p, n,   c, c2, t, v, k) {
+  t = ""
+  while (p <= n) {
+    c = substr(s, p, 1)
+    if (c == "\047") { p++; break }
+    if (c == "\\" && p < n) {
+      c2 = substr(s, p + 1, 1); p += 2
+      if (c2 == "n") t = t "\n"
+      else if (c2 == "t") t = t "\t"
+      else if (c2 == "x") { v = hexval(s, p, 2); p = HEXP; t = t (v > 0 && v < 128 ? sprintf("%c", v) : "?") }
+      else if (c2 == "u" || c2 == "U") { v = hexval(s, p, c2 == "u" ? 4 : 8); p = HEXP; t = t (v > 0 && v < 128 ? sprintf("%c", v) : "?") }
+      else if (c2 ~ /[0-7]/) { v = c2 + 0; k = 1; while (k < 3 && substr(s, p, 1) ~ /[0-7]/) { v = v * 8 + substr(s, p, 1); p++; k++ } t = t (v > 0 && v < 128 ? sprintf("%c", v) : "?") }
+      else if (c2 == "c") p++
+      else if (index("abeEfrv", c2)) t = t " "
+      else t = t c2
       continue
-    fi
-    value="$tok"
-    if [ "$redir" -eq 1 ]; then
-      redir=0
-    elif [ "$at" -eq 1 ]; then
-      case "$value" in
-        cd | pushd | popd) cd="$value" cdarg="" taken=0 at=0 ;;
-        "{" | "!" | if | then | else | elif | while | until | do | time | builtin | command | nohup | exec | [A-Za-z_]*=*) ;;
-        *) at=0 ;;
-      esac
-    elif [ -n "$cd" ] && [ "$taken" -eq 0 ]; then
-      case "$value" in
-        -) cdarg=- taken=1 ;;
-        -- | -[LPe@]*) ;;
-        *'$'* | *[][*?{}]*) cdarg="?" taken=1 ;;
-        *) cdarg="$value" taken=1 ;;
-      esac
-    fi
-    case "$value" in
-      '""' | *'$'*) ;; # quoted prose, or built at run time: out of reach (docs/SECURITY.md)
-      *[][*?{}]*)
-        raw="${value%%$wild}" prefix="${value%%$wild}"
-        if guard_climbs "$prefix"; then
-          prefix="$(guard_resolve_word "$prefix" "$here")" resolved=$((resolved + 1))
-        elif [ "$outside" -eq 1 ]; then
-          case "$prefix" in /* | -*) ;; *) prefix="$here/$prefix" ;; esac
-        fi
-        case "$prefix" in
-          /*)
-            value="$prefix${value#"$raw"}"
-            GUARD_EXTRA="$GUARD_EXTRA $prefix"
-            lp="$(guard_lower "$prefix")"
-            lp="${lp%/}"
-            if [ "$lp" = "$home" ]; then
-              GUARD_WILD="$(printf "that command has a wildcard in your home folder (%s), which also matches the leads' private folders under it; name the files." "$tok")" && return 0
-            fi
-            for private in "$GUARD_MEMORY_LC" "$GUARD_STATE_LC" "$GUARD_TREES_LC" "$GUARD_TRANSCRIPTS_LC" ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"}; do
-              [ -n "$private" ] || continue
-              case "$private/" in "$lp"*) GUARD_WILD="$(printf "that command has a wildcard (%s) that can match a private folder (%s); name the files." "$tok" "$private")" && return 0 ;; esac
-            done
-            ;;
-        esac
-        ;;
-      *)
-        # --file=../x and X=../x name ../x
-        path="$value" pre=""
-        case "$path" in -*=* | [A-Za-z_]*=*) pre="${path%%=*}=" path="${path#*=}" ;; esac
-        if guard_climbs "$path"; then
-          path="$(guard_resolve_word "$path" "$here")" resolved=$((resolved + 1))
-          GUARD_EXTRA="$GUARD_EXTRA $path" value="$pre$path"
-        elif [ "$outside" -eq 1 ]; then
-          case "$path" in "" | /* | -*) ;; *) GUARD_EXTRA="$GUARD_EXTRA $here/$path" value="$pre$here/$path" ;; esac
-        fi
-        ;;
-    esac
-    if [ "$resolved" -gt 100 ]; then GUARD_WILD="that command has more than 100 relative paths for the guard to follow; split it." && return 0; fi
-    GUARD_FOLLOWED="$GUARD_FOLLOWED $value"
-  done < <(guard_strip_prose "$1" ";" words | LC_ALL=C /usr/bin/awk '
-    # one line per word ("w" and the word, unquoted; "w" "" for quoted prose) and per operator: "o;" (; and the
-    # end of a line), "oa" (&& ||), "o|", "o&", "o(" "o)" (also $( and `), "o>" (any redirection)
-    function flush() { if (w != "" || q) print "w" (w == "" ? "\"\"" : w); w = ""; q = 0 }
-    function op(o) { flush(); print "o" o }
-    { s = s (NR > 1 ? ";" : "") $0 }
-    END {
-      n = length(s); w = ""; q = 0; inq = 0; bt = 0
-      for (i = 1; i <= n; i++) {
-        ch = substr(s, i, 1)
-        if (inq) { if (ch == "\"") inq = 0; else w = w ch; continue }
-        if (ch == "\"") { inq = 1; q = 1; continue }
-        if (ch == " " || ch == "\t") { flush(); continue }
-        two = substr(s, i, 2)
-        if (two == "&&" || two == "||") { op("a"); i++; continue }
-        if (two == "|&") { op("|"); i++; continue }
-        if (two == ">&" || two == "<&" || two == "&>" || two == ">|") { op(">"); i++; if (substr(s, i + 1, 1) == ">") i++; continue }
-        if (ch == ">" || ch == "<") { op(">"); continue }
-        if (ch == ";" || ch == "|" || ch == "&" || ch == "(" || ch == ")") { op(ch); continue }
-        if (ch == "`") { op(bt ? ")" : "("); bt = !bt; continue }
-        w = w ch
+    }
+    t = t c; p++
+  }
+  quoted(t)
+  return p
+}
+function tilde(s, p, n,   t, name, c) {
+  t = substr(s, p + 1); match(t, /^[A-Za-z0-9._+-]*/); name = substr(t, 1, RLENGTH)
+  c = substr(s, p + 1 + RLENGTH, 1)
+  if (c != "" && c !~ /[\/ \t\n;&|()<>:]/) { LW = LW "~"; return p + 1 }
+  if (name == "" || name == USERN) LW = LW HOME
+  else if (name == "+") LW = LW "\002"
+  else if (name == "-") { LW = LW "~-"; flag("$") }
+  else LW = LW "/Users/" name
+  return p + 1 + RLENGTH
+}
+# closep(s, p, n): the ) that closes the $( or <( whose text starts at p (quotes, nesting, comments and heredoc
+# bodies skipped); 0 when there is none
+function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, line, probe, t, start) {
+  depth = 1; prev = "\n"; hn = 0
+  while (p <= n) {
+    c = substr(s, p, 1)
+    if (c == "\\") { p += 2; prev = "x"; continue }
+    if (c == "\047") { j = index(substr(s, p + 1), "\047"); if (!j) return 0; p += j + 1; prev = "x"; continue }
+    if (c == "\"") { p = dqskip(s, p + 1, n); if (!p) return 0; prev = "x"; continue }
+    if (c == "`") { j = p + 1; while (j <= n && substr(s, j, 1) != "`") { if (substr(s, j, 1) == "\\") j++; j++ } if (j > n) return 0; p = j + 1; prev = "x"; continue }
+    if (c == "$" && substr(s, p + 1, 1) == "(") { j = closep(s, p + 2, n); if (!j) return 0; p = j + 1; prev = "x"; continue }
+    if (c == "#" && prev ~ /[ \t\n;&|(]/) { j = index(substr(s, p), "\n"); if (!j) return 0; p += j - 1; continue }
+    if (c == "<" && substr(s, p + 1, 1) == "<" && substr(s, p + 2, 1) != "<") {
+      p += 2; hs[hn + 1] = 0; if (substr(s, p, 1) == "-") { p++; hs[hn + 1] = 1 }
+      while (substr(s, p, 1) == " " || substr(s, p, 1) == "\t") p++
+      start = p; while (p <= n && substr(s, p, 1) !~ /[ \t\n;&|()<>]/) p++
+      t = substr(s, start, p - start); gsub(/[\047"\\]/, "", t); hd[++hn] = t; prev = "x"; continue
+    }
+    if (c == "\n" && hn) {
+      p++
+      for (k = 1; k <= hn; k++) while (p <= n) {
+        j = index(substr(s, p), "\n"); line = j ? substr(s, p, j - 1) : substr(s, p); p += j ? j : n - p + 1
+        probe = line; if (hs[k]) sub(/^\t+/, "", probe)
+        if (probe == hd[k]) break
       }
-      flush()
-    }')
-  if [ -n "$cd" ]; then guard_follow_cd; fi
-  GUARD_EXTRA="$(guard_squeeze "$GUARD_EXTRA")"
+      hn = 0; prev = "\n"; continue
+    }
+    if (c == "(") depth++
+    else if (c == ")" && --depth == 0) return p
+    prev = c; p++
+  }
   return 0
 }
-
-# guard_follow_cd — guard_follow's cd, pushd or popd, once its words are read: moves guard_follow's "here" (bash
-# functions see their caller's locals). A bare cd goes home, cd - goes back, a run-time folder ("?") stays put.
-guard_follow_cd() {
-  local to="" n="${#dirs[@]}"
-  case "$cd" in
-    popd)
-      if [ "$n" -gt 0 ]; then to="${dirs[$((n - 1))]}" && unset "dirs[$((n - 1))]"; fi
-      ;;
-    *)
-      case "$cdarg" in
-        "") if [ "$cd" = cd ]; then to="$(guard_abspath "$HOME" /)"; fi ;;
-        -) to="$old" ;;
-        "?") ;;
-        *) to="$(guard_resolve_word "$cdarg" "$here")" ;;
-      esac
-      if [ -n "$to" ] && [ "$cd" = pushd ]; then dirs[$n]="$here"; fi
-      ;;
-  esac
-  cd=""
-  [ -n "$to" ] || return 0
-  old="$here" here="$to"
-  GUARD_EXTRA="$GUARD_EXTRA $to"
-  GUARD_HERES="$GUARD_HERES$to"$'\n'
+function dqskip(s, p, n,   c, j) {
+  while (p <= n) {
+    c = substr(s, p, 1)
+    if (c == "\\") { p += 2; continue }
+    if (c == "\"") return p + 1
+    if (c == "$" && substr(s, p + 1, 1) == "(") { j = closep(s, p + 2, n); if (!j) return 0; p = j + 1; continue }
+    if (c == "`") { j = p + 1; while (j <= n && substr(s, j, 1) != "`") { if (substr(s, j, 1) == "\\") j++; j++ } if (j > n) return 0; p = j + 1; continue }
+    p++
+  }
   return 0
 }
+# the $( ) and ` ` in a heredoc body or a ${ } (they run too)
+function subs_in(t, d, at,   p, n, c, j) {
+  n = length(t); p = 1
+  while (p <= n) {
+    c = substr(t, p, 1)
+    if (c == "\\") { p += 2; continue }
+    if (c == "$" && substr(t, p + 1, 1) == "(") { j = closep(t, p + 2, n); addsub(d, j ? substr(t, p + 2, j - p - 2) : substr(t, p + 2), at, "s"); p = j ? j + 1 : n + 1; continue }
+    if (c == "`") { j = index(substr(t, p + 1), "`"); addsub(d, j ? substr(t, p + 1, j - 1) : substr(t, p + 1), at, "s"); p = j ? p + j + 1 : n + 1; continue }
+    p++
+  }
+}
+function lex(s, d,   n, p, c, c2, j, t, hn, hi, line, probe, body, start, strip) {
+  NT[d] = 0; NS[d] = 0; LW = ""; LF = ""; LIN = 0; LRED = 0; hn = 0
+  n = length(s); p = 1
+  while (p <= n) {
+    if (DENY != "") return
+    c = substr(s, p, 1)
+    if (c == "\\") {
+      c2 = substr(s, p + 1, 1)
+      if (c2 != "\n" && p < n) { LW = LW c2; flag("q"); LIN = 1 }
+      p += 2; continue
+    }
+    if (c == "\047") { j = index(substr(s, p + 1), "\047"); if (!j) j = n - p + 1; quoted(substr(s, p + 1, j - 1)); p += j + 1; continue }
+    if (c == "$" && substr(s, p + 1, 1) == "\047") { p = ansi(s, p + 2, n); continue }
+    if (c == "$" && substr(s, p + 1, 1) == "\"") { p++; continue }
+    if (c == "\"") { p = dq(s, p + 1, n, d); continue }
+    if (c == "$") { p = dollar(s, p, n, d); LIN = 1; continue }
+    if (c == "`") { p = tick(s, p + 1, n, d); LIN = 1; continue }
+    if (c == " " || c == "\t" || c == "\r") { endw(d); p++; continue }
+    if (c == "#" && !LIN) { j = index(substr(s, p), "\n"); if (!j) break; p += j - 1; continue }
+    if (c == "\n") {
+      endw(d); op(d, ";"); p++
+      for (hi = 1; hi <= hn; hi++) {
+        body = ""
+        while (p <= n) {
+          j = index(substr(s, p), "\n"); line = j ? substr(s, p, j - 1) : substr(s, p); p += j ? j : n - p + 1
+          probe = line; if (HS[hi]) sub(/^\t+/, "", probe)
+          if (probe == HD[hi]) break
+          body = body probe "\n"
+        }
+        HB[d, HT[hi]] = body
+        if (!HQ[hi]) subs_in(body, d, HT[hi])
+      }
+      hn = 0; continue
+    }
+    if (c == ";") { endw(d); op(d, ";"); p++; while (substr(s, p, 1) == ";" || substr(s, p, 1) == "&") p++; continue }
+    if (c == "&") {
+      endw(d); c2 = substr(s, p + 1, 1)
+      if (c2 == "&") { op(d, "&&"); p += 2; continue }
+      if (c2 == ">") { p += 2; if (substr(s, p, 1) == ">") p++; red(d, ">"); continue }
+      op(d, "&"); p++; continue
+    }
+    if (c == "|") {
+      endw(d); c2 = substr(s, p + 1, 1)
+      if (c2 == "|") { op(d, "||"); p += 2; continue }
+      op(d, "|"); p += (c2 == "&") ? 2 : 1; continue
+    }
+    if (c == "(" || c == ")") { endw(d); op(d, c); p++; continue }
+    if (c == "<" || c == ">") {
+      c2 = substr(s, p + 1, 1)
+      if (c2 == "(") {
+        j = closep(s, p + 2, n); t = j ? substr(s, p + 2, j - p - 2) : substr(s, p + 2)
+        addsub(d, t, NT[d] + 1, "p"); LW = LW "\003"; flag("$"); flag("P"); LIN = 1
+        p = j ? j + 1 : n + 1; continue
+      }
+      if (LIN && LF == "" && LW ~ /^[0-9]+$/) { LW = ""; LIN = 0 }
+      endw(d)
+      if (substr(s, p, 3) == "<<<") { red(d, "<<<"); p += 3; continue }
+      if (c == "<" && c2 == "<") {
+        p += 2; strip = 0; if (substr(s, p, 1) == "-") { strip = 1; p++ }
+        red(d, "<<"); LRED = 0
+        while (substr(s, p, 1) == " " || substr(s, p, 1) == "\t") p++
+        start = p; while (p <= n && substr(s, p, 1) !~ /[ \t\n;&|()<>]/) p++
+        t = substr(s, start, p - start)
+        hn++; HQ[hn] = (t ~ /[\047"\\]/); gsub(/[\047"\\]/, "", t); HD[hn] = t; HS[hn] = strip; HT[hn] = NT[d]; HB[d, NT[d]] = ""
+        continue
+      }
+      t = c; p++; c2 = substr(s, p, 1)
+      if (c2 == ">" || c2 == "|" || c2 == "&" || (c == "<" && c2 == ">")) { t = t c2; p++ }
+      red(d, t); continue
+    }
+    if (c == "~" && (!LIN || LW ~ /[=:]$/)) { p = tilde(s, p, n); LIN = 1; continue }
+    if (c == "*" || c == "?" || c == "[") flag("g")
+    if (c == "{") { j = index(substr(s, p), "}"); if (j && substr(s, p, j) ~ /,|\.\./) flag("g") }
+    LW = LW c; LIN = 1; p++
+  }
+  endw(d)
+}
 
-# guard_tree_walk <command, ~ and $HOME spelled out> — prints a reason when a tool that walks a whole tree
-# (grep -r, rg, find, ls -R, du, tar) is given a folder that holds a memory folder or the leads'
-# conversations: `grep -r x ~` reads ~/.wolfmux/memory as surely as a cat of it does. Absolute arguments
-# are seen, and relative ones that climb or start here (../../.., ., ./x: guard_climbs), resolved against
-# GUARD_CWD (guard_shell passes the command as guard_follow spelled it out, in the folder each cd moved
-# to: they come absolute); grep's and rg's pattern is not a folder. Prose (quoted text, heredoc bodies) is not a command
-# (guard_strip_prose); lines that end in "\" go on in the next one.
-guard_tree_walk() {
-  local line i j n tool word lw walks takes pattern skip ended
-  local -a words
-  GUARD_WALK_AT=""
-  while IFS= read -r line; do
-    words=()
-    read -r -a words <<<"$line" || true
-    n="${#words[@]}"
-    i=0
-    # past assignments and the words that only run the next one (sudo grep, env X=1 find, time du)
-    while [ "$i" -lt "$n" ]; do
-      case "${words[$i]}" in
-        *=* | sudo | command | env | time | nice | nohup | exec | builtin | xargs) i=$((i + 1)) ;;
-        *) break ;;
+# --- one simple command: collect(d, i) puts its words in A[d,1..CM[d]] (flags AF, tokens CW) and its
+# redirections in CRD[d,1..CN[d]] (targets CRT); it returns the operator that ends it
+function collect(d, i,   n) {
+  n = NT[d]; CM[d] = 0; CN[d] = 0; CS[d] = i
+  while (i <= n && TT[d, i] != "o") {
+    if (TT[d, i] == "r") { CN[d]++; CRD[d, CN[d]] = i; CRT[d, CN[d]] = 0 }
+    else if (TR[d, i]) CRT[d, CN[d]] = i
+    else { CM[d]++; CW[d, CM[d]] = i; A[d, CM[d]] = TV[d, i]; AF[d, CM[d]] = TF[d, i] }
+    i++
+  }
+  CE[d] = i
+  return i
+}
+function join(d, a, z,   t, k) { t = ""; for (k = a; k <= z; k++) t = t (k > a ? " " : "") A[d, k]; return t }
+function addpi(d, t) { NPI[d]++; PI[d, NPI[d]] = t }
+function hasopt(d, p, letter, long,   k, w) {
+  for (k = p + 1; k <= CM[d]; k++) { w = A[d, k]; if ((w ~ ("^-[A-Za-z]*" letter) && w !~ /^--/) || (long != "" && index(w, long) == 1)) return 1 }
+  return 0
+}
+# prog(d, i): the word that is the program, past assignments, reserved words and the commands that only run
+# the next one (env, sudo, exec, nice, timeout, xargs, caffeinate, script, npx …); 0 for none. Sets PENVI
+# (env -i), PEXECC (exec -c) and PI[d,…] (env -S and npx -c text, which is a command)
+function prog(d, i,   m, w, b, j, c, arg) {
+  m = CM[d]; PENVI = 0; PEXECC = 0; NPI[d] = 0
+  while (i <= m) {
+    w = A[d, i]; b = tolower(base(w))
+    if (w ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/ || w ~ /^(!|\{|\}|if|then|else|elif|do|while|until|builtin|nohup|setsid|noglob)$/) { i++; continue }
+    if (w == "time") { i++; while (i <= m && A[d, i] ~ /^-/) i++; continue }
+    if (w == "command") { if (i < m && A[d, i + 1] ~ /^-[A-Za-z]*[vV]/) return i; i++; while (i <= m && A[d, i] ~ /^-/) i++; continue }
+    if (w == "exec") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /c/) PEXECC = 1; if (A[d, i] ~ /a$/) i++; i++ } continue }
+    if (b == "sudo" || b == "doas") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /^-[ugChpDRTrtU]$/) i++; i++ } continue }
+    if (b == "env") {
+      i++
+      while (i <= m) {
+        w = A[d, i]
+        if (w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { i++; continue }
+        if (w == "-" || w == "--ignore-environment") { PENVI = 1; i++; continue }
+        if (w == "--") { i++; break }
+        if (w ~ /^--split-string=/) { addpi(d, substr(w, 16)); i++; continue }
+        if (w == "--split-string") { if (i < m) addpi(d, A[d, i + 1]); i += 2; continue }
+        if (w ~ /^--(unset|chdir)$/) { i += 2; continue }
+        if (w ~ /^--/) { i++; continue }
+        if (w ~ /^-/) {
+          for (j = 2; j <= length(w); j++) {
+            c = substr(w, j, 1)
+            if (c == "i") PENVI = 1
+            if (index("uPSC", c)) { arg = substr(w, j + 1); if (arg == "") { arg = (i < m) ? A[d, i + 1] : ""; i++ } if (c == "S") addpi(d, arg); break }
+          }
+          i++; continue
+        }
+        break
+      }
+      continue
+    }
+    if (b == "nice") { i++; if (i <= m && A[d, i] == "-n") i += 2; else if (i <= m && A[d, i] ~ /^-/) i++; continue }
+    if (b == "timeout" || b == "gtimeout") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /^(-s|-k|--signal|--kill-after)$/) i++; i++ } i++; continue }
+    if (b == "xargs" || b == "gxargs") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /^-[IJLnPRSsEda]$/) i++; i++ } continue }
+    if (b == "caffeinate") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /^-[tw]$/) i++; i++ } continue }
+    if (b == "script") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /^-[FtT]$/) i++; i++ } i++; continue }
+    if (b == "stdbuf" || b == "gstdbuf") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /^-[ioe]$/) i++; i++ } continue }
+    if (b == "ionice" || b == "taskpolicy") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /^-[cnpdgtb]$/) i++; i++ } continue }
+    if (b == "arch") { i++; while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] == "-arch") i++; i++ } continue }
+    if (b == "npx" || b == "bunx" || b == "pnpx") {
+      i++
+      while (i <= m && A[d, i] ~ /^-/) { if (A[d, i] ~ /^(-c|--call)$/ && i < m) addpi(d, A[d, i + 1]); if (A[d, i] ~ /^(-p|--package|-c|--call)$/) i++; i++ }
+      continue
+    }
+    return i
+  }
+  return 0
+}
+# the rules about the program itself: tmux; claude --resume; a program that drops the identity
+function progrules(d, p,   m, b, k, w, start, neg) {
+  m = CM[d]
+  if (PENVI || PEXECC) return R_ID
+  if (p < 1 || p > m) return ""
+  b = tolower(base(A[d, p]))
+  if (b == "tmux") return R_TMUX
+  sub(/@.*$/, "", b)
+  start = 0
+  if (b == "claude" || b == "claude-code") start = p + 1
+  else if (b ~ /^(node|nodejs|bun|deno)$/) {
+    for (k = p + 1; k <= m; k++) if (A[d, k] !~ /^-/) { if (tolower(A[d, k]) ~ /claude-code(\/|@|$)/) start = k + 1; break }
+  }
+  if (start) for (k = start; k <= m; k++) {
+    w = A[d, k]
+    if (isprose(w, AF[d, k])) continue
+    if (w ~ /^--(resume|continue|session-id|fork-session)(=|$)/ || w ~ /^-[A-Za-z]*[cr][A-Za-z]*$/) return R_RESUME
+  }
+  if (b ~ /^(unset|local|read|readarray|mapfile|for|select)$/) { for (k = p + 1; k <= m; k++) if (A[d, k] ~ ("^" IDS "$")) return R_ID }
+  if (b == "export" || b == "declare" || b == "typeset") {
+    neg = 0
+    for (k = p + 1; k <= m; k++) {
+      if ((b == "export" && A[d, k] ~ /^-[A-Za-z]*n/) || (b != "export" && A[d, k] ~ /^\+/)) neg = 1
+      else if (neg && A[d, k] ~ ("^" IDS "$")) return R_ID
+    }
+  }
+  if (b == "printf") for (k = p + 1; k <= m; k++) if ((A[d, k] == "-v" && k < m && A[d, k + 1] ~ ("^" IDS "$")) || A[d, k] ~ ("^-v" IDS "$")) return R_ID
+  return ""
+}
+function identity(d,   k, w, m) {
+  m = CM[d]
+  for (k = 1; k <= m; k++) {
+    w = A[d, k]
+    if (isprose(w, AF[d, k])) continue
+    if (w ~ ("(^|[^A-Za-z0-9_${])" IDS "\\+?=")) return R_ID
+    if ((w == "-u" || w == "--unset") && k < m && A[d, k + 1] ~ ("^" IDS "$")) return R_ID
+    if (w ~ ("^(-u|--unset=)" IDS "$")) return R_ID
+  }
+  return ""
+}
+# slots(d, p): which words of a search tool are options (SO 1; 2 an option argument; 3 an option whose value is a
+# pattern) and which is the pattern (SP), read after ALL options (grep -r ~ -e x has no pattern word); WALKS when
+# the tool walks a whole tree; TOOL its name
+function slots(d, p,   m, b, k, w, takes, longs, pats, gp, pat, gotpat, j, c, e, skip, skippat, dflag, ended, isgrep, k0) {
+  m = CM[d]; WALKS = 0; TOOL = ""
+  for (k = 1; k <= m; k++) { SO[d, k] = 0; SP[d, k] = 0 }
+  if (p < 1) return
+  b = tolower(base(A[d, p])); TOOL = b; k0 = p + 1
+  takes = ""; longs = ""; pats = "e"; gp = "ef"; pat = 0; isgrep = 0
+  if (b ~ /^(grep|egrep|fgrep|zgrep|ggrep)$/) { takes = "ABCDdefm"; longs = "|regexp|file|include|exclude|exclude-dir|context|after-context|before-context|max-count|directories|devices|label|binary-files|"; pat = 1; isgrep = 1 }
+  else if (b == "rg") { WALKS = 1; takes = "ABCEMTdefgjmrt"; pats = "eg"; longs = "|regexp|file|glob|iglob|type|type-not|type-add|type-clear|max-count|context|after-context|before-context|max-depth|maxdepth|threads|replace|sort|sortr|max-filesize|encoding|ignore-file|pre|pre-glob|colors|color|engine|path-separator|context-separator|field-match-separator|field-context-separator|dfa-size-limit|regex-size-limit|max-columns|hostname-bin|hyperlink-format|"; pat = 1 }
+  else if (b == "ag") { WALKS = 1; takes = "ABCGgm"; pats = "Gg"; gp = "g"; longs = "|after|before|context|file-search-regex|max-count|depth|ignore|ignore-dir|pager|path-to-ignore|"; pat = 1 }
+  else if (b == "ack") { WALKS = 1; takes = "ABCm"; longs = "|after-context|before-context|context|max-count|match|type|ignore-dir|ignore-file|output|"; pat = 1 }
+  else if (b == "fd" || b == "fdfind") { WALKS = 1; takes = "etEdjScxX"; pats = "E"; gp = ""; longs = "|extension|type|exclude|max-depth|min-depth|exact-depth|threads|size|color|exec|exec-batch|base-directory|max-results|changed-within|changed-before|owner|format|"; pat = 1 }
+  else if (b ~ /^(find|gfind|du|gdu|tar|gtar|bsdtar)$/) WALKS = 1
+  else if (b == "git") {
+    k = p + 1
+    while (k <= m && A[d, k] ~ /^-/) { if (A[d, k] ~ /^(-C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env)$/) k++; k++ }
+    if (k > m) return
+    k0 = k + 1
+    if (A[d, k] == "grep") { takes = "efABCmO"; longs = "|regexp|file|after-context|before-context|context|max-count|"; pat = 1 }
+    else if (A[d, k] ~ /^(log|show|diff|whatchanged|rev-list|shortlog|reflog)$/) { takes = "SGn"; pats = "SG"; gp = ""; longs = "|grep|author|committer|"; pat = 0 }
+    else return
+  } else if (b != "ls" && b != "gls") return
+  gotpat = 0; skip = 0; ended = 0; skippat = 0; dflag = 0
+  for (k = k0; k <= m; k++) {
+    w = A[d, k]
+    if (skip) { SO[d, k] = 2; if (skippat) SP[d, k] = 1; if (dflag && w == "recurse") WALKS = 1; skip = 0; continue }
+    if (ended || w == "-" || w !~ /^-/) continue
+    SO[d, k] = 1
+    if (w == "--") { ended = 1; continue }
+    if (substr(w, 1, 2) == "--") {
+      e = substr(w, 3); sub(/=.*$/, "", e)
+      if (isgrep && (e == "recursive" || e == "dereference-recursive" || w == "--directories=recurse")) WALKS = 1
+      if ((b == "ls" || b == "gls") && e == "recursive") WALKS = 1
+      if (e ~ /^(regexp|file|files|match|type-list)$/ && b != "fd" && b != "fdfind") gotpat = 1
+      if (index(longs, "|" e "|") && !index(w, "=")) { skip = 1; skippat = (e ~ PATS); dflag = (isgrep && e == "directories") }
+      else if (e ~ PATS) SO[d, k] = 3
+      continue
+    }
+    for (j = 2; j <= length(w); j++) {
+      c = substr(w, j, 1)
+      if (isgrep && (c == "r" || c == "R")) WALKS = 1
+      if ((b == "ls" || b == "gls") && c == "R") WALKS = 1
+      if (index(takes, c)) {
+        if (index(gp, c)) gotpat = 1
+        if (substr(w, j + 1) == "") { skip = 1; skippat = (index(pats, c) > 0); dflag = (isgrep && c == "d") }
+        else if (isgrep && c == "d" && substr(w, j + 1) == "recurse") WALKS = 1
+        else if (index(pats, c)) SO[d, k] = 3
+        break
+      }
+    }
+  }
+  if (pat && !gotpat) for (k = k0; k <= m; k++) if (!SO[d, k]) { SP[d, k] = 1; break }
+}
+function walkmsg(tool, w) { return tool " walks all of " w ", which holds the leads\047 private memory folders (~/.wolfmux/memory), their conversations, Claude Code\047s records or its temporary folder; search a narrower folder." }
+
+# --- paths: canon(p) makes p plain (.., ., //, and the symlinks guard_bash found, part by part)
+function canon(p,   n, parts, k, seg, cnt, st, i, cur, tp, m) {
+  n = split(p, parts, "/"); cnt = 0
+  for (k = 1; k <= n; k++) {
+    seg = parts[k]
+    if (seg == "" || seg == ".") continue
+    if (seg == "..") { if (cnt) cnt--; continue }
+    st[++cnt] = seg
+    if (NLINK) {
+      cur = ""; for (i = 1; i <= cnt; i++) cur = cur "/" st[i]
+      if (tolower(cur) in LINK) { m = split(LINK[tolower(cur)], tp, "/"); cnt = 0; for (i = 1; i <= m; i++) if (tp[i] != "") st[++cnt] = tp[i] }
+    }
+  }
+  cur = ""; for (i = 1; i <= cnt; i++) cur = cur "/" st[i]
+  return cur == "" ? "/" : cur
+}
+function rpath(v, here) { v = rep(v, "\002", here); if (substr(v, 1, 1) == "/") return canon(v); return canon(here "/" v) }
+# wpath(v, here): the path a word names (an option or assignment: its value), "" for none; a path that ends
+# outside the own worktree counts against the budget
+function wpath(v, here,   r) {
+  if (v ~ /^-/) { if (!index(v, "=")) return ""; v = substr(v, index(v, "=") + 1) }
+  else if (v ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) v = substr(v, index(v, "=") + 1)
+  if (v == "" || v ~ /^[A-Za-z][A-Za-z0-9+.-]*:\/\//) return ""
+  r = rpath(v, here)
+  if (!inown(r) && ++RESOLVED > 300 && DENY == "") DENY = R_SPLIT
+  if (++PATHS % 50 == 0) clock()
+  return r
+}
+# cand(p): print the parts of p under the own worktree or /tmp, for guard_bash to test for symlinks
+function cand(p,   l, k, start, q, n) {
+  l = tolower(p); start = 0
+  for (k = 1; k <= NOWN; k++) if (inside(l, OWN[k])) { start = length(OWN[k]) + 1; break }
+  if (!start && match(l, /^(\/private)?\/(tmp|var\/folders)\//)) start = RLENGTH
+  if (!start) return
+  q = start
+  while ((n = index(substr(p, q + 1), "/")) > 0) { emit(substr(p, 1, q + n - 1)); q += n }
+  emit(p)
+}
+function emit(x) {
+  if (x in SEEN) return
+  SEEN[x] = 1
+  if (++NCAND > 12000) { if (DENY == "") DENY = R_SPLIT; return }
+  print "L" x
+}
+# a wildcard: refused when its folder is your home, or when the part with the wildcard can match the next part
+# of a private folder (ls /tmp/*.log passes, ls /tmp/* and cat ~/.wolfmux/mem*/… do not)
+function globre(g,   i, n, c, r, j) {
+  r = "^"; n = length(g)
+  for (i = 1; i <= n; i++) {
+    c = substr(g, i, 1)
+    if (c == "*") r = r ".*"
+    else if (c == "?") r = r "."
+    else if (c == "[") { j = index(substr(g, i + 1), "]"); if (j) { r = r "."; i += j } else r = r "\\[" }
+    else if (c == "{") { j = index(substr(g, i + 1), "}"); if (j && substr(g, i + 1, j - 1) ~ /,|\.\./) { r = r ".*"; i += j } else r = r "\\{" }
+    else if (index("\\^$.|+()", c)) r = r "\\" c
+    else r = r c
+  }
+  return r "$"
+}
+function wildin(l, re, arr, n,   k, pre, rest) {
+  pre = (l == "/") ? "/" : l "/"
+  for (k = 1; k <= n; k++) if (substr(arr[k], 1, length(pre)) == pre) { rest = substr(arr[k], length(pre) + 1); sub(/\/.*$/, "", rest); if (rest ~ re) return arr[k] }
+  return ""
+}
+function wild(v, here,   pre, dir, comp, l, r, re) {
+  v = rep(v, "\002", here)
+  if (v ~ /^-/) { if (!index(v, "=")) return ""; v = substr(v, index(v, "=") + 1) }
+  else if (v ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) v = substr(v, index(v, "=") + 1)
+  if (!match(v, /[*?[]|\{[^}]*(,|\.\.)/)) return ""
+  pre = substr(v, 1, RSTART - 1)
+  dir = pre; sub(/[^\/]*$/, "", dir)
+  comp = substr(v, length(dir) + 1); sub(/\/.*$/, "", comp)
+  if (substr(dir, 1, 1) != "/") dir = here "/" dir
+  dir = canon(dir); l = tolower(dir)
+  if ((r = lit(dir)) != "") return r
+  if (l == LHOME) return "that command has a wildcard in your home folder (" v "), which also matches the leads\047 private folders under it; name the files."
+  re = globre(tolower(comp))
+  if ((r = wildin(l, re, MEM, NMEM)) != "" || (r = wildin(l, re, STATE, NSTATE)) != "" || (r = wildin(l, re, TREES, NTREES)) != "" || (r = wildin(l, re, TR, NTR)) != "" || (r = wildin(l, re, CL, NCL)) != "" || (r = wildin(l, re, CT, NCT)) != "")
+    return "that command has a wildcard (" v ") that can match a private folder (" r "); name the files."
+  return ""
+}
+
+# --- the rules that need the command in order (checkB)
+function gitrules(d, p,   m, k, j, w, sc, name) {
+  m = CM[d]; k = p + 1
+  while (k <= m && A[d, k] ~ /^-/) { if (A[d, k] ~ /^(-C|-c|--git-dir|--work-tree|--namespace|--super-prefix|--config-env|--exec-path)$/) k++; k++ }
+  if (k > m) return ""
+  sc = A[d, k]
+  if (sc == "worktree") { for (j = k + 1; j <= m; j++) if (A[d, j] !~ /^-/) { if (A[d, j] ~ /^(add|remove|move|prune|repair|lock|unlock)$/) return R_WT; break } }
+  if (sc == "branch") for (j = k + 1; j <= m; j++) { w = A[d, j]; if (w ~ /^--(delete|move|copy|force)$/ || (w ~ /^-[A-Za-z]*[dDmMcCf]/ && w !~ /^--/)) return R_BRANCH }
+  if (sc == "update-ref") return R_BRANCH
+  if (sc == "switch") return R_SWITCH
+  if (sc == "checkout") {
+    name = ""
+    for (j = k + 1; j <= m; j++) {
+      w = A[d, j]
+      if (w == "--") break
+      if (w ~ /^(-b|-B|--orphan|--detach)$/ || w ~ /^-[A-Za-z]*[bB]$/) return R_SWITCH
+      if (w ~ /^-/) continue
+      if (name == "") name = w
+    }
+    if (name != "" && name != BRANCH) BR[++NB] = name
+  }
+  if (sc == "push") for (j = k + 1; j <= m; j++) { w = A[d, j]; if (w ~ /^(--all|--mirror|--delete|-d)$/ || w ~ /^\+/ || w ~ /(^|:)(refs\/heads\/)?(main|master)$/) return R_PUSH }
+  return ""
+}
+function rootrules(d, p, b, here,   m, k, w, v) {
+  m = CM[d]
+  if (!NROOT) return ""
+  for (k = 1; k <= m; k++) {
+    w = A[d, k]; v = ""
+    if ((w == "-C" || w == "--git-dir" || w == "--work-tree") && k < m) v = A[d, k + 1]
+    else if (w ~ /^(--git-dir|--work-tree)=/) v = substr(w, index(w, "=") + 1)
+    else if (w ~ /^-C./) v = substr(w, 3)
+    if (v != "" && !index(AF[d, k], "$") && inroot(rpath(v, here))) return R_ROOT
+  }
+  if (p < 1) return ""
+  if (b ~ /^(rm|mv|rmdir|chmod|chown|ln|truncate|dd|tee|install)$/ || ((b == "sed" || b == "perl") && hasopt(d, p, "i", "--in-place"))) {
+    for (k = p + 1; k <= m; k++) if (RP[d, k] != "" && inroot(RP[d, k])) return R_ROOT
+  }
+  if (b ~ /^(cp|rsync|ditto)$/ && m > p && RP[d, m] != "" && inroot(RP[d, m])) return R_ROOT
+  return roottext(d, p, b)
+}
+# a read-only checkout whose path has a blank in it, written without quotes (rm -rf $ROOT/src): the shell splits it,
+# but the command still means that checkout (and would hit another folder). The words joined again, read as text.
+function roottext(d, p, b,   k, j, w, r, sp) {
+  sp = 0
+  for (k = 1; k <= NROOT; k++) if (index(ROOT[k], " ")) sp = 1
+  if (!sp) return ""
+  w = ""
+  for (k = CS[d]; k < CE[d]; k++) if (TT[d, k] == "r" || !isprose(TV[d, k], TF[d, k])) w = w " " TV[d, k]
+  w = tolower(w)
+  for (k = 1; k <= NROOT; k++) if (index(ROOT[k], " ")) w = rep(w, ROOT[k], "@root@")
+  if (!index(w, "@root@")) return ""
+  if (w ~ /(^| )(>|>>|>\||>&|<>) @root@/) return R_ROOT
+  gsub(/ (>|>>|>\||>&|<>|<|<&|<<<|<<) [^ ]*/, "", w)
+  if (w ~ /(^| )(cd|pushd)( -[a-z@]+)* @root@/ || w ~ /(^| )(-c ?|--git-dir[ =]|--work-tree[ =])@root@/) return R_ROOT
+  if (b ~ /^(rm|mv|rmdir|chmod|chown|ln|truncate|dd|tee|install)$/ || ((b == "sed" || b == "perl") && hasopt(d, p, "i", "--in-place"))) return R_ROOT
+  if (b ~ /^(cp|rsync|ditto)$/ && w ~ /@root@[^ ]*$/) return R_ROOT
+  return ""
+}
+function lnrule(d, p, here,   m, k, w, r, l) {
+  m = CM[d]
+  for (k = p + 1; k <= m; k++) {
+    w = A[d, k]
+    if (w ~ /^-/ || isprose(w, AF[d, k]) || index(AF[d, k], "$")) continue
+    r = rpath(w, here); l = tolower(r)
+    if (inown(r) || inany(r, SCR, NSCR)) continue
+    if (inside(l, LHOME) || substr(l, 1, 7) == "/users/" || inany(r, CT, NCT) || holds(l) || lit(r) != "") return R_LINK
+  }
+  return ""
+}
+function cdto(d, p, b, here,   m, k, w) {
+  m = CM[d]
+  if (b == "popd") { if (ND[d] > 0) return DS[d, --ND[d]]; return "" }
+  for (k = p + 1; k <= m; k++) { w = A[d, k]; if (w == "--") { k++; break } if (w !~ /^-./) break }
+  if (k > m) return (b == "cd") ? canon(HOME) : ""
+  w = A[d, k]
+  if (w == "-") return OLD[d]
+  if (index(AF[d, k], "$") || index(AF[d, k], "g")) return ""
+  w = rpath(w, here)
+  if (b == "pushd") DS[d, ND[d]++] = here
+  return w
+}
+# what a command prints into a pipe, when it can be read off the text: echo, printf, cat of a heredoc or <<<
+function producer(d, p,   m, b, k, t, j) {
+  m = CM[d]; t = ""
+  if (p < 1) return ""
+  b = tolower(base(A[d, p]))
+  if (b == "echo") { k = p + 1; while (k <= m && A[d, k] ~ /^-[neE]+$/) k++; return join(d, k, m) }
+  if (b == "printf") { k = p + 1; if (k <= m && A[d, k] == "-v") k += 2; for (; k <= m; k++) t = t A[d, k] "\n"; return t }
+  if (b == "cat" && p == m) return stdintext(d)
+  return ""
+}
+function stdintext(d,   k, j, t) {
+  t = ""
+  for (k = 1; k <= CN[d]; k++) { j = CRD[d, k]; if (TV[d, j] == "<<") t = t HB[d, j]; else if (TV[d, j] == "<<<" && CRT[d, k]) t = t TV[d, CRT[d, k]] "\n" }
+  return t
+}
+function runstdin(d, here, inp,   t) { t = stdintext(d); if (t == "") t = inp; if (t == "") return ""; return run(t, d + 1, here) }
+# a <( ) whose output a shell or source reads: what its last command prints
+function runproc(d, tok, here,   k, i, e, t) {
+  for (k = 1; k <= NS[d]; k++) if (SA[d, k] == tok && SK[d, k] == "p") {
+    if (d + 1 > 3) return R_NEST
+    lex(SX[d, k], d + 1); t = ""; i = 1
+    while (i <= NT[d + 1]) { e = collect(d + 1, i); if (CM[d + 1] > 0) t = producer(d + 1, prog(d + 1, 1)); i = e + 1 }
+    if (t != "") return run(t, d + 1, here)
+  }
+  return ""
+}
+# what this command runs as another command: the script of sh -c (options before or after -c, --), a shell
+# that reads stdin (a heredoc, <<<, a pipe from echo/printf/cat, -s, -, /dev/stdin, <( )), eval, source of
+# stdin, env -S, npx -c, ssh HOST TEXT (in your home), watch TEXT, make -f - with a heredoc
+function inner(d, p, b, here, inp,   m, k, j, w, hasc, stdin, r, t) {
+  m = CM[d]
+  for (k = 1; k <= NPI[d]; k++) if ((r = run(PI[d, k], d + 1, here)) != "") return r
+  for (k = 1; k <= m; k++) {
+    w = A[d, k]
+    if (isprose(w, AF[d, k]) || tolower(base(w)) !~ SHELLS) continue
+    hasc = 0; stdin = 0; j = k + 1
+    while (j <= m) {
+      w = A[d, j]
+      if (w == "--") { j++; break }
+      if (w == "-") { stdin = 1; j++; break }
+      if (w ~ /^[-+][oO]$/ || w == "--rcfile" || w == "--init-file") { j += 2; continue }
+      if (w ~ /^--./) { j++; continue }
+      if (w ~ /^[-+][A-Za-z]+$/) { if (w ~ /^-[A-Za-z]*c/) hasc = 1; if (w ~ /^-[A-Za-z]*s/) stdin = 1; j++; continue }
+      break
+    }
+    if (hasc) { if (j <= m && (r = run(A[d, j], d + 1, here)) != "") return r; continue }
+    if (stdin || j > m || A[d, j] ~ /^\/dev\/(stdin|fd\/0)$/) { if ((r = runstdin(d, here, inp)) != "") return r; continue }
+    if (index(AF[d, j], "P") && (r = runproc(d, CW[d, j], here)) != "") return r
+  }
+  if (p < 1) return ""
+  if (b == "eval" && p < m && (r = run(join(d, p + 1, m), d + 1, here)) != "") return r
+  if ((b == "source" || b == ".") && p < m) {
+    if (A[d, p + 1] ~ /^(-|\/dev\/stdin|\/dev\/fd\/0)$/) { if ((r = runstdin(d, here, inp)) != "") return r }
+    else if (index(AF[d, p + 1], "P") && (r = runproc(d, CW[d, p + 1], here)) != "") return r
+  }
+  if (b == "ssh") {
+    for (k = p + 1; k <= m; k++) { w = A[d, k]; if (w !~ /^-/) break; if (w ~ /^-[46AaCfGgKkMNnqsTtVvXxYy]*[BbcDEeFIiJLlmOopQRSWw]$/) k++ }
+    if (k < m && (r = run(join(d, k + 1, m), d + 1, HOME)) != "") return r
+  }
+  if (b == "watch") {
+    for (k = p + 1; k <= m; k++) { w = A[d, k]; if (w !~ /^-/) break; if (w ~ /^(-n|--interval|-q|--equexit)$/) k++ }
+    if (k <= m && (r = run(join(d, k, m), d + 1, here)) != "") return r
+  }
+  if (b == "make" || b == "gmake") for (k = p + 1; k < m; k++) if (A[d, k] == "-f" && A[d, k + 1] ~ /^(-|\/dev\/stdin)$/) {
+    t = stdintext(d); if (t == "") t = inp
+    gsub(/\n\t+/, "\n", t); sub(/^\t+/, "", t)
+    if (t != "" && (r = run(t, d + 1, here)) != "") return r
+  }
+  return ""
+}
+
+# --- the two passes
+function checkA(d, here,   m, k, j, v, r, p, q, b) {
+  m = CM[d]
+  for (k = 1; k <= m; k++) { v = A[d, k]; if (!isprose(v, AF[d, k]) && (r = lit(rep(v, "\002", here))) != "") return r }
+  for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) { v = TV[d, j]; if (!isprose(v, TF[d, j]) && (r = lit(rep(v, "\002", here))) != "") return r }
+  p = prog(d, 1)
+  if ((r = progrules(d, p)) != "" || (r = identity(d)) != "") return r
+  if (p < 1) return ""
+  b = tolower(base(A[d, p]))
+  for (k = p + 1; k <= m; k++) if (A[d, k] ~ /^-(exec|execdir|ok|okdir)$/ || ((b == "fd" || b == "fdfind") && A[d, k] ~ /^(-x|-X|--exec|--exec-batch)$/)) {
+    q = prog(d, k + 1)
+    if ((r = progrules(d, q)) != "") return r
+  }
+  slots(d, p)
+  if (WALKS) for (k = p + 1; k <= m; k++) {
+    v = A[d, k]
+    if (SO[d, k] == 1 || SO[d, k] == 3 || SP[d, k] || isprose(v, AF[d, k]) || index(AF[d, k], "$")) continue
+    v = rep(v, "\002", here)
+    if (substr(v, 1, 1) == "/" && holds(tolower(canon(v)))) return walkmsg(TOOL, A[d, k])
+  }
+  return ""
+}
+function phaseA(d, here,   i, e, r) {
+  i = 1
+  while (i <= NT[d]) {
+    e = collect(d, i)
+    if ((CM[d] > 0 || CN[d] > 0) && (r = checkA(d, here)) != "") return r
+    if (DENY != "") return DENY
+    i = e + 1
+  }
+  return ""
+}
+function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, tgt, any, rp) {
+  m = CM[d]; NEWHERE = ""
+  inp = PROD[d]; PROD[d] = ""
+  for (k = 1; k <= NS[d]; k++) if (SA[d, k] >= s && SA[d, k] < e && (r = run(SX[d, k], d + 1, here)) != "") return r
+  collect(d, s)
+  p = prog(d, 1); b = (p ? tolower(base(A[d, p])) : "")
+  slots(d, p); walks = WALKS; tool = TOOL; any = 0
+  for (k = 1; k <= m; k++) {
+    RP[d, k] = ""; v = A[d, k]
+    if (isprose(v, AF[d, k]) || SP[d, k] || SO[d, k] == 3 || (SO[d, k] == 1 && !index(v, "=")) || index(AF[d, k], "$")) continue
+    if (index(AF[d, k], "g")) { if ((r = wild(v, here)) != "") return r; continue }
+    rp = wpath(v, here)
+    if (rp == "") continue
+    RP[d, k] = rp
+    if ((r = lit(rp)) != "") return r
+    cand(rp)
+    if (walks && k > p && SO[d, k] != 1) { if (SO[d, k] == 0) any = 1; if (holds(tolower(rp))) return walkmsg(tool, v) }
+  }
+  if (DENY != "") return DENY
+  if (walks && !any && p > 0 && tool !~ /tar$/ && holds(tolower(here))) return walkmsg(tool, here)
+  for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) {
+    v = TV[d, j]
+    if (isprose(v, TF[d, j]) || index(TF[d, j], "$")) continue
+    if (index(TF[d, j], "g")) { if ((r = wild(v, here)) != "") return r; continue }
+    rp = rpath(v, here)
+    if ((r = lit(rp)) != "") return r
+    if (TV[d, CRD[d, k]] ~ />/ && inroot(rp)) return R_ROOT
+    cand(rp)
+  }
+  if (b == "git" && (r = gitrules(d, p)) != "") return r
+  if ((r = rootrules(d, p, b, here)) != "") return r
+  if ((b == "ln" || (b == "cp" && hasopt(d, p, "s", "--symbolic-link"))) && (r = lnrule(d, p, here)) != "") return r
+  tgt = ""
+  if (b == "cd" || b == "pushd" || b == "popd") {
+    tgt = cdto(d, p, b, here)
+    if (tgt != "") { if ((r = lit(tgt)) != "") return r; if (inroot(tgt)) return R_ROOT; cand(tgt) }
+  }
+  if ((r = inner(d, p, b, here, inp)) != "") return r
+  if (topipe) PROD[d] = producer(d, p)
+  if (tgt != "") { OLD[d] = here; NEWHERE = tgt }
+  return ""
+}
+function phaseB(d, here,   i, e, o, r, list, pipe, piped, sd) {
+  list = here; pipe = here; piped = 0; sd = 0; OLD[d] = ""; ND[d] = 0; PROD[d] = ""
+  i = 1
+  while (i <= NT[d]) {
+    e = collect(d, i)
+    o = (e <= NT[d]) ? TV[d, e] : ";"
+    if (CM[d] > 0 || CN[d] > 0) {
+      if ((r = checkB(d, here, i, e, o == "|")) != "") return r
+      if (NEWHERE != "") here = NEWHERE
+    }
+    if (DENY != "") return DENY
+    if (o == ";") { if (piped) here = pipe; piped = 0; list = here; pipe = here; PROD[d] = "" }
+    else if (o == "&&" || o == "||") { if (piped) here = pipe; piped = 0; pipe = here; PROD[d] = "" }
+    else if (o == "|") { here = pipe; piped = 1 }
+    else if (o == "&") { here = list; piped = 0; pipe = list; PROD[d] = "" }
+    else if (o == "(") { SHH[d, sd] = here; SHL[d, sd] = list; SHP[d, sd] = pipe; SHQ[d, sd] = piped; sd++; list = here; pipe = here; piped = 0 }
+    else if (o == ")") { if (sd > 0) { sd--; here = SHH[d, sd]; list = SHL[d, sd]; pipe = SHP[d, sd]; piped = SHQ[d, sd] } }
+    i = e + 1
+  }
+  return ""
+}
+function run(text, d, here,   r) {
+  if (d > 3) return R_NEST
+  if (DENY != "") return DENY
+  lex(text, d)
+  if (DENY != "") return DENY
+  if ((r = phaseA(d, here)) != "") return r
+  return phaseB(d, here)
+}
+{ S = S (NR > 1 ? "\n" : "") $0 }
+END {
+  init()
+  r = run(S, 0, ENVIRON["GA_CWD"])
+  if (r != "") { print "D" r; exit }
+  for (k = 1; k <= NB; k++) print "B" BR[k]
+  print "OK"
+}'
+
+# guard_bash <command> — sets GUARD_REASON when the command reaches outside (GUARD_SCAN, then the symlinks it
+# names, then git checkout of another branch)
+guard_bash() {
+  local out line path links="" new pass=0 ok name checkouts=""
+  GUARD_REASON=""
+  while [ "$pass" -lt 4 ]; do
+    pass=$((pass + 1)) new="" ok=0 checkouts=""
+    out="$(printf '%s' "$1" | GA_LINKS="$links" GA_CWD="$GUARD_CWD" GA_HOME="$HOME" GA_USER="${USER:-}" GA_BRANCH="$GUARD_BRANCH" \
+      GA_OWN="$GUARD_L_OWN" GA_SCR="$GUARD_L_SCR" GA_TREES="$GUARD_L_TREES" GA_STATE="$GUARD_L_STATE" GA_MEM="$GUARD_L_MEM" \
+      GA_TR="$GUARD_L_TR" GA_CL="$GUARD_L_CL" GA_CT="$GUARD_L_CT" GA_ROOT="$GUARD_L_ROOT" GA_TRSHOW="$GUARD_TRANSCRIPTS" \
+      GA_CTSHOW="${GUARD_CTMP[0]:-}" GA_RO="$GUARD_READONLY" LC_ALL=C /usr/bin/awk "$GUARD_SCAN" 2>/dev/null)"
+    while IFS= read -r line; do
+      case "$line" in
+        D*) GUARD_REASON="${line#D}" && return 0 ;;
+        L*)
+          path="${line#L}"
+          [ -L "$path" ] || continue
+          case "$links" in *"$path"$'\t'*) continue ;; esac
+          if guard_link "$path"; then new="$new$path"$'\t'"$GUARD_P"$'\n'; fi
+          ;;
+        B*) checkouts="$checkouts${line#B}"$'\n' ;;
+        OK) ok=1 ;;
       esac
-    done
-    [ "$i" -lt "$n" ] || continue
-    tool="$(basename -- "${words[$i]}" 2>/dev/null || true)"
-    walks=0 takes="" pattern=0 skip=0 ended=0
-    case "$tool" in
-      rg) walks=1 takes="ABCEMTefgjmrt" pattern=1 ;;
-      find | du | tar | gtar | bsdtar) walks=1 ;;
-      grep | egrep | fgrep) takes="ABCDdefm" pattern=1 ;;
-      ls) ;;
-      *) continue ;;
-    esac
-    i=$((i + 1))
-    while [ "$i" -lt "$n" ]; do
-      word="${words[$i]}"
-      word="${word//\"/}"
-      word="${word//\'/}"
-      i=$((i + 1))
-      case "$tool:$word" in
-        ls:--recursive | ls:-*R* | *grep:--recursive | *grep:--dereference-recursive | *grep:--directories=recurse | *grep:-[rR]* | *grep:-[!-]*[rR]*) walks=1 ;;
-      esac
-      # grep and rg: the first word that is not an option is the PATTERN, not a folder (grep -rn "/Users/" src/),
-      # unless -e, -f, --regexp or --file gave the pattern; the argument of an option is neither.
-      if [ -n "$takes" ] && [ "$skip" -eq 1 ]; then
-        skip=0
-        continue
-      fi
-      if [ -n "$takes" ] && [ "$ended" -eq 0 ]; then
-        case "$word" in
-          --) ended=1 && continue ;;
-          --regexp=* | --file=*) pattern=0 && continue ;;
-          --regexp | --file) pattern=0 skip=1 && continue ;;
-          --files) pattern=0 && continue ;;
-          --type | --type-not | --glob | --iglob | --max-count | --context | --after-context | --before-context | --include | --exclude | --exclude-dir | --max-depth | --threads | --replace) skip=1 && continue ;;
-          --*) continue ;;
-          -?*)
-            j=1
-            while [ "$j" -lt "${#word}" ]; do
-              case "$takes" in
-                *"${word:$j:1}"*)
-                  case "${word:$j:1}" in e | f) pattern=0 ;; esac
-                  if [ "$j" -eq $((${#word} - 1)) ]; then skip=1; fi
-                  break
-                  ;;
-              esac
-              j=$((j + 1))
-            done
-            continue
-            ;;
-        esac
-      fi
-      if [ "$pattern" -eq 1 ]; then
-        pattern=0
-        continue
-      fi
-      # a word that climbs (../../..) or starts here (., ./x) is the folder it names
-      if guard_climbs "$word"; then word="$(guard_resolve_word "$word" "${GUARD_CWD:-$PWD}")"; fi
-      case "$word" in /*) ;; *) continue ;; esac
-      while [ "${#word}" -gt 1 ] && [ "${word%/}" != "$word" ]; do word="${word%/}"; done
-      lw="$(guard_lower "$word")"
-      if guard_holds_private "$lw"; then
-        GUARD_WALK_AT="$word"
-      fi
-    done
-    if [ "$walks" -eq 1 ] && [ -n "${GUARD_WALK_AT:-}" ]; then
-      printf "%s walks all of %s, which holds the leads' private memory folders (~/.wolfmux/memory) or their conversations; search a narrower folder." "$tool" "$GUARD_WALK_AT"
-      return 0
+    done <<<"$out"
+    # an awk that stopped half way (an error) decided nothing: refuse rather than let the command through
+    if [ "$ok" -ne 1 ]; then GUARD_REASON="the guard could not read that command; simplify it or split it." && return 0; fi
+    [ -n "$new" ] || break
+    links="$links$new"
+  done
+  while IFS= read -r name; do
+    [ -n "$name" ] && [ "$name" != "$GUARD_BRANCH" ] && [ -n "$GIT_BIN" ] || continue
+    if "$GIT_BIN" -C "$GUARD_OWN" show-ref --verify -q "refs/heads/$name" 2>/dev/null; then
+      GUARD_REASON="$(printf 'stay on your own branch (%s); "%s" is another branch.' "$GUARD_BRANCH" "$name")" && return 0
     fi
-    GUARD_WALK_AT=""
-  done < <(guard_strip_prose "$1" ";" | LC_ALL=C /usr/bin/tr ';|&()`' '\n\n\n\n\n\n' && printf '\n')
+  done <<<"$checkouts"
   return 0
 }
 
-# guard_shell <command> — prints a reason when the command reaches outside
-guard_shell() {
-  local c lc word inner h heres extra followed depth="${2:-0}"
-  # Literal paths become tokens first, so no path can confuse a pattern below. A path can
-  # be written in more than one way (as configured, with symlinks resolved, /private/tmp
-  # as /tmp, doubled slashes, "/./", ~, ~<name> or $HOME for a home directory), so every spelling we know
-  # of is replaced. Paths the text does not spell out (../x, ./x, a relative word after cd ~/.wolfmux, a
-  # wildcard) are resolved as the shell would, folder by folder (guard_follow). What stays out of reach: a
-  # cd to a folder built at run time (d=~/.wolfmux; cd $d && cat memory/…), a path built at run time, code
-  # in a string (python3 -c "…") — the guard reads text, not what the shell will resolve (docs/SECURITY.md).
-  c="$(guard_squeeze "$(guard_home "$1")")"
-  guard_follow "$c"
-  if [ -n "$GUARD_WILD" ]; then printf '%s' "$GUARD_WILD" && return 0; fi
-  extra="$GUARD_EXTRA" followed="$GUARD_FOLLOWED" heres="$GUARD_HERES"
-  # What sh -c, bash -lc, a here-string, a heredoc fed to a shell, or eval will run is a command and
-  # not prose, though it is quoted: each is checked as one (guard_inner_commands), three levels deep, in the
-  # folder the command starts in and in every folder a cd in it moved to (which one it runs in is not followed).
-  while IFS= read -r inner; do
-    [ -n "$inner" ] || continue
-    if [ "$depth" -ge 3 ]; then printf 'that command nests sh -c or eval more than three levels deep; run the inner command itself.' && return 0; fi
-    while IFS= read -r h; do
-      word="$(GUARD_CWD="$h" && guard_shell "${inner//$'\001'/$'\n'}" $((depth + 1)))"
-      if [ -n "$word" ]; then printf '%s' "$word" && return 0; fi
-    done < <(printf '%s\n%s' "$GUARD_CWD" "$heres" | LC_ALL=C /usr/bin/awk 'NF && !seen[$0]++' | /usr/bin/head -5)
-  done < <(guard_inner_commands "$1")
-  # Other teammates' worktrees, teamctl's state, the memory folders, the leads' conversations and Claude Code's
-  # other records, in lower case (the disk does not tell ~/.WOLFMUX/MEMORY from ~/.wolfmux/memory), and after
-  # the prose is gone: a commit message or a heredoc may SAY .wolfmux/memory, a command may not name it. The
-  # paths resolved above come first, on a line of their own: nothing that follows can turn them into prose.
-  lc="$(guard_lower "${extra# }"$'\n'"$c")"
-  lc="$(guard_tokenize "$lc" @OWN@ "$(guard_lower "$GUARD_OWN")" "$(guard_lower "${WOLFMUX_WORKTREE:-}")")"
-  lc="$(guard_tokenize "$lc" @TREES@ "$GUARD_TREES_LC" "$(guard_lower "$WOLFMUX_DATA/worktrees")")"
-  lc="$(guard_tokenize "$lc" @STATE@ "$GUARD_STATE_LC" "$(guard_lower "$WOLFMUX_DATA/state")")"
-  lc="$(guard_tokenize "$lc" @MEMORY@ "$GUARD_MEMORY_LC" "$(guard_lower "$WOLFMUX_DATA/memory")")"
-  lc="$(guard_tokenize "$lc" @TRANSCRIPTS@ "$GUARD_TRANSCRIPTS_LC" "$(guard_lower "$GUARD_TRANSCRIPTS_AS")")"
-  lc="$(guard_tokenize "$lc" @CLAUDE@ ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"})"
-  lc="$(guard_strip_prose "$lc")"
-  case "$lc" in
-    *@TREES@* | *@STATE@*) printf "that command names another teammate's worktree or teamctl's state." && return 0 ;;
-    *@MEMORY@* | *.wolfmux/memory*) printf "that command names a lead's private memory folder (~/.wolfmux/memory), which no worker reads." && return 0 ;;
-    *@CLAUDE@*) printf "that command names Claude Code's own records of sessions (file-history, todos, paste-cache under ~/.claude), which hold copies of other agents' work; no worker reads them." && return 0 ;;
-  esac
-  case "$(printf '%s' "$lc" | sed -E 's#@TRANSCRIPTS@/memory([^a-z0-9_.-]|$)#\1#g')" in
-    *@TRANSCRIPTS@*) printf "that command names the folder of the leads' conversations (%s); only its memory/ is shared." "$GUARD_TRANSCRIPTS" && return 0 ;;
-  esac
-  # the tree walk reads the command with its relative words spelled out in the folder they are used in
-  word="$(guard_tree_walk "$followed")"
-  if [ -n "$word" ]; then printf '%s' "$word" && return 0; fi
-  c="$(guard_tokenize "$c" @OWN@ "$GUARD_OWN" "${WOLFMUX_WORKTREE:-}")"
-  c="$(guard_tokenize "$c" @TREES@ "$GUARD_TREES" "$WOLFMUX_DATA/worktrees")"
-  c="$(guard_tokenize "$c" @STATE@ "$GUARD_STATE" "$WOLFMUX_DATA/state")"
-  c="$(guard_tokenize "$c" @MEMORY@ "$GUARD_MEMORY" "$WOLFMUX_DATA/memory")"
-  c="$(guard_tokenize "$c" @ROOT@ "$GUARD_ROOT" "${WOLFMUX_ROOT:-}" "$GUARD_REPO")"
-  # A quoted one-word "tmux" ('tmux', "/opt/homebrew/bin/tmux") is the program, not prose
-  c="$(printf '%s' "$c" | sed -E "s#[\"']([^\"'[:space:]]*/)?tmux[\"']# \\1tmux #g")"
-  c="$(guard_strip_prose "$c")"
-  local edge='(^|[;&|(){}[:space:]])' git='git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:]]*)?)*[[:space:]]+'
-  local ids='(TEAM_ROLE|TMUX_PANE|WOLFMUX_TEAM|BEADS_ACTOR)' after='([[:space:];&|)]|$)'
-
-  if printf '%s' "$c" | grep -Eq "(^|[;&|(){}[:space:]/\\])tmux([[:space:]]|\$)"; then
-    printf 'tmux belongs to teamctl; panes of other agents are not yours to read or type into.' && return 0
-  fi
-  # claude --resume <id> reads that conversation itself, a lead's too (the memory lead's holds its card after mem
-  # boot), where a worker's own read of the folder is refused. Read where it runs as a command (bare, by a path,
-  # quoted, after env or X=1), in the command as guard_follow spelled it out: one line, ";" between commands.
-  local cmd_start='(^|[;&|()])[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|env|exec|command|builtin|nohup|npx|bunx|sudo|time|nice|xargs|g?timeout[[:space:]]+[0-9.]+[smhd]?|!|\{|then|do|else)[[:space:]]+)*'
-  if printf '%s' "$followed" | grep -Eq "${cmd_start}([^[:space:];&|()]*/)?claude[[:space:]]([^;&|()]*[[:space:]])?(--resume|--continue|--session-id|-[A-Za-z]*[cr][A-Za-z]*)([[:space:]=]|\$)"; then
-    printf "that command resumes a Claude Code conversation (claude --resume, -r, --continue, -c, --session-id), which reads it whoever's it is. A worker never resumes a conversation; ask the lead." && return 0
-  fi
-  # Who may act is decided by the identity this pane gives the agent (caller_resolve, lib/policy.sh): a command
-  # that drops or rewrites it would run teamctl as somebody else. Cooperative, like the rest of the guard.
-  if printf '%s' "$c" | grep -Eq "(^|[^A-Za-z0-9_\${])${ids}\\+?=" ||
-    printf '%s' "$c" | grep -Eq "${edge}(unset|export[[:space:]]+-[a-z]*n[a-z]*)([[:space:]]+-[a-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+${ids}${after}" ||
-    printf '%s' "$c" | grep -Eq "(^|[[:space:]])(-u|--unset)([[:space:]]+|=)?${ids}${after}" ||
-    printf '%s' "$c" | grep -Eq "${edge}env([[:space:]]+(-[uPSC][[:space:]]+[^-[:space:];&|][^[:space:];&|]*|-[^[:space:];&|]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*))*[[:space:]]+(-[A-Za-z0-9]*i[A-Za-z0-9]*|--ignore-environment|-)${after}" ||
-    printf '%s' "$c" | grep -Eq "${edge}exec[[:space:]]+-[a-z]*c"; then
-    printf 'that command unsets or overrides TEAM_ROLE, TMUX_PANE, WOLFMUX_TEAM or BEADS_ACTOR (env -i, env -u, unset, X=…): teamctl decides who may act by the identity your pane gives you, and a command without it is not you. Run it with them as they are.' && return 0
-  fi
-  if printf '%s' "$c" | grep -Eq "${edge}${git}worktree[[:space:]]+(add|remove|move|prune|repair|lock|unlock)"; then
-    printf 'git worktrees are created and removed by teamctl only.' && return 0
-  fi
-  if printf '%s' "$c" | grep -Eq "${edge}${git}(branch[[:space:]]+(-[dDmMcCf]|--delete|--move|--copy|--force)|update-ref([[:space:]]|\$))"; then
-    printf 'moving, renaming or deleting branches is the lead'"'"'s business.' && return 0
-  fi
-  if printf '%s' "$c" | grep -Eq "${edge}${git}switch([[:space:]]|\$)" ||
-    printf '%s' "$c" | grep -Eq "${edge}${git}checkout[[:space:]]+(-b|-B|--orphan|--detach)([[:space:]]|\$)"; then
-    printf 'stay on your own branch (%s); do not switch or create branches in this worktree.' "$GUARD_BRANCH" && return 0
-  fi
-  # `git checkout <name>`: only a problem when <name> is another local branch
-  word="$(printf '%s' "$c" | sed -nE "s/.*${edge}${git}checkout[[:space:]]+([^-[:space:]][^[:space:];&|]*).*/\\4/p" | head -1)"
-  if [ -n "$word" ] && [ "$word" != "$GUARD_BRANCH" ] && [ -n "$GIT_BIN" ] &&
-    "$GIT_BIN" -C "$GUARD_OWN" show-ref --verify -q "refs/heads/$word" 2>/dev/null; then
-    printf 'stay on your own branch (%s); "%s" is another branch.' "$GUARD_BRANCH" "$word" && return 0
-  fi
-  if printf '%s' "$c" | grep -Eq "${edge}${git}push([[:space:]]|\$)" &&
-    printf '%s' "$c" | grep -Eq '(--all|--mirror|--delete|[[:space:]]-d[[:space:]]|:(main|master)([[:space:]]|$)|[[:space:]](main|master)([[:space:]]|$)|[[:space:]]\+[^[:space:]]+)'; then
-    printf 'pushing to main, deleting or force-updating remote branches is for the lead.' && return 0
-  fi
-  case "$c" in
-    *@ROOT@*)
-      if printf '%s' "$c" | grep -Eq "${edge}(cd|pushd)[[:space:]]+[\"']?@ROOT@" ||
-        printf '%s' "$c" | grep -Eq "(-C|--git-dir|--work-tree)[[:space:]=]*[\"']?@ROOT@" ||
-        printf '%s' "$c" | grep -Eq ">[>|]?[[:space:]]*[\"']?@ROOT@" ||
-        printf '%s' "$c" | grep -Eq "${edge}(rm|mv|rmdir|chmod|chown|ln|truncate|dd|tee|install|sed[[:space:]]+-[a-zA-Z]*i[^[:space:];&|]*|perl[[:space:]]+-[a-zA-Z]*i[^[:space:];&|]*)[[:space:]][^;&|]*@ROOT@" ||
-        printf '%s' "$c" | grep -Eq "${edge}(cp|rsync|ditto)[[:space:]][^;&|]*@ROOT@[^[:space:];&|]*[\"']?[[:space:]]*(\$|[;&|])"; then
-        printf 'that command would change a checkout that is read-only for you (%s). Your work belongs in your own worktree.' "$GUARD_READONLY" && return 0
-      fi
-      ;;
-  esac
-  return 0
-}
-
-# cmd_guard — internal (`teamctl _guard`): PreToolUse hook of a worker, JSON on stdin
-cmd_guard() {
-  local input tool cwd target reason path lpath allowed pattern
-  input="$(/bin/cat 2>/dev/null || true)"
-  [ -n "$JQ_BIN" ] && [ -n "$input" ] || return 0
-  [ -n "${TEAM_ROLE:-}" ] && [ "$TEAM_ROLE" != "$WOLFMUX_LEAD_ROLE" ] || return 0
-  [ -n "${WOLFMUX_WORKTREE:-}" ] && [ -d "$WOLFMUX_WORKTREE" ] || return 0 # cannot tell: allow
-  GUARD_OWN="$(cd "$WOLFMUX_WORKTREE" && /bin/pwd -P)" || return 0
-  GUARD_TREES="$(guard_abspath "$WOLFMUX_DATA/worktrees" /)"
-  GUARD_STATE="$(guard_abspath "$WOLFMUX_DATA/state" /)"
-  GUARD_MEMORY="$(guard_abspath "$WOLFMUX_DATA/memory" /)"
+# guard_setup — every path the checks compare, resolved once (guard_phys: no fork). GUARD_L_* are the same as
+# newline lists for GUARD_SCAN: as configured and as resolved, in both of which a command may spell them.
+guard_setup() {
+  local path target p
+  guard_phys "$WOLFMUX_WORKTREE" /
+  GUARD_OWN="$GUARD_P"
+  guard_phys "$WOLFMUX_DATA/worktrees" /
+  GUARD_TREES="$GUARD_P" GUARD_L_TREES="$GUARD_P"$'\n'"$WOLFMUX_DATA/worktrees"
+  guard_phys "$WOLFMUX_DATA/state" /
+  GUARD_STATE="$GUARD_P" GUARD_L_STATE="$GUARD_P"$'\n'"$WOLFMUX_DATA/state"
+  guard_phys "$WOLFMUX_DATA/memory" /
+  GUARD_MEMORY="$GUARD_P" GUARD_L_MEM="$GUARD_P"$'\n'"$WOLFMUX_DATA/memory"
+  GUARD_L_OWN="$GUARD_OWN"$'\n'"$WOLFMUX_WORKTREE"
   GUARD_ROOT=""
-  if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then GUARD_ROOT="$(cd "$WOLFMUX_ROOT" && /bin/pwd -P)"; fi
+  if [ -n "${WOLFMUX_ROOT:-}" ] && [ -d "$WOLFMUX_ROOT" ]; then guard_phys "$WOLFMUX_ROOT" / && GUARD_ROOT="$GUARD_P"; fi
   # Every lead runs in the project's own folder, so Claude Code keeps every lead's conversation in ONE
-  # folder named after it (transcripts_dir): a worker never needs them, and the memory team's lead
-  # reads its private memory there (mem boot prints the card). Its memory/ is the project's shared
-  # memory, which every session may read.
-  GUARD_TRANSCRIPTS="" GUARD_TRANSCRIPTS_AS=""
+  # folder named after it (transcripts_dir, spelled out here without its forks): a worker never needs them,
+  # and the memory team's lead reads its private memory there (mem boot prints the card). Its memory/ is the
+  # project's shared memory, which every session may read.
+  GUARD_TRANSCRIPTS="" GUARD_L_TR=""
   if [ -n "$GUARD_ROOT" ]; then
-    GUARD_TRANSCRIPTS_AS="$(transcripts_dir "$GUARD_ROOT" 2>/dev/null || true)"
-    if [ -n "$GUARD_TRANSCRIPTS_AS" ]; then GUARD_TRANSCRIPTS="$(guard_abspath "$GUARD_TRANSCRIPTS_AS" /)"; fi
+    p="${GUARD_ROOT//[^A-Za-z0-9]/-}"
+    path="${WOLFMUX_CLAUDE_PROJECTS:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}/$p"
+    guard_phys "$path" /
+    GUARD_TRANSCRIPTS="$GUARD_P" GUARD_L_TR="$GUARD_P"$'\n'"$path"
   fi
-  GUARD_TREES_LC="$(guard_lower "$GUARD_TREES")" GUARD_STATE_LC="$(guard_lower "$GUARD_STATE")"
-  GUARD_MEMORY_LC="$(guard_lower "$GUARD_MEMORY")" GUARD_TRANSCRIPTS_LC="$(guard_lower "$GUARD_TRANSCRIPTS")"
   # Claude Code's records of sessions outside the project folders (guard_claude_private), as configured and resolved
-  GUARD_CLAUDE_LC=()
+  GUARD_CLAUDE=() GUARD_L_CL=""
   for path in "${HOME:+$HOME/.claude}" "${CLAUDE_CONFIG_DIR:-}"; do
     [ -n "$path" ] || continue
-    for target in file-history todos paste-cache; do
-      GUARD_CLAUDE_LC+=("$(guard_lower "$(guard_abspath "$path/$target" /)")" "$(guard_lower "$(guard_squeeze "${path%/}/$target")")")
+    for target in file-history todos paste-cache sessions session-env history.jsonl; do
+      guard_phys "$path/$target" /
+      GUARD_CLAUDE+=("$GUARD_P" "${path%/}/$target")
     done
+  done
+  if [ -n "${WOLFMUX_CLAUDE_SESSIONS:-}" ]; then
+    guard_phys "$WOLFMUX_CLAUDE_SESSIONS" /
+    GUARD_CLAUDE+=("$GUARD_P" "$WOLFMUX_CLAUDE_SESSIONS")
+  fi
+  for path in "${GUARD_CLAUDE[@]}"; do GUARD_L_CL="$GUARD_L_CL$path"$'\n'; done
+  # Claude Code's temporary folder: every session's task output and scratchpad, the leads' too. Each session's
+  # own root there is named after the folder it runs in, every character that is not a letter or digit as "-":
+  # the worker's own is open to it. WOLFMUX_CLAUDE_TMP is for tests only: the hook's environment comes from the
+  # agent's launch (lib/agents.sh), and no command a worker runs can set it for the hook.
+  path="${WOLFMUX_CLAUDE_TMP:-/private/tmp/claude-${UID:-$(id -u)}}"
+  guard_phys "$path" /
+  GUARD_CTMP=("$GUARD_P" "$path") GUARD_SCRATCH=() GUARD_L_SCR=""
+  GUARD_L_CT="$GUARD_P"$'\n'"$path"
+  for p in "$GUARD_OWN" "$WOLFMUX_WORKTREE"; do
+    p="${p//[^A-Za-z0-9]/-}"
+    GUARD_SCRATCH+=("${GUARD_CTMP[0]}/$p" "$path/$p")
+    GUARD_L_SCR="$GUARD_L_SCR${GUARD_CTMP[0]}/$p"$'\n'"$path/$p"$'\n'
   done
   # A teammate spawned with --repo has its worktree in another repository: that repository's
   # own checkout is read-only for it, exactly as the lead's is.
   GUARD_REPO=""
-  if [ -n "${WOLFMUX_REPO:-}" ] && [ -d "$WOLFMUX_REPO" ]; then GUARD_REPO="$(cd "$WOLFMUX_REPO" && /bin/pwd -P)"; fi
+  if [ -n "${WOLFMUX_REPO:-}" ] && [ -d "$WOLFMUX_REPO" ]; then guard_phys "$WOLFMUX_REPO" / && GUARD_REPO="$GUARD_P"; fi
   if [ "$GUARD_REPO" = "$GUARD_ROOT" ]; then GUARD_REPO=""; fi
   GUARD_READONLY="$GUARD_ROOT"
   if [ -n "$GUARD_REPO" ]; then GUARD_READONLY="$GUARD_ROOT and $GUARD_REPO"; fi
+  GUARD_L_ROOT="$GUARD_ROOT"$'\n'"${WOLFMUX_ROOT:-}"$'\n'"$GUARD_REPO"$'\n'"${GUARD_REPO:+${WOLFMUX_REPO:-}}"
   GUARD_BRANCH="${WOLFMUX_BRANCH:-}"
+}
 
-  tool="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_name // ""' 2>/dev/null || true)"
-  cwd="$(printf '%s' "$input" | "$JQ_BIN" -r '.cwd // ""' 2>/dev/null || true)"
+# guard_check — cmd_guard's work; the decision on stdout (nothing: allow)
+guard_check() {
+  local tool="" cwd="" command="" file="" target="" pattern="" path s i=0
+  local -a strings=()
+  [ -n "${TEAM_ROLE:-}" ] && [ "$TEAM_ROLE" != "$WOLFMUX_LEAD_ROLE" ] || return 0
+  [ -n "$JQ_BIN" ] && [ -n "${WOLFMUX_WORKTREE:-}" ] && [ -d "$WOLFMUX_WORKTREE" ] || return 0 # cannot tell: allow
+  # one jq call reads the hook's input on stdin: the tool, its folder, the strings the checks read (an MCP
+  # tool's: every string in its input, at most 100), each ended by a NUL
+  while IFS= read -r -d '' s; do
+    case "$i" in
+      0) tool="$s" ;;
+      1) cwd="$s" ;;
+      2) command="$s" ;;
+      3) file="$s" ;;
+      4) target="$s" ;;
+      5) pattern="$s" ;;
+      *) strings[${#strings[@]}]="$s" ;;
+    esac
+    i=$((i + 1))
+  done < <("$JQ_BIN" -j '([0] | implode) as $z
+    | [.tool_name, .cwd, .tool_input.command, (.tool_input.file_path // .tool_input.notebook_path), (.tool_input.file_path // .tool_input.path), .tool_input.pattern]
+      + (if ((.tool_name // "") | tostring | startswith("mcp__")) then [.tool_input | .. | strings][:100] else [] end)
+    | map((. // "" | tostring) + $z) | add' 2>/dev/null)
+  [ -n "$tool" ] || return 0
+  guard_setup
   [ -n "$cwd" ] && [ -d "$cwd" ] || cwd="$GUARD_OWN"
-  GUARD_CWD="$(cd "$cwd" && /bin/pwd -P)" || GUARD_CWD="$GUARD_OWN"
+  guard_phys "$cwd" /
+  GUARD_CWD="$GUARD_P"
   case "$tool" in
     Edit | Write | MultiEdit | NotebookEdit)
-      target="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null || true)"
-      [ -n "$target" ] || return 0
-      path="$(guard_abspath "$target" "$cwd")"
-      lpath="$(guard_lower "$path")"
-      case "$path" in */../* | */..) guard_deny "'$target' does not resolve to a plain path." && return 0 ;; esac
+      [ -n "$file" ] || return 0
+      guard_phys "$file" "$cwd"
+      path="$GUARD_P"
+      case "$path" in */../* | */..) guard_deny "'$file' does not resolve to a plain path." && return 0 ;; esac
       if guard_inside "$path" "$GUARD_OWN"; then return 0; fi
-      if guard_inside "$lpath" "$GUARD_TREES_LC" || guard_inside "$lpath" "$GUARD_STATE_LC"; then
-        guard_deny "'$target' belongs to another teammate or to teamctl." && return 0
-      fi
-      if guard_inside "$lpath" "$GUARD_MEMORY_LC"; then
-        guard_deny "'$target' is in a lead's private memory folder; no worker writes there." && return 0
-      fi
-      if guard_transcript "$lpath"; then
-        guard_deny "'$target' is in the folder of the leads' conversations; no worker writes there." && return 0
-      fi
-      if guard_claude_private "$lpath"; then
-        guard_deny "'$target' is in Claude Code's own records of sessions (file-history, todos, paste-cache); no worker writes there." && return 0
-      fi
+      guard_private "$path"
+      case "$GUARD_WHY" in
+        trees) guard_deny "'$file' belongs to another teammate or to teamctl." && return 0 ;;
+        memory) guard_deny "'$file' is in a lead's private memory folder; no worker writes there." && return 0 ;;
+        transcripts) guard_deny "'$file' is in the folder of the leads' conversations; no worker writes there." && return 0 ;;
+        claude) guard_deny "'$file' is in Claude Code's own records of sessions (file-history, todos, paste-cache, sessions, session-env, history.jsonl); no worker writes there." && return 0 ;;
+        ctmp) guard_deny "'$file' is in Claude Code's temporary folder of other sessions; your own scratchpad there is the one you may write in." && return 0 ;;
+      esac
       if [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT"; then
-        guard_deny "'$target' is in the lead's checkout, which is read-only for you." && return 0
+        guard_deny "'$file' is in the lead's checkout, which is read-only for you." && return 0
       fi
       if [ -n "$GUARD_REPO" ] && guard_inside "$path" "$GUARD_REPO"; then
-        guard_deny "'$target' is in the main checkout of $GUARD_REPO. Your worktree of that repository is where your work goes; the checkout itself is read-only for you." && return 0
+        guard_deny "'$file' is in the main checkout of $GUARD_REPO. Your worktree of that repository is where your work goes; the checkout itself is read-only for you." && return 0
       fi
-      for allowed in /private/tmp /tmp /private/var/folders /var/folders "$HOME/.claude"; do
-        if guard_inside "$path" "$allowed"; then return 0; fi
+      for s in /private/tmp /tmp /private/var/folders /var/folders "$HOME/.claude"; do
+        if guard_inside "$path" "$s"; then return 0; fi
       done
-      guard_deny "'$target' is outside your worktree, so you may not change it."
+      guard_deny "'$file' is outside your worktree, so you may not change it."
       ;;
     Read | Grep | Glob | LS)
-      target="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.file_path // .tool_input.path // ""' 2>/dev/null || true)"
-      # Glob takes an absolute pattern without a path: /a/b/**/*.md searches /a/b
-      if [ "$tool" = "Glob" ]; then
-        pattern="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.pattern // ""' 2>/dev/null || true)"
+      set -- "$target"
+      if [ "$tool" = "Glob" ] && [ -n "$pattern" ]; then
+        # the folder a Glob searches: its pattern up to the first wildcard, from its path or from here, with
+        # symlinks resolved (a link w -> ~/.wolfmux makes w/memory/** a search of the memory folder); its path too
+        guard_phys "${target:-$cwd}" "$cwd"
         case "$pattern" in
-          /* | "~" | "~/"*) target="$(guard_glob_root "$pattern")" ;;
-          # a relative pattern that climbs (../../../../../memory/**) searches where it climbs to, from path or here
-          .. | ../* | */../* | */..) target="$(guard_glob_root "$(guard_resolve_word "$pattern" "$(guard_abspath "${target:-$cwd}" "$cwd")")")" ;;
+          /* | "~" | "~/"*) guard_glob_root "$pattern" && set -- "$GUARD_P" ;;
+          *) guard_glob_root "$GUARD_P/$pattern" && set -- "$GUARD_P" "$target" ;;
         esac
       fi
-      [ -n "$target" ] || return 0
-      path="$(guard_abspath "$target" "$cwd")"
-      lpath="$(guard_lower "$path")"
-      case "$path" in */../* | */..) guard_deny "'$target' does not resolve to a plain path." && return 0 ;; esac
-      if guard_inside "$path" "$GUARD_OWN"; then return 0; fi
-      if guard_inside "$lpath" "$GUARD_TREES_LC" || guard_inside "$lpath" "$GUARD_STATE_LC"; then
-        guard_deny "'$target' is another teammate's worktree or teamctl's state; their work in progress is not yours to read."
-      elif guard_inside "$lpath" "$GUARD_MEMORY_LC"; then
-        guard_deny "'$target' is in a lead's private memory folder (~/.wolfmux/memory), which no worker reads."
-      elif guard_transcript "$lpath"; then
-        guard_deny "'$target' is in the folder of the leads' conversations, which no worker reads (its memory/ is shared: that one you may read)."
-      elif guard_claude_private "$lpath"; then
-        guard_deny "'$target' is in Claude Code's own records of sessions (file-history keeps a copy of every file a session changed, a lead's too), which no worker reads."
-      elif [ "$tool" = "Grep" ] || [ "$tool" = "Glob" ] && guard_holds_private "$lpath"; then
-        # A search of a folder that holds them (~/.wolfmux, ~/.claude, your home) would read them too.
-        guard_deny "a search of '$target' would reach into the private memory folders (~/.wolfmux/memory) or the leads' conversations under it; search a narrower folder."
-      fi
+      for target in "$@"; do
+        [ -n "$target" ] || continue
+        guard_phys "$target" "$cwd"
+        path="$GUARD_P"
+        case "$path" in */../* | */..) guard_deny "'$target' does not resolve to a plain path." && return 0 ;; esac
+        if guard_inside "$path" "$GUARD_OWN"; then continue; fi
+        guard_private "$path"
+        case "$GUARD_WHY" in
+          trees) guard_deny "'$target' is another teammate's worktree or teamctl's state; their work in progress is not yours to read." && return 0 ;;
+          memory) guard_deny "'$target' is in a lead's private memory folder (~/.wolfmux/memory), which no worker reads." && return 0 ;;
+          transcripts) guard_deny "'$target' is in the folder of the leads' conversations, which no worker reads (its memory/ is shared: that one you may read)." && return 0 ;;
+          claude) guard_deny "'$target' is in Claude Code's own records of sessions (file-history keeps a copy of every file a session changed, sessions/ and history.jsonl every session's id and prompts, a lead's too), which no worker reads." && return 0 ;;
+          ctmp) guard_deny "'$target' is in Claude Code's temporary folder, which holds every session's tool output, the leads' too; only your own scratchpad there is yours." && return 0 ;;
+        esac
+        if { [ "$tool" = "Grep" ] || [ "$tool" = "Glob" ]; } && guard_holds_private "$path"; then
+          # A search of a folder that holds them (~/.wolfmux, ~/.claude, your home, /tmp) would read them too.
+          guard_deny "a search of '$target' would reach into the private memory folders (~/.wolfmux/memory), the leads' conversations, Claude Code's records or its temporary folder under it; search a narrower folder." && return 0
+        fi
+      done
       ;;
     mcp__*)
-      # An MCP tool's input has no fixed shape: every string that is an absolute path counts.
-      # Another teammate's worktree, teamctl's state, the memory folders and the leads' conversations
-      # are off limits for any of them; the lead's checkout only for a tool whose name says it changes things.
-      while IFS= read -r target; do
+      # An MCP tool's input has no fixed shape: every string that is an absolute path (or a file:// URL)
+      # counts. Another teammate's worktree, teamctl's state, the memory folders, the leads' conversations,
+      # Claude Code's records and its temporary folder are off limits for any of them; the lead's checkout only
+      # for a tool whose name says it changes things.
+      for target in ${strings[@]+"${strings[@]}"}; do
+        case "$target" in file://localhost/*) target="${target#file://localhost}" ;; file:///*) target="${target#file://}" ;; esac
         case "$target" in /* | "~"/*) ;; *) continue ;; esac
-        path="$(guard_abspath "$target" "$cwd")"
-        lpath="$(guard_lower "$path")"
+        guard_phys "$target" "$cwd"
+        path="$GUARD_P"
         if guard_inside "$path" "$GUARD_OWN"; then continue; fi
-        if guard_inside "$lpath" "$GUARD_TREES_LC" || guard_inside "$lpath" "$GUARD_STATE_LC"; then
-          guard_deny "'$target' is another teammate's worktree or teamctl's state." && return 0
-        fi
-        if guard_inside "$lpath" "$GUARD_MEMORY_LC"; then
-          guard_deny "'$target' is in a lead's private memory folder." && return 0
-        fi
-        if guard_transcript "$lpath"; then
-          guard_deny "'$target' is in the folder of the leads' conversations." && return 0
-        fi
-        if guard_claude_private "$lpath"; then
-          guard_deny "'$target' is in Claude Code's own records of sessions (file-history, todos, paste-cache)." && return 0
-        fi
+        guard_private "$path"
+        case "$GUARD_WHY" in
+          trees) guard_deny "'$target' is another teammate's worktree or teamctl's state." && return 0 ;;
+          memory) guard_deny "'$target' is in a lead's private memory folder." && return 0 ;;
+          transcripts) guard_deny "'$target' is in the folder of the leads' conversations." && return 0 ;;
+          claude) guard_deny "'$target' is in Claude Code's own records of sessions (file-history, todos, paste-cache, sessions, session-env, history.jsonl)." && return 0 ;;
+          ctmp) guard_deny "'$target' is in Claude Code's temporary folder of other sessions." && return 0 ;;
+        esac
         if { { [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT"; } ||
-          { [ -n "$GUARD_REPO" ] && guard_inside "$path" "$GUARD_REPO"; }; } &&
-          printf '%s' "$tool" | grep -Eiq '(write|edit|create|delete|remove|move|rename|patch|apply|append|insert|replace|mkdir|upload|save)'; then
-          guard_deny "'$target' is in a checkout that is read-only for you ($GUARD_READONLY)." && return 0
+          { [ -n "$GUARD_REPO" ] && guard_inside "$path" "$GUARD_REPO"; }; }; then
+          case "$tool" in
+            *[Ww]rite* | *[Ee]dit* | *[Cc]reate* | *[Dd]elete* | *[Rr]emove* | *[Mm]ove* | *[Rr]ename* | *[Pp]atch* | *[Aa]pply* | *[Aa]ppend* | *[Ii]nsert* | *[Rr]eplace* | *[Mm]kdir* | *[Uu]pload* | *[Ss]ave*)
+              guard_deny "'$target' is in a checkout that is read-only for you ($GUARD_READONLY)." && return 0
+              ;;
+          esac
         fi
-      done < <(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input | [.. | strings] | .[]' 2>/dev/null | head -100)
+      done
       ;;
     Bash)
-      target="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.command // ""' 2>/dev/null || true)"
-      [ -n "$target" ] || return 0
+      [ -n "$command" ] || return 0
       # A shell that runs inside a private folder reads it with every relative word
-      lpath="$(guard_lower "$GUARD_CWD")"
-      if ! guard_inside "$GUARD_CWD" "$GUARD_OWN" && { guard_inside "$lpath" "$GUARD_TREES_LC" || guard_inside "$lpath" "$GUARD_STATE_LC" ||
-        guard_inside "$lpath" "$GUARD_MEMORY_LC" || guard_transcript "$lpath" || guard_claude_private "$lpath"; }; then
+      guard_private "$GUARD_CWD"
+      if [ -n "$GUARD_WHY" ]; then
         guard_deny "this shell runs in $GUARD_CWD, a folder that is not yours to read; cd back into your worktree." && return 0
       fi
-      reason="$(guard_shell "$target" 2>/dev/null || true)"
-      if [ -n "$reason" ]; then guard_deny "$reason"; fi
+      guard_bash "$command"
+      if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON"; fi
       ;;
   esac
+  return 0
+}
+
+# cmd_guard — internal (`teamctl _guard`): PreToolUse hook of a worker, JSON on stdin. Every path is compared
+# without regard to letter case, as the disk does (~/.WOLFMUX/Memory IS ~/.wolfmux/memory).
+cmd_guard() {
+  local nocase=0 LC_ALL=C # bytes, as sed counts them for the names of Claude Code's folders
+  shopt -q nocasematch && nocase=1
+  shopt -s nocasematch
+  guard_check
+  [ "$nocase" -eq 1 ] || shopt -u nocasematch
   return 0
 }

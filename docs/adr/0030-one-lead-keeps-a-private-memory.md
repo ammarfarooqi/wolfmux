@@ -109,14 +109,16 @@ session id) and the pane says so.
 - Other teams' leads get no setting, no block and no prompt.
 
 ### Negative
-- The guard changes for EVERY worker of the project, not only the memory team's: `guard_home` spells
-  `~`, `$HOME` and `${HOME}` out as the home folder for every Bash command (so `~/.wolfmux/state` is
-  caught too), the `.wolfmux/memory` text rule applies to every worker, paths are compared without
+- The guard changes for EVERY worker of the project, not only the memory team's: one awk pass
+  (`GUARD_SCAN`, review round 4) unquotes every Bash word and spells `~`, `~<name>`, `$HOME` and
+  `${HOME}` out as the home folder before any check (so `~/.wolfmux/state` is caught too), the
+  `.wolfmux/memory` text rule applies to every worker, paths are compared without
   regard to letter case, and a worker's tree walk of `~`, `~/.wolfmux`, `~/.claude` or `/` (`grep -r`,
   `rg`, `find`, `ls -R`, `du`, `tar`, a Grep of the whole `~/.claude`) is refused with "search a
   narrower folder". The memory folder and the leads' transcripts are under the same home for all of
-  them, so a rule for one team only would leave the others' workers a way in. Each check costs a few
-  milliseconds per tool call.
+  them, so a rule for one team only would leave the others' workers a way in. A Bash check costs about
+  20 ms (one jq and one awk, no fork per word); a check that would take over 2 seconds is refused,
+  because Claude Code runs a call whose hook times out.
 - A change of the policy reaches a running lead only at its next restart; a change of `core/card.md`
   reaches it at its next `mem boot` (every launch; after a compaction only if the lead runs it, as it is
   told to: nothing enforces that in v1.22.0).
@@ -128,10 +130,15 @@ session id) and the pane says so.
 ### Risks
 - The guard reads text. Since review round 3 it resolves `..` and `./` words, follows a literal `cd`
   or `pushd`, checks the text handed to `sh -c` / `bash -c` / `eval` / a heredoc fed to a shell as a
-  command, and refuses wildcards that start a private folder. What it still does not see: a `cd` to a
-  folder known only at run time (`d=~/.wolfmux; cd $d && cat memory/…`, which `tests/memory.sh` pins),
-  `CDPATH`, a `cd` to a wildcard, a path built at run time, code in another language (`python3 -c "…"`),
-  a script the command runs, and tree walkers it does not know (`cp -R`, `rsync`, `zip -r`). Every
+  command, and refuses wildcards that can match a private folder. Since round 4 it reads the command
+  in one pass as the shell does: quotes and `\` removed inside words, a pipe of `echo` or a heredoc into
+  a shell, `ssh` and `watch` text, the pattern of a search tool never taken for a path, symlinks under
+  the worktree followed, Claude Code's `sessions/`, `history.jsonl` and temporary folder closed. What it
+  still does not see: a `cd` to a folder known only at run time (`d=~/.wolfmux; cd $d && cat memory/…`,
+  which `tests/memory.sh` pins), a program known only at run time (`c=claude; $c -r <id>`), `CDPATH`, a
+  `cd` to a wildcard, a path built at run time, code in another language (`python3 -c "…"`), a script the
+  command runs, a chain of more than three symlinks, and tree walkers it does not know (`cp -R`, `rsync`,
+  `zip -r`). Every
   owner-only gate is a pane proof that a process can drop by unsetting `TEAM_ROLE` and `TMUX_PANE`; the
   worker guard refuses the obvious forms (`env -u`, `env -i`, `unset`, an `X=` prefix). Leads of other
   teams are not guarded at all, and a team with `worker-isolation off` has no guard. docs/SECURITY.md
@@ -143,7 +150,9 @@ session id) and the pane says so.
   and that lead (since round 3). Every view that prints conversation ids (`teamctl status`, plain and
   `--json`, `model --now`, `restore`, also when the orphan steward runs it) prints the memory lead's as
   `hidden` to anyone else; the records under `~/.wolfmux/state` still hold it (closed to workers, not to
-  leads).
+  leads). The id is no secret: `ps -axww` and `~/.claude/sessions/<pid>.json` show it to every process
+  on the Mac, so `hidden` is a courtesy. The control for workers is the guard's refusal of
+  `claude --resume`; leads are not guarded.
 - `destroy --purge --memory` is protected by the pane proof, not by the typed team name: a process can
   get a terminal from a piped `script -q /dev/null` and type the name itself.
 - The boot prompt with `--resume` is documented, not yet observed on a live pane: the first real
