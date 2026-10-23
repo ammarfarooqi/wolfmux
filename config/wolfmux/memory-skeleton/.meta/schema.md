@@ -147,13 +147,19 @@ keywords,summary,importance,authority,links,repo_ref,notes`. What a row carries:
 - a file (`<path>` under --from, `rules:<file>` under --rules-from, `archive:<file>` under
   --from, `claude-mem:<path>` under --claude-mem-from, default
   `~/claude-mem-export-2026-10-22`): its bytes; going to a region, only what follows its own
-  frontmatter. source_type is `file`, `rules-file`, `archive-file` or `claude-mem`.
+  frontmatter. source_type is `file`, `rules-file`, `archive-file` or `claude-mem`. A leading
+  `---` block is frontmatter only when every line in it is `key: value`, an indented
+  continuation, a `- item` or a `# comment`; otherwise the whole source is the body. A
+  stripped frontmatter's `description` is kept as the `source_description:` header field.
   `hub:<file>#<n>`: line n of that file.
 - `state:<key>` (a key of --state): to `state/<file>.json#<key>` or a ledger file, the JSON
   value; to `<region>/<name>.md`, the value's text is the body (a string as is, any other
   value pretty-printed with indent 2 and sorted keys; no newline added).
 
 A region dest gets its header from the row, and its body's sha256 is checked like a file's.
+Verification re-reads every file source: its sha256 (shown as `raw`) must be unchanged, and
+the placed body must be the raw source minus exactly the stripped block. Rows that place the
+same body are each found once at their own dest.
 `region` is the dest's folder (empty means the same). A `pointer` row writes a pointer file
 into any region folder (`pointer: <abs path>`, authority `shared:<path>` unless the row gives
 one, body `Pointer: <path>` and the summary); on a pointer row `region: pointer` also means

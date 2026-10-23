@@ -357,9 +357,14 @@ def log(tree, message):
 
 # --- headers -------------------------------------------------------------------------------
 
+HEADER_KEY = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t](.*))?$")
+
+
 def split_header(data):
     """(fields, body, raw header text). fields is None when the file has no --- header. The body
-    is every byte after the closing --- line, untouched."""
+    is every byte after the closing --- line, untouched. A block counts as a header only when
+    every line in it is `key: value`, an indented continuation, a `- item` or a `# comment`;
+    anything else (a rule line, then prose, then a rule) is all body."""
     if not (data.startswith(b"---\n") or data.startswith(b"---\r\n")):
         return None, data, ""
     pos = data.index(b"\n") + 1
@@ -373,10 +378,32 @@ def split_header(data):
         if line == "---":
             return fields, data[end + 1:], "\n".join(raw)
         raw.append(line)
-        match = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*):(.*)$", line)
-        if match and not line[:1].isspace():
-            fields[match.group(1)] = match.group(2).strip()
+        match = HEADER_KEY.match(line)
+        if match:
+            fields[match.group(1)] = (match.group(2) or "").strip()
+        elif not re.match(r"^([ \t]+\S|- |-$|#)", line):
+            return None, data, ""
         pos = end + 1
+
+
+def header_value(raw, key):
+    """A header field's whole value: one line, or a YAML block (`>`, `|` or nothing after the
+    colon) joined from its indented lines."""
+    lines = raw.split("\n")
+    for number, line in enumerate(lines):
+        match = HEADER_KEY.match(line)
+        if not match or match.group(1) != key:
+            continue
+        value = (match.group(2) or "").strip()
+        if value and value[0] not in ">|":
+            return value.strip("\"'")
+        more = []
+        for following in lines[number + 1:]:
+            if not re.match(r"^[ \t]+\S", following):
+                break
+            more.append(following.strip())
+        return " ".join(more)
+    return ""
 
 
 def render_header(fields):
@@ -2321,7 +2348,8 @@ def plan_row(tree, row, line, ctx):
             return item
         if top in REGIONS:
             item.update(kind="region", status="copy")
-            item["content"] = region_content(tree, row, dest_file, ctx, payload=payload, mtime=mtime)
+            item["content"] = region_content(tree, row, dest_file, ctx, payload=payload, mtime=mtime,
+                                             description=item.get("source_description"))
         elif top == "archive":
             if dest_file.count("/") < 2:
                 raise Refused("dest %s is not archive/<folder>/<file>" % dest_file)
@@ -2354,6 +2382,7 @@ def read_source(item, ctx, source, kind, top):
         raw = handle.read()
     item["source_path"] = path
     item["bytes_in"] = len(raw)
+    item["raw_sha"] = sha256(raw)
     if kind == "hub-line":
         number = int(source.rsplit("#", 1)[1])
         lines = raw.split(b"\n")
@@ -2362,10 +2391,11 @@ def read_source(item, ctx, source, kind, top):
         payload = lines[number - 1] + b"\n"
         item["bytes_in"] = len(payload)
     else:
-        fields, body, _ = split_header(raw)
+        fields, body, header = split_header(raw)
         payload = body if fields is not None and top in REGIONS else raw
         if fields is not None and top in REGIONS:
             item["frontmatter"] = len(raw) - len(body)
+            item["source_description"] = one_line(header_value(header, "description"))
     return payload, os.path.getmtime(path)
 
 
@@ -2386,7 +2416,7 @@ def source_path(ctx, source, kind):
     return under(ctx["from"], source)
 
 
-def region_content(tree, row, dest_file, ctx, payload=b"", mtime=None, pointer=None):
+def region_content(tree, row, dest_file, ctx, payload=b"", mtime=None, pointer=None, description=None):
     parts = dest_file.split("/")
     if len(parts) != 2 or not parts[1].endswith(".md"):
         raise Refused("dest %s is not <region>/<name>.md" % dest_file)
@@ -2424,6 +2454,8 @@ def region_content(tree, row, dest_file, ctx, payload=b"", mtime=None, pointer=N
               "links": render_links(links_of(row.get("links", ""))), "importance": importance,
               "authority": authority, "last_confirmed": confirmed, "status": "live", "repo_ref": repo_ref,
               "origin": "migrated %s from %s" % (ctx["when"].date().isoformat(), row.get("source", "").strip())}
+    if description:  # the stripped frontmatter's description, so nothing it said is lost
+        fields["source_description"] = description
     if pointer:
         fields["pointer"] = pointer
         payload = ("Pointer: %s\n%s\n" % (pointer, summary)).encode("utf-8")
@@ -2510,15 +2542,40 @@ def state_count(tree, value):
     return count
 
 
+def source_check(item):
+    """Re-read a file row's source: it must be unchanged, and the body placed must be the raw
+    source minus exactly its stripped frontmatter block (or its one hub line). '' when it is."""
+    with open(item["source_path"], "rb") as handle:
+        raw = handle.read()
+    if sha256(raw) != item["raw_sha"]:
+        return "the source changed during the run"
+    if item["source"].strip().startswith("hub:"):
+        number = int(item["source"].rsplit("#", 1)[1])
+        body = raw.split(b"\n")[number - 1] + b"\n"
+    else:
+        strip = item.get("frontmatter", 0)
+        if strip and split_header(raw)[1] != raw[strip:]:
+            return "the stripped block is not the source's frontmatter"
+        body = raw[strip:]
+    return "" if sha256(body) == item["sha"] else "the body is not the source minus its frontmatter"
+
+
 def verify(tree, items, dry):
     failures = []
     shas = {} if dry else tree_shas(tree)
     ledgers = b"" if dry else ledger_text(tree)
+    sharing = {}  # rows of this run that place the same body: each is found that many times
+    for item in items:
+        if item["status"] in ("copy", "exists") and item["kind"] in ("region", "archive"):
+            sharing[item["sha"]] = sharing.get(item["sha"], 0) + 1
     for item in items:
         if item["status"] not in ("copy", "pointer", "exists"):
             continue
+        problem = source_check(item) if item.get("source_path") and item["action"].strip() != "pointer" else ""
         if dry:
-            if item["status"] == "exists":
+            if problem:
+                item["check"] = "MISMATCH: %s" % problem
+            elif item["status"] == "exists":
                 item["check"] = "already in the tree"
             elif item["kind"] == "region" and item["status"] == "copy":
                 body = split_header(item["content"])[1]
@@ -2527,15 +2584,20 @@ def verify(tree, items, dry):
                 item["check"] = "sha256 match (in memory)" if sha256(item["content"]) == item["sha"] else "MISMATCH"
             else:
                 item["check"] = "would place it"
-            if item["check"] == "MISMATCH":
+            if item["check"].startswith("MISMATCH"):
                 failures.append(item)
             continue
-        if item["action"].strip() == "pointer":
+        if problem:
+            item["check"] = "MISMATCH: %s" % problem
+        elif item["action"].strip() == "pointer":
             entry = Entry(tree, item["dest"])
             item["check"] = "pointer ok" if entry.get("pointer") == item["source_path"] else "MISSING"
         elif item["kind"] in ("region", "archive"):
             found = shas.get(item["sha"], [])
-            item["check"] = "found once" if found == [item["dest"]] else "found %d times: %s" % (len(found), ", ".join(found) or "-")
+            if item["dest"] in found and len(found) == sharing[item["sha"]]:
+                item["check"] = "found once" if len(found) == 1 else "found once at its dest (%d rows place this body)" % len(found)
+            else:
+                item["check"] = "found %d times: %s" % (len(found), ", ".join(found) or "-")
         elif item["kind"] == "ledger":
             found = ledgers.count(item["payload"])
             item["check"] = "found once" if found == 1 else "found %d times" % found
@@ -2663,8 +2725,11 @@ def migrate_report(tree, args, items, failures, extra, when):
         check = item.get("check", "")
         head = "line %d %-7s %s -> %s" % (item["line"], item["status"], item["source"], item.get("dest", ""))
         detail = " sha256 %s" % item["sha"][:16] if item["sha"] else ""
+        if item.get("raw_sha"):
+            detail += " raw %s" % item["raw_sha"][:16]
         if item.get("frontmatter"):
-            detail += " (source frontmatter of %d bytes replaced by the header)" % item["frontmatter"]
+            detail += " (source frontmatter of %d bytes replaced by the header%s)" % (
+                item["frontmatter"], "; its description kept as source_description" if item.get("source_description") else "")
         lines.append(head + detail + (": " + check if check else "") + (": " + item["reason"] if item["reason"] else ""))
     lines.append("")
     lines.append("bytes in: %d; bytes out: %d" % (sum(i["bytes_in"] for i in items if i["status"] in ("copy", "pointer", "exists")),
