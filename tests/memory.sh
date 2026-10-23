@@ -41,6 +41,7 @@ if [ "${1:-}" = "-p" ]; then
   exit 0
 fi
 jq -cn --args '$ARGS.positional' -- "$@" >>"$FAKE/argv-${WOLFMUX_TEAM:-default}-${TEAM_ROLE:-x}"
+printf '%s|%s\n' "${SHELL:-}" "${CLAUDE_CODE_SHELL:-}" >"$FAKE/shell-${WOLFMUX_TEAM:-default}-${TEAM_ROLE:-x}"
 exec "$STUB_AGENT" "$@"
 EOF
 /bin/cat >"$FAKE/bd" <<'EOF'
@@ -89,8 +90,8 @@ as_agent() { # <team> <role> <teamctl args…>: what that agent's own pane runs
 
 passed=0
 failed=0
-check() { # <description> <command string>
-  if eval "$2" >"$WORK/check.out" 2>&1; then
+check() { # <description> <command string>: in a subshell, so an exit in it fails this check, not the suite
+  if (eval "$2") >"$WORK/check.out" 2>&1; then
     passed=$((passed + 1))
     printf '  pass  %s\n' "$1"
   else
@@ -286,7 +287,7 @@ check "  ... warns when the lead runs Codex (no autoMemoryDirectory; resume --la
   'teamctl memory status 2>&1 | grep -q "the lead of mem runs Codex"'
 cat "$WORK/lead.json" >"$(STATE)/teams/mem/agents/lead.json"
 check "teamctl memory check runs mem check and passes its exit code" \
-  'teamctl memory check | grep -q "0 problems" && FAKE_MEM_CHECK_RC=1 teamctl memory check >/dev/null 2>&1; [ $? -eq 1 ]'
+  'teamctl memory check | grep -q "0 problems" && { FAKE_MEM_CHECK_RC=1 teamctl memory check >/dev/null 2>&1; [ $? -eq 1 ]; }'
 check "check (it writes, and prints names) and path are the owner's: a worker and the other team's lead get 77" \
   'for who in "mem w1" "other lead"; do for c in check path; do as_agent $who memory $c >"$WORK/o" 2>&1; [ $? -eq 77 ] && ! grep -qF "$DIR" "$WORK/o" || { echo "not refused: $who memory $c"; exit 1; }; done; done'
 check "  ... the mem lead runs both: path is the folder, check passes on mem check's answer" \
@@ -455,7 +456,7 @@ timed() { # <limit ms> <allow|deny> <command>: teamctl _guard decides so, in und
   t0="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000')"
   if printf '%s' "$input" | TEAM_ROLE=w1 WOLFMUX_TEAM=mem WOLFMUX_ROOT="$PROJECT" WOLFMUX_WORKTREE="$W1" WOLFMUX_BRANCH="$branch" "$REPO/bin/teamctl" _guard | grep -q '"deny"'; then got=deny; fi
   t1="$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000')"
-  [ "$got" = "$2" ] && [ $((t1 - t0)) -lt "$1" ] || { printf '%s in %s ms: %s\n' "$got" $((t1 - t0)) "$3" | cut -c1-160 && return 1; }
+  [ "$got" = "$2" ] && [ $((t1 - t0)) -lt "$1" ] || { printf '%s in %s ms (%s bytes): %s\n' "$got" $((t1 - t0)) "${#3}" "$3" | head -1 | cut -c1-160 && return 1; }
 }
 B1="cat $MEM; cd /tmp; cd /usr; cd /var; cd /etc; sh -c 'ls"
 P99="prettier --write" P101="prettier --write"
@@ -466,6 +467,91 @@ done
 B1="$B1'"
 check "G1: the review's B1 command is refused in under 2 s, 99 paths in the worktree pass in under 1 s, git status in under 0.3 s" \
   'timed 2000 deny "$B1" && timed 1000 allow "$P99" && timed 300 allow "git status"'
+# Review round 5 (H1): the size is capped before any work, and every step after it is linear in the command
+HD60="$(awk 'BEGIN { print "cat > out.txt <<\047EOF\047"; for (i = 0; i < 6000; i++) print "some data"; printf "EOF" }')"
+W60="echo $(awk 'BEGIN { for (i = 0; i < 60000; i++) printf "A" }')"
+W65="echo $(awk 'BEGIN { for (i = 0; i < 66000; i++) printf "A" }')"
+HD400="$(awk 'BEGIN { print "cat > out.txt <<\047EOF\047"; for (i = 0; i < 200000; i++) print "x"; printf "EOF" }')"
+check "H1: a 60 KB heredoc and one 60 KB word pass in under 0.5 s; 65 KB and a 400 KB heredoc are refused at once (under 0.3 s)" \
+  'timed 500 allow "$HD60" && timed 500 allow "$W60" && timed 300 deny "$W65" && timed 300 deny "$HD400"'
+check "H2: a worker runs its Bash tool in bash (SHELL and CLAUDE_CODE_SHELL are /bin/bash at its launch); a lead keeps its own shell" \
+  '[ "$(cat "$FAKE/shell-mem-w1")" = "/bin/bash|/bin/bash" ] && case "$(cat "$FAKE/shell-mem-lead")" in *"|") true ;; *) false ;; esac'
+R5_ZSH=("cat ~/.wolfmux/(memory|x)/x" "cat ~/.wolfmux/mem(|)ory/x" "cat ~/.claude/(sessions)/1.json" "cat $WOLFMUX_DATA/(state)/x.json"
+  "cp -R ~/.wolfmux/(memory|x) /tmp/m" "cat ~/.wolfmux/@(memory|x)/x" "cat ~/.wolfmux/(\")\"|memory)/x" "cd ~/(.wolfmux|zz) && cat memory/x"
+  "bash =(echo 'cat ~/.wolfmux/memory/x')" "source =(echo 'cat ~/.wolfmux/memory/x')" "=tmux -V" "=claude -r abc" "/opt/homebrew/bin/tmu? -V"
+  "/bin/ba(s)h -c 'cat ~/.wolfmux/mem\"\"ory/x'")
+R5_ZSH_ALLOW=("f() { echo hi; }; f" "x=(a b c); echo \${x[1]}" "( cd src && ls )" "if (true); then echo y; fi" "ls src/(lib|x)"
+  'git commit -m "fix (a|b) in src"' 'case "$x" in (a|b) echo y;; esac' "echo \$((1+2))")
+check "H2: zsh glob groups ((a|b), mem(|)ory, @( ), a quoted ) inside), =( ), =cmd and a wildcard program word are read as zsh reads them; f() { }, x=( ), ( ) and case ( ) pass" \
+  'denied_all "${R5_ZSH[@]}" && allowed_all "${R5_ZSH_ALLOW[@]}"'
+deep() { jq -cn --arg p "$1" '{deep: {list: ["a", $p]}}'; }
+cmdf() { jq -cn --arg c "$1" '{opts: {cmd: $c}}'; }
+check "H3: the hook runs for every tool: Monitor and PowerShell commands are shell text; any other tool has every string and its command/cmd/script fields checked" \
+  '[ "$(guard Monitor "$(sh "cat ~/.wolfmux/memory/x")")" = deny ] && [ "$(guard PowerShell "$(sh "cat $DIR/MEMORY.md")")" = deny ] &&
+   [ "$(guard Monitor "$(sh "npm test")")" = allow ] && [ "$(guard FooTool "$(deep "$DIR/MEMORY.md")")" = deny ] &&
+   [ "$(guard FooTool "$(deep "~/.wolfmux/memory/x")")" = deny ] && [ "$(guard FooTool "$(cmdf "cd $WOLFMUX_DATA && cat memory/x")")" = deny ] &&
+   [ "$(guard mcp__x__run "$(jq -cn --arg c "cat $DIR/MEMORY.md" "{script: \$c}")")" = deny ] &&
+   [ "$(guard FooTool "$(jq -cn "{p: \"src/lib/x.ts\", q: \"tests/a.sh\", note: \"see .wolfmux/memory docs\"}")")" = allow ] &&
+   [ "$(guard TodoWrite "$(jq -cn "{todos: [{content: \"fix the guard\", status: \"pending\"}]}")")" = allow ] &&
+   jq -e ".hooks.PreToolUse[0].matcher == \".*\"" "$(STATE)/teams/mem/settings/w1.json" >/dev/null'
+# Review round 5 (H4): UP climbs from the worktree to the data folder, so the cases name memory/... only by resolving
+UP="" UPD="$(cd "$W1" && pwd -P)"
+while [ "$UPD" != "$WOLFMUX_DATA" ] && [ "$UPD" != / ]; do UP="$UP../" UPD="$(dirname "$UPD")"; done
+MSG60="git commit -m \"$(awk 'BEGIN { for (i = 0; i < 15000; i++) printf "a/b " }')\""
+R5_PROSE=("cd $WORK && cat 'Library/Application Support/../../data/memory/$KEY/mem/MEMORY.md'"
+  "mkdir -p 'a b' && cat 'a b/../${UP}memory/$KEY/mem/MEMORY.md'" "cat 'x y'/../${UP}memory/$KEY/mem/MEMORY.md"
+  "cd $WOLFMUX_DATA && cat 'memory/$KEY/mem/core/my notes.md'" 'git commit -m "see ~/.wolfmux/memory"')
+R5_PROSE_ALLOW=('git commit -m "fix a/b in src"' 'git commit -m "docs: see src/lib/x.ts and tests/a b.sh"' 'cat "src/my file.ts"')
+check "H4: a quoted word with a blank is a path when it holds a / (the review's three cases, and an MCP string); a commit message that names a private folder (see ~/.wolfmux/memory) is refused, so rephrase it; fix a/b in src passes, a 60 KB message in under 0.5 s" \
+  '[ "$UPD" = "$WOLFMUX_DATA" ] && denied_all "${R5_PROSE[@]}" && [ "$(guard FooTool "$(deep "a b/../${UP}memory/$KEY/mem/MEMORY.md")")" = deny ] &&
+   allowed_all "${R5_PROSE_ALLOW[@]}" && timed 500 allow "$MSG60"'
+end_link_followed() { # links where the path ends: f -> the memory index, g -> f, rx.ts -> the lead's checkout (no file there yet)
+  local r=0
+  /bin/ln -s "$DIR/MEMORY.md" "$W1/f" && /bin/ln -s "$W1/f" "$W1/g" && /bin/ln -s "$PROJECT/rx.ts" "$W1/rx.ts" || return 1
+  [ "$(guard Read "$(file f)")" = deny ] && [ "$(guard Read "$(file "$W1/g")")" = deny ] && [ "$(guard Grep "$(search f)")" = deny ] &&
+    [ "$(guard Write "$(file rx.ts)")" = deny ] && [ "$(guard Edit "$(file "$W1/rx.ts")")" = deny ] && denied_all "cat g" "echo x > rx.ts" || r=1
+  /bin/rm -f "$W1/f" "$W1/g" "$W1/rx.ts"
+  return "$r"
+}
+R5_LINKS=("ln -s ~/.wolfmux/mem\$(true)ory/$KEY/mem/MEMORY.md f" "gln -s ~ h" "xargs ln -s <<< \"$WOLFMUX_DATA h\""
+  "git update-index --add --cacheinfo 120000,\$(printf %s $WOLFMUX_DATA | git hash-object -w --stdin),h" "find . -name x -exec ln -s {} h \\;")
+check "H5: a link where the path ends is followed by Read, Grep, Write, Edit and Bash (f -> the memory index, g -> f, rx.ts -> the lead's checkout); ln with a word built at run time, gln, xargs ln, find -exec ln and git update-index 120000 are refused" \
+  'end_link_followed && denied_all "${R5_LINKS[@]}" && allowed_all "ln -s src/lib lib" "git update-index --refresh"'
+R5_RT=("cat ~/.wolfmux/mem\${x}ory/x" "cat ~/.wolfmux/mem\$(true)ory/x" "cat ~/.wolfmux/mem\$@ory/x" "cat ~/.wolfmux/mem\`true\`ory/x"
+  "cat ~/.wolf\$1mux/memory/x" "cd $WOLFMUX_DATA && cat mem\${x}ory/$KEY/mem/MEMORY.md" "cd $WORK/da\${x}ta && cat memory/$KEY/mem/MEMORY.md"
+  "bash -c \"\$(printf 'cd $WOLFMUX_DATA && cat memory/$KEY/mem/MEMORY.md')\"" "eval \"\$(printf 'cd $WOLFMUX_DATA; cat memory/$KEY/mem/MEMORY.md')\""
+  "xargs -I{} sh -c '{}' <<< 'cd $WOLFMUX_DATA && cat memory/$KEY/mem/MEMORY.md'")
+R5_RT_ALLOW=('echo $HOME/x' 'cd "$(git rev-parse --show-toplevel)" && ls' 'bash -c "$(printf "echo hi")"' 'git commit -m "fix $x in a/b"'
+  'eval "$(ssh-agent -s)"' 'for f in src/*.ts; do cat "$f"; done')
+check "H6: a word is also read with every part built at run time deleted (mem\${x}ory, mem\$(true)ory, .wolf\$1mux); what \$( ) prints is the text of sh -c or eval, and xargs input the text of sh -c '{}'; an MCP string may be FILE:, file:/, have leading blanks or climb with .." \
+  'denied_all "${R5_RT[@]}" && allowed_all "${R5_RT_ALLOW[@]}" &&
+   [ "$(guard mcp__fs__write_file "$(at "FILE://$PROJECT/x")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "  $PROJECT/x")")" = deny ] &&
+   [ "$(guard mcp__fs__write_file "$(at "file:$PROJECT/x")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "${UP}../demo project/x")")" = deny ] &&
+   [ "$(guard mcp__fs__read "$(at "fIlE:$DIR/MEMORY.md")")" = deny ] && [ "$(guard mcp__fs__write_file "$(at "./src/x.ts")")" = allow ]'
+# Review round 5 (H7): the guard needs only what every Mac has, /bin/bash 3.2 and BSD awk (/usr/bin/awk)
+GAWK_ONLY='\b(gensub|asorti?|strtonum|systime|strftime|mktime|patsplit|isarray|typeof|lshift|rshift|compl)[[:space:]]*\(|IGNORECASE|PROCINFO|FPAT|BEGINFILE|ENDFILE|nextfile|\\y|re-interval'
+BASH4_ONLY='\$\{[A-Za-z_][A-Za-z_0-9]*(,,?|\^\^?)\}|declare -[a-zA-Z]*[AnNg]|local -[a-zA-Z]*[An]|mapfile|readarray|&>>|\|&|;;&|coproc|EPOCH|\[\[ -v |wait -n'
+R5_PORT=("cat > out.txt <<'EOF'
+some data
+EOF" "echo \$'a\\x41\\101\\u0041' \"dq \$x \${y:-z} \$(date) \`id\`\" 'sq' # a comment" 'ls src/(a|b).ts mem(|)o *(.) && x=( a b ) && f() { echo; }'
+  'for f in *.ts; do bash -c "echo $f"; done | sort' 'git commit -m "fix a/b in src"' 'printf %s {a,b}{1..3} ~/x <(ls) >>log 2>&1')
+bsdawk() { # <OK|D> <command>: /usr/bin/awk reads it with the guard's program ($SCAN) to the end, and prints nothing on stderr
+  local out
+  out="$(GA_CMD="$2" GA_CWD="$W1" GA_HOME="$HOME" LC_ALL=C /usr/bin/awk "$SCAN" 2>"$WORK/awk.err")" && [ ! -s "$WORK/awk.err" ] &&
+    case "$1" in OK) [ "$(printf '%s\n' "$out" | tail -1)" = OK ] ;; *) printf '%s\n' "$out" | grep -q '^D' ;; esac ||
+    { cat "$WORK/awk.err"; printf '%s: %s\n' "$1" "$2" | cut -c1-160; return 1; }
+}
+portable() { # no gawk-only feature in the awk program, none of bash 4 around it, awk and bash by their macOS paths
+  local SCAN c g="$REPO/config/wolfmux/lib/guard.sh"
+  SCAN="$(/bin/bash -c '. "$1" && printf "%s" "$GUARD_SCAN"' _ "$g")" && [ -n "$SCAN" ] &&
+    ! printf '%s\n' "$SCAN" | grep -v '^[[:space:]]*#' | grep -qE "$GAWK_ONLY" && grep -q 'LC_ALL=C /usr/bin/awk "\$GUARD_SCAN"' "$g" &&
+    [ "$(head -1 "$REPO/bin/teamctl")" = '#!/bin/bash' ] && /bin/bash -n "$g" &&
+    ! awk '/^GUARD_SCAN=/ { s = 1 } !s && !/^[[:space:]]*#/ { print } s && /^}\047$/ { s = 0 }' "$g" | grep -qE "$BASH4_ONLY" || return 1
+  for c in "${R5_PORT[@]}"; do bsdawk OK "$c" || return 1; done
+  bsdawk D "cat ~/.wolfmux/memory/x" && bsdawk D "tmux ls"
+}
+check "H7: the guard runs on what every Mac has: no gawk-only feature, /usr/bin/awk reads heredocs, \$'…', groups, \$( ) and comments to the end with nothing on stderr; teamctl is #!/bin/bash, guard.sh has no bash 4 feature" \
+  'portable'
 R4_ALLOW=('grep -n "tmux" src/x.sh' "rg -n 'tmux' src" "git log -S tmux" "echo tmux" "which tmux" 'grep -rn "../utils" src/' 'rg "../lib" src'
   "git grep -n '../shared'" "$P101" "cat $SCRATCH/s1/scratchpad/notes.md" "ls /tmp/*.log")
 check "G2, G3, G10: tmux as a word, a search pattern with .., 101 paths inside the worktree and the own scratchpad all pass" \

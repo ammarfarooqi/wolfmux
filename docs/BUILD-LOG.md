@@ -2092,7 +2092,7 @@ the card, four `cd`s, then `sh -c` with 99 `x/../f` words), because every `..` w
 and the cheap rules ran last. The fix is one awk pass, `GUARD_SCAN` in `lib/guard.sh`: it reads the
 command as the shell does, runs the cheap name rules first, then follows `cd` and the inner commands,
 with no fork per word, and refuses ("split this command") over 4,000 words, over 300 paths outside the
-worktree or after 2 seconds. Setup is one jq and one awk; symlinks are tested with the builtin `[ -L ]`
+worktree or after 2 seconds (round 5 found that this clock never bounded the lexer: see below). Setup is one jq and one awk; symlinks are tested with the builtin `[ -L ]`
 and read through in a second pass only when one exists. Timings on the reviewer's harness, before and
 after: the padded command 19.7 s → 0.03 s (refused), `prettier --write` on 99 worktree files 9.3 s →
 0.03 s, on 101 files refused → allowed (paths inside the worktree no longer count), `git status`
@@ -2106,15 +2106,43 @@ or `--`, `echo`/`printf`/a heredoc piped into a shell, `bash -`, `source /dev/st
 `claude --resume` refusal after `timeout`, `nice`, `caffeinate`, `script`, `xargs`, `npx
 @anthropic-ai/claude-code` and `$(which claude)`, quoted and un-export identity drops (`unset "X"`,
 `declare +x`, `read`, `printf -v`, `env -S`), a symlink in the worktree (`ln -s ~/.wolfmux w`, then
-`cat w/memory/…`: the `ln` is refused and an existing link is followed by Bash, Read and Glob), and a
+`cat w/memory/…`: the `ln` is refused and an existing folder link is followed by Bash, Read and Glob;
+a link at the end of a path was followed only after round 5), and a
 worktree named like the start of another (`w1` and `w10`). Claude Code's records widened: `sessions/`,
 `session-env/`, `history.jsonl` and its temporary folder `/private/tmp/claude-<uid>` (except the
 worker's own scratchpad) are closed, MCP `file://` URLs count as paths, and `fd`, `ag` and `ack` are
 tree walkers. SECURITY.md now says the conversation id is no secret (`ps -axww` and
 `~/.claude/sessions` show it to every process), that `find /tmp` is refused, and what still passes:
 a folder, path or program built at run time (`c=claude; $c -r <id>`), `CDPATH`, code in another
-language, a script the command runs and a chain of more than three symlinks. `tests/memory.sh` has eight
+language, a script the command runs and a chain of more than three symlinks (round 5 found the chain
+claim stale: a chain is followed as deep as macOS goes, 32 links). `tests/memory.sh` has eight
 new checks (all fail on the round-3 guard), including the three timings through `teamctl _guard`.
+
+**Review round 5.** The final review of round 4 (8572a05) found a lexer time hole, a shell mismatch, an
+unguarded tool and links at the end of a path. B1: the lexer was unbounded (a 600 KB word took 17.3 s, a
+400 KB heredoc 11.1 s, 400 KB of comments 9.3 s); now a command over 64 KB is refused before awk starts
+in 0.02 to 0.04 s, the lexer counts characters, words and paths (a step budget, with the clock only as a
+backstop), and every 60 KB shape takes 0.02 to 0.53 s (it was up to 7.7 s). M1 (H2): the Bash tool runs
+`$SHELL`, which is `/bin/zsh` for every agent on this Mac; workers now launch with `SHELL` and
+`CLAUDE_CODE_SHELL` set to `/bin/bash`, and the lexer reads an in-word `(` as a zsh glob group and strips a
+leading `=` (`=tmux`). Shell proof (fe9d657): Claude Code 2.1.309 reads `CLAUDE_CODE_SHELL` first;
+`claude -p --model haiku` answered `/bin/zsh 5.9` by default and `/bin/bash 3.2.57(1)-release` with the
+two variables. M2 (H3): the hook matcher is `.*`; Monitor and PowerShell commands go through the Bash
+check, and any other tool has every string value read as a quoted word and its `command`, `cmd` and
+`script` fields as shell text. M3 (H4): a quoted word that holds a `/` is a path even with a blank in it
+(a commit message that names a private folder by path is refused on purpose). M4 (H5): the last
+component of a path is resolved with the link rule too (Read, Grep, Glob, LS, Edit, Write, Bash), and the
+`ln` rule covers `gln`, `link`, `cp -s/-l`, run-time words, `xargs`, `find -exec` and
+`git update-index --cacheinfo 120000`. S1 to S4 (H6): a word is also read with its run-time parts deleted
+(`mem${x}ory`), what `$( )` prints is shell text, and MCP `file:` strings are normalised. H7 (db1cb6e):
+a portability audit of the awk program and the bash (no gawk or bash 4 forms) with a check that keeps
+it. H8 (6151e70): test honesty. `check()` runs each body in a subshell, because nine checks ended the
+whole suite at their first failure, and a masked `$?` was fixed; of the 43 guard checks the 15 of
+rounds 4 and 5 fail on 1538605's guard and the 26 older ones pass (they test rules it already has); no
+check passed on old code where it should not. Commits: H1 0efa2f2 and e415173, H2 fe9d657 and b0dc1ac,
+H3 ad76f41, H4 89fd842, H5 202d022, H6 fafd2e6, H7 db1cb6e, H8 6151e70. Harness flips against the
+reviewer's 8572a05 baseline, all allow to deny, 37 of 742: H2 14, H3 3, H4 6, H5 7, H6 8. `tests/memory.sh`
+went from 122 to 130 checks, each new one failing on its parent's guard.
 
 ## Footprint on the machine
 

@@ -37,11 +37,12 @@
 # reason an agent stops working. It is fast because Claude Code runs a tool call whose
 # hook times out (10 s, lib/agents.sh): a command too big or too slow to check is refused.
 
-# guard_phys <path> <cwd> — sets GUARD_P: the path absolute, "//" and "/./" squeezed, symlinks of the existing
-# part resolved (the builtin cd -P: no fork), the rest as written. Letter case as typed: every compare is
+# guard_phys <path> <cwd> [<links followed>] — sets GUARD_P: the path absolute, "//" and "/./" squeezed, symlinks
+# of the existing part resolved (the builtin cd -P: no fork), then a link where that part ends (to a file, or to
+# nothing yet: Read, Write and Edit follow it), the rest as written. Letter case as typed: every compare is
 # without regard to case (cmd_guard sets nocasematch), as the disk is.
 guard_phys() {
-  local path="$1" dir rest="" back="$PWD" two='//' dot='/./' one='/'
+  local path="$1" dir rest="" back="$PWD" two='//' dot='/./' one='/' first
   case "$path" in
     /*) ;;
     "~") path="$HOME" ;;
@@ -69,6 +70,12 @@ guard_phys() {
   fi
   GUARD_P="${dir%/}$rest"
   GUARD_P="${GUARD_P:-/}"
+  # at most 32 links deep, as the system follows them (a loop of links leads nowhere it could read)
+  first="${rest#/}" first="${first%%/*}"
+  if [ -n "$first" ] && [ -L "${dir%/}/$first" ] && [ "${3:-0}" -lt 32 ] && guard_link "${dir%/}/$first" $((${3:-0} + 1)); then
+    GUARD_P="${GUARD_P%/}${rest#"/$first"}"
+    GUARD_P="${GUARD_P:-/}"
+  fi
 }
 
 # guard_abspath <path> <cwd> — guard_phys, printed
@@ -83,7 +90,7 @@ guard_inside() {
   return 1
 }
 
-# guard_link <symlink> — sets GUARD_P to where it leads, physical (a link to a folder costs no fork)
+# guard_link <symlink> [<links followed>] — sets GUARD_P to where it leads, physical (a link to a folder costs no fork)
 guard_link() {
   local back="$PWD" to
   if [ -d "$1" ]; then
@@ -94,7 +101,7 @@ guard_link() {
   fi
   to="$(/usr/bin/readlink "$1" 2>/dev/null)" || return 1
   case "$to" in /*) ;; *) to="${1%/*}/$to" ;; esac
-  guard_phys "$to" /
+  guard_phys "$to" / "${2:-0}"
 }
 
 # guard_transcript <path> — inside the folder of the leads' conversations, and not in the project's shared
@@ -180,9 +187,10 @@ guard_deny() {
   return 0
 }
 
-# GUARD_SCAN — the awk program that reads one shell command (stdin) as the shell would and decides whether it
+# GUARD_SCAN — the awk program that reads one shell command (GA_CMD) as the shell would and decides whether it
 # reaches outside, in ONE process: a guard that is slow is a guard that is skipped (the hook times out and the
 # call runs). Paths and names come in the environment (GA_*, set by guard_bash). It prints:
+#   T<seconds>  the clock it started from (guard_bash hands it to the next pass: GA_T0)
 #   D<reason>   refuse (and stops)
 #   L<path>     a path under the worker's worktree or /tmp that may be a symlink: guard_bash tests each with the
 #               builtin [ -L ] and runs the program again with the links it found (GA_LINKS, "path<TAB>target")
@@ -198,9 +206,16 @@ guard_deny() {
 #               outside the own worktree, symlinks from GA_LINKS); wildcards; tree walks; git; the read-only
 #               checkouts; links; then what sh -c, eval, a heredoc or pipe into a shell, env -S, ssh and watch
 #               run, as a command one level deeper (four levels refuse).
-# Budget: over 4000 words, over 300 paths resolved outside the own worktree, or 2 seconds: refuse ("split").
+# Budget, counted in steps so that it means the same on a busy machine: guard_bash refuses a command over 64 KB
+# before awk starts; awk refuses over 256 KB of text lexed (an inner command counts again), 4000 words, 300 paths
+# resolved outside the own worktree or 12,000 link candidates, and a wildcard word or a link candidate over 4096
+# bytes. Every step is linear: a search reads the text in growing windows, plain characters are taken in runs, a
+# word grows a kilobyte at a time (app), long strings are glued from pieces, and no sub() or match() runs on a
+# long word (BSD awk tries every start position). A 60 KB command takes under half a second. A clock (whole
+# seconds, every 1000 characters, 50 words and 50 paths) is the backstop: 5 seconds from the first pass, under
+# the hook's 10.
 # Out of reach: a folder or path built at run time (d=~/.wolfmux; cd $d), code in a string (python3 -c),
-# CDPATH, a chain of more than three links (docs/SECURITY.md).
+# CDPATH (docs/SECURITY.md).
 GUARD_SCAN='
 function init(   n, t, k, at) {
   HOME = ENVIRON["GA_HOME"]; sub(/\/+$/, "", HOME); LHOME = tolower(HOME)
@@ -210,9 +225,13 @@ function init(   n, t, k, at) {
   NMEM = list(ENVIRON["GA_MEM"], MEM); NTR = list(ENVIRON["GA_TR"], TR)
   NCL = list(ENVIRON["GA_CL"], CL); NCT = list(ENVIRON["GA_CT"], CT); NROOT = list(ENVIRON["GA_ROOT"], ROOT)
   n = split(ENVIRON["GA_LINKS"], t, "\n")
-  for (k = 1; k <= n; k++) if ((at = index(t[k], "\t")) > 1) { LINK[tolower(substr(t[k], 1, at - 1))] = substr(t[k], at + 1); NLINK++ }
+  for (k = 1; k <= n; k++) if ((at = index(t[k], "\t")) > 1) { LINK[tolower(substr(t[k], 1, at - 1))] = substr(t[k], at + 1); NLINK++; if (at - 1 > MAXLINK) MAXLINK = at - 1 }
   IDS = "(TEAM_ROLE|TMUX_PANE|WOLFMUX_TEAM|BEADS_ACTOR)"
   SHELLS = "^(ba|z|da|k|fi|tc|c|mk|yash|posh)?sh$"
+  LNS = "^(g?ln|link)$"
+  # the programs the rules name, for a program word with a wildcard or a group (gname)
+  NMIND = split("tmux claude claude-code sh bash zsh dash ksh fish tcsh csh mksh yash posh eval source . env sudo doas exec command xargs gxargs nice timeout gtimeout git ln gln cp gcp node nodejs bun deno npx bunx pnpx ssh watch make gmake cd pushd popd echo printf cat unset export declare typeset local read readarray mapfile find fd fdfind grep rg", MINDL, " ")
+  for (k = 1; k <= NMIND; k++) MIND[MINDL[k]] = 1
   PATS = "^(regexp|glob|iglob|include|exclude|exclude-dir|match|file-search-regex|grep|author|committer)$"
   R_TREES = "that command names another teammate\047s worktree or teamctl\047s state."
   R_MEM = "that command names a lead\047s private memory folder (~/.wolfmux/memory), which no worker reads."
@@ -221,7 +240,8 @@ function init(   n, t, k, at) {
   R_CTMP = "that command names Claude Code\047s temporary folder (" ENVIRON["GA_CTSHOW"] "), which holds every session\047s tool output, the leads\047 too. Only your own scratchpad there is yours: a worker searches its worktree and its own scratchpad, never all of /tmp."
   R_LONG = "that command is too long for the guard to follow (over 4000 words); split it."
   R_SPLIT = "that command has too many paths outside your worktree for the guard to follow (over 300); split this command."
-  R_SLOW = "that command takes the guard too long to check (over 2 seconds); split this command."
+  R_SLOW = "that command takes the guard too long to check (over 5 seconds); split this command."
+  R_BIG = "that command is too big for the guard to follow (over 256 KB of text to read, the commands it runs inside counted again); split this command."
   R_NEST = "that command nests sh -c or eval more than three levels deep; run the inner command itself."
   R_TMUX = "tmux belongs to teamctl; panes of other agents are not yours to read or type into."
   R_RESUME = "that command resumes a Claude Code conversation (claude --resume, -r, --continue, -c, --session-id), which reads it whoever\047s it is. A worker never resumes a conversation; ask the lead."
@@ -232,7 +252,8 @@ function init(   n, t, k, at) {
   R_PUSH = "pushing to main, deleting or force-updating remote branches is for the lead."
   R_ROOT = "that command would change a checkout that is read-only for you (" ENVIRON["GA_RO"] "). Your work belongs in your own worktree."
   R_LINK = "that command makes a link to a place outside your worktree (your home folder, /Users or Claude Code\047s temporary folder); a later command could read a private folder through it. Copy what you need into your worktree instead."
-  srand(); T0 = srand()
+  R_LINKRT = "that command makes a link whose target is built at run time or comes from its input ($( ), ${ }, ` `, xargs, find -exec, git update-index 120000 or --index-info), so the guard cannot see where it leads. Write the paths out, or copy what you need into your worktree instead."
+  srand(); T0 = srand(); if (ENVIRON["GA_T0"] != "") T0 = ENVIRON["GA_T0"] + 0
 }
 # list(text, arr): the newline-separated paths, lower case, squeezed, without a trailing "/", each also without
 # a leading /private (/private/tmp is /tmp); the count
@@ -246,9 +267,115 @@ function list(text, arr,   n, t, k, c, p) {
   }
   return c
 }
-function clock(   now) { srand(); now = srand(); if (now - T0 >= 2 && DENY == "") DENY = R_SLOW }
-function base(w) { sub(/\/+$/, "", w); sub(/.*\//, "", w); return w }
-function rep(v, a, b,   out, at) { out = ""; while ((at = index(v, a)) > 0) { out = out substr(v, 1, at - 1) b; v = substr(v, at + length(a)) } return out v }
+function clock(   now) { srand(); now = srand(); if (now - T0 >= 5 && DENY == "") DENY = R_SLOW }
+# idx(s, p, t): where t is first found in s at or after p, 0 for none. It reads s in growing windows: the
+# index(substr(s, p), t) it replaces copied the whole rest of the command at every quote, comment and line
+function idx(s, p, t,   n, w, j) {
+  n = length(s); w = 256
+  while (p <= n) {
+    if ((j = index(substr(s, p, w + length(t) - 1), t)) > 0) return p + j - 1
+    p += w; w += w
+  }
+  return 0
+}
+# heredoc(s, p, n, delim, strip): the body that starts at p, up to the line that is delim (tabs taken off its
+# lines for <<-), in HBODY; it returns where the text goes on after the delimiter line
+function heredoc(s, p, n, delim, strip,   start, at, j, e, line) {
+  start = p
+  if (!strip) {
+    if (substr(s, p, length(delim) + 1) == delim "\n" || (p + length(delim) - 1 == n && substr(s, p, length(delim)) == delim)) { HBODY = ""; return p + length(delim) + 1 }
+    at = p
+    while ((j = idx(s, at, "\n" delim)) > 0) {
+      e = j + 1 + length(delim)
+      if (e > n || substr(s, e, 1) == "\n") { HBODY = substr(s, start, j - start + 1); return e + 1 }
+      at = j + 1
+    }
+    p = n + 1
+  } else while (p <= n) {
+    j = idx(s, p, "\n"); e = j ? j : n + 1
+    line = substr(s, p, e - p); sub(/^\t+/, "", line)
+    if (line == delim) break
+    p = e + 1
+  }
+  HBODY = substr(s, start, p - start); e = p
+  if (strip) { gsub(/\n\t+/, "\n", HBODY); sub(/^\t+/, "", HBODY); if (p <= n) e = (j ? j : n) + 1 }
+  if (HBODY != "" && substr(HBODY, length(HBODY)) != "\n") HBODY = HBODY "\n"
+  return e
+}
+# glue(arr, a, z): arr[a..z] joined, the halves first (adding one piece at a time copies the whole result each time)
+function glue(arr, a, z,   m) { if (a > z) return ""; if (a == z) return arr[a]; m = int((a + z) / 2); return glue(arr, a, m) glue(arr, m + 1, z) }
+# base(w): the last part of a path (by split: sub(/.*\//) tries every start position, a long word cost its length
+# squared), without the leading = of zsh (=tmux runs tmux)
+function base(w,   n, parts) { if (substr(w, 1, 1) == "=") w = substr(w, 2); n = split(w, parts, "/"); while (n > 1 && parts[n] == "") n--; return parts[n] }
+# --- zsh glob groups ((a|b), mem(|)ory) and bash extglob (@(a|b)): the lexer writes their syntax as \006 ( \007 |
+# \010 ), so a quoted ( | ) is never read as one. galts(v, f, out): the words a group word (flag G) stands for,
+# each alternative, at most 64; a nested group, a ! * ? + before the (, or more alternatives stand for "*"
+# (GSTAR, and every word then goes to wild()); a word with over 16 groups is one word, its star form
+function galts(v, f, out,   L, p, at, j, pre, lc, body, na, al, nc, cur, nw, m, i, k) {
+  GSTAR = 0; out[1] = v
+  if (!index(f, "G")) return 1
+  # over 4096 bytes it stays as it is: wild() refuses a wildcard word that long
+  if ((L = length(v)) > 4096) { GSTAR = 1; return 1 }
+  if (gsub(/\006/, "\006", v) > 16) { out[1] = gstar(v); GSTAR = 1; return 1 }
+  nc = 1; cur[1] = ""; p = 1
+  while ((at = idx(v, p, "\006")) > 0) {
+    pre = substr(v, p, at - p); lc = substr(pre, length(pre))
+    j = gclose(v, at + 1)
+    body = substr(v, at + 1, j - at - 1 - GSHUT)
+    if (lc != "" && index("!*?+@", lc)) pre = substr(pre, 1, length(pre) - 1)
+    if (GNEST || (lc != "" && index("!*?+", lc))) { na = 1; al[1] = "*"; GSTAR = 1 } else na = split(body, al, "\007")
+    if (na < 1) { na = 1; al[1] = "" }
+    if (nc * na > 64) { na = 1; al[1] = "*"; GSTAR = 1 }
+    m = 0; for (i = 1; i <= nc; i++) for (k = 1; k <= na; k++) nw[++m] = cur[i] pre al[k]
+    nc = m; for (i = 1; i <= nc; i++) cur[i] = nw[i]
+    p = j
+  }
+  for (i = 1; i <= nc; i++) { out[i] = cur[i] substr(v, p); gsub(/[\006\007\010]/, "", out[i]) }
+  return nc
+}
+# gclose(v, j): where the text goes on after the group whose body starts at j; GNEST when a group is inside it,
+# GSHUT when it is closed (by idx: one character at a time cost a long word its length squared)
+function gclose(v, j,   depth, o, c) {
+  depth = 1; GNEST = 0; GSHUT = 1; o = idx(v, j, "\006")
+  while (depth > 0) {
+    if (!(c = idx(v, j, "\010"))) { GSHUT = 0; return length(v) + 1 }
+    if (o && o < c) { depth++; GNEST = 1; j = o + 1; o = idx(v, j, "\006") } else { depth--; j = c + 1 }
+  }
+  return j
+}
+# gstar(v): v with every group (and the ! * ? + @ before it) read as "*"
+function gstar(v,   p, at, pre, k, pc) {
+  p = 1; k = 0
+  while ((at = idx(v, p, "\006")) > 0) {
+    pre = substr(v, p, at - p); if (pre != "" && index("!*?+@", substr(pre, length(pre)))) pre = substr(pre, 1, length(pre) - 1)
+    pc[++k] = pre "*"
+    p = gclose(v, at + 1)
+  }
+  pc[++k] = substr(v, p)
+  v = glue(pc, 1, k); gsub(/[\007\010]/, "", v)
+  return v
+}
+# gname(w, f): the program a program word names, lower case; for a word with a wildcard or a group
+# (/opt/homebrew/bin/tmu?, (tmux|x)) the first program the guard minds that it can match
+function gname(w, f,   b, n, k, j, re) {
+  b = tolower(base(w))
+  if ((!index(f, "g") && !index(f, "G")) || length(w) > 256) return b
+  n = galts(w, f, GN)
+  for (k = 1; k <= n; k++) {
+    b = tolower(base(GN[k]))
+    if (b !~ /[*?[{]/) { if (b in MIND) return b; continue }
+    re = globre(b)
+    for (j = 1; j <= NMIND; j++) if (MINDL[j] ~ re) return MINDL[j]
+  }
+  return tolower(base(GN[1]))
+}
+function rep(v, a, b,   at, p, n, k, pc) {
+  if (!(at = index(v, a))) return v
+  p = 1; n = length(a); k = 0
+  while (at > 0) { pc[++k] = substr(v, p, at - p) b; p = at + n; at = idx(v, p, a) }
+  pc[++k] = substr(v, p)
+  return glue(pc, 1, k)
+}
 function inside(p, dir) { return p == dir || substr(p, 1, length(dir) + 1) == dir "/" }
 function inany(p, arr, n,   k, l) { l = tolower(p); for (k = 1; k <= n; k++) if (inside(l, arr[k])) return 1; return 0 }
 function inown(p) { return inany(p, OWN, NOWN) }
@@ -259,40 +386,57 @@ function isprose(v, f) { return index(f, "p") && v !~ /^(\/|\.\.?\/|~)/ && subst
 # --- the private folders, by name: hit(l, p) when l holds p as a whole name (what follows is no name character)
 function namech(c) { return c ~ /[a-z0-9._-]/ }
 function hit(l, p,   at, n) {
-  n = length(p)
-  while ((at = index(l, p)) > 0) { if (!namech(substr(l, at + n, 1))) return 1; l = substr(l, at + 1) }
+  n = length(p); at = index(l, p)
+  while (at > 0) { if (!namech(substr(l, at + n, 1))) return 1; at = idx(l, at + 1, p) }
   return 0
 }
-function trhit(l, p,   at, n, after) {
-  n = length(p)
-  while ((at = index(l, p)) > 0) {
-    after = substr(l, at + n)
-    if (!namech(substr(after, 1, 1)) && !(substr(after, 1, 7) == "/memory" && !namech(substr(after, 8, 1)))) return 1
-    l = substr(l, at + 1)
+function trhit(l, p,   at, n) {
+  n = length(p); at = index(l, p)
+  while (at > 0) {
+    if (!namech(substr(l, at + n, 1)) && !(substr(l, at + n, 7) == "/memory" && !namech(substr(l, at + n + 7, 1)))) return 1
+    at = idx(l, at + 1, p)
   }
   return 0
 }
 # the own worktree and the own scratchpad are blanked out first (w1 is not the start of w10)
-function maskone(l, p,   at, n, out) {
-  n = length(p); out = ""
-  while ((at = index(l, p)) > 0) {
-    if (!namech(substr(l, at + n, 1))) { out = out substr(l, 1, at - 1) "\004"; l = substr(l, at + n) }
-    else { out = out substr(l, 1, at); l = substr(l, at + 1) }
+function maskone(l, p,   at, n, q, k, pc) {
+  if (!(at = index(l, p))) return l
+  n = length(p); q = 1; k = 0
+  while (at > 0) {
+    if (!namech(substr(l, at + n, 1))) { pc[++k] = substr(l, q, at - q) "\004"; q = at + n; at = idx(l, q, p) }
+    else at = idx(l, at + 1, p)
   }
-  return out l
+  pc[++k] = substr(l, q)
+  return glue(pc, 1, k)
 }
-function lit(w,   l, k) {
+# lit(w, prose): the private folder w names; with prose set, the bare name .wolfmux/memory alone is no path
+function lit(w, prose,   l, k) {
   l = tolower(w)
   for (k = 1; k <= NOWN; k++) l = maskone(l, OWN[k])
   for (k = 1; k <= NSCR; k++) l = maskone(l, SCR[k])
   for (k = 1; k <= NTREES; k++) if (hit(l, TREES[k])) return R_TREES
   for (k = 1; k <= NSTATE; k++) if (hit(l, STATE[k])) return R_TREES
   for (k = 1; k <= NMEM; k++) if (hit(l, MEM[k])) return R_MEM
-  if (hit(l, ".wolfmux/memory")) return R_MEM
+  if (!prose && hit(l, ".wolfmux/memory")) return R_MEM
   for (k = 1; k <= NCL; k++) if (hit(l, CL[k])) return R_CLAUDE
   for (k = 1; k <= NTR; k++) if (trhit(l, TR[k])) return R_TRANS
   for (k = 1; k <= NCT; k++) if (hit(l, CT[k])) return R_CTMP
   return ""
+}
+# rtstrip(v): the word with every part built at run time deleted ($( ) and ` ` are \003, then $name, ${ }, $1, $@ …),
+# as each may be empty (mem${x}ory); in one pass over the $ signs
+function rtstrip(v,   n, pt, k, pc, c, at) {
+  if (index(v, "\003")) gsub(/\003/, "", v)
+  if (!index(v, "$")) return v
+  n = split(v, pt, "$"); pc[1] = pt[1]
+  for (k = 2; k <= n; k++) {
+    c = substr(pt[k], 1, 1)
+    if (c == "{") { at = index(pt[k], "}"); pc[k] = at ? substr(pt[k], at + 1) : "" }
+    else if (c ~ /[A-Za-z_]/) { match(substr(pt[k], 1, 256), /^[A-Za-z_][A-Za-z0-9_]*/); pc[k] = substr(pt[k], RLENGTH + 1) }
+    else if (c ~ /[0-9@*#?!-]/) pc[k] = substr(pt[k], 2)
+    else pc[k] = (c == "" ? "" : "$") pt[k]
+  }
+  return glue(pc, 1, n)
 }
 # a folder that holds a private one: a search of it reads that too
 function holds(l,   k) {
@@ -309,28 +453,36 @@ function holds(l,   k) {
 # TR[d,i] (a redirection target: its operator), HB[d,i] (the body of a heredoc, on its << token) and the
 # substitutions SX[d,k] (text), SA[d,k] (token), SK[d,k] (s or p)
 function flag(f) { if (!index(LF, f)) LF = LF f }
-function quoted(t) { LW = LW t; flag("q"); if (t ~ /[ \t\n]/) flag("p"); LIN = 1 }
-function endw(d) {
+# app(t): t added to the word being read. Pieces gather in LB and go to LW a kilobyte at a time (adding to one
+# long LW piece by piece made a long word cost its length squared); LC is the last character of the word
+function app(t) { if (t == "") return; LB = LB t; LC = substr(t, length(t)); if (length(LB) > 1024) { LW = LW LB; LB = "" } }
+function qapp(t) { app(t); if (t ~ /[ \t\n]/) flag("p") }
+function quoted(t) { qapp(t); flag("q"); LIN = 1 }
+function endw(d,   w) {
   if (!LIN) return
-  NT[d]++; TT[d, NT[d]] = "w"; TV[d, NT[d]] = LW; TF[d, NT[d]] = LF; TR[d, NT[d]] = LRED; LRED = 0
-  LW = ""; LF = ""; LIN = 0
+  w = LW LB
+  if (LBR && w ~ /\{[^}]*(,|\.\.)[^}]*\}/) flag("g")
+  NT[d]++; TT[d, NT[d]] = "w"; TV[d, NT[d]] = w; TF[d, NT[d]] = LF; TR[d, NT[d]] = LRED; LRED = 0
+  LW = ""; LB = ""; LC = ""; LF = ""; LIN = 0; LBR = 0; GD = 0
   if (++WORDS > 4000 && DENY == "") DENY = R_LONG
   if (WORDS % 50 == 0) clock()
 }
 function op(d, o) { NT[d]++; TT[d, NT[d]] = "o"; TV[d, NT[d]] = o; TF[d, NT[d]] = ""; TR[d, NT[d]] = 0; LRED = 0 }
 function red(d, o) { NT[d]++; TT[d, NT[d]] = "r"; TV[d, NT[d]] = o; TF[d, NT[d]] = ""; TR[d, NT[d]] = 0; LRED = NT[d] }
+# cmdpos(d): a command can start at the next word (a ( there is a subshell, elsewhere a glob group)
+function cmdpos(d) { return !NT[d] || TT[d, NT[d]] == "o" || (TT[d, NT[d]] == "w" && !TR[d, NT[d]] && TV[d, NT[d]] ~ /^(!|\{|if|then|else|elif|do|while|until|time|coproc)$/) }
 function addsub(d, t, at, kind) { NS[d]++; SX[d, NS[d]] = t; SA[d, NS[d]] = at; SK[d, NS[d]] = kind }
 # what $( ) or ` ` gives in a word: which X, command -v X and type -p X give X itself; the rest is run time
 function subword(t,   name) {
   name = t
-  if (sub(/^[ \t]*(which|command[ \t]+-[vV]|type[ \t]+-[pP])[ \t]+/, "", name) && name ~ /^[^ \t;&|<>()`$\\"\047]+[ \t]*$/) { sub(/[ \t]+$/, "", name); LW = LW name; return }
-  LW = LW "\003"; flag("$")
+  if (sub(/^[ \t]*(which|command[ \t]+-[vV]|type[ \t]+-[pP])[ \t]+/, "", name) && name ~ /^[^ \t;&|<>()`$\\"\047]+[ \t]*$/) { sub(/[ \t]+$/, "", name); app(name); return }
+  app("\003"); flag("$")
 }
 function expand(name, as) {
-  if (name == "HOME") LW = LW HOME
-  else if (name == "USER" || name == "LOGNAME") LW = LW USERN
-  else if (name == "PWD") LW = LW "\002"
-  else { LW = LW as; flag("$") }
+  if (name == "HOME") app(HOME)
+  else if (name == "USER" || name == "LOGNAME") app(USERN)
+  else if (name == "PWD") app("\002")
+  else { app(as); flag("$") }
 }
 function dollar(s, p, n, d,   c2, j, t, name) {
   c2 = substr(s, p + 1, 1)
@@ -340,33 +492,35 @@ function dollar(s, p, n, d,   c2, j, t, name) {
     return j ? j + 1 : n + 1
   }
   if (c2 == "{") {
-    j = index(substr(s, p + 2), "}"); t = j ? substr(s, p + 2, j - 1) : substr(s, p + 2)
+    j = idx(s, p + 2, "}"); t = j ? substr(s, p + 2, j - p - 2) : substr(s, p + 2)
     if (t ~ /\$\(|`/) subs_in(t, d, NT[d] + 1)
     name = t; sub(/[^A-Za-z0-9_].*$/, "", name)
     expand(name, "${" t "}")
-    return j ? p + 2 + j : n + 1
+    return j ? j + 1 : n + 1
   }
   if (c2 ~ /[A-Za-z_]/) {
-    t = substr(s, p + 1); match(t, /^[A-Za-z_][A-Za-z0-9_]*/); name = substr(t, 1, RLENGTH)
+    t = substr(s, p + 1, 256); match(t, /^[A-Za-z_][A-Za-z0-9_]*/); name = substr(t, 1, RLENGTH)
     expand(name, "$" name)
     return p + 1 + RLENGTH
   }
-  if (c2 != "" && index("0123456789@*#?$!-", c2)) { LW = LW "$" c2; flag("$"); return p + 2 }
-  LW = LW "$"
+  if (c2 != "" && index("0123456789@*#?$!-", c2)) { app("$" c2); flag("$"); return p + 2 }
+  app("$")
   return p + 1
 }
-function tick(s, p, n, d,   c, c2, t) {
-  t = ""
+function tick(s, p, n, d,   c, c2, t, k, pc) {
+  k = 0
   while (p <= n) {
     c = substr(s, p, 1)
-    if (c == "\\") { c2 = substr(s, p + 1, 1); if (c2 == "`" || c2 == "$" || c2 == "\\") { t = t c2; p += 2; continue } }
+    if (c == "\\") { c2 = substr(s, p + 1, 1); if (c2 == "`" || c2 == "$" || c2 == "\\") { pc[++k] = c2; p += 2; continue } }
     if (c == "`") { p++; break }
-    t = t c; p++
+    if (match(substr(s, p, 256), /^[^`\\]+/)) { pc[++k] = substr(s, p, RLENGTH); p += RLENGTH; continue }
+    pc[++k] = c; p++
   }
+  t = glue(pc, 1, k)
   addsub(d, t, NT[d] + 1, "s"); subword(t)
   return p
 }
-function dq(s, p, n, d,   c, c2) {
+function dq(s, p, n, d,   c, c2, t) {
   flag("q"); LIN = 1
   while (p <= n) {
     c = substr(s, p, 1)
@@ -374,13 +528,13 @@ function dq(s, p, n, d,   c, c2) {
     if (c == "\\") {
       c2 = substr(s, p + 1, 1)
       if (c2 == "\n") { p += 2; continue }
-      if (c2 == "$" || c2 == "`" || c2 == "\"" || c2 == "\\") { LW = LW c2; p += 2; continue }
-      LW = LW c; p++; continue
+      if (c2 == "$" || c2 == "`" || c2 == "\"" || c2 == "\\") { app(c2); p += 2; continue }
+      app(c); p++; continue
     }
     if (c == "$") { p = dollar(s, p, n, d); continue }
     if (c == "`") { p = tick(s, p + 1, n, d); continue }
-    if (c == " " || c == "\t" || c == "\n") flag("p")
-    LW = LW c; p++
+    if (match(substr(s, p, 256), /^[^"\\$`]+/)) { qapp(substr(s, p, RLENGTH)); p += RLENGTH; continue }
+    app(c); p++
   }
   return p
 }
@@ -389,50 +543,51 @@ function hexval(s, p, most,   v, k, c) {
   while (k < most && (c = tolower(substr(s, HEXP, 1))) != "" && index("0123456789abcdef", c)) { v = v * 16 + index("0123456789abcdef", c) - 1; HEXP++; k++ }
   return v
 }
-function ansi(s, p, n,   c, c2, t, v, k) {
-  t = ""
+function ansi(s, p, n,   c, c2, v, k) {
+  flag("q"); LIN = 1
   while (p <= n) {
     c = substr(s, p, 1)
     if (c == "\047") { p++; break }
     if (c == "\\" && p < n) {
       c2 = substr(s, p + 1, 1); p += 2
-      if (c2 == "n") t = t "\n"
-      else if (c2 == "t") t = t "\t"
-      else if (c2 == "x") { v = hexval(s, p, 2); p = HEXP; t = t (v > 0 && v < 128 ? sprintf("%c", v) : "?") }
-      else if (c2 == "u" || c2 == "U") { v = hexval(s, p, c2 == "u" ? 4 : 8); p = HEXP; t = t (v > 0 && v < 128 ? sprintf("%c", v) : "?") }
-      else if (c2 ~ /[0-7]/) { v = c2 + 0; k = 1; while (k < 3 && substr(s, p, 1) ~ /[0-7]/) { v = v * 8 + substr(s, p, 1); p++; k++ } t = t (v > 0 && v < 128 ? sprintf("%c", v) : "?") }
+      if (c2 == "n") qapp("\n")
+      else if (c2 == "t") qapp("\t")
+      else if (c2 == "x") { v = hexval(s, p, 2); p = HEXP; qapp(v > 0 && v < 128 ? sprintf("%c", v) : "?") }
+      else if (c2 == "u" || c2 == "U") { v = hexval(s, p, c2 == "u" ? 4 : 8); p = HEXP; qapp(v > 0 && v < 128 ? sprintf("%c", v) : "?") }
+      else if (c2 ~ /[0-7]/) { v = c2 + 0; k = 1; while (k < 3 && substr(s, p, 1) ~ /[0-7]/) { v = v * 8 + substr(s, p, 1); p++; k++ } qapp(v > 0 && v < 128 ? sprintf("%c", v) : "?") }
       else if (c2 == "c") p++
-      else if (index("abeEfrv", c2)) t = t " "
-      else t = t c2
+      else if (index("abeEfrv", c2)) qapp(" ")
+      else qapp(c2)
       continue
     }
-    t = t c; p++
+    if (match(substr(s, p, 256), /^[^\047\\]+/)) { qapp(substr(s, p, RLENGTH)); p += RLENGTH; continue }
+    qapp(c); p++
   }
-  quoted(t)
   return p
 }
 function tilde(s, p, n,   t, name, c) {
-  t = substr(s, p + 1); match(t, /^[A-Za-z0-9._+-]*/); name = substr(t, 1, RLENGTH)
+  t = substr(s, p + 1, 256); match(t, /^[A-Za-z0-9._+-]*/); name = substr(t, 1, RLENGTH)
   c = substr(s, p + 1 + RLENGTH, 1)
-  if (c != "" && c !~ /[\/ \t\n;&|()<>:]/) { LW = LW "~"; return p + 1 }
-  if (name == "" || name == USERN) LW = LW HOME
-  else if (name == "+") LW = LW "\002"
-  else if (name == "-") { LW = LW "~-"; flag("$") }
-  else LW = LW "/Users/" name
+  if (c != "" && c !~ /[\/ \t\n;&|()<>:]/) { app("~"); return p + 1 }
+  if (name == "" || name == USERN) app(HOME)
+  else if (name == "+") app("\002")
+  else if (name == "-") { app("~-"); flag("$") }
+  else app("/Users/" name)
   return p + 1 + RLENGTH
 }
 # closep(s, p, n): the ) that closes the $( or <( whose text starts at p (quotes, nesting, comments and heredoc
 # bodies skipped); 0 when there is none
-function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, line, probe, t, start) {
+function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, t, start) {
   depth = 1; prev = "\n"; hn = 0
   while (p <= n) {
+    if (match(substr(s, p, 256), /^[^\\\047"`$#<\n()]+/)) { p += RLENGTH; prev = substr(s, p - 1, 1); continue }
     c = substr(s, p, 1)
     if (c == "\\") { p += 2; prev = "x"; continue }
-    if (c == "\047") { j = index(substr(s, p + 1), "\047"); if (!j) return 0; p += j + 1; prev = "x"; continue }
+    if (c == "\047") { j = idx(s, p + 1, "\047"); if (!j) return 0; p = j + 1; prev = "x"; continue }
     if (c == "\"") { p = dqskip(s, p + 1, n); if (!p) return 0; prev = "x"; continue }
     if (c == "`") { j = p + 1; while (j <= n && substr(s, j, 1) != "`") { if (substr(s, j, 1) == "\\") j++; j++ } if (j > n) return 0; p = j + 1; prev = "x"; continue }
     if (c == "$" && substr(s, p + 1, 1) == "(") { j = closep(s, p + 2, n); if (!j) return 0; p = j + 1; prev = "x"; continue }
-    if (c == "#" && prev ~ /[ \t\n;&|(]/) { j = index(substr(s, p), "\n"); if (!j) return 0; p += j - 1; continue }
+    if (c == "#" && prev ~ /[ \t\n;&|(]/) { j = idx(s, p, "\n"); if (!j) return 0; p = j; continue }
     if (c == "<" && substr(s, p + 1, 1) == "<" && substr(s, p + 2, 1) != "<") {
       p += 2; hs[hn + 1] = 0; if (substr(s, p, 1) == "-") { p++; hs[hn + 1] = 1 }
       while (substr(s, p, 1) == " " || substr(s, p, 1) == "\t") p++
@@ -441,11 +596,7 @@ function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, line, probe, t, sta
     }
     if (c == "\n" && hn) {
       p++
-      for (k = 1; k <= hn; k++) while (p <= n) {
-        j = index(substr(s, p), "\n"); line = j ? substr(s, p, j - 1) : substr(s, p); p += j ? j : n - p + 1
-        probe = line; if (hs[k]) sub(/^\t+/, "", probe)
-        if (probe == hd[k]) break
-      }
+      for (k = 1; k <= hn; k++) p = heredoc(s, p, n, hd[k], hs[k])
       hn = 0; prev = "\n"; continue
     }
     if (c == "(") depth++
@@ -456,6 +607,7 @@ function closep(s, p, n,   depth, c, j, prev, hn, hd, hs, k, line, probe, t, sta
 }
 function dqskip(s, p, n,   c, j) {
   while (p <= n) {
+    if (match(substr(s, p, 256), /^[^\\"$`]+/)) { p += RLENGTH; continue }
     c = substr(s, p, 1)
     if (c == "\\") { p += 2; continue }
     if (c == "\"") return p + 1
@@ -469,44 +621,43 @@ function dqskip(s, p, n,   c, j) {
 function subs_in(t, d, at,   p, n, c, j) {
   n = length(t); p = 1
   while (p <= n) {
+    if (match(substr(t, p, 256), /^[^\\$`]+/)) { p += RLENGTH; continue }
     c = substr(t, p, 1)
     if (c == "\\") { p += 2; continue }
     if (c == "$" && substr(t, p + 1, 1) == "(") { j = closep(t, p + 2, n); addsub(d, j ? substr(t, p + 2, j - p - 2) : substr(t, p + 2), at, "s"); p = j ? j + 1 : n + 1; continue }
-    if (c == "`") { j = index(substr(t, p + 1), "`"); addsub(d, j ? substr(t, p + 1, j - 1) : substr(t, p + 1), at, "s"); p = j ? p + j + 1 : n + 1; continue }
+    if (c == "`") { j = idx(t, p + 1, "`"); addsub(d, j ? substr(t, p + 1, j - p - 1) : substr(t, p + 1), at, "s"); p = j ? j + 1 : n + 1; continue }
     p++
   }
 }
-function lex(s, d,   n, p, c, c2, j, t, hn, hi, line, probe, body, start, strip) {
-  NT[d] = 0; NS[d] = 0; LW = ""; LF = ""; LIN = 0; LRED = 0; hn = 0
-  n = length(s); p = 1
+function lex(s, d,   n, p, c, c2, j, t, hn, hi, start, strip, clk) {
+  NT[d] = 0; NS[d] = 0; LW = ""; LB = ""; LC = ""; LF = ""; LIN = 0; LRED = 0; LBR = 0; GD = 0; hn = 0
+  n = length(s); p = 1; clk = 1000
+  if ((STEPS += n) > 262144 && DENY == "") DENY = R_BIG
   while (p <= n) {
     if (DENY != "") return
+    if (p >= clk) { clock(); clk = p + 1000 }
+    # plain characters, taken as one run (one character at a time made a long word cost its length squared)
+    if (match(substr(s, p, 256), /^[A-Za-z0-9_.\/,+%@^!:=-]+/)) { app(substr(s, p, RLENGTH)); LIN = 1; p += RLENGTH; continue }
     c = substr(s, p, 1)
     if (c == "\\") {
       c2 = substr(s, p + 1, 1)
-      if (c2 != "\n" && p < n) { LW = LW c2; flag("q"); LIN = 1 }
+      if (c2 != "\n" && p < n) { app(c2); flag("q"); LIN = 1 }
       p += 2; continue
     }
-    if (c == "\047") { j = index(substr(s, p + 1), "\047"); if (!j) j = n - p + 1; quoted(substr(s, p + 1, j - 1)); p += j + 1; continue }
+    if (c == "\047") { j = idx(s, p + 1, "\047"); if (!j) j = n + 1; quoted(substr(s, p + 1, j - p - 1)); p = j + 1; continue }
     if (c == "$" && substr(s, p + 1, 1) == "\047") { p = ansi(s, p + 2, n); continue }
     if (c == "$" && substr(s, p + 1, 1) == "\"") { p++; continue }
     if (c == "\"") { p = dq(s, p + 1, n, d); continue }
     if (c == "$") { p = dollar(s, p, n, d); LIN = 1; continue }
     if (c == "`") { p = tick(s, p + 1, n, d); LIN = 1; continue }
     if (c == " " || c == "\t" || c == "\r") { endw(d); p++; continue }
-    if (c == "#" && !LIN) { j = index(substr(s, p), "\n"); if (!j) break; p += j - 1; continue }
+    if (c == "#" && !LIN) { j = idx(s, p, "\n"); if (!j) break; p = j; continue }
     if (c == "\n") {
       endw(d); op(d, ";"); p++
       for (hi = 1; hi <= hn; hi++) {
-        body = ""
-        while (p <= n) {
-          j = index(substr(s, p), "\n"); line = j ? substr(s, p, j - 1) : substr(s, p); p += j ? j : n - p + 1
-          probe = line; if (HS[hi]) sub(/^\t+/, "", probe)
-          if (probe == HD[hi]) break
-          body = body probe "\n"
-        }
-        HB[d, HT[hi]] = body
-        if (!HQ[hi]) subs_in(body, d, HT[hi])
+        p = heredoc(s, p, n, HD[hi], HS[hi])
+        HB[d, HT[hi]] = HBODY
+        if (!HQ[hi]) subs_in(HBODY, d, HT[hi])
       }
       hn = 0; continue
     }
@@ -517,6 +668,16 @@ function lex(s, d,   n, p, c, c2, j, t, hn, hi, line, probe, body, start, strip)
       if (c2 == ">") { p += 2; if (substr(s, p, 1) == ">") p++; red(d, ">"); continue }
       op(d, "&"); p++; continue
     }
+    # a glob group: ( inside a word, or where no command starts, up to its ) with | between (zsh reads
+    # cat ~/.wolfmux/(memory|x) as one word); =( ) at the start of a word is a process substitution in zsh
+    if (c == "(" && LIN && LW == "" && LB == "=" && LF == "") {
+      j = closep(s, p + 1, n); t = j ? substr(s, p + 1, j - p - 1) : substr(s, p + 1)
+      addsub(d, t, NT[d] + 1, "p"); LB = ""; LC = ""; app("\003"); flag("$"); flag("P")
+      p = j ? j + 1 : n + 1; continue
+    }
+    if (c == "(" && (GD || (substr(s, p + 1, 1) != ")" && (LIN ? (LW != "" || LB !~ /^[A-Za-z_][A-Za-z0-9_]*\+?=$/) : !cmdpos(d))))) { GD++; app("\006"); flag("G"); LIN = 1; p++; continue }
+    if (GD && c == "|") { app("\007"); p++; continue }
+    if (GD && c == ")") { GD--; app("\010"); p++; continue }
     if (c == "|") {
       endw(d); c2 = substr(s, p + 1, 1)
       if (c2 == "|") { op(d, "||"); p += 2; continue }
@@ -527,10 +688,10 @@ function lex(s, d,   n, p, c, c2, j, t, hn, hi, line, probe, body, start, strip)
       c2 = substr(s, p + 1, 1)
       if (c2 == "(") {
         j = closep(s, p + 2, n); t = j ? substr(s, p + 2, j - p - 2) : substr(s, p + 2)
-        addsub(d, t, NT[d] + 1, "p"); LW = LW "\003"; flag("$"); flag("P"); LIN = 1
+        addsub(d, t, NT[d] + 1, "p"); app("\003"); flag("$"); flag("P"); LIN = 1
         p = j ? j + 1 : n + 1; continue
       }
-      if (LIN && LF == "" && LW ~ /^[0-9]+$/) { LW = ""; LIN = 0 }
+      if (LIN && LF == "" && LW == "" && LB ~ /^[0-9]+$/) { LB = ""; LC = ""; LIN = 0 }
       endw(d)
       if (substr(s, p, 3) == "<<<") { red(d, "<<<"); p += 3; continue }
       if (c == "<" && c2 == "<") {
@@ -546,10 +707,10 @@ function lex(s, d,   n, p, c, c2, j, t, hn, hi, line, probe, body, start, strip)
       if (c2 == ">" || c2 == "|" || c2 == "&" || (c == "<" && c2 == ">")) { t = t c2; p++ }
       red(d, t); continue
     }
-    if (c == "~" && (!LIN || LW ~ /[=:]$/)) { p = tilde(s, p, n); LIN = 1; continue }
+    if (c == "~" && (!LIN || LC == "=" || LC == ":")) { p = tilde(s, p, n); LIN = 1; continue }
     if (c == "*" || c == "?" || c == "[") flag("g")
-    if (c == "{") { j = index(substr(s, p), "}"); if (j && substr(s, p, j) ~ /,|\.\./) flag("g") }
-    LW = LW c; LIN = 1; p++
+    if (c == "{") LBR = 1 # a brace expansion when the word has a , or .. before a } (endw)
+    app(c); LIN = 1; p++
   }
   endw(d)
 }
@@ -567,7 +728,7 @@ function collect(d, i,   n) {
   CE[d] = i
   return i
 }
-function join(d, a, z,   t, k) { t = ""; for (k = a; k <= z; k++) t = t (k > a ? " " : "") A[d, k]; return t }
+function join(d, a, z,   k, n, pc) { n = 0; for (k = a; k <= z; k++) pc[++n] = (k > a ? " " : "") A[d, k]; return glue(pc, 1, n) }
 function addpi(d, t) { NPI[d]++; PI[d, NPI[d]] = t }
 function hasopt(d, p, letter, long,   k, w) {
   for (k = p + 1; k <= CM[d]; k++) { w = A[d, k]; if ((w ~ ("^-[A-Za-z]*" letter) && w !~ /^--/) || (long != "" && index(w, long) == 1)) return 1 }
@@ -579,7 +740,7 @@ function hasopt(d, p, letter, long,   k, w) {
 function prog(d, i,   m, w, b, j, c, arg) {
   m = CM[d]; PENVI = 0; PEXECC = 0; NPI[d] = 0
   while (i <= m) {
-    w = A[d, i]; b = tolower(base(w))
+    w = A[d, i]; b = gname(w, AF[d, i])
     if (w ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/ || w ~ /^(!|\{|\}|if|then|else|elif|do|while|until|builtin|nohup|setsid|noglob)$/) { i++; continue }
     if (w == "time") { i++; while (i <= m && A[d, i] ~ /^-/) i++; continue }
     if (w == "command") { if (i < m && A[d, i + 1] ~ /^-[A-Za-z]*[vV]/) return i; i++; while (i <= m && A[d, i] ~ /^-/) i++; continue }
@@ -597,11 +758,10 @@ function prog(d, i,   m, w, b, j, c, arg) {
         if (w ~ /^--(unset|chdir)$/) { i += 2; continue }
         if (w ~ /^--/) { i++; continue }
         if (w ~ /^-/) {
-          for (j = 2; j <= length(w); j++) {
-            c = substr(w, j, 1)
-            if (c == "i") PENVI = 1
-            if (index("uPSC", c)) { arg = substr(w, j + 1); if (arg == "") { arg = (i < m) ? A[d, i + 1] : ""; i++ } if (c == "S") addpi(d, arg); break }
-          }
+          # -i before the first option that takes a value (u P S C), which takes the rest or the next word
+          j = match(w, /[uPSC]/)
+          if (index(j ? substr(w, 1, j - 1) : w, "i")) PENVI = 1
+          if (j) { c = substr(w, j, 1); arg = substr(w, j + 1); if (arg == "") { arg = (i < m) ? A[d, i + 1] : ""; i++ } if (c == "S") addpi(d, arg) }
           i++; continue
         }
         break
@@ -630,7 +790,7 @@ function progrules(d, p,   m, b, k, w, start, neg) {
   m = CM[d]
   if (PENVI || PEXECC) return R_ID
   if (p < 1 || p > m) return ""
-  b = tolower(base(A[d, p]))
+  b = gname(A[d, p], AF[d, p])
   if (b == "tmux") return R_TMUX
   sub(/@.*$/, "", b)
   start = 0
@@ -672,7 +832,7 @@ function slots(d, p,   m, b, k, w, takes, longs, pats, gp, pat, gotpat, j, c, e,
   m = CM[d]; WALKS = 0; TOOL = ""
   for (k = 1; k <= m; k++) { SO[d, k] = 0; SP[d, k] = 0 }
   if (p < 1) return
-  b = tolower(base(A[d, p])); TOOL = b; k0 = p + 1
+  b = gname(A[d, p], AF[d, p]); TOOL = b; k0 = p + 1
   takes = ""; longs = ""; pats = "e"; gp = "ef"; pat = 0; isgrep = 0
   if (b ~ /^(grep|egrep|fgrep|zgrep|ggrep)$/) { takes = "ABCDdefm"; longs = "|regexp|file|include|exclude|exclude-dir|context|after-context|before-context|max-count|directories|devices|label|binary-files|"; pat = 1; isgrep = 1 }
   else if (b == "rg") { WALKS = 1; takes = "ABCEMTdefgjmrt"; pats = "eg"; longs = "|regexp|file|glob|iglob|type|type-not|type-add|type-clear|max-count|context|after-context|before-context|max-depth|maxdepth|threads|replace|sort|sortr|max-filesize|encoding|ignore-file|pre|pre-glob|colors|color|engine|path-separator|context-separator|field-match-separator|field-context-separator|dfa-size-limit|regex-size-limit|max-columns|hostname-bin|hyperlink-format|"; pat = 1 }
@@ -723,7 +883,11 @@ function slots(d, p,   m, b, k, w, takes, longs, pats, gp, pat, gotpat, j, c, e,
 function walkmsg(tool, w) { return tool " walks all of " w ", which holds the leads\047 private memory folders (~/.wolfmux/memory), their conversations, Claude Code\047s records or its temporary folder; search a narrower folder." }
 
 # --- paths: canon(p) makes p plain (.., ., //, and the symlinks guard_bash found, part by part)
-function canon(p,   n, parts, k, seg, cnt, st, i, cur, tp, m) {
+# Every step is linear in the path: a path with no //, . or .. part and no link known is plain already; the
+# prefixes looked up in LINK (lower case, pre[]) are built only up to the longest link (MAXLINK); the result is
+# glued, not added to part by part.
+function canon(p,   n, parts, k, seg, cnt, st, i, pre, tp, m) {
+  if (!NLINK && substr(p, 1, 1) == "/" && p !~ /\/\/|\/\.\.?(\/|$)/) { if (length(p) > 1 && substr(p, length(p)) == "/") p = substr(p, 1, length(p) - 1); return p }
   n = split(p, parts, "/"); cnt = 0
   for (k = 1; k <= n; k++) {
     seg = parts[k]
@@ -731,14 +895,49 @@ function canon(p,   n, parts, k, seg, cnt, st, i, cur, tp, m) {
     if (seg == "..") { if (cnt) cnt--; continue }
     st[++cnt] = seg
     if (NLINK) {
-      cur = ""; for (i = 1; i <= cnt; i++) cur = cur "/" st[i]
-      if (tolower(cur) in LINK) { m = split(LINK[tolower(cur)], tp, "/"); cnt = 0; for (i = 1; i <= m; i++) if (tp[i] != "") st[++cnt] = tp[i] }
+      pre[cnt] = lpre(pre, cnt, seg)
+      if (pre[cnt] in LINK) { m = split(LINK[pre[cnt]], tp, "/"); cnt = 0; for (i = 1; i <= m; i++) if (tp[i] != "") { st[++cnt] = tp[i]; pre[cnt] = lpre(pre, cnt, tp[i]) } }
     }
   }
-  cur = ""; for (i = 1; i <= cnt; i++) cur = cur "/" st[i]
-  return cur == "" ? "/" : cur
+  if (!cnt) return "/"
+  for (i = 1; i <= cnt; i++) st[i] = "/" st[i]
+  return glue(st, 1, cnt)
+}
+# lpre(pre, i, seg): the lower-case path of parts 1..i, "\005" once it is longer than any link
+function lpre(pre, i, seg,   b) {
+  b = (i > 1) ? pre[i - 1] : ""
+  if (b == "\005" || length(b) + 1 + length(seg) > MAXLINK) return "\005"
+  return b "/" tolower(seg)
 }
 function rpath(v, here) { v = rep(v, "\002", here); if (substr(v, 1, 1) == "/") return canon(v); return canon(here "/" v) }
+# prosepath(v, here): prose that holds a "/" may still be a path (cat "Library/Application Support/../../x"):
+# the path the whole text names from here (PRP), then each blank-separated part with a "/" (one that starts
+# with ~ or / in full, any other from here, where naming .wolfmux/memory alone is no path)
+function prosepath(v, here,   r, n, pt, k, w, name) {
+  PRP = ""
+  if (!index(v, "/")) return ""
+  PRP = rpath(v, here)
+  if (!inown(PRP) && ++RESOLVED > 300 && DENY == "") DENY = R_SPLIT
+  if ((r = lit(PRP, 1)) != "") return r
+  cand(PRP)
+  n = split(v, pt, /[ \t\n]+/)
+  for (k = 1; k <= n; k++) {
+    w = pt[k]
+    if (!index(w, "/") || ((here, w) in PSEEN)) continue
+    PSEEN[here, w] = 1
+    if (++PATHS % 50 == 0) clock()
+    if (DENY != "") return DENY
+    if (substr(w, 1, 1) == "~" && match(substr(w, 1, 256), /^~[A-Za-z0-9._+-]*\//)) {
+      name = substr(w, 2, RLENGTH - 2)
+      if (name == "" || name == USERN) w = HOME substr(w, RLENGTH)
+      else if (name == "+") w = here substr(w, RLENGTH)
+      else if (name != "-") w = "/Users/" name substr(w, RLENGTH)
+      if ((r = lit(rpath(w, here))) != "") return r
+    } else if (substr(w, 1, 1) == "/") { if ((r = lit(canon(w))) != "") return r }
+    else if ((r = lit(rpath(w, here), 1)) != "") return r
+  }
+  return DENY
+}
 # wpath(v, here): the path a word names (an option or assignment: its value), "" for none; a path that ends
 # outside the own worktree counts against the budget
 function wpath(v, here,   r) {
@@ -756,9 +955,10 @@ function cand(p,   l, k, start, q, n) {
   for (k = 1; k <= NOWN; k++) if (inside(l, OWN[k])) { start = length(OWN[k]) + 1; break }
   if (!start && match(l, /^(\/private)?\/(tmp|var\/folders)\//)) start = RLENGTH
   if (!start) return
+  # up to 4096 bytes: the system names no longer path, so a link further on is never reached
   q = start
-  while ((n = index(substr(p, q + 1), "/")) > 0) { emit(substr(p, 1, q + n - 1)); q += n }
-  emit(p)
+  while ((n = idx(p, q + 1, "/")) > 0 && n <= 4097) { emit(substr(p, 1, n - 1)); q = n }
+  if (length(p) <= 4096) emit(p)
 }
 function emit(x) {
   if (x in SEEN) return
@@ -790,6 +990,7 @@ function wild(v, here,   pre, dir, comp, l, r, re) {
   v = rep(v, "\002", here)
   if (v ~ /^-/) { if (!index(v, "=")) return ""; v = substr(v, index(v, "=") + 1) }
   else if (v ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) v = substr(v, index(v, "=") + 1)
+  if (length(v) > 4096) return "that command has a wildcard word over 4096 characters, too long for the guard to follow; name the files."
   if (!match(v, /[*?[]|\{[^}]*(,|\.\.)/)) return ""
   pre = substr(v, 1, RSTART - 1)
   dir = pre; sub(/[^\/]*$/, "", dir)
@@ -813,6 +1014,8 @@ function gitrules(d, p,   m, k, j, w, sc, name) {
   if (sc == "worktree") { for (j = k + 1; j <= m; j++) if (A[d, j] !~ /^-/) { if (A[d, j] ~ /^(add|remove|move|prune|repair|lock|unlock)$/) return R_WT; break } }
   if (sc == "branch") for (j = k + 1; j <= m; j++) { w = A[d, j]; if (w ~ /^--(delete|move|copy|force)$/ || (w ~ /^-[A-Za-z]*[dDmMcCf]/ && w !~ /^--/)) return R_BRANCH }
   if (sc == "update-ref") return R_BRANCH
+  # an index entry of mode 120000 is a link, made in the worktree by the next checkout
+  if (sc == "update-index") for (j = k + 1; j <= m; j++) { w = A[d, j]; if (w == "--index-info" || w ~ /^(--cacheinfo=)?120000(,|$)/ || (A[d, j - 1] == "--cacheinfo" && index(AF[d, j], "$"))) return R_LINKRT }
   if (sc == "switch") return R_SWITCH
   if (sc == "checkout") {
     name = ""
@@ -847,13 +1050,13 @@ function rootrules(d, p, b, here,   m, k, w, v) {
 }
 # a read-only checkout whose path has a blank in it, written without quotes (rm -rf $ROOT/src): the shell splits it,
 # but the command still means that checkout (and would hit another folder). The words joined again, read as text.
-function roottext(d, p, b,   k, j, w, r, sp) {
+function roottext(d, p, b,   k, j, w, r, sp, n, pc) {
   sp = 0
   for (k = 1; k <= NROOT; k++) if (index(ROOT[k], " ")) sp = 1
   if (!sp) return ""
-  w = ""
-  for (k = CS[d]; k < CE[d]; k++) if (TT[d, k] == "r" || !isprose(TV[d, k], TF[d, k])) w = w " " TV[d, k]
-  w = tolower(w)
+  n = 0
+  for (k = CS[d]; k < CE[d]; k++) if (TT[d, k] == "r" || !isprose(TV[d, k], TF[d, k])) pc[++n] = " " TV[d, k]
+  w = tolower(glue(pc, 1, n))
   for (k = 1; k <= NROOT; k++) if (index(ROOT[k], " ")) w = rep(w, ROOT[k], "@root@")
   if (!index(w, "@root@")) return ""
   if (w ~ /(^| )(>|>>|>\||>&|<>) @root@/) return R_ROOT
@@ -863,11 +1066,15 @@ function roottext(d, p, b,   k, j, w, r, sp) {
   if (b ~ /^(cp|rsync|ditto)$/ && w ~ /@root@[^ ]*$/) return R_ROOT
   return ""
 }
+# a link (ln, gln, link, cp -s or -l): refused when it leads outside the worktree, when a word of it is built at
+# run time, or when its words come from its input (xargs ln); a word with a blank is a path here too
 function lnrule(d, p, here,   m, k, w, r, l) {
   m = CM[d]
+  if (xargsto(d, p)) return R_LINKRT
+  for (k = p + 1; k <= m; k++) if (index(AF[d, k], "$")) return R_LINKRT
   for (k = p + 1; k <= m; k++) {
     w = A[d, k]
-    if (w ~ /^-/ || isprose(w, AF[d, k]) || index(AF[d, k], "$")) continue
+    if (w ~ /^-/) continue
     r = rpath(w, here); l = tolower(r)
     if (inown(r) || inany(r, SCR, NSCR)) continue
     if (inside(l, LHOME) || substr(l, 1, 7) == "/users/" || inany(r, CT, NCT) || holds(l) || lit(r) != "") return R_LINK
@@ -881,37 +1088,43 @@ function cdto(d, p, b, here,   m, k, w) {
   if (k > m) return (b == "cd") ? canon(HOME) : ""
   w = A[d, k]
   if (w == "-") return OLD[d]
-  if (index(AF[d, k], "$") || index(AF[d, k], "g")) return ""
+  if (index(AF[d, k], "g")) return ""
+  # built at run time: followed as if every run-time part were empty, unless nothing is left (cd "$(git …)")
+  if (index(AF[d, k], "$") && (w = rtstrip(w)) == "") return ""
+  # a group word is followed only when it stands for one word (cd ~/(src)); with more it is a wildcard
+  if (index(AF[d, k], "G")) { if (galts(w, AF[d, k], ALT) > 1 || GSTAR) return ""; w = ALT[1] }
   w = rpath(w, here)
   if (b == "pushd") DS[d, ND[d]++] = here
   return w
 }
 # what a command prints into a pipe, when it can be read off the text: echo, printf, cat of a heredoc or <<<
-function producer(d, p,   m, b, k, t, j) {
-  m = CM[d]; t = ""
+function producer(d, p,   m, b, k, n, pc) {
+  m = CM[d]
   if (p < 1) return ""
-  b = tolower(base(A[d, p]))
+  b = gname(A[d, p], AF[d, p])
   if (b == "echo") { k = p + 1; while (k <= m && A[d, k] ~ /^-[neE]+$/) k++; return join(d, k, m) }
-  if (b == "printf") { k = p + 1; if (k <= m && A[d, k] == "-v") k += 2; for (; k <= m; k++) t = t A[d, k] "\n"; return t }
+  if (b == "printf") { k = p + 1; if (k <= m && A[d, k] == "-v") k += 2; n = 0; for (; k <= m; k++) pc[++n] = A[d, k] "\n"; return glue(pc, 1, n) }
   if (b == "cat" && p == m) return stdintext(d)
   return ""
 }
-function stdintext(d,   k, j, t) {
-  t = ""
-  for (k = 1; k <= CN[d]; k++) { j = CRD[d, k]; if (TV[d, j] == "<<") t = t HB[d, j]; else if (TV[d, j] == "<<<" && CRT[d, k]) t = t TV[d, CRT[d, k]] "\n" }
-  return t
+function stdintext(d,   k, j, n, pc) {
+  n = 0
+  for (k = 1; k <= CN[d]; k++) { j = CRD[d, k]; if (TV[d, j] == "<<") pc[++n] = HB[d, j]; else if (TV[d, j] == "<<<" && CRT[d, k]) pc[++n] = TV[d, CRT[d, k]] "\n" }
+  return glue(pc, 1, n)
 }
 function runstdin(d, here, inp,   t) { t = stdintext(d); if (t == "") t = inp; if (t == "") return ""; return run(t, d + 1, here) }
-# a <( ) whose output a shell or source reads: what its last command prints
-function runproc(d, tok, here,   k, i, e, t) {
-  for (k = 1; k <= NS[d]; k++) if (SA[d, k] == tok && SK[d, k] == "p") {
+# a <( ) whose output a shell or source reads, or (kind s) a $( ) or ` ` that is the text of sh -c or eval: what
+# its last command prints
+function runproc(d, tok, here, kind,   k, i, e, t, r) {
+  for (k = 1; k <= NS[d]; k++) if (SA[d, k] == tok && SK[d, k] == (kind == "" ? "p" : kind)) {
     if (d + 1 > 3) return R_NEST
     lex(SX[d, k], d + 1); t = ""; i = 1
     while (i <= NT[d + 1]) { e = collect(d + 1, i); if (CM[d + 1] > 0) t = producer(d + 1, prog(d + 1, 1)); i = e + 1 }
-    if (t != "") return run(t, d + 1, here)
+    if (t != "" && (r = run(t, d + 1, here)) != "") return r
   }
   return ""
 }
+function xargsto(d, k,   j) { for (j = 1; j < k; j++) if (gname(A[d, j], AF[d, j]) ~ /^g?xargs$/) return 1; return 0 }
 # what this command runs as another command: the script of sh -c (options before or after -c, --), a shell
 # that reads stdin (a heredoc, <<<, a pipe from echo/printf/cat, -s, -, /dev/stdin, <( )), eval, source of
 # stdin, env -S, npx -c, ssh HOST TEXT (in your home), watch TEXT, make -f - with a heredoc
@@ -920,7 +1133,7 @@ function inner(d, p, b, here, inp,   m, k, j, w, hasc, stdin, r, t) {
   for (k = 1; k <= NPI[d]; k++) if ((r = run(PI[d, k], d + 1, here)) != "") return r
   for (k = 1; k <= m; k++) {
     w = A[d, k]
-    if (isprose(w, AF[d, k]) || tolower(base(w)) !~ SHELLS) continue
+    if (isprose(w, AF[d, k]) || gname(w, AF[d, k]) !~ SHELLS) continue
     hasc = 0; stdin = 0; j = k + 1
     while (j <= m) {
       w = A[d, j]
@@ -931,12 +1144,19 @@ function inner(d, p, b, here, inp,   m, k, j, w, hasc, stdin, r, t) {
       if (w ~ /^[-+][A-Za-z]+$/) { if (w ~ /^-[A-Za-z]*c/) hasc = 1; if (w ~ /^-[A-Za-z]*s/) stdin = 1; j++; continue }
       break
     }
-    if (hasc) { if (j <= m && (r = run(A[d, j], d + 1, here)) != "") return r; continue }
+    if (hasc) {
+      if (j <= m && (r = run(A[d, j], d + 1, here)) != "") return r
+      # the script is what a $( ) in it prints (bash -c "$(printf …)"); under xargs, its input may be the script
+      if (j <= m && index(AF[d, j], "$") && (r = runproc(d, CW[d, j], here, "s")) != "") return r
+      if (xargsto(d, k) && (r = runstdin(d, here, inp)) != "") return r
+      continue
+    }
     if (stdin || j > m || A[d, j] ~ /^\/dev\/(stdin|fd\/0)$/) { if ((r = runstdin(d, here, inp)) != "") return r; continue }
     if (index(AF[d, j], "P") && (r = runproc(d, CW[d, j], here)) != "") return r
   }
   if (p < 1) return ""
   if (b == "eval" && p < m && (r = run(join(d, p + 1, m), d + 1, here)) != "") return r
+  if (b == "eval") for (k = p + 1; k <= m; k++) if (index(AF[d, k], "$") && (r = runproc(d, CW[d, k], here, "s")) != "") return r
   if ((b == "source" || b == ".") && p < m) {
     if (A[d, p + 1] ~ /^(-|\/dev\/stdin|\/dev\/fd\/0)$/) { if ((r = runstdin(d, here, inp)) != "") return r }
     else if (index(AF[d, p + 1], "P") && (r = runproc(d, CW[d, p + 1], here)) != "") return r
@@ -958,24 +1178,36 @@ function inner(d, p, b, here, inp,   m, k, j, w, hasc, stdin, r, t) {
 }
 
 # --- the two passes
-function checkA(d, here,   m, k, j, v, r, p, q, b) {
+# alit(v, f, here): lit() on the word, and on every word a group word stands for
+function alit(v, f, here,   n, k, r) {
+  if ((r = lit(rep(v, "\002", here))) != "" || !index(f, "G")) return r
+  n = galts(v, f, ALT)
+  for (k = 1; k <= n; k++) if ((r = lit(rep(ALT[k], "\002", here))) != "") return r
+  return ""
+}
+function checkA(d, here,   m, k, j, v, r, p, q, b, n, i) {
   m = CM[d]
-  for (k = 1; k <= m; k++) { v = A[d, k]; if (!isprose(v, AF[d, k]) && (r = lit(rep(v, "\002", here))) != "") return r }
-  for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) { v = TV[d, j]; if (!isprose(v, TF[d, j]) && (r = lit(rep(v, "\002", here))) != "") return r }
+  for (k = 1; k <= m; k++) {
+    v = A[d, k]
+    if (!isprose(v, AF[d, k]) && ((r = alit(v, AF[d, k], here)) != "" || (index(AF[d, k], "$") && (r = alit(rtstrip(v), AF[d, k], here)) != ""))) return r
+  }
+  for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) { v = TV[d, j]; if (!isprose(v, TF[d, j]) && (r = alit(v, TF[d, j], here)) != "") return r }
   p = prog(d, 1)
   if ((r = progrules(d, p)) != "" || (r = identity(d)) != "") return r
   if (p < 1) return ""
-  b = tolower(base(A[d, p]))
+  b = gname(A[d, p], AF[d, p])
   for (k = p + 1; k <= m; k++) if (A[d, k] ~ /^-(exec|execdir|ok|okdir)$/ || ((b == "fd" || b == "fdfind") && A[d, k] ~ /^(-x|-X|--exec|--exec-batch)$/)) {
     q = prog(d, k + 1)
     if ((r = progrules(d, q)) != "") return r
+    # its words are filled in at run time ({})
+    if (q && gname(A[d, q], AF[d, q]) ~ LNS) return R_LINKRT
   }
   slots(d, p)
   if (WALKS) for (k = p + 1; k <= m; k++) {
     v = A[d, k]
     if (SO[d, k] == 1 || SO[d, k] == 3 || SP[d, k] || isprose(v, AF[d, k]) || index(AF[d, k], "$")) continue
-    v = rep(v, "\002", here)
-    if (substr(v, 1, 1) == "/" && holds(tolower(canon(v)))) return walkmsg(TOOL, A[d, k])
+    n = galts(v, AF[d, k], ALT)
+    for (i = 1; i <= n; i++) { v = rep(ALT[i], "\002", here); if (substr(v, 1, 1) == "/" && holds(tolower(canon(v)))) return walkmsg(TOOL, A[d, k]) }
   }
   return ""
 }
@@ -989,38 +1221,67 @@ function phaseA(d, here,   i, e, r) {
   }
   return ""
 }
-function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, tgt, any, rp) {
+# globby(v, f, gs): the word goes to wild() (a wildcard written out, or a group read as "*")
+function globby(v, f, gs) { return gs || (index(f, "g") && v ~ /[*?[]|\{[^}]*(,|\.\.)/) }
+function checkB(d, here, s, e, topipe,   m, k, j, v, r, p, b, walks, tool, inp, tgt, any, rp, n, i, gs) {
   m = CM[d]; NEWHERE = ""
   inp = PROD[d]; PROD[d] = ""
   for (k = 1; k <= NS[d]; k++) if (SA[d, k] >= s && SA[d, k] < e && (r = run(SX[d, k], d + 1, here)) != "") return r
   collect(d, s)
-  p = prog(d, 1); b = (p ? tolower(base(A[d, p])) : "")
+  p = prog(d, 1); b = (p ? gname(A[d, p], AF[d, p]) : "")
   slots(d, p); walks = WALKS; tool = TOOL; any = 0
+  # every word a group word stands for is checked; with more than one, the group is also a wildcard
   for (k = 1; k <= m; k++) {
     RP[d, k] = ""; v = A[d, k]
-    if (isprose(v, AF[d, k]) || SP[d, k] || SO[d, k] == 3 || (SO[d, k] == 1 && !index(v, "=")) || index(AF[d, k], "$")) continue
-    if (index(AF[d, k], "g")) { if ((r = wild(v, here)) != "") return r; continue }
-    rp = wpath(v, here)
-    if (rp == "") continue
-    RP[d, k] = rp
-    if ((r = lit(rp)) != "") return r
-    cand(rp)
-    if (walks && k > p && SO[d, k] != 1) { if (SO[d, k] == 0) any = 1; if (holds(tolower(rp))) return walkmsg(tool, v) }
+    if (SP[d, k] || SO[d, k] == 3 || (SO[d, k] == 1 && !index(v, "="))) continue
+    # built at run time: the path it names when every run-time part is empty (cd ~/.wolfmux && cat mem${x}ory/x)
+    if (index(AF[d, k], "$")) {
+      v = rtstrip(v)
+      if (isprose(v, AF[d, k])) { if ((r = prosepath(v, here)) != "") return r }
+      else if ((rp = wpath(v, here)) != "" && (r = lit(rp)) != "") return r
+      continue
+    }
+    # prose with a "/" is checked as a path too; a walking tool is refused when it names a folder that holds a
+    # private one, but it is no path word (find -name "a b/c" in ~ still walks ~)
+    if (isprose(v, AF[d, k])) {
+      if ((r = prosepath(v, here)) != "") return r
+      RP[d, k] = PRP
+      if (PRP != "" && walks && k > p && SO[d, k] != 1 && holds(tolower(PRP))) return walkmsg(tool, v)
+      continue
+    }
+    n = galts(v, AF[d, k], ALT); gs = GSTAR
+    if (n > 1 && (r = wild(gstar(v), here)) != "") return r
+    for (i = 1; i <= n; i++) {
+      v = ALT[i]
+      if (globby(v, AF[d, k], gs)) { if ((r = wild(v, here)) != "") return r; continue }
+      rp = wpath(v, here)
+      if (rp == "") continue
+      if (RP[d, k] == "" || inroot(rp)) RP[d, k] = rp
+      if ((r = lit(rp)) != "") return r
+      cand(rp)
+      if (walks && k > p && SO[d, k] != 1) { if (SO[d, k] == 0) any = 1; if (holds(tolower(rp))) return walkmsg(tool, v) }
+    }
   }
   if (DENY != "") return DENY
   if (walks && !any && p > 0 && tool !~ /tar$/ && holds(tolower(here))) return walkmsg(tool, here)
   for (k = 1; k <= CN[d]; k++) if ((j = CRT[d, k])) {
+    # a redirection target is a path even with a blank in it: never prose
     v = TV[d, j]
-    if (isprose(v, TF[d, j]) || index(TF[d, j], "$")) continue
-    if (index(TF[d, j], "g")) { if ((r = wild(v, here)) != "") return r; continue }
-    rp = rpath(v, here)
-    if ((r = lit(rp)) != "") return r
-    if (TV[d, CRD[d, k]] ~ />/ && inroot(rp)) return R_ROOT
-    cand(rp)
+    if (index(TF[d, j], "$")) { if ((v = rtstrip(v)) != "" && (r = lit(rpath(v, here))) != "") return r; continue }
+    n = galts(v, TF[d, j], ALT); gs = GSTAR
+    if (n > 1 && (r = wild(gstar(v), here)) != "") return r
+    for (i = 1; i <= n; i++) {
+      v = ALT[i]
+      if (globby(v, TF[d, j], gs)) { if ((r = wild(v, here)) != "") return r; continue }
+      rp = rpath(v, here)
+      if ((r = lit(rp)) != "") return r
+      if (TV[d, CRD[d, k]] ~ />/ && inroot(rp)) return R_ROOT
+      cand(rp)
+    }
   }
   if (b == "git" && (r = gitrules(d, p)) != "") return r
   if ((r = rootrules(d, p, b, here)) != "") return r
-  if ((b == "ln" || (b == "cp" && hasopt(d, p, "s", "--symbolic-link"))) && (r = lnrule(d, p, here)) != "") return r
+  if ((b ~ LNS || (b ~ /^g?cp$/ && (hasopt(d, p, "s", "--symbolic-link") || hasopt(d, p, "l", "--link")))) && (r = lnrule(d, p, here)) != "") return r
   tgt = ""
   if (b == "cd" || b == "pushd" || b == "popd") {
     tgt = cdto(d, p, b, here)
@@ -1060,23 +1321,46 @@ function run(text, d, here,   r) {
   if ((r = phaseA(d, here)) != "") return r
   return phaseB(d, here)
 }
-{ S = S (NR > 1 ? "\n" : "") $0 }
-END {
+# strs(text, here): the strings of a tool call (\001 between them), each read as one quoted word: the private
+# folders by name, then the path it names from here (a leading ~/ is the home folder); prose (a blank in it) goes
+# to prosepath
+function strs(text, here,   n, sv, k, v, r, rp) {
+  n = split(text, sv, "\001")
+  for (k = 1; k <= n; k++) {
+    v = sv[k]
+    if (v == "") continue
+    if (isprose(v, (v ~ /[ \t\n]/) ? "qp" : "q")) { if ((r = prosepath(v, here)) != "") return r; continue }
+    if (v == "~" || substr(v, 1, 2) == "~/") v = HOME substr(v, 2)
+    if ((r = lit(v)) != "") return r
+    if ((rp = wpath(v, here)) == "") continue
+    if ((r = lit(rp)) != "") return r
+    cand(rp)
+    if (DENY != "") return DENY
+  }
+  return ""
+}
+BEGIN {
   init()
-  r = run(S, 0, ENVIRON["GA_CWD"])
+  print "T" T0
+  if (ENVIRON["GA_MODE"] == "strings") r = strs(ENVIRON["GA_CMD"], ENVIRON["GA_CWD"])
+  else r = run(ENVIRON["GA_CMD"], 0, ENVIRON["GA_CWD"])
   if (r != "") { print "D" r; exit }
   for (k = 1; k <= NB; k++) print "B" BR[k]
   print "OK"
 }'
 
-# guard_bash <command> — sets GUARD_REASON when the command reaches outside (GUARD_SCAN, then the symlinks it
-# names, then git checkout of another branch)
+# guard_bash <command> [strings] — sets GUARD_REASON when the command reaches outside (GUARD_SCAN, then the
+# symlinks it names, then git checkout of another branch); with "strings", <command> is the strings of a tool
+# call, \001 after each, read as words (strs)
 guard_bash() {
-  local out line path links="" new pass=0 ok name checkouts=""
+  local out line path links="" new pass=0 ok name checkouts="" t0=""
   GUARD_REASON=""
+  # the size first, before any work (cmd_guard runs with LC_ALL=C: bytes; guard_check's jq hands over \001 for one
+  # over 65536 characters, so that bash never reads it): a bigger one is no command a worker types
+  if [ "${#1}" -gt 65536 ] || [ "$1" = $'\001' ]; then GUARD_REASON="that command is over 64 KB; split this command; the guard reads at most 64 KB." && return 0; fi
   while [ "$pass" -lt 4 ]; do
     pass=$((pass + 1)) new="" ok=0 checkouts=""
-    out="$(printf '%s' "$1" | GA_LINKS="$links" GA_CWD="$GUARD_CWD" GA_HOME="$HOME" GA_USER="${USER:-}" GA_BRANCH="$GUARD_BRANCH" \
+    out="$(GA_CMD="$1" GA_MODE="${2:-}" GA_T0="$t0" GA_LINKS="$links" GA_CWD="$GUARD_CWD" GA_HOME="$HOME" GA_USER="${USER:-}" GA_BRANCH="$GUARD_BRANCH" \
       GA_OWN="$GUARD_L_OWN" GA_SCR="$GUARD_L_SCR" GA_TREES="$GUARD_L_TREES" GA_STATE="$GUARD_L_STATE" GA_MEM="$GUARD_L_MEM" \
       GA_TR="$GUARD_L_TR" GA_CL="$GUARD_L_CL" GA_CT="$GUARD_L_CT" GA_ROOT="$GUARD_L_ROOT" GA_TRSHOW="$GUARD_TRANSCRIPTS" \
       GA_CTSHOW="${GUARD_CTMP[0]:-}" GA_RO="$GUARD_READONLY" LC_ALL=C /usr/bin/awk "$GUARD_SCAN" 2>/dev/null)"
@@ -1090,6 +1374,7 @@ guard_bash() {
           if guard_link "$path"; then new="$new$path"$'\t'"$GUARD_P"$'\n'; fi
           ;;
         B*) checkouts="$checkouts${line#B}"$'\n' ;;
+        T*) t0="${line#T}" ;; # the clock of the first pass: the next passes count from it
         OK) ok=1 ;;
       esac
     done <<<"$out"
@@ -1173,12 +1458,14 @@ guard_setup() {
 
 # guard_check — cmd_guard's work; the decision on stdout (nothing: allow)
 guard_check() {
-  local tool="" cwd="" command="" file="" target="" pattern="" path s i=0
-  local -a strings=()
+  local tool="" cwd="" command="" file="" target="" pattern="" path s i=0 all="" slashes
+  local -a strings=() cmds=()
   [ -n "${TEAM_ROLE:-}" ] && [ "$TEAM_ROLE" != "$WOLFMUX_LEAD_ROLE" ] || return 0
   [ -n "$JQ_BIN" ] && [ -n "${WOLFMUX_WORKTREE:-}" ] && [ -d "$WOLFMUX_WORKTREE" ] || return 0 # cannot tell: allow
-  # one jq call reads the hook's input on stdin: the tool, its folder, the strings the checks read (an MCP
-  # tool's: every string in its input, at most 100), each ended by a NUL
+  # one jq call reads the hook's input on stdin: the tool, its folder, the strings the checks read, each ended by
+  # a NUL. A tool the guard has no rules of its own for (an MCP tool, and any other: the hook runs for all) also
+  # hands over every string in its input (s…; \001 alone when they add up to over 64 KB) and the fields named
+  # command, cmd or script at any depth (c…), which may be shell text
   while IFS= read -r -d '' s; do
     case "$i" in
       0) tool="$s" ;;
@@ -1187,12 +1474,15 @@ guard_check() {
       3) file="$s" ;;
       4) target="$s" ;;
       5) pattern="$s" ;;
-      *) strings[${#strings[@]}]="$s" ;;
+      *) case "$s" in c*) cmds[${#cmds[@]}]="${s#c}" ;; s*) strings[${#strings[@]}]="${s#s}" ;; *) strings[${#strings[@]}]="$s" ;; esac ;;
     esac
     i=$((i + 1))
   done < <("$JQ_BIN" -j '([0] | implode) as $z
-    | [.tool_name, .cwd, .tool_input.command, (.tool_input.file_path // .tool_input.notebook_path), (.tool_input.file_path // .tool_input.path), .tool_input.pattern]
-      + (if ((.tool_name // "") | tostring | startswith("mcp__")) then [.tool_input | .. | strings][:100] else [] end)
+    | [.tool_name, .cwd, (.tool_input.command | if type == "string" and length > 65536 then "\u0001" else . end), (.tool_input.file_path // .tool_input.notebook_path), (.tool_input.file_path // .tool_input.path), .tool_input.pattern]
+      + (if ((.tool_name // "") | tostring | test("^(Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Bash|Monitor|PowerShell)$")) then []
+         else ([.tool_input | .. | strings]) as $s
+           | if ($s | map(length) | add // 0) > 65536 then ["s\u0001"]
+             else ($s | map("s" + .)) + [.tool_input | .. | objects | to_entries[] | select(.key | test("^(command|cmd|script)$")) | .value | strings | "c" + .] end end)
     | map((. // "" | tostring) + $z) | add' 2>/dev/null)
   [ -n "$tool" ] || return 0
   guard_setup
@@ -1256,14 +1546,34 @@ guard_check() {
         fi
       done
       ;;
-    mcp__*)
-      # An MCP tool's input has no fixed shape: every string that is an absolute path (or a file:// URL)
-      # counts. Another teammate's worktree, teamctl's state, the memory folders, the leads' conversations,
-      # Claude Code's records and its temporary folder are off limits for any of them; the lead's checkout only
-      # for a tool whose name says it changes things.
+    Bash | Monitor | PowerShell)
+      # Monitor runs its command in the same shell as Bash, and sends every line it prints back
+      [ -n "$command" ] || return 0
+      # A shell that runs inside a private folder reads it with every relative word
+      guard_private "$GUARD_CWD"
+      if [ -n "$GUARD_WHY" ]; then
+        guard_deny "this shell runs in $GUARD_CWD, a folder that is not yours to read; cd back into your worktree." && return 0
+      fi
+      guard_bash "$command"
+      if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON"; fi
+      ;;
+    *)
+      # An MCP tool, or any other tool (the hook runs for every tool): its input has no fixed shape, so every
+      # string that is an absolute path (or a file:// URL) counts. Another teammate's worktree, teamctl's state,
+      # the memory folders, the leads' conversations, Claude Code's records and its temporary folder are off
+      # limits for any of them; the lead's checkout only for a tool whose name says it changes things.
       for target in ${strings[@]+"${strings[@]}"}; do
-        case "$target" in file://localhost/*) target="${target#file://localhost}" ;; file:///*) target="${target#file://}" ;; esac
-        case "$target" in /* | "~"/*) ;; *) continue ;; esac
+        # leading blanks go; a file: URL in any letter case (nocasematch) with any number of slashes, localhost
+        # too, is its path; a relative path that climbs (../x, a/../../x) is read from the cwd
+        target="${target#"${target%%[![:space:]]*}"}"
+        case "$target" in
+          file:*)
+            target="${target:5}" slashes="${target%%[!/]*}" target="${target#"$slashes"}"
+            case "$target" in localhost/*) target="${target:9}" ;; esac
+            target="/$target"
+            ;;
+        esac
+        case "$target" in /* | "~" | "~"/* | . | .. | ./* | ../* | */.. | */../*) ;; *) continue ;; esac
         guard_phys "$target" "$cwd"
         path="$GUARD_P"
         if guard_inside "$path" "$GUARD_OWN"; then continue; fi
@@ -1284,16 +1594,18 @@ guard_check() {
           esac
         fi
       done
-      ;;
-    Bash)
-      [ -n "$command" ] || return 0
-      # A shell that runs inside a private folder reads it with every relative word
-      guard_private "$GUARD_CWD"
-      if [ -n "$GUARD_WHY" ]; then
-        guard_deny "this shell runs in $GUARD_CWD, a folder that is not yours to read; cd back into your worktree." && return 0
+      # every string as a quoted word of a command (the word checks of GUARD_SCAN), and command, cmd and script
+      # fields as shell text
+      for s in ${strings[@]+"${strings[@]}"}; do all="$all$s"$'\001'; done
+      [ "$all" = $'\001\001' ] && all=$'\001' # over 64 KB in all
+      if [ -n "$all" ]; then
+        guard_bash "$all" strings
+        if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON" && return 0; fi
       fi
-      guard_bash "$command"
-      if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON"; fi
+      for s in ${cmds[@]+"${cmds[@]}"}; do
+        guard_bash "$s"
+        if [ -n "$GUARD_REASON" ]; then guard_deny "$GUARD_REASON" && return 0; fi
+      done
       ;;
   esac
   return 0

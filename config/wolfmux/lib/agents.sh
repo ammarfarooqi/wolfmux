@@ -907,7 +907,8 @@ write_agent_settings() {
   if notify_wanted "$kind"; then notify_command="\"$TEAMCTL_SELF\" _notify"; fi
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
   # Workers only: agent teams off, so a worker can never become a second manager.
-  # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh).
+  # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh), for every tool (Monitor
+  #   runs shell text too, and a tool the guard does not know has its strings checked).
   # Everyone: notifications are teamctl's job inside a team (lib/notify.sh), and the
   #   notice inbox reaches the agent on Stop and on UserPromptSubmit (lib/inbox.sh).
   # Everyone: Claude Code's agent view is off (disableAgentView, and its environment switch
@@ -934,7 +935,7 @@ write_agent_settings() {
            + [{hooks: [{type: "command", command: $inbox_stop, timeout: 10}]}]),
          UserPromptSubmit: [{hooks: [{type: "command", command: $inbox_prompt, timeout: 10}]}]}}
     * (if $guard_command != ""
-       then {hooks: {PreToolUse: [{matcher: "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Bash|mcp__.*",
+       then {hooks: {PreToolUse: [{matcher: ".*",
                                    hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
     * (if $kind == "worker" and $mode == "lead"
        then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $permission_command, timeout: $timeout}]}]}}
@@ -974,6 +975,11 @@ cmd_run_agent() {
     WOLFMUX_BRANCH="$(reg_field "$role" branch)"
     WOLFMUX_REPO="$(reg_field "$role" repo)" # set only with --repo: that repository's own checkout is read-only too
     export WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_REPO
+    # Claude Code's Bash tool runs in CLAUDE_CODE_SHELL, else in $SHELL when that is bash or zsh (Claude Code
+    # 2.1.309). The guard reads a command the way bash does, so a worker's commands run in bash; on a Mac whose
+    # login shell is zsh they ran in zsh, where (a|b) is a glob group and =cmd a path lookup. The guard reads
+    # those two anyway (lib/guard.sh). Leads keep their own shell.
+    export SHELL=/bin/bash CLAUDE_CODE_SHELL=/bin/bash
     # A teammate spawned with --repo sits in another repository, and bd resolves its workspace
     # through git: without this it would look for Beads in THAT repository and find none or the
     # wrong one. The team's tasks and messages live in the project's workspace, so name it.

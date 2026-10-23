@@ -104,7 +104,7 @@ exec "$REAL_JQ" "$@"
 STUB
   chmod +x "$RESTORE_TEST/bin/"*
   export PATH="$RESTORE_TEST/bin:$PATH"
-  for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore brand inbox; do
+  for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore brand inbox memory; do
     . "$WOLFMUX_HOME/lib/$module.sh"
   done
   TEAMCTL_SELF="$REPO/bin/teamctl"
