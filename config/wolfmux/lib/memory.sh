@@ -66,16 +66,14 @@ memory_bytes() {
 }
 
 # memory_card <file> <cap> — the card, at most <cap> bytes, cut at the end of a line so that no
-# character is cut in half; MEMORY_CARD_CUT=1 when something was left out
+# character is cut in half (whether it was cut: memory_bytes against <cap>)
 memory_card() {
   local file="$1" cap="$2" last
-  MEMORY_CARD_CUT=0
   [ -f "$file" ] || return 0
   if [ "$(memory_bytes "$file")" -le "$cap" ]; then
     /bin/cat "$file"
     return 0
   fi
-  MEMORY_CARD_CUT=1
   last="$(/usr/bin/head -c "$cap" "$file" | /usr/bin/tail -c 1 | /usr/bin/od -An -c | /usr/bin/tr -d ' ')"
   # A cut that does not end on a newline ends inside a line: that part line goes. A first line that
   # is longer than the cap itself is kept, without the bytes of a character cut in half.
@@ -111,7 +109,7 @@ memory_prompt_block() {
   [ "$room" -le "$MEMORY_CARD_CAP" ] || room="$MEMORY_CARD_CAP"
   [ "$room" -ge 0 ] || room=0
   card="$(memory_card "$dir/core/card.md" "$room")"
-  if [ "$MEMORY_CARD_CUT" = 1 ]; then cut="(card truncated at $room bytes: the rest is in core/card.md)"; fi
+  if [ "$(memory_bytes "$dir/core/card.md")" -gt "$room" ]; then cut="(card truncated at $room bytes: the rest is in core/card.md)"; fi
   [ -n "$card" ] || [ -n "$cut" ] || card="(no core/card.md yet: mem boot writes it)"
   printf '%s\n\n' "$head"
   if [ -n "$card" ]; then printf '%s\n\n' "$card"; fi

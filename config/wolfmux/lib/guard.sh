@@ -234,8 +234,11 @@ cmd_guard() {
       if guard_inside "$path" "$GUARD_OWN"; then return 0; fi
       if guard_inside "$path" "$GUARD_TREES" || guard_inside "$path" "$GUARD_STATE" || [ "$path" = "$GUARD_TREES" ] || [ "$path" = "$GUARD_STATE" ]; then
         guard_deny "'$target' is another teammate's worktree or teamctl's state; their work in progress is not yours to read."
-      elif guard_inside "$path" "$GUARD_MEMORY" || [ "$path" = "$GUARD_MEMORY" ] || guard_inside "$GUARD_MEMORY" "$path"; then
-        guard_deny "'$target' is (or holds) a lead's private memory folder (~/.wolfmux/memory), which no worker reads."
+      elif guard_inside "$path" "$GUARD_MEMORY" || [ "$path" = "$GUARD_MEMORY" ]; then
+        guard_deny "'$target' is in a lead's private memory folder (~/.wolfmux/memory), which no worker reads."
+      elif [ "$tool" = "Grep" ] || [ "$tool" = "Glob" ] && guard_inside "$GUARD_MEMORY" "$path"; then
+        # A search of a folder that holds them (~/.wolfmux, your home) would read the memory folders too.
+        guard_deny "a search of '$target' would reach into the private memory folders under it (~/.wolfmux/memory); search a narrower folder."
       fi
       ;;
     mcp__*)
