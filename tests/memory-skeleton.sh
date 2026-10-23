@@ -544,7 +544,10 @@ check "erase without --confirm lists every live file, archive file, ledger line,
 check "it names the pre-migration tar outside the tree, which it never changes" \
   'printf "%s" "$LIST" | grep -q "^outside the tree, not changed (erase it by hand): $HOME/.wolfmux/backups/memory-pre-migration-20261001T000000Z.tar"'
 check "erase without --confirm changes nothing" '[ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
-OUT="$("$T/bin/mem" erase "dana smith" --confirm)"; RC=$?
+N="$(printf '%s\n' "$LIST" | sed -n 's/^\([0-9][0-9]*\) items; run again with --confirm \1 to erase them.*/\1/p')"
+check "the listing ends with its item count, and --confirm with another count is refused and changes nothing" \
+  '[ "$N" = "$(printf "%s\n" "$LIST" | grep -c "^\(file\|line\|state\|tar\) ")" ] && OUT="$("$T/bin/mem" erase "dana smith" --confirm $((N + 1)) 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "the listing has $N items" && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+OUT="$("$T/bin/mem" erase "dana smith" --confirm "$N")"; RC=$?
 check "erase --confirm removes the live and archived files that name the subject" \
   '[ "$RC" -eq 0 ] && [ ! -e "$T/people/dana.md" ] && [ ! -e "$T/topics/onboarding.md" ] && [ ! -e "$T/archive/2026-08/topics/dana-old.md" ] && [ -f "$T/topics/unrelated.md" ]'
 check "the ledger lines become a one-line marker; the other lines stay" \
@@ -557,7 +560,37 @@ check "nothing in the tree names the subject any more, drain.log included" '! gr
 check "drain.log says what erase did, with a sha256 prefix of the subject, never the subject" \
   'grep -q "erase on the owner'"'"'s word: subject sha256:[0-9a-f]\{12\}; 3 files removed" "$T/.meta/drain.log"'
 check "the pre-migration tar outside the tree is untouched" '[ "$HOME_TAR_SUM" = "$(tree_sum "$HOME/.wolfmux/backups")" ]'
-check "erase refuses a subject shorter than 3 characters" '! "$T/bin/mem" erase da --confirm'
+check "erase refuses a subject shorter than 3 characters" '! "$T/bin/mem" erase da --confirm 1'
+T="$WORK/erase-words"
+fresh "$T"
+topic "$T" custom-domains "domains, dns" 3 2026-10-01
+printf 'Custom domains go live soon.\n' >>"$T/topics/custom-domains.md"
+topic "$T" later "later, plan" 3 2026-10-01
+printf 'We do it tomorrow.\n' >>"$T/topics/later.md"
+topic "$T" meeting "meeting, weekly" 3 2026-10-01
+printf 'Tom runs the meeting.\n' >>"$T/topics/meeting.md"
+printf 'We decided.' | "$T/bin/mem" decide --time 2026-10-02T09:00Z --source chat --slug decided >/dev/null
+"$T/bin/mem" sweep-log --inboxes 3 --asks-touched 1 --free-pct 40 --swap-gb 1 --load 2 >/dev/null
+SUM_BEFORE="$(tree_sum "$T")"
+LIST="$("$T/bin/mem" erase tom)"
+check "erase matches whole words: tom finds the file that says Tom, not custom-domains or tomorrow" \
+  '[ "$(printf "%s\n" "$LIST" | grep -c "^file ")" -eq 1 ] && printf "%s" "$LIST" | grep -q "^file   topics/meeting.md" && printf "%s" "$LIST" | grep -q "^1 items; run again with --confirm 1"'
+"$T/bin/mem" erase tom --confirm 1 >/dev/null
+check "erase tom --confirm 1 removes only that file" \
+  '[ ! -e "$T/topics/meeting.md" ] && [ -f "$T/topics/custom-domains.md" ] && [ -f "$T/topics/later.md" ]'
+SUM_BEFORE="$(tree_sum "$T")"
+check "erase dec matches nothing: a path counts by its file stem only, never decisions-YYYY-MM" \
+  '"$T/bin/mem" erase dec | grep -qx "nothing in the tree names that subject" && "$T/bin/mem" erase ledger 2>/dev/null; [ -f "$T/ledger/decisions-2026-10.md" ]'
+check "erase matches state and .jsonl values, never field names: free finds no sweep line" \
+  '"$T/bin/mem" erase free | grep -qx "nothing in the tree names that subject"'
+check "erase refuses .md, a header field, a folder name and a bare number, and changes nothing" \
+  '! "$T/bin/mem" erase .md && ! "$T/bin/mem" erase summary && ! "$T/bin/mem" erase topics && ! "$T/bin/mem" erase 2026 && [ "$SUM_BEFORE" = "$(tree_sum "$T")" ]'
+printf 'Ask the person on call.\n' >>"$T/topics/later.md"
+"$T/bin/mem" backup >/dev/null
+N="$("$T/bin/mem" erase person | sed -n 's/^\([0-9][0-9]*\) items; run again.*/\1/p')"
+"$T/bin/mem" erase person --confirm "$N" >/dev/null
+check "erase never edits bin/mem or .meta/schema.md, live or inside a backup tar (both say person)" \
+  '[ ! -e "$T/topics/later.md" ] && grep -q person "$T/bin/mem" && grep -q person "$T/.meta/schema.md" && python3 -I -c "import sys,tarfile; t=tarfile.open(sys.argv[1]); sys.exit(not (t.extractfile(\"bin/mem\").read() == open(sys.argv[2], \"rb\").read() and t.extractfile(\".meta/schema.md\").read() == open(sys.argv[3], \"rb\").read() and \"topics/later.md\" not in t.getnames()))" "$(ls "$T"/.meta/backups/*.tar | head -1)" "$T/bin/mem" "$T/.meta/schema.md"'
 /bin/rm -rf "$HOME/.wolfmux"
 T="$WORK/purge"
 fresh "$T"

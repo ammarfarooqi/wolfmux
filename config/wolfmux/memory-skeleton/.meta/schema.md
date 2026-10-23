@@ -120,6 +120,25 @@ the size in bytes, nothing else; every token that matches a people/ file name (o
 split on `-`) is replaced by `person`. `.meta/jev/<UTC>-<slug>.json` keeps what was sent and
 what came back. Any error: the candidate goes to `.meta/digest-pending.md`; nothing moves.
 
+## Erase (mem erase, on the owner's word)
+
+The subject matches as a whole word, case folded (`tom` finds `Tom`, not `tomorrow` or
+`custom`). A path matches on its file stem only, never a folder name or an extension. In
+state files and `.jsonl` lines only the values count (and a state file's top-level keys),
+never the field names. The subject needs 3 characters and a letter, and is not a word every
+tree holds (a header field, a folder, a ledger label, a common word). What it does:
+
+- a region or archive file, or a `.meta/jev/` audit file, that names it: removed whole;
+- a ledger, index or log line: replaced by `[erased <YYYY-MM-DD> on owner's word]`
+  (`{"erased": "<YYYY-MM-DD> on owner's word"}` in a `.jsonl` file);
+- a state entry: removed;
+- each backup tar under `.meta/backups/`: rebuilt the same way. Pre-migration tars under
+  `~/.wolfmux/backups/` are listed, never changed.
+
+`.meta/schema.md` and `bin/` ship with mem and are never edited, live or in a tar.
+Without `--confirm` it lists every item and the count; `--confirm <count>` erases only when
+the listing still has that many items. No backup is made first (it would hold the subject).
+
 ## Migration (mem migrate)
 
 The mapping CSV has one row per item: `source,source_type,dest,region,action,hold,name,

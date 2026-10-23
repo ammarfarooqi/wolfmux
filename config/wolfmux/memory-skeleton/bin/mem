@@ -93,7 +93,7 @@ USAGE = """usage: mem [--root <dir>] <command> [options]
   drain [--dry-run] [--no-jev]
   backup [--note <retention basis>]
   unarchive <name>
-  erase <subject> [--confirm]
+  erase <subject> [--confirm <count the listing printed>]
   purge [--confirm] <archived name | YYYY-MM>...
   migrate --from <dir> --map <csv> [--rules-from <dir>] [--claude-mem-from <dir>] [--state <json>]
       [--dry-run]
@@ -1985,45 +1985,80 @@ def cmd_purge(tree, args):
     return 0
 
 
-def erase_lines(data, needle, marker, jsonl=False):
+# Words every tree holds (header fields, folders, ledger labels, common words): erasing one
+# would take every file with it, so erase refuses them as a subject.
+ERASE_STOP = set(FIELD_ORDER + REGIONS + TREE_DIRS + tuple(n for n, _ in STATE_DEFAULTS) + (
+    "md", "txt", "json", "jsonl", "tar", "the", "and", "for", "not", "but", "you", "are", "was", "with", "this",
+    "that", "from", "have", "has", "will", "can", "all", "any", "new", "old", "none", "live", "superseded", "erased",
+    "owner", "word", "memory", "mem", "index", "card", "boot", "check", "meta", "backups", "shared", "migrated",
+    "ledger", "decisions", "sends", "asks", "sweeps", "slug", "source", "bytes", "chat", "slack", "bead", "open",
+    "close", "who", "what", "waiting", "channel", "ref", "time", "backup", "basis", "kept", "days", "rule", "prune"))
+
+
+def erase_matcher(subject):
+    """The subject as a whole word, case folded: 'tom' finds 'Tom' but not 'tomorrow' or 'custom'."""
+    return re.compile(r"(?<![a-z0-9])%s(?![a-z0-9])" % re.escape(subject.casefold()))
+
+
+def json_leaves(value):
+    """The scalar values inside a JSON value, keys left out: what erase matches in state and .jsonl."""
+    if isinstance(value, dict):
+        return [leaf for child in value.values() for leaf in json_leaves(child)]
+    if isinstance(value, list):
+        return [leaf for child in value for leaf in json_leaves(child)]
+    return [] if value is None else [str(value)]
+
+
+def names_subject(match, value, key=None):
+    return any(match.search(text.casefold()) for text in ([key] if key is not None else []) + json_leaves(value))
+
+
+def erase_lines(data, match, marker, jsonl=False):
     """(new bytes, numbers of the lines that held the subject)."""
     text = data.decode("utf-8", "replace")
     lines = text.split("\n")
     hit = []
     for number, line in enumerate(lines):
-        if needle in line.casefold():
+        named = match.search(line.casefold())
+        if named and jsonl:
+            try:
+                named = names_subject(match, json.loads(line))
+            except ValueError:
+                pass
+        if named:
             hit.append(number + 1)
             lines[number] = json.dumps({"erased": marker}) if jsonl else "[erased %s]" % marker
     return "\n".join(lines).encode("utf-8"), hit
 
 
-def erase_state(value, needle):
-    """(new value, removed ids) for a state file: entries whose JSON names the subject go."""
+def erase_state(value, match):
+    """(new value, removed ids) for a state file: entries whose values (or top-level key) name the subject go."""
     removed = []
     if isinstance(value, list):
         kept = []
         for item in value:
-            if needle in canonical(item).casefold():
+            if names_subject(match, item):
                 removed.append(str(item.get("id") or item.get("name") or "?") if isinstance(item, dict) else "?")
             else:
                 kept.append(item)
         return kept, removed
     kept = {}
     for key in value:
-        if needle in canonical({key: value[key]}).casefold():
+        if names_subject(match, value[key], key):
             removed.append(key)
         else:
             kept[key] = value[key]
     return kept, removed
 
 
-def erase_plan(rel, data, needle, marker):
+def erase_plan(rel, data, match, marker):
     """What erase does to one file, in the live tree or inside a backup tar:
-    (None | "drop" | "edit", new bytes, [where the subject is])."""
-    if needle in rel.casefold():
+    (None | "drop" | "edit", new bytes, [where the subject is]). A path counts by its file
+    stem only: folder names and extensions never match."""
+    if match.search(os.path.splitext(os.path.basename(rel))[0].casefold()):
         return "drop", None, [rel]
     text = data.decode("utf-8", "replace")
-    if needle not in text.casefold():
+    if not match.search(text.casefold()):
         return None, data, []
     parts = rel.split("/")
     if parts[0] in REGIONS or (parts[0] == "archive" and len(parts) > 3 and parts[2] in REGIONS) or rel.startswith(".meta/jev/"):
@@ -2034,12 +2069,22 @@ def erase_plan(rel, data, needle, marker):
         except ValueError:
             value = None
         if isinstance(value, (list, dict)):
-            kept, removed = erase_state(value, needle)
+            kept, removed = erase_state(value, match)
+            if not removed:
+                return None, data, []
             return "edit", dump_json(kept), ["%s#%s" % (rel, r) for r in removed]
-    new, hit = erase_lines(data, needle, marker, rel.endswith(".jsonl"))
+    new, hit = erase_lines(data, match, marker, rel.endswith(".jsonl"))
+    if not hit:
+        return None, data, []
     return "edit", new, ["%s:%d" % (rel, n) for n in hit]
 
 
+# The schema and the tool ship with mem and are not memory: erase never edits them, live or in a tar.
+ERASE_SPEC = (".meta/schema.md",)
+
+
+def erase_skips(rel):
+    return rel in ERASE_SPEC or rel.startswith("bin/")
 # MEMORY.md and the card are regenerated once the rest is gone; the lock holds no data.
 ERASE_REGENERATED = ("MEMORY.md", "core/card.md", ".meta/lock")
 
@@ -2048,11 +2093,15 @@ def cmd_erase(tree, args):
     subject = one_line(args.subject)
     if len(subject) < 3:
         raise Refused("the subject must be at least 3 characters, or it matches everything")
-    needle = subject.casefold()
+    if not re.search(r"[^\W\d_]", subject):
+        raise Refused("the subject needs a letter (a bare number or date matches whole ledgers)")
+    if re.sub(r"^[^a-z0-9]+|[^a-z0-9]+$", "", subject.casefold()) in ERASE_STOP:
+        raise Refused("%r is a word every tree holds (a header field, a folder or a common word); name the person or thing" % subject)
+    needle = erase_matcher(subject)
     marker = "%s on owner's word" % now().date().isoformat()
     plans = []
     for rel in walk_tree(tree):
-        if rel.startswith(".meta/backups/") or rel in ERASE_REGENERATED:
+        if rel.startswith(".meta/backups/") or rel in ERASE_REGENERATED or erase_skips(rel):
             continue
         data = tree.read(rel)
         action, new, where = erase_plan(rel, data, needle, marker)
@@ -2077,9 +2126,12 @@ def cmd_erase(tree, args):
     if not plans and not tars:
         print("nothing in the tree names that subject")
         return 0
-    if not args.confirm:
-        print("run again with --confirm to erase these (no backup is made first)")
+    count = sum(len(where) for _, _, _, _, where in plans) + sum(len(members) for _, members in tars)
+    if args.confirm is None:
+        print("%d items; run again with --confirm %d to erase them (no backup is made first)" % (count, count))
         return 0
+    if args.confirm != count:
+        raise Refused("--confirm %d, but the listing has %d items; read it again and confirm that count" % (args.confirm, count))
     files = lines = entries = 0
     for rel, data, action, new, where in plans:
         if action == "drop":
@@ -2094,7 +2146,7 @@ def cmd_erase(tree, args):
     for rel, _ in tars:
         rebuild_tar(tree, rel, needle, marker)
     log(tree, "erase on the owner's word: subject sha256:%s; %d files removed, %d lines and %d state entries erased, %d backups rebuilt"
-        % (sha256(needle.encode("utf-8"))[:12], files, lines, entries, len(tars)))
+        % (sha256(subject.casefold().encode("utf-8"))[:12], files, lines, entries, len(tars)))
     run_check(tree, now())
     print("erased: %d files, %d lines, %d state entries; %d backups rebuilt" % (files, lines, entries, len(tars)))
     return 0
@@ -2119,9 +2171,7 @@ def tar_plan(path, needle, marker):
     try:
         with tarfile.open(path) as tar:
             for member in tar.getmembers():
-                if not member.isfile():
-                    if needle in member.name.casefold():
-                        out.append((member.name, "drop"))
+                if not member.isfile() or erase_skips(member.name):  # a folder name never matches
                     continue
                 action, _, _ = erase_plan(member.name, tar.extractfile(member).read(), needle, marker)
                 if action:
@@ -2138,9 +2188,8 @@ def rebuild_tar(tree, rel, needle, marker):
     os.close(fd)
     with tarfile.open(path) as old, tarfile.open(tmp, "w") as new:
         for member in old.getmembers():
-            if not member.isfile():
-                if needle not in member.name.casefold():
-                    new.addfile(member)
+            if not member.isfile() or erase_skips(member.name):
+                new.addfile(member, old.extractfile(member) if member.isfile() else None)
                 continue
             action, data, _ = erase_plan(member.name, old.extractfile(member).read(), needle, marker)
             if action == "drop":
@@ -2750,7 +2799,7 @@ def build_parser():
     p.add_argument("name")
     p = sub.add_parser("erase", add_help=False, allow_abbrev=False)
     p.add_argument("subject")
-    p.add_argument("--confirm", action="store_true")
+    p.add_argument("--confirm", type=int, metavar="N")
     p = sub.add_parser("purge", add_help=False, allow_abbrev=False)
     p.add_argument("--confirm", action="store_true")
     p.add_argument("targets", nargs="+")
