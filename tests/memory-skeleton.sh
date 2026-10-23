@@ -554,6 +554,34 @@ OUT="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" check)"
 CARD="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" boot)"
 check "a decide block whose bytes: count is wrong is one WARN naming its time; the decisions after it keep their blocks" \
   '[ "$(printf "%s\n" "$OUT" | grep -c "does not match its bytes: count")" -eq 1 ] && printf "%s\n" "$OUT" | grep -qx "WARN    ledger/decisions-2026-10.md: the decision at 2026-10-02T09:00Z does not match its bytes: count; the block is damaged, read it by hand" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-03T09:00Z number-3" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-04T09:00Z number-4"'
+# A bytes: count LARGER than the quote: it is trusted only when the line it reaches is a
+# closing fence. Taken on trust, 4000 bytes would eat every decision after it.
+L="$WORK/big-count"
+fresh "$L"
+for n in 1 2 3; do printf 'Decision %s.' "$n" | "$L/bin/mem" decide --time "2026-10-0${n}T09:00Z" --source chat --slug "big-$n" >/dev/null; done
+python3 -I -c 'import sys; p=sys.argv[1]; d=open(p,"rb").read(); open(p,"wb").write(d.replace(b"bytes: 11\n```\nDecision 1.", b"bytes: 4000\n```\nDecision 1.", 1))' "$L/ledger/decisions-2026-10.md"
+echo b | "$L/bin/mem" add --region rules --name big-rule --keywords "big, rule" --summary s --authority decisions-2026-10#2026-10-03T09:00Z >/dev/null 2>&1
+OUT="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" check)"
+CARD="$(MEM_NOW=2026-10-23T09:00Z "$L/bin/mem" boot)"
+check "a bytes: count larger than its quote (4000) is one WARN naming its time; the decisions after it keep their anchors, so a rule on the last one resolves" \
+  '[ "$(printf "%s\n" "$OUT" | grep -c "does not match its bytes: count")" -eq 1 ] && printf "%s\n" "$OUT" | grep -q "the decision at 2026-10-01T09:00Z does not match" && [ -f "$L/rules/big-rule.md" ] && ! printf "%s\n" "$OUT" | grep -q "is not in the ledger" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-02T09:00Z big-2" && printf "%s" "$CARD" | grep -qx -- "- 2026-10-03T09:00Z big-3"'
+printf '\n```\n## 2026-10-04T09:00Z\nan example heading inside a fence nobody closed\n' >>"$L/ledger/decisions-2026-10.md"
+SUM_BEFORE="$(tree_sum "$L")"
+OUT="$(printf 'Four.' | "$L/bin/mem" decide --time 2026-10-04T09:00Z --source chat 2>&1)"; RC=$?
+check "decide refuses an anchor whose ## line sits in a fence no block owns (exit 64, anchor taken): two blocks never share an anchor; nothing is written" \
+  '[ "$RC" -eq 64 ] && printf "%s" "$OUT" | grep -q "anchor taken: ledger/decisions-2026-10.md has a .## 2026-10-04T09:00Z. line" && [ "$SUM_BEFORE" = "$(tree_sum "$L")" ] && printf "Five." | "$L/bin/mem" decide --time 2026-10-04T09:01Z --source chat | grep -qx "decisions-2026-10#2026-10-04T09:01Z"'
+# erase inside a decide quote (the reviewer's repro): the marker is shorter than the line it
+# replaces, so bytes: must be counted again or the next decision loses its anchor.
+L="$WORK/erase-quote"
+fresh "$L"
+printf 'We agreed that Tom owns the release train for the whole quarter and nobody else touches the release branch without asking.\nSecond line.\n' | "$L/bin/mem" decide --time 2026-10-20T10:00Z --source chat --slug release-owner >/dev/null
+printf 'Ship on Fridays only.\n' | "$L/bin/mem" decide --time 2026-10-20T11:00Z --source chat --slug friday-ship >/dev/null
+echo b | "$L/bin/mem" add --region rules --name friday-ship --keywords "ship, friday" --summary s --authority decisions-2026-10#2026-10-20T11:00Z >/dev/null
+ERASE_OUT="$("$L/bin/mem" erase Tom --confirm 1 2>&1)"
+OUT="$("$L/bin/mem" check)"
+REF="$(printf x | "$L/bin/mem" decide --time 2026-10-20T11:00Z --source chat)"
+check "erase inside a decide quote counts bytes: again: check stays clean, the rule on the next decision resolves, a new decide in that minute gets a new anchor" \
+  'printf "%s\n" "$ERASE_OUT" | grep -q "^erased: 0 files, 1 lines" && ! printf "%s\n" "$ERASE_OUT" | grep -q "^WARN" && printf "%s\n" "$OUT" | grep -qx "result: 0 problems, 0 warnings" && ! grep -q Tom "$L/ledger/decisions-2026-10.md" && grep -qx "Second line." "$L/ledger/decisions-2026-10.md" && grep -qx "bytes: 49" "$L/ledger/decisions-2026-10.md" && [ "$REF" = "decisions-2026-10#2026-10-20T11:00Z-2" ] && [ "$(grep -c "^## 2026-10-20T11:00Z$" "$L/ledger/decisions-2026-10.md")" -eq 1 ]'
 check "after --, --root is a plain value (a recall word); a --root that is no tree is refused" \
   'OUT="$("$T/bin/mem" recall -- --root=nothing-here 2>&1)"; printf "%s" "$OUT" | grep -q "no match" && OUT="$("$T/bin/mem" --root "$WORK/no-such-tree" recall x 2>&1)"; [ $? -eq 1 ] && printf "%s" "$OUT" | grep -q "not a memory tree"'
 fresh "$WORK/after"
@@ -1198,6 +1226,15 @@ DRY="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-fence.csv" --dry-run
 FENCE_OUT="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-fence.csv" 2>&1)"; RC=$?
 check "a migrated decisions payload with an unclosed fence is refused with the reason; a closed one is placed and parses" \
   'for out in "$DRY" "$FENCE_OUT"; do printf "%s" "$out" | grep -q "^- line 2 refused decisions_open.md: the payload leaves a code fence open (1 fence lines): it would swallow the decisions after it; close the fence in the source, or set action skip$" || exit 1; done && [ "$RC" -eq 1 ] && grep -q "^line 3 copy .*: found once$" "$T2"/.meta/migrate-*.md && ! grep -q "open-fence" "$T2/ledger/decisions-2026-10.md" && MEM_NOW=2026-10-23T09:00Z "$T2/bin/mem" boot | grep -qx -- "- 2026-10-06T09:00Z closed-fence"'
+# Its fences balance, but bytes: 4000 is more than its quote: once appended, every later decide
+# block of that month would be read as part of it.
+printf -- '## 2026-10-01T10:00Z\nslug: old\nsource: chat\nbytes: 4000\n```\nold words\n```\n' >"$SRC/decisions_big.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\ndecisions_big.md,file,ledger/decisions-2026-10.md,,copy,no,,,,,,,,\n' >"$WORK/map-big.csv"
+T2="$WORK/migrate-big"
+fresh "$T2"
+BIG_OUT="$("$T2/bin/mem" migrate --from "$SRC" --map "$WORK/map-big.csv" 2>&1)"; RC=$?
+check "a migrated decisions payload whose bytes: (4000) is larger than its quote is refused with the reason; nothing is appended" \
+  '[ "$RC" -eq 1 ] && printf "%s" "$BIG_OUT" | grep -q "^- line 2 refused decisions_big.md: the payload.s decision at 2026-10-01T10:00Z does not match its bytes: count" && ! grep -qs "old words" "$T2/ledger/decisions-2026-10.md"'
 check "a frontmatter whose first line is key: value may hold a blank line: it is stripped, its description kept" \
   'python3 -I -c "import sys; d=open(sys.argv[1],\"rb\").read(); sys.exit(not d.endswith(b\"\n---\nBody after a blank-line header.\n\") or b\"\nsource_description: with a blank line\n\" not in d)" "$T/topics/blank-front.md" && printf "%s" "$OUT" | grep -q "^line 3 copy .*(source frontmatter of [0-9]* bytes replaced by the header; its description kept as source_description): found once$"'
 /bin/rm -rf "$HOME/.wolfmux"

@@ -135,11 +135,16 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
   `## migrated state:<key> at <UTC minute>`, then the value pretty-printed in a ```` ```json ````
   fence. A re-run finds the same block (whatever its minute) and appends nothing.
 - In the decisions ledger, the fence `decide` writes (the line after `bytes: N`) holds exactly
-  N bytes of quote: a `## <time>` or `slug:` line inside them never starts a block. Any other
-  open fence (a stray one, or a decide fence whose closing fence is not where `bytes:` says)
-  ends at the next `## <time>` line that is followed by a `slug:` line, so it never swallows
-  the decisions after it. `mem check` WARNs once per block whose `bytes:` count does not
-  match, naming its time. `mem migrate` refuses a decisions payload that leaves a fence open.
+  N bytes of quote: a `## <time>` or `slug:` line inside them never starts a block. N is
+  trusted only when the line those N bytes reach (N + 1 for a quote without a final newline)
+  really is a closing fence. Any other open fence (a stray one, or a decide fence whose N is
+  too small or too large) ends at its closing fence or at the next `## <time>` line that is
+  followed by a `slug:` line, so it never swallows the decisions after it. `mem check` WARNs
+  once per block whose `bytes:` count does not match, naming its time. `mem erase` counts
+  `bytes:` again for every quote it edits. `mem decide` refuses (exit 64, "anchor taken") an
+  anchor whose `## <anchor>` line sits outside every quote but starts no block (a damaged
+  block holds it). `mem migrate` refuses a decisions payload that leaves a fence open, holds a
+  damaged block, or would cost a decide block appended after it its anchor.
 - `mem ask close` takes any id of `[A-Za-z0-9._-]` (migrated asks keep theirs); `mem ask
   open` still needs a slug.
 

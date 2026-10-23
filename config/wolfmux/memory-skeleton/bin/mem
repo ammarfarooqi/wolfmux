@@ -118,7 +118,10 @@ READERS = ("recall", "status", "help")
 
 
 class Refused(Exception):
-    pass
+    """A refusal: nothing (more) is written. code is the exit status: 1, or 64 for a usage error."""
+    def __init__(self, message, code=EXIT_REFUSED):
+        Exception.__init__(self, message)
+        self.code = code
 
 
 class Parser(argparse.ArgumentParser):
@@ -683,34 +686,45 @@ def open_fence(text):
     return count, fence is not None
 
 
-def decision_blocks(text, damaged=None):
+def raw_len(line):
+    """The bytes of one ledger line as written (a byte that is not UTF-8 counts as one byte)."""
+    return len(line.encode("utf-8", "surrogateescape"))
+
+
+def quote_end(lines, opening, size, fence):
+    """The index of the closing fence of a decide quote of `size` bytes whose fence is
+    lines[opening], or None when the line those bytes reach is not a closing fence. A quote
+    without a final newline gets one from decide: the fence comes after N or N + 1 bytes."""
+    remaining, at = size, opening + 1
+    while remaining > 0 and at < len(lines):
+        remaining -= raw_len(lines[at]) + 1
+        at += 1
+    if remaining in (0, -1) and at < len(lines) and closes_fence(lines[at], fence):
+        return at
+    return None
+
+
+def decision_blocks(text, damaged=None, layout=None):
     """[(anchor, time, {slug, source}, block text)] from one decisions ledger.
 
     The fence decide writes (the line after a block's `bytes: N`) holds exactly N bytes of the
     owner's words: nothing in them starts a block or sets a field, and its closing fence comes
-    right after them. Any other open fence (a stray one in a migrated payload, or a decide fence
-    whose closing fence is not where `bytes:` says) closes at a `## <time>` line followed by a
-    `slug:` line, so it never swallows the next decision. damaged, when given, gets the anchor of
-    every block whose `bytes:` count does not match its quote."""
+    right after them. N is trusted only when the line those N bytes reach really is a closing
+    fence; that is worked out before anything is read as quote. Any other open fence (a stray
+    one in a migrated payload, or a decide fence whose N does not reach a closing fence) closes
+    at a closing fence or at a `## <time>` line followed by a `slug:` line, so it never
+    swallows the next decision. damaged, when given, gets the anchor of every block whose
+    `bytes:` count does not match its quote. layout, when given, gets one dict per block:
+    {"anchor", "head": line index, "meta": {field: line index}, "quote": (bytes line, opening
+    fence, closing fence) of a trusted quote, or None}."""
     out = []
     current = None
     fence = None
-    quote = None  # [bytes of the quote still to come, its fence] inside a decide-written fence
     lines = text.split("\n")
+    resume = 0  # the line after a trusted quote: the lines before it are in the block already
     for number, line in enumerate(lines):
-        if quote is not None:
-            if quote[0] > 0:
-                current[3].append(line)
-                quote[0] -= len(line.encode("utf-8")) + 1
-                continue
-            # A quote without a final newline gets one from decide: the fence is at N or N + 1.
-            if quote[0] >= -1 and closes_fence(line, quote[1]):
-                current[3].append(line)
-                quote = None
-                continue
-            if damaged is not None:
-                damaged.append(current[0])
-            fence, quote = quote[1], None
+        if number < resume:
+            continue
         if fence is not None:
             following = lines[number + 1] if number + 1 < len(lines) else ""
             if not (DECISION_HEAD.match(line) and re.match(r"^slug: \S", following)):
@@ -723,16 +737,22 @@ def decision_blocks(text, damaged=None):
         opening = FENCE.match(line)
         if opening:
             size = re.match(r"^bytes: (\d+)$", current[3][-1]) if current is not None else None
-            if size:
-                quote = [int(size.group(1)), opening.group(1)]
-            else:
-                fence = opening.group(1)
+            close = quote_end(lines, number, int(size.group(1)), opening.group(1)) if size else None
+            if close is not None:
+                current[3].extend(lines[number:close + 1])
+                current[4]["quote"] = (number - 1, number, close)
+                resume = close + 1
+                continue
+            if size and damaged is not None:
+                damaged.append(current[0])
+            fence = opening.group(1)
             if current is not None:
                 current[3].append(line)
             continue
         match = DECISION_HEAD.match(line)
         if match:
-            current = [match.group(1) + (match.group(2) or ""), match.group(1), {}, [line]]
+            anchor = match.group(1) + (match.group(2) or "")
+            current = [anchor, match.group(1), {}, [line], {"anchor": anchor, "head": number, "meta": {}, "quote": None}]
             out.append(current)
             continue
         if current is not None:
@@ -740,9 +760,24 @@ def decision_blocks(text, damaged=None):
             meta = re.match(r"^(slug|source|bytes): (.*)$", line)
             if meta and meta.group(1) not in current[2]:
                 current[2][meta.group(1)] = meta.group(2)
-    if quote is not None and damaged is not None:  # the ledger ends inside a quote
-        damaged.append(current[0])
-    return [(a, t, m, "\n".join(block)) for a, t, m, block in out]
+                current[4]["meta"][meta.group(1)] = number
+    if layout is not None:
+        layout.extend(block[4] for block in out)
+    return [(a, t, m, "\n".join(block)) for a, t, m, block, _ in out]
+
+
+def loose_heads(text, layout):
+    """The anchors of `## <time>` lines that are outside every trusted quote but start no block
+    of their own: swallowed by a damaged block. decide never hands out one of them."""
+    lines = text.split("\n")
+    inside = set(n for block in layout if block["quote"] for n in range(block["quote"][1], block["quote"][2] + 1))
+    heads = set(block["head"] for block in layout)
+    out = set()
+    for number, line in enumerate(lines):
+        match = DECISION_HEAD.match(line)
+        if match and number not in inside and number not in heads:
+            out.add(match.group(1) + (match.group(2) or ""))
+    return out
 
 
 def ledger_entries(tree):
@@ -1760,15 +1795,22 @@ def cmd_decide(tree, args):
         raise Refused("the owner's words come on stdin, verbatim; nothing arrived")
     month = month_of(when)
     rel = ledger_rel("decisions", month)
-    taken = set()
+    taken, loose = set(), {}
     for existing in (rel, "archive/%s/ledger/decisions-%s.md" % (month, month)):
         data = tree.read_or_none(existing)
         if data is not None:
-            taken.update(a for a, _, _, _ in decision_blocks(data.decode("utf-8", "replace")))
+            text, layout = data.decode("utf-8", "replace"), []
+            taken.update(a for a, _, _, _ in decision_blocks(text, layout=layout))
+            loose.update((a, existing) for a in loose_heads(text, layout))
     anchor, n = minute(when), 1
     while anchor in taken:
         n += 1
         anchor = "%s-%d" % (minute(when), n)
+    if anchor in loose:
+        # A damaged block swallowed a decision with this anchor: a second block would share it.
+        raise Refused("anchor taken: %s has a `## %s` line that a damaged block swallowed; run mem check, "
+                      "repair that block's bytes: by hand, and decide again (nothing was written)"
+                      % (loose[anchor], anchor), code=EXIT_USAGE)
     text = quote.decode("utf-8", "replace")
     slug = check_name(args.slug, "--slug") if args.slug else (slugify(" ".join(text.split()[:6])) or "decision")
     runs = re.findall(r"`+", text)
@@ -2382,6 +2424,35 @@ def erase_lines(data, match, marker, jsonl=False, drain_log=False):
     return "\n".join(lines).encode("utf-8"), hit, keys
 
 
+def erase_decisions(data, match, marker):
+    """(new bytes, numbers of the lines that hold the subject) for a decisions ledger. A quote
+    line becomes the marker and the block's `bytes:` is counted again, so the quote still ends
+    at its own fence and no decision after it loses its anchor. A slug: or source: line keeps
+    its field. The `## <time>`, `bytes:` and fence lines hold no names and are never edited."""
+    text = data.decode("utf-8", "replace")
+    before = text.split("\n")
+    lines = list(before)
+    layout = []
+    decision_blocks(text, layout=layout)
+    fixed = set(block["head"] for block in layout)
+    fixed.update(n for block in layout if block["quote"] for n in block["quote"])
+    fields = dict((n, key) for block in layout for key, n in block["meta"].items())
+    hit = []
+    for number, line in enumerate(lines):
+        if number in fixed or not match.search(line.casefold()):
+            continue
+        hit.append(number)
+        lines[number] = ("%s: [erased %s]" % (fields[number], marker)) if number in fields else "[erased %s]" % marker
+    for block in layout:
+        if not block["quote"] or not any(block["quote"][1] < n < block["quote"][2] for n in hit):
+            continue
+        size_at, opening, closing = block["quote"]
+        # decide adds a newline to a quote without one: that byte stays out of the count.
+        added = sum(raw_len(line) + 1 for line in before[opening + 1:closing]) - int(before[size_at][len("bytes: "):])
+        lines[size_at] = "bytes: %d" % (sum(raw_len(line) + 1 for line in lines[opening + 1:closing]) - added)
+    return "\n".join(lines).encode("utf-8"), [n + 1 for n in hit]
+
+
 def erase_state(value, match):
     """(new value, removed ids, whether a key alone names the subject somewhere) for a state file.
     An entry goes when a value inside it names the subject, at any depth, or (in an object file)
@@ -2439,7 +2510,11 @@ def erase_plan(rel, data, match, marker):
     if isinstance(value, (list, dict)):  # any other JSON: the values are erased in place, the file stays JSON
         new, count = redact_json(value, match, marker)
         return "edit", dump_json(new), ["%s (%d JSON value%s)" % (rel, count, "" if count == 1 else "s")], left
-    new, hit, keys = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
+    ledger = LEDGER_FILE.match(os.path.basename(rel))
+    if ledger and ledger.group(1) == "decisions":
+        (new, hit), keys = erase_decisions(data, match, marker), []
+    else:
+        new, hit, keys = erase_lines(data, match, marker, rel.endswith(".jsonl"), os.path.basename(rel) == "drain.log")
     left = [rel] if keys else []
     if not hit:
         return None, data, [], left
@@ -2521,9 +2596,13 @@ def cmd_erase(tree, args):
     erase_id = os.urandom(4).hex()
     log(tree, "erase on the owner's word: erase id %s; %d files removed, %d lines and %d state entries erased, %d backups rebuilt"
         % (erase_id, files, lines, entries, len(tars)))
-    run_check(tree, now())
+    found = [line for line in run_check(tree, now())[2] if line.startswith(("PROBLEM", "WARN"))]
     print("erased: %d files, %d lines, %d state entries; %d backups rebuilt (erase id %s in .meta/drain.log)"
           % (files, lines, entries, len(tars), erase_id))
+    if found:  # what the erase left for the owner to look at (a rule whose authority is gone, say)
+        print("mem check after the erase:")
+        for line in found:
+            print(line)
     return 0
 
 
@@ -2726,6 +2805,17 @@ def plan_row(tree, row, line, ctx):
                 if still_open or fences % 2:
                     raise Refused("the payload leaves a code fence open (%d fence lines): it would swallow the "
                                   "decisions after it; close the fence in the source, or set action skip" % fences)
+                text, damaged = payload.decode("utf-8", "replace"), []
+                decision_blocks(text, damaged)
+                if damaged:
+                    raise Refused("the payload's decision at %s does not match its bytes: count: it would swallow the "
+                                  "decisions after it; fix bytes: in the source, or set action skip" % ", ".join(damaged))
+                # A decide block appended after the payload must keep its anchor.
+                probe = "\n## 9999-12-31T23:59Z\nslug: probe\nsource: chat\nbytes: 2\n```\nx\n```\n"
+                blocks = decision_blocks(text + ("" if text.endswith("\n") else "\n") + probe)
+                if not blocks or blocks[-1][0] != "9999-12-31T23:59Z":
+                    raise Refused("a decision appended after the payload would lose its anchor; fix the payload's "
+                                  "fences in the source, or set action skip")
             item.update(kind="ledger", status="copy", append=payload)
             ledger_held(tree, item, ctx, dest_file)
         else:
@@ -3371,7 +3461,7 @@ def main(argv):
         return COMMANDS[args.command](tree, args)
     except Refused as error:
         sys.stderr.write("mem: %s\n" % error)
-        return EXIT_REFUSED
+        return error.code
 
 
 if __name__ == "__main__":
