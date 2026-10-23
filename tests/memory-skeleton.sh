@@ -623,6 +623,8 @@ rows = [
     ("reference_board.md", "file", "topics/board-copy.md", "pointer", "copy", "no", "board-copy", "board", "a copy that says pointer", "3", "", "", "", ""),
     # line 20: a claude-mem export file, frontmatter stripped like a file row's
     ("claude-mem:observations/obs-1.md", "claude-mem", "topics/fly-cutover.md", "topics", "copy", "no", "fly-cutover", "fly, cutover", "when the fly cutover ran", "3", "", "", "", ""),
+    # line 21: a second row into line 3's dest
+    ("reference_links.md", "file", "topics/afd-2129.md", "topics", "copy", "no", "afd-2129", "links", "a second row into one dest", "3", "", "", "", ""),
 ]
 with open(sys.argv[1], "w", newline="") as out:
     w = csv.writer(out)
@@ -681,6 +683,8 @@ check "a claude-mem: row reads the default ~/claude-mem-export-2026-10-22 and co
   'python3 -I -c "import sys; sys.exit(open(sys.argv[1], \"rb\").read().split(b\"\n---\n\", 1)[1] != b\"The cutover ran at 09:00 UTC.\n\")" "$T/topics/fly-cutover.md" && grep -q "^line 20 copy    claude-mem:observations/obs-1.md -> topics/fly-cutover.md sha256 [0-9a-f]* (source frontmatter of 45 bytes replaced by the header): found once" "$WORK/migrate-report.txt"'
 check "migrate refuses a --claude-mem-from that is not a folder; a claude-mem: row without the folder is held with the fix" \
   '! "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --claude-mem-from "$WORK/no-such-export" --dry-run 2>/dev/null && OUT="$(HOME="$WORK/empty-home" "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --dry-run)" && printf "%s" "$OUT" | grep -q "^- line 20 hold claude-mem:observations/obs-1.md: a claude-mem: row needs --claude-mem-from <dir>"'
+check "a second row into one dest is refused, and the message says what to do; the first row's file is kept" \
+  'grep -q "^- line 21 hold reference_links.md: dest topics/afd-2129.md is already the dest of line 3: keep one row, set the others to action skip (or give each its own dest)" "$WORK/migrate-report.txt" && grep -q "^repo_ref: fe:" "$T/topics/afd-2129.md"'
 check "the source folder and the rules folder are never written" '[ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ "$RULES_SUM" = "$(tree_sum "$RULES_SRC")" ]'
 check "headers come from the map: region, keywords, authority, repo_ref, last_confirmed from the source mtime" \
   'grep -q "^authority: decisions-2026-10#2026-10-09T13:50Z" "$T/rules/tone.md" && grep -q "^repo_ref: fe:src/features/fly/agent-log/0007.md AFD-2129" "$T/topics/afd-2129.md" && grep -q "^last_confirmed: $(date -u -r "$SRC/project_fly.md" +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)" "$T/topics/afd-2129.md" && grep -q "^links: \[\[tone\]\]" "$T/rules/slack-names.md"'

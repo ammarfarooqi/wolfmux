@@ -2219,7 +2219,8 @@ def plan_row(tree, row, line, ctx):
             item.update(status="hold", reason=row.get("notes", "").strip() or "held by the map")
             return item
         if dest in ctx["dests"]:
-            raise Refused("dest %s is already the dest of line %d" % (dest, ctx["dests"][dest]))
+            raise Refused("dest %s is already the dest of line %d: keep one row, set the others to action skip "
+                          "(or give each its own dest)" % (dest, ctx["dests"][dest]))
         ctx["dests"][dest] = line
         dest_file, _, dest_key = dest.partition("#")
         tree.abs(dest_file)
