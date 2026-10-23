@@ -793,6 +793,44 @@ topic "$T" stale-u "stale, u" 3 2026-09-01
 OUT="$(MEM_JEV_URL="http://127.0.0.1:9/v1/systemone" "$T/bin/mem" drain 2>&1)"
 check "Jev unreachable: only the exception's type name is logged, never its text" \
   'printf "%s" "$OUT" | grep -q "^digest topics/stale-u.md (rule 4; Jev failed: URLError; nothing moves)" && grep -q "rule 4: Jev failed (URLError)" "$T/.meta/drain.log" && grep -q "Jev failed: URLError$" "$T/.meta/digest-pending.md" && ! grep -rqi "refused" "$T/.meta/drain.log" "$T/.meta/digest-pending.md" "$T/.meta/jev" && [ -f "$T/topics/stale-u.md" ]'
+T="$WORK/drain-bad-url"
+fresh "$T"
+topic "$T" stale-b "stale, b" 3 2026-09-01
+OUT="$(MEM_JEV_URL="not a url" "$T/bin/mem" drain 2>&1)"; RC=$?
+check "a MEM_JEV_URL that is not a URL fails like any Jev failure (ValueError, nothing moves): no traceback, never the key" \
+  '[ "$RC" -eq 0 ] && printf "%s" "$OUT" | grep -q "^digest topics/stale-b.md (rule 4; Jev failed: ValueError; nothing moves)" && ! printf "%s" "$OUT" | grep -q "Traceback\|$MEM_JEV_KEY" && ! grep -rq "$MEM_JEV_KEY" "$T/.meta" && [ -f "$T/topics/stale-b.md" ]'
+# A proxy in the environment (HTTPS_PROXY, ALL_PROXY, ...) would see the key: the Jev request
+# never uses one. The proxy here is a dead port; the request still reaches the mock.
+T="$WORK/drain-proxy"
+fresh "$T"
+topic "$T" stale-p "stale, p" 3 2026-09-01
+GOT_BEFORE="$(ls "$WORK/jev-got" | wc -l)"
+OUT="$(env -u no_proxy -u NO_PROXY HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 ALL_PROXY=http://127.0.0.1:9 http_proxy=http://127.0.0.1:9 https_proxy=http://127.0.0.1:9 all_proxy=http://127.0.0.1:9 "$T/bin/mem" drain 2>&1)"
+check "with HTTP_PROXY, HTTPS_PROXY and ALL_PROXY set to a dead port, the Jev request still goes straight to MEM_JEV_URL" \
+  '[ "$(( $(ls "$WORK/jev-got" | wc -l) - GOT_BEFORE ))" -eq 1 ] && ! grep -q "Jev failed" "$T/.meta/drain.log" && [ -f "$T/archive/2026-10/topics/stale-p.md" ]'
+# A decide quote holding a byte that is not UTF-8 (\351, Latin-1 e-acute) and a ## line: bytes:
+# counts it as one byte and every reader counts the same, so the ## line never becomes a block.
+T="$WORK/decide-latin1"
+fresh "$T"
+printf 'caf\351 menu stays\n## 2026-10-21T08:00Z\nslug: fake\nsource: chat\nend\n' | "$T/bin/mem" decide --time 2026-10-21T09:00Z --source chat --slug latin1 >/dev/null
+check "a decide quote with invalid UTF-8 stays one block: check finds nothing damaged, its ## line is no anchor, boot still prints" \
+  '! "$T/bin/mem" check 2>&1 | grep -q "damaged" && [ "$(printf x | "$T/bin/mem" decide --time 2026-10-21T08:00Z --source chat --slug next)" = "decisions-2026-10#2026-10-21T08:00Z" ] && "$T/bin/mem" boot >/dev/null'
+# Each move writes the new place first and removes the old one after: a crash leaves the data in
+# both places. check names each such half move.
+T="$WORK/half-moves"
+fresh "$T"
+/bin/mkdir -p "$T/archive/2026-08/ledger" "$T/archive/2026-09/ledger"
+printf -- '- 2026-08-05T09:00Z | to: sam | channel: c | ref: r | an august send\n' >"$T/ledger/sends-2026-08.md"
+/bin/cp "$T/ledger/sends-2026-08.md" "$T/archive/2026-08/ledger/sends-2026-08.md"
+printf '{"time": "2026-09-01T09:00Z", "inboxes": 1}\n' >"$T/archive/2026-09/ledger/sweeps-2026-09.jsonl"
+printf '{"time": "2026-09-01T09:00Z", "inboxes": 1}\n{"time": "2026-10-20T09:00Z", "inboxes": 2}\n' >"$T/ledger/sweeps-2026-10.jsonl"
+topic "$T" back "back, again"
+printf -- '- 2026-09-30 archive/2026-09/topics/back.md from topics/back.md: rule 4: test\n' >>"$T/archive/index.md"
+chmod 600 "$T"/ledger/* "$T"/archive/2026-0*/ledger/*
+chmod 700 "$T"/archive/2026-0* "$T"/archive/2026-0*/ledger
+OUT="$("$T/bin/mem" check 2>&1)"
+check "check WARNs about each half move: a ledger month also archived in full, a sweep line both live and archived, an index line for a file unarchived halfway" \
+  'printf "%s\n" "$OUT" | grep -q "^WARN .*ledger/sends-2026-08.md is also in archive/2026-08/ledger/ in full" && printf "%s\n" "$OUT" | grep -q "^WARN .*ledger/sweeps-2026-10.jsonl: 1 sweep line is also archived" && printf "%s\n" "$OUT" | grep -q "^WARN .*archive/index.md lists topics/back.md as archived at archive/2026-09/topics/back.md, which is gone"'
 # Names hidden inside a longer token, and names with accents, are masked too.
 T="$WORK/drain-mask"
 fresh "$T"

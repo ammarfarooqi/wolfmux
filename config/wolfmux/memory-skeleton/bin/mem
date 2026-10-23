@@ -699,6 +699,18 @@ def raw_len(line):
     return len(line.encode("utf-8", "surrogateescape"))
 
 
+def as_written(data):
+    """A decisions ledger as text in which a byte that is not UTF-8 stays one character
+    (surrogateescape), so raw_len counts every line as decide counted the quote: an invalid byte
+    can never shorten or lengthen a quote and leave a fake block. Encode back the same way."""
+    return data.decode("utf-8", "surrogateescape")
+
+
+def shown(text):
+    """Text from as_written with each byte that is not UTF-8 as U+FFFD, safe to print."""
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
+
+
 def quote_end(lines, opening, size, fence):
     """The index of the closing fence of a decide quote of `size` bytes whose fence is
     lines[opening], or None when the line those bytes reach is not a closing fence. A quote
@@ -771,7 +783,7 @@ def decision_blocks(text, damaged=None, layout=None):
                 current[4]["meta"][meta.group(1)] = number
     if layout is not None:
         layout.extend(block[4] for block in out)
-    return [(a, t, m, "\n".join(block)) for a, t, m, block, _ in out]
+    return [(a, t, dict((k, shown(v)) for k, v in m.items()), shown("\n".join(block))) for a, t, m, block, _ in out]
 
 
 def loose_heads(text, layout):
@@ -795,9 +807,10 @@ def ledger_entries(tree):
         match = LEDGER_FILE.match(os.path.basename(rel))
         if not match:
             continue
-        text = tree.read(rel).decode("utf-8", "replace")
+        data = tree.read(rel)
+        text = data.decode("utf-8", "replace")
         if match.group(1) == "decisions":
-            for _, when, _, block in decision_blocks(text):
+            for _, when, _, block in decision_blocks(as_written(data)):
                 out.append((safe_time(when), block))
         elif match.group(1) == "sweeps":
             for line in text.split("\n"):
@@ -842,7 +855,7 @@ def authority_resolves(tree, ref):
     month, anchor = match.groups()
     for rel in ("ledger/decisions-%s.md" % month, "archive/%s/ledger/decisions-%s.md" % (month, month)):
         data = tree.read_or_none(rel)
-        if data is not None and any(a == anchor for a, _, _, _ in decision_blocks(data.decode("utf-8", "replace"))):
+        if data is not None and any(a == anchor for a, _, _, _ in decision_blocks(as_written(data))):
             return True
     return False
 
@@ -1029,7 +1042,7 @@ def recent_decisions(tree, when, count=3):
         data = tree.read_or_none("ledger/decisions-%s.md" % month)
         if data is None:
             continue
-        for anchor, at, meta, _ in decision_blocks(data.decode("utf-8", "replace")):
+        for anchor, at, meta, _ in decision_blocks(as_written(data)):
             found.append((at, anchor, meta.get("slug", "")))
     found.sort(reverse=True)
     return found[:count]
@@ -1425,10 +1438,12 @@ def run_check(tree, when, quiet=False):
     for rel in tree.files("ledger") + tree.files("archive"):
         if LEDGER_FILE.match(os.path.basename(rel)) and os.path.basename(rel).startswith("decisions-"):
             damaged = []
-            decision_blocks(tree.read(rel).decode("utf-8", "replace"), damaged)
+            decision_blocks(as_written(tree.read(rel)), damaged)
             for anchor in damaged:
                 report("WARN", "%s: the decision at %s does not match its bytes: count; the block is damaged, read it by hand"
                        % (rel, anchor))
+    for message in half_moves(tree):
+        report("WARN", message)
     boot = tree.read_or_none("core/boot.md")
     if boot is None:
         report("PROBLEM", "core/boot.md is missing (mem init writes the template)")
@@ -1807,7 +1822,7 @@ def cmd_decide(tree, args):
     for existing in (rel, "archive/%s/ledger/decisions-%s.md" % (month, month)):
         data = tree.read_or_none(existing)
         if data is not None:
-            text, layout = data.decode("utf-8", "replace"), []
+            text, layout = as_written(data), []
             taken.update(a for a, _, _, _ in decision_blocks(text, layout=layout))
             loose.update((a, existing) for a in loose_heads(text, layout))
     anchor, n = minute(when), 1
@@ -2003,6 +2018,38 @@ def index_add(tree, to_rel, from_rel, reason):
     append_file(tree, "archive/index.md", ("- %s %s from %s: %s\n" % (now().date().isoformat(), to_rel, from_rel, one_line(reason))).encode("utf-8"))
 
 
+def half_moves(tree):
+    """What a drain or an unarchive stopped halfway leaves. Each writes the new place first and
+    removes the old one after, so a crash leaves the data in both places, never in neither: a
+    ledger month whose whole text is already in its archived copy, sweep lines both live and
+    archived, an index line for a file unarchive already moved back."""
+    out, archived_sweeps = [], set()
+    for rel in tree.files("archive"):
+        if re.match(r"^sweeps-\d{4}-\d{2}\.jsonl$", os.path.basename(rel)):
+            archived_sweeps.update(line for line in tree.read(rel).split(b"\n") if line.strip())
+    for rel in tree.files("ledger"):
+        match = LEDGER_FILE.match(os.path.basename(rel))
+        if not match:
+            continue
+        live = tree.read(rel)
+        archived = tree.read_or_none("archive/%s/ledger/%s" % (match.group(2), os.path.basename(rel)))
+        if live.strip() and archived and live in archived:
+            out.append("%s is also in archive/%s/ledger/ in full (a drain stopped before it removed the live file); "
+                       "delete %s" % (rel, match.group(2), rel))
+        elif match.group(1) == "sweeps":
+            both = [line for line in live.split(b"\n") if line in archived_sweeps]
+            if both:
+                out.append("%s: %d sweep line%s also archived (a drain stopped before it rewrote the live file); remove "
+                           "%s from %s" % (rel, len(both), " is" if len(both) == 1 else "s are",
+                                           "it" if len(both) == 1 else "them", rel))
+    for line in index_lines(tree)[1]:
+        match = INDEX_LINE.match(line)
+        if match and not tree.has(match.group(2)) and tree.has(match.group(3)):
+            out.append("archive/index.md lists %s as archived at %s, which is gone and %s is live (an unarchive "
+                       "stopped halfway); delete that index line" % (match.group(3), match.group(2), match.group(3)))
+    return out
+
+
 def archive_move(tree, from_rel, to_rel, reason):
     src = tree.abs(from_rel)
     dest = tree.abs(to_rel)
@@ -2124,14 +2171,15 @@ def jev_ask(tree, entry, age, ref_days, people, key, when):
         }}}}
     url = os.environ.get("MEM_JEV_URL", JEV_URL)
     data = json.dumps(body).encode("utf-8")
-    opener = urllib.request.build_opener(NoRedirect)
+    # No proxy, whatever HTTPS_PROXY or ALL_PROXY say: a proxy would see the key.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
     backoff = float(os.environ.get("MEM_JEV_BACKOFF", "2"))
     status, raw, error, attempts = None, b"", None, 0
     for attempt in range(4):
         attempts += 1
-        request = urllib.request.Request(url, data=data, method="POST",
-                                         headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
-        try:
+        try:  # a bad MEM_JEV_URL fails here, in Request, and is reported like any other failure
+            request = urllib.request.Request(url, data=data, method="POST",
+                                             headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"})
             with opener.open(request, timeout=float(os.environ.get("MEM_JEV_TIMEOUT", "20"))) as answer:
                 status, raw, error = answer.status, answer.read(), None
             break
@@ -2508,7 +2556,7 @@ def erase_lines(data, match, marker, jsonl=False, drain_log=False):
     and is left behind. A `backup ... basis=` line in drain.log is never replaced: the subject
     is replaced inside its basis text only (a routine basis is mem's own words and stays), so
     the tar keeps the basis it was kept on; a hit in the rest of the line is left behind."""
-    text = data.decode("utf-8", "replace")
+    text = as_written(data)  # a line erase does not touch keeps its bytes, invalid UTF-8 too
     lines = text.split("\n")
     hit, keys, kept = [], [], []
     for number, line in enumerate(lines):
@@ -2535,7 +2583,7 @@ def erase_lines(data, match, marker, jsonl=False, drain_log=False):
             continue
         hit.append(number + 1)
         lines[number] = json.dumps({"erased": marker}, ensure_ascii=False) if jsonl else "[erased %s]" % marker
-    return "\n".join(lines).encode("utf-8"), hit, keys, kept
+    return "\n".join(lines).encode("utf-8", "surrogateescape"), hit, keys, kept
 
 
 def erase_decisions(data, match, marker):
@@ -2543,7 +2591,7 @@ def erase_decisions(data, match, marker):
     line becomes the marker and the block's `bytes:` is counted again, so the quote still ends
     at its own fence and no decision after it loses its anchor. A slug: or source: line keeps
     its field. The `## <time>`, `bytes:` and fence lines hold no names and are never edited."""
-    text = data.decode("utf-8", "replace")
+    text = as_written(data)
     before = text.split("\n")
     lines = list(before)
     layout = []
@@ -2564,7 +2612,7 @@ def erase_decisions(data, match, marker):
         # decide adds a newline to a quote without one: that byte stays out of the count.
         added = sum(raw_len(line) + 1 for line in before[opening + 1:closing]) - int(before[size_at][len("bytes: "):])
         lines[size_at] = "bytes: %d" % (sum(raw_len(line) + 1 for line in lines[opening + 1:closing]) - added)
-    return "\n".join(lines).encode("utf-8"), [n + 1 for n in hit]
+    return "\n".join(lines).encode("utf-8", "surrogateescape"), [n + 1 for n in hit]
 
 
 def erase_state(value, match):
@@ -3018,7 +3066,7 @@ def plan_row(tree, row, line, ctx):
                 if still_open or fences % 2:
                     raise Refused("the payload leaves a code fence open (%d fence lines): it would swallow the "
                                   "decisions after it; close the fence in the source, or set action skip" % fences)
-                text, damaged = payload.decode("utf-8", "replace"), []
+                text, damaged = as_written(payload), []
                 decision_blocks(text, damaged)
                 if damaged:
                     raise Refused("the payload's decision at %s does not match its bytes: count: it would swallow the "

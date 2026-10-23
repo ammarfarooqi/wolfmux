@@ -148,7 +148,10 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
   `bytes:` again for every quote it edits. `mem decide` refuses (exit 64, "anchor taken") an
   anchor whose `## <anchor>` line sits outside every quote but starts no block (a damaged
   block holds it). `mem migrate` refuses a decisions payload that leaves a fence open, holds a
-  damaged block, or would cost a decide block appended after it its anchor.
+  damaged block, or would cost a decide block appended after it its anchor. N counts the
+  quote's bytes as written, invalid UTF-8 included, and every reader counts them the same way
+  (a byte that is not UTF-8 is one byte), so such a byte never shortens a quote into a fake
+  block.
 - `mem ask close` takes any id of `[A-Za-z0-9._-]` (migrated asks keep theirs); `mem ask
   open` still needs a slug.
 
@@ -157,6 +160,11 @@ full lint (keyword overlap, ledger references, modes, auto-memory filing): that 
 - `archive/index.md`: `- <date> <where it is now> from <where it was>: <reason>`.
 - `archive/YYYY-MM/<region>/<file>`, `archive/YYYY-MM/ledger/<file>`. A ledger month that is
   archived again is appended to the archived copy.
+- Every move writes the new place first and removes the old one after (drain's archive of a
+  file or a ledger month, rule 3's sweep lines, unarchive): a crash between the two leaves
+  the data in both places, never in neither. `mem check` WARNs about each such half move: a
+  ledger month whose whole text is already in its archived copy, sweep lines both live and
+  archived, an index line for a file that is live again while its archived path is gone.
 
 ## .meta/drain.log
 
@@ -184,7 +192,9 @@ split on `-`), or holds such a part of 3 or more letters (`danasmith`), is repla
 `person`, accents folded first (`Renée` is `renee`). `.meta/jev/<UTC>-<slug>.json` keeps what was sent and
 what came back: `time, url, attempts, status, error, sent, response`, and `local` (`{"file":
 "<region>/<name>.md"}`, the real path, which never left the machine). Any error, or an answer of the wrong shape: the candidate goes to
-`.meta/digest-pending.md`; nothing moves. Errors are logged by type name only.
+`.meta/digest-pending.md`; nothing moves. Errors are logged by type name only. The request
+never goes through a proxy: `HTTPS_PROXY`, `ALL_PROXY` and the like are ignored, as a proxy
+would see the key. A `MEM_JEV_URL` that is not a URL is one more such error (`ValueError`).
 
 The key: `MEM_JEV_KEY`, else the Keychain item `typesafe-api-key`, which is sent only to the
 default URL `https://api.typesafe.ai/v1/systemone` (a custom `MEM_JEV_URL` needs
