@@ -2086,6 +2086,36 @@ which the guard closes to workers and not to leads. A follow-up in the same roun
 everywhere a view prints it: `teamctl status` (plain and `--json`, the id and the agent-view chat it
 continued in), `model --now` and `restore` print `hidden` to anyone but the owner and that lead.
 
+**Review round 4.** A re-review of round 3 found one blocker. A slow guard is no guard: Claude Code runs a
+tool call whose hook times out (10 s), and the round-3 guard took 17.6 s on a padded command (a `cat` of
+the card, four `cd`s, then `sh -c` with 99 `x/../f` words), because every `..` word cost about 15 forks
+and the cheap rules ran last. The fix is one awk pass, `GUARD_SCAN` in `lib/guard.sh`: it reads the
+command as the shell does, runs the cheap name rules first, then follows `cd` and the inner commands,
+with no fork per word, and refuses ("split this command") over 4,000 words, over 300 paths outside the
+worktree or after 2 seconds. Setup is one jq and one awk; symlinks are tested with the builtin `[ -L ]`
+and read through in a second pass only when one exists. Timings on the reviewer's harness, before and
+after: the padded command 19.7 s → 0.03 s (refused), `prettier --write` on 99 worktree files 9.3 s →
+0.03 s, on 101 files refused → allowed (paths inside the worktree no longer count), `git status`
+0.29 s → 0.02 s. Of the harness's 498 cases, 107 changed, all as the review asked. False positives
+gone: `tmux` counts only as the program (`grep -n "tmux"`, `rg 'tmux'`, `git log -S tmux`, `echo tmux`
+pass), and a search pattern is never a path (`grep -rn "../utils" src/`, `rg "../lib"`, `git grep
+'../shared'` pass). Bypasses closed: quotes and `\` inside a word (`mem""ory`, `mem\ory`,
+`~/.wolfmux/"memory"`, `$'…'`), a `\` line continuation inside a word, `sh -c` with options around `-c`
+or `--`, `echo`/`printf`/a heredoc piped into a shell, `bash -`, `source /dev/stdin`, `<( )`, `ssh` and
+`watch` text, `grep -r ~ -e x` and `grep -d recurse x ~` (the pattern is chosen after every option), the
+`claude --resume` refusal after `timeout`, `nice`, `caffeinate`, `script`, `xargs`, `npx
+@anthropic-ai/claude-code` and `$(which claude)`, quoted and un-export identity drops (`unset "X"`,
+`declare +x`, `read`, `printf -v`, `env -S`), a symlink in the worktree (`ln -s ~/.wolfmux w`, then
+`cat w/memory/…`: the `ln` is refused and an existing link is followed by Bash, Read and Glob), and a
+worktree named like the start of another (`w1` and `w10`). Claude Code's records widened: `sessions/`,
+`session-env/`, `history.jsonl` and its temporary folder `/private/tmp/claude-<uid>` (except the
+worker's own scratchpad) are closed, MCP `file://` URLs count as paths, and `fd`, `ag` and `ack` are
+tree walkers. SECURITY.md now says the conversation id is no secret (`ps -axww` and
+`~/.claude/sessions` show it to every process), that `find /tmp` is refused, and what still passes:
+a folder, path or program built at run time (`c=claude; $c -r <id>`), `CDPATH`, code in another
+language, a script the command runs and a chain of more than three symlinks. `tests/memory.sh` has eight
+new checks (all fail on the round-3 guard), including the three timings through `teamctl _guard`.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

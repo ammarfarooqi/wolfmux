@@ -766,10 +766,14 @@ for the team's name. `uninstall.sh --purge-memory` without `--purge` removes not
 Workers are refused the folder by the worktree guard, and also the folder of the leads' conversations
 (`~/.claude/projects/<project path>/`, except its shared `memory/`). A worker's search of a whole tree
 that holds either one is refused too: `grep -r x ~`, `find / …`, `du -sh ~`, and a Grep of the whole
-`~/.claude` folder. Search a narrower folder instead. A worker never resumes a conversation either:
-`claude --resume`, `-r`, `--continue`, `-c` or `--session-id` in its Bash text (bare, by a path, after
-`env` or `npx`, inside `sh -c` or `eval`) is refused, because the CLI would read that conversation itself;
-`claude -p` and `claude --version` pass. Where that guard ends is in
+`~/.claude` folder. Search a narrower folder instead. Claude Code's own records (`~/.claude/sessions`,
+`session-env`, `history.jsonl`, `file-history`, `todos`, `paste-cache`) and its temporary folder
+(`/private/tmp/claude-<uid>`, except the worker's own scratchpad) are closed too, so a worker searches its
+worktree and its scratchpad, never all of `/tmp`. A worker never resumes a conversation either:
+`claude --resume`, `-r`, `--continue`, `-c` or `--session-id` in its Bash text is refused wherever `claude`
+is the program (bare, by a path, after `env`, `sudo`, `nice`, `timeout`, `nohup`, `xargs` or `script`, as
+`npx @anthropic-ai/claude-code`, inside `sh -c`, `eval` or a heredoc fed to a shell), because the CLI
+would read that conversation itself; `claude -p` and `claude --version` pass. Where that guard ends is in
 [SECURITY.md](SECURITY.md#team-memory-who-can-read-a-leads-private-folder).
 
 Team memory is built for a Claude lead. A Codex lead has no `autoMemoryDirectory`, so `MEMORY.md` is not
