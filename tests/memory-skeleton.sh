@@ -53,6 +53,17 @@ fresh() {
   /bin/cp -R "$SKEL" "$1"
   "$1/bin/mem" init >/dev/null
 }
+# within <seconds> <command...>: the command in its own process group; past the time the whole
+# group is killed (a hung mem holds the lock through its lockf child) and the exit is 124.
+within() {
+  python3 -I -c 'import os, subprocess, sys
+p = subprocess.Popen(sys.argv[2:], start_new_session=True)
+try:
+    sys.exit(p.wait(timeout=float(sys.argv[1])))
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, 9)
+    sys.exit(124)' "$@"
+}
 # mode_of <path>: the permission bits, octal (BSD stat on macOS, GNU stat elsewhere).
 mode_of() { stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1"; }
 # topic <tree> <name> <keywords> [importance] [last_confirmed]: a topics file with a full header.
@@ -211,6 +222,45 @@ sys.exit(not (keys and keys == sorted(keys, reverse=True) and keys == best and a
 EOF'
 check "the caps are written in schema.md" 'grep -q "rules 20, people 8, teams 6, topics 12" "$SKEL/.meta/schema.md"'
 /bin/rm -f "$T"/topics/filler-*.md "$T"/rules/rule-*.md
+# The reviewer's tree: 20 rules, 8 people, 6 teams, ONE topic, every summary 160 characters. With
+# é (2 bytes) in the summaries the index must shrink, and the single topic gives way first.
+for glyph in a é; do
+  S="$WORK/shrink-$glyph"
+  fresh "$S"
+  python3 -I - "$S" "$glyph" <<'EOF'
+import os, sys
+t, g = sys.argv[1], sys.argv[2]
+for region, count in (("rules", 20), ("people", 8), ("teams", 6), ("topics", 1)):
+    for i in range(1, count + 1):
+        name = "%s-%02d" % (region, i)
+        path = os.path.join(t, region, name + ".md")
+        with open(path, "w", encoding="utf-8") as out:
+            out.write("---\nname: %s\nregion: %s\nkeywords: %s, k%s\nsummary: %s\nlinks:\nimportance: 3\n%slast_confirmed: 2026-10-01\nstatus: live\n---\nbody\n"
+                      % (name, region, name, name, g * 160, "authority: shared:RULES.md\n" if region == "rules" else ""))
+        os.chmod(path, 0o600)
+EOF
+  OUT="$(within 60 "$S/bin/mem" check 2>&1)"; RC=$?
+  check "the reviewer's tree ($glyph summaries): check ends (no shrink loop), MEMORY.md <= 5,000 bytes, no problem" \
+    '[ "$RC" -eq 0 ] && [ "$(wc -c <"$S/MEMORY.md")" -le 5000 ] && [ "$(wc -l <"$S/MEMORY.md")" -le 80 ] && ! printf "%s" "$OUT" | grep -q PROBLEM && grep -q "(rules/rules-" "$S/MEMORY.md"'
+done
+check "a region with one live file gives way too: the topic becomes ONE line, 1 more topics" \
+  'grep -qx -- "- 1 more topics: mem recall <words>" "$S/MEMORY.md" && ! grep -q "(topics/topics-01.md)" "$S/MEMORY.md" && printf "%s" "$OUT" | grep -q "^WARN .*MEMORY.md lists 0 of 1 live topics"'
+check "with every region at its floor (rules 1, the rest 0) the shrink stops and WARNs the bytes still over" \
+  'within 60 python3 -I - "$S" <<'"'"'EOF'"'"'
+import sys
+path = sys.argv[1] + "/bin/mem"
+ns = {"__name__": "mem_under_test"}
+exec(compile(open(path, encoding="utf-8").read(), path, "exec"), ns)
+ns["INDEX_MAX_BYTES"] = 300
+tree = ns["Tree"](sys.argv[1])
+said = []
+cuts = []
+text = ns["build_index"](tree, ns["region_entries"](tree), ns["now"](), cuts)
+index, _ = ns["refresh_index"](tree, ns["region_entries"](tree), ns["now"](), lambda level, message: said.append((level, message)))
+over = len(index.encode("utf-8")) - 300
+sys.exit(not (dict((r, s) for r, s, _ in cuts) == {"rules": 1, "people": 0, "teams": 0, "topics": 0} and over > 0
+              and ("WARN", "MEMORY.md: index over budget by %d bytes with every region at its floor; shorten summaries or the ledger pointers" % over) in said))
+EOF'
 printf -- '---\nname: no-summary\nregion: topics\nkeywords: a, b\nlinks:\nimportance: 3\nlast_confirmed: 2026-10-01\nstatus: live\n---\nbody\n' >"$T/topics/no-summary.md"
 chmod 600 "$T/topics/no-summary.md"
 OUT="$("$T/bin/mem" check)"; RC=$?

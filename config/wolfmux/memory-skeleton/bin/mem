@@ -840,10 +840,13 @@ def index_order(region, live):
     return live
 
 
-def build_index(tree, entries, when, cuts=None):
+def build_index(tree, entries, when, cuts=None, over=None):
     """MEMORY.md. A region with more live files than its INDEX_CAPS lines shows the first ones
-    and ONE line saying how many more; if the bytes still pass the cap, topics give way first,
-    then teams, people, rules. cuts, when given, gets (region, shown, live) per cut region."""
+    and ONE line saying how many more. If the bytes still pass the cap, one region shows one
+    entry fewer per pass: topics first, then teams, people, rules; topics, teams and people go
+    down to none, rules to one. The loop ends under the cap, or when no region can give way;
+    over, when given, then gets how many bytes are left over the cap. cuts, when given, gets
+    (region, shown, live) per cut region."""
     sections = [(region, title, index_order(region, [e for e in entries if e.region == region and e.live]))
                 for region, title in REGION_TITLES]
     month = month_of(when)
@@ -854,31 +857,36 @@ def build_index(tree, entries, when, cuts=None):
             count = tree.read(rel).count(b"\n")
             pointers.append("- [%s](%s) %d lines" % (os.path.splitext(os.path.basename(rel))[0], rel, count))
     caps = dict(INDEX_CAPS)
-    while True:
-        full, used = render_index(sections, caps, pointers, when)
-        if len(full.encode("utf-8")) <= INDEX_MAX_BYTES:
-            break
-        shrink = [region for region, _ in reversed(INDEX_CAPS) if used[region][0] > 0]
+    # Entries shown per region: all of them within the cap, else the cap less the "N more" line.
+    shown = dict((region, len(live) if len(live) <= caps[region] else caps[region] - 1) for region, _, live in sections)
+    floors = {"rules": 1}
+    full = render_index(sections, shown, pointers, when)
+    while len(full.encode("utf-8")) > INDEX_MAX_BYTES:
+        shrink = [region for region, _ in reversed(INDEX_CAPS) if shown[region] > floors.get(region, 0)]
         if not shrink:
             break
-        caps[shrink[0]] = max(1, used[shrink[0]][1] - 1)
+        shown[shrink[0]] -= 1
+        smaller = render_index(sections, shown, pointers, when)
+        if smaller == full:  # a pass that changes nothing: stop, never spin
+            break
+        full = smaller
+    if over is not None and len(full.encode("utf-8")) > INDEX_MAX_BYTES:
+        over.append(len(full.encode("utf-8")) - INDEX_MAX_BYTES)
     if cuts is not None:
-        cuts.extend((region, used[region][0], len(live)) for region, _, live in sections if used[region][0] < len(live))
+        cuts.extend((region, shown[region], len(live)) for region, _, live in sections if shown[region] < len(live))
     return full
 
 
-def render_index(sections, caps, pointers, when):
+def render_index(sections, shown, pointers, when):
     body = list(LEGEND)
-    used = {}
     for region, title, live in sections:
         body.append("## %s" % title)
-        shown = live if len(live) <= caps[region] else live[:caps[region] - 1]
-        body.extend(index_line(e) for e in shown)
-        if len(shown) < len(live):
-            body.append("- %d more %s: mem recall <words>" % (len(live) - len(shown), region))
+        listed = live[:shown[region]]
+        body.extend(index_line(e) for e in listed)
+        if len(listed) < len(live):
+            body.append("- %d more %s: mem recall <words>" % (len(live) - len(listed), region))
         if not live:
             body.append("- (none yet)")
-        used[region] = (len(shown), len(shown) + (1 if len(shown) < len(live) else 0))
     body.append("## Ledger pointers")
     body.extend(pointers or ["- (nothing this month yet)"])
     text = "\n".join(body) + "\n"
@@ -889,7 +897,7 @@ def render_index(sections, caps, pointers, when):
         if len(full.encode("utf-8")) == size:
             break
         size = len(full.encode("utf-8"))
-    return full, used
+    return full
 
 
 def lint_index(text, label):
@@ -1374,10 +1382,12 @@ def cmd_check(tree, args):
 
 def refresh_index(tree, entries, when, report):
     """MEMORY.md and core/card.md, regenerated from `entries`. (index text, card text)."""
-    cuts = []
-    index = build_index(tree, entries, when, cuts)
+    cuts, over = [], []
+    index = build_index(tree, entries, when, cuts, over)
     for region, shown, live in cuts:
         report("WARN", "MEMORY.md lists %d of %d live %s (the index caps); mem recall finds the rest" % (shown, live, region))
+    for size in over:
+        report("WARN", "MEMORY.md: index over budget by %d bytes with every region at its floor; shorten summaries or the ledger pointers" % size)
     for problem in lint_index(index, "MEMORY.md (generated)"):
         report("PROBLEM", problem)
     write_file(tree, "MEMORY.md", index.encode("utf-8"))

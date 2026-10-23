@@ -78,8 +78,11 @@ Index caps, in lines per region section: rules 20, people 8, teams 6, topics 12 
 title, legend, headings and ledger pointers that is at most 80 lines). Rules come newest
 first; people, teams and topics most important first, then newest `last_confirmed`. A region
 with more live files than its cap shows the first ones and ONE line
-`- N more <region>: mem recall <words>`. If the index still passes 5,000 bytes, topics give
-way first, then teams, people and rules. A cut region is a WARN in `check`, never a problem.
+`- N more <region>: mem recall <words>`. If the index still passes 5,000 bytes, one region
+shows one entry fewer per pass: topics first, then teams, people and rules. Topics, teams and
+people go down to no entry (only the `N more` line), rules to one. When every region is at
+that floor and the bytes still pass the cap, `check` WARNs `index over budget by N bytes`.
+A cut region is a WARN in `check`, never a problem.
 
 `add`, `drain` and `unarchive` regenerate MEMORY.md and the card at once but do not run the
 full lint (keyword overlap, ledger references, modes, auto-memory filing): that is `mem check`.
