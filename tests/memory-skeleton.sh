@@ -589,6 +589,9 @@ printf 'AFD-2129 notes: the fly deploy, step 1.\r\nstep 2, with ```code```\n' >"
 printf 'Shared links live here.\n' >"$SRC/reference_links.md"
 printf 'The vendor list lives here.\n' >"$SRC/project_vendors.md"
 printf 'The board lives here.\n' >"$SRC/reference_board.md"
+CM="$HOME/claude-mem-export-2026-10-22"   # the default --claude-mem-from
+/bin/mkdir -p "$CM/observations"
+printf -- '---\ntitle: Fly cutover\ntype: observation\n---\nThe cutover ran at 09:00 UTC.\n' >"$CM/observations/obs-1.md"
 printf 'Archived note from July.\n' >"$SRC/old/archived.md"
 printf 'private, never copied\n' >"$SRC/secret.md"
 printf 'held for later\n' >"$SRC/held.md"
@@ -618,6 +621,8 @@ rows = [
     ("project_vendors.md", "file", "rules/vendors.md", "pointer", "pointer", "no", "vendors", "vendors", "where the vendor list lives", "3", "", "", "", ""),
     ("reference_board.md", "file", "topics/board.md", "topics", "pointer", "no", "board", "board", "where the board lives", "3", "", "", "", ""),
     ("reference_board.md", "file", "topics/board-copy.md", "pointer", "copy", "no", "board-copy", "board", "a copy that says pointer", "3", "", "", "", ""),
+    # line 20: a claude-mem export file, frontmatter stripped like a file row's
+    ("claude-mem:observations/obs-1.md", "claude-mem", "topics/fly-cutover.md", "topics", "copy", "no", "fly-cutover", "fly, cutover", "when the fly cutover ran", "3", "", "", "", ""),
 ]
 with open(sys.argv[1], "w", newline="") as out:
     w = csv.writer(out)
@@ -630,7 +635,7 @@ SRC_SUM="$(tree_sum "$SRC")"; RULES_SUM="$(tree_sum "$RULES_SRC")"; T_SUM="$(tre
 DRY="$("$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --dry-run)"; RC=$?
 check "migrate --dry-run exits 0 and says nothing was written" '[ "$RC" -eq 0 ] && printf "%s\n" "$DRY" | sed -n 1p | grep -q "(dry run: nothing was written)"'
 check "the dry run reports a sha256 match for every copied body" \
-  '[ "$(printf "%s" "$DRY" | grep -c "sha256 match (in memory)")" -eq 7 ] && printf "%s" "$DRY" | grep -q "^verification: every payload keeps its sha256 in memory"'
+  '[ "$(printf "%s" "$DRY" | grep -c "sha256 match (in memory)")" -eq 8 ] && printf "%s" "$DRY" | grep -q "^verification: every payload keeps its sha256 in memory"'
 check "the dry run writes nothing: not the tree, not the source, not ~/.wolfmux" \
   '[ "$T_SUM" = "$(tree_sum "$T")" ] && [ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ ! -e "$HOME/.wolfmux" ]'
 check "the dry run lists the held and skipped rows with their reasons" \
@@ -672,6 +677,10 @@ check "a pointer row may land in topics/ (authority shared:<path>, no body copie
   'grep -q "^region: topics$" "$T/topics/board.md" && grep -q "^authority: shared:$SRC/reference_board.md$" "$T/topics/board.md" && ! grep -q "The board lives here" "$T/topics/board.md" && grep -q "^line 18 pointer reference_board.md -> topics/board.md.*: pointer ok" "$WORK/migrate-report.txt"'
 check "region 'pointer' on a copy row is refused and names the fix" \
   'grep -q "^- line 19 hold reference_board.md: region .pointer. on a copy row: set region topics, or action pointer" "$WORK/migrate-report.txt" && [ ! -e "$T/topics/board-copy.md" ]'
+check "a claude-mem: row reads the default ~/claude-mem-export-2026-10-22 and copies the body without its frontmatter" \
+  'python3 -I -c "import sys; sys.exit(open(sys.argv[1], \"rb\").read().split(b\"\n---\n\", 1)[1] != b\"The cutover ran at 09:00 UTC.\n\")" "$T/topics/fly-cutover.md" && grep -q "^line 20 copy    claude-mem:observations/obs-1.md -> topics/fly-cutover.md sha256 [0-9a-f]* (source frontmatter of 45 bytes replaced by the header): found once" "$WORK/migrate-report.txt"'
+check "migrate refuses a --claude-mem-from that is not a folder; a claude-mem: row without the folder is held with the fix" \
+  '! "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --claude-mem-from "$WORK/no-such-export" --dry-run 2>/dev/null && OUT="$(HOME="$WORK/empty-home" "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" --dry-run)" && printf "%s" "$OUT" | grep -q "^- line 20 hold claude-mem:observations/obs-1.md: a claude-mem: row needs --claude-mem-from <dir>"'
 check "the source folder and the rules folder are never written" '[ "$SRC_SUM" = "$(tree_sum "$SRC")" ] && [ "$RULES_SUM" = "$(tree_sum "$RULES_SRC")" ]'
 check "headers come from the map: region, keywords, authority, repo_ref, last_confirmed from the source mtime" \
   'grep -q "^authority: decisions-2026-10#2026-10-09T13:50Z" "$T/rules/tone.md" && grep -q "^repo_ref: fe:src/features/fly/agent-log/0007.md AFD-2129" "$T/topics/afd-2129.md" && grep -q "^last_confirmed: $(date -u -r "$SRC/project_fly.md" +%Y-%m-%d 2>/dev/null || date -u +%Y-%m-%d)" "$T/topics/afd-2129.md" && grep -q "^links: \[\[tone\]\]" "$T/rules/slack-names.md"'
@@ -685,7 +694,7 @@ check "a rollback backup is taken first, kept on the owner's word" \
   'grep -q "basis=migration rollback; delete 7 days after the restart test on the owner'"'"'s word" "$T/.meta/drain.log" && [ "$(ls "$T"/.meta/backups/*.tar | wc -l | tr -d " ")" -ge 1 ]'
 PRE="$(ls "$HOME"/.wolfmux/backups/memory-pre-migration-*.tar 2>/dev/null | head -1)"
 check "the source and rules folders are tarred to ~/.wolfmux/backups, mode 600, with a sha256 list, minus skip rows" \
-  '[ -n "$PRE" ] && [ "$(mode_of "$PRE")" = 600 ] && [ -f "${PRE%.tar}.sha256" ] && tar -tf "$PRE" | grep -qx "source/feedback_tone.md" && tar -tf "$PRE" | grep -qx "rules/slack-names.md" && tar -tf "$PRE" | grep -qx "state/comms-state.json" && ! tar -tf "$PRE" | grep -q secret.md'
+  '[ -n "$PRE" ] && [ "$(mode_of "$PRE")" = 600 ] && [ -f "${PRE%.tar}.sha256" ] && tar -tf "$PRE" | grep -qx "source/feedback_tone.md" && tar -tf "$PRE" | grep -qx "rules/slack-names.md" && tar -tf "$PRE" | grep -qx "state/comms-state.json" && tar -tf "$PRE" | grep -qx "claude-mem/observations/obs-1.md" && ! tar -tf "$PRE" | grep -q secret.md'
 check "the report is kept in .meta/migrate-<UTC>.md" 'ls "$T"/.meta/migrate-*.md >/dev/null 2>&1 && grep -q "^verification: every source body" "$T"/.meta/migrate-*.md'
 check "after migrate, check passes" '"$T/bin/mem" check'
 "$T/bin/mem" migrate --from "$SRC" --map "$WORK/map.csv" --rules-from "$RULES_SRC" --state "$WORK/comms-state.json" >/dev/null 2>&1

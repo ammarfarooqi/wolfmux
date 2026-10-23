@@ -95,7 +95,8 @@ USAGE = """usage: mem [--root <dir>] <command> [options]
   unarchive <name>
   erase <subject> [--confirm]
   purge [--confirm] <archived name | YYYY-MM>...
-  migrate --from <dir> --map <csv> [--rules-from <dir>] [--state <json>] [--dry-run]
+  migrate --from <dir> --map <csv> [--rules-from <dir>] [--claude-mem-from <dir>] [--state <json>]
+      [--dry-run]
   status
 
 The tree: --root <dir>, else $MEM_ROOT, else the folder above this script.
@@ -2162,7 +2163,10 @@ def glob_home_backups():
 
 MAP_COLUMNS = ("source", "source_type", "dest", "region", "action", "hold", "name", "keywords", "summary",
                "importance", "authority", "links", "repo_ref", "notes")
-PREFIX_TYPES = (("rules:", "rules-file"), ("state:", "state-key"), ("archive:", "archive-file"), ("hub:", "hub-line"))
+PREFIX_TYPES = (("rules:", "rules-file"), ("state:", "state-key"), ("archive:", "archive-file"), ("hub:", "hub-line"),
+                ("claude-mem:", "claude-mem"))
+CLAUDE_MEM_DEFAULT = "~/claude-mem-export-2026-10-22"
+FILE_KINDS = ("file", "rules-file", "archive-file", "claude-mem")
 
 
 def under(base, rel):
@@ -2208,7 +2212,7 @@ def plan_row(tree, row, line, ctx):
             raise Refused("source_type %r does not fit the source %r (want %s)" % (source_type, source, expected))
         if action == "skip":
             item.update(status="skip", reason=row.get("notes", "").strip() or "skip row")
-            if expected in ("file", "rules-file", "archive-file"):
+            if expected in FILE_KINDS:
                 ctx["exclude"].add(source_path(ctx, source, expected))
             return item
         if action == "hold" or row.get("hold", "no").strip().lower() == "yes":
@@ -2320,6 +2324,11 @@ def source_path(ctx, source, kind):
         return under(ctx["rules"], source[len("rules:"):])
     if kind == "archive-file":
         return under(ctx["from"], source[len("archive:"):])
+    if kind == "claude-mem":
+        if not ctx["claude_mem"]:
+            raise Refused("a claude-mem: row needs --claude-mem-from <dir> (%s is not a folder)" % CLAUDE_MEM_DEFAULT)
+        ctx["claude_mem_used"] = True
+        return under(ctx["claude_mem"], source[len("claude-mem:"):])
     if kind == "hub-line":
         return under(ctx["from"], source[len("hub:"):].rsplit("#", 1)[0])
     return under(ctx["from"], source)
@@ -2506,7 +2515,8 @@ def pre_migration_tar(ctx, when):
     fd, tmp = tempfile.mkstemp(prefix=".mem-", suffix=".tmp", dir=folder)
     os.close(fd)
     with tarfile.open(tmp, "w") as tar:
-        for label, base in (("source", ctx["from"]), ("rules", ctx["rules"])):
+        claude_mem = ctx["claude_mem"] if ctx["claude_mem_used"] else None
+        for label, base in (("source", ctx["from"]), ("rules", ctx["rules"]), ("claude-mem", claude_mem)):
             if not base:
                 continue
             for current, dirs, names in os.walk(base):
@@ -2545,6 +2555,11 @@ def cmd_migrate(tree, args):
     rules = os.path.realpath(os.path.expanduser(args.rules_from)) if args.rules_from else None
     if rules and not os.path.isdir(rules):
         raise Refused("--rules-from %s is not a folder" % args.rules_from)
+    claude_mem = os.path.realpath(os.path.expanduser(args.claude_mem_from or CLAUDE_MEM_DEFAULT))
+    if not os.path.isdir(claude_mem):
+        if args.claude_mem_from:
+            raise Refused("--claude-mem-from %s is not a folder" % args.claude_mem_from)
+        claude_mem = None  # only a claude-mem: row needs it, and that row says so
     state, state_path = None, None
     if args.state:
         state_path = os.path.realpath(os.path.expanduser(args.state))
@@ -2559,8 +2574,8 @@ def cmd_migrate(tree, args):
         if missing:
             raise Refused("the map has no column %s (the header is %s)" % (", ".join(missing), ",".join(MAP_COLUMNS)))
         rows = list(reader)
-    ctx = {"from": source, "rules": rules, "state": state, "state_path": state_path, "when": when,
-           "exclude": set(), "dests": {}}
+    ctx = {"from": source, "rules": rules, "claude_mem": claude_mem, "claude_mem_used": False, "state": state,
+           "state_path": state_path, "when": when, "exclude": set(), "dests": {}}
     items = [plan_row(tree, row, number, ctx) for number, row in enumerate(rows, 2)]
     out = []
     if not args.dry_run:
@@ -2587,7 +2602,8 @@ def migrate_report(tree, args, items, failures, extra, when):
     dry = args.dry_run
     lines = ["# Migration %s%s" % (minute(when), " (dry run: nothing was written)" if dry else ""),
              "from: %s" % os.path.realpath(args.source), "map: %s" % os.path.realpath(args.map),
-             "rules from: %s" % (args.rules_from or "-"), "state: %s" % (args.state or "-"), ""]
+             "rules from: %s" % (args.rules_from or "-"),
+             "claude-mem from: %s" % (args.claude_mem_from or CLAUDE_MEM_DEFAULT), "state: %s" % (args.state or "-"), ""]
     lines.extend(extra)
     counts = {}
     for item in items:
@@ -2719,6 +2735,7 @@ def build_parser():
     p.add_argument("--from", dest="source", required=True)
     p.add_argument("--map", required=True)
     p.add_argument("--rules-from", dest="rules_from")
+    p.add_argument("--claude-mem-from", dest="claude_mem_from")
     p.add_argument("--state")
     p.add_argument("--dry-run", dest="dry_run", action="store_true")
     return parser

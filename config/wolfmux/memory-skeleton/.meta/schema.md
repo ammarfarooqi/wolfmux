@@ -126,7 +126,9 @@ The mapping CSV has one row per item: `source,source_type,dest,region,action,hol
 keywords,summary,importance,authority,links,repo_ref,notes`. What a row carries:
 
 - a file (`<path>` under --from, `rules:<file>` under --rules-from, `archive:<file>` under
-  --from): its bytes; going to a region, only what follows its own frontmatter.
+  --from, `claude-mem:<path>` under --claude-mem-from, default
+  `~/claude-mem-export-2026-10-22`): its bytes; going to a region, only what follows its own
+  frontmatter. source_type is `file`, `rules-file`, `archive-file` or `claude-mem`.
   `hub:<file>#<n>`: line n of that file.
 - `state:<key>` (a key of --state): to `state/<file>.json#<key>` or a ledger file, the JSON
   value; to `<region>/<name>.md`, the value's text is the body (a string as is, any other
