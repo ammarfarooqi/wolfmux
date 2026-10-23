@@ -69,9 +69,24 @@ guard_transcript() {
 # guard_holds_private <lower-case path> — the path is a folder that holds a memory folder or the leads'
 # conversations (~, ~/.wolfmux, ~/.claude): a search of it reads them too
 guard_holds_private() {
+  local private
   [ "$1" != "/" ] || return 0
   guard_inside "$GUARD_MEMORY_LC" "$1" && return 0
+  for private in ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"}; do
+    guard_inside "$private" "$1" && return 0
+  done
   [ -n "$GUARD_TRANSCRIPTS_LC" ] && guard_inside "$GUARD_TRANSCRIPTS_LC" "$1"
+}
+
+# guard_claude_private <lower-case path> — inside one of Claude Code's own records of sessions outside any project:
+# file-history/ (the copy of every file a session changed with Edit or Write, from before the change), todos/ and
+# paste-cache/, under ~/.claude and under CLAUDE_CONFIG_DIR. Any session's, a lead's included: no worker reads them.
+guard_claude_private() {
+  local private
+  for private in ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"}; do
+    guard_inside "$1" "$private" && return 0
+  done
+  return 1
 }
 
 # guard_glob_root <absolute glob pattern> — the folder it searches: everything before the first part
@@ -88,8 +103,12 @@ guard_deny() {
   return 0
 }
 
-# guard_squeeze <text> — "//" becomes "/" (not after a colon: URLs stay intact), and "/./" becomes "/"
-guard_squeeze() { printf '%s' "$1" | sed -E -e 's#([^:/])/{2,}#\1/#g' -e ':a' -e 's#/\./#/#g' -e 'ta' -e 's#(.)/\.$#\1#'; }
+# guard_squeeze <text> — "//" becomes "/" (not after a colon: URLs stay intact), "/./" becomes "/", and a
+# word that ends in "/." loses it, mid-line too (`grep -r x ~/. | head`): "/." alone is "/"
+guard_squeeze() {
+  printf '%s' "$1" | sed -E -e 's#([^:/])/{2,}#\1/#g' -e ':a' -e 's#/\./#/#g' -e 'ta' \
+    -e 's#(^|[[:space:]=])/\.([[:space:];&|)]|$)#\1/\2#g' -e 's#([^[:space:]=])/\.([[:space:];&|)]|$)#\1\2#g'
+}
 
 # guard_tokenize <command> <token> <path>... — replace every spelling of the paths
 guard_tokenize() {
@@ -112,13 +131,15 @@ guard_tokenize() {
 # is still a cd. A quoted word with no space in it that holds .wolfmux/memory is a path
 # too (`cat "x/.wolfmux/memory/y"`); a sentence that mentions the folder is not.
 # <joiner> (default a space) is what the lines are joined with: ";" keeps
-# one command per line apart for guard_tree_walk.
+# one command per line apart for guard_tree_walk. A line that ends in a "\" goes on in the next one, as
+# in the shell. Quoted prose leaves an empty word ("") where it was, so that `grep -rn "TODO" ~` still
+# has a pattern in front of its folder (guard_tree_walk).
 guard_strip_prose() {
   local mark=$'\001' joiner="${2:- }"
   printf '%s\n' "$1" |
     awk '
       skipping { if ($0 ~ "^[[:space:]]*" marker "[[:space:]]*[)\"]*[[:space:]]*$") skipping = 0; next }
-      { print }
+      { if (match($0, /\\+$/) && RLENGTH % 2 == 1) printf "%s ", substr($0, 1, length($0) - 1); else print }
       match($0, /<<-?[[:space:]]*["\047\\]?[A-Za-z_][A-Za-z0-9_]*/) {
         marker = substr($0, RSTART, RLENGTH); sub(/^<<-?[[:space:]]*["\047\\]?/, "", marker); skipping = 1
       }' |
@@ -128,14 +149,97 @@ guard_strip_prose() {
       -e "s/'((@[A-Z]+@|~|\.{0,2}\/)[^']*)'/$mark\\1$mark/g" \
       -e 's/"([^"[:space:]]*\.wolfmux\/memory[^"[:space:]]*)"/'"$mark"'\1'"$mark"'/g' \
       -e "s/'([^'[:space:]]*\\.wolfmux\\/memory[^'[:space:]]*)'/$mark\\1$mark/g" \
-      -e 's/"[^"]*"/ /g' \
-      -e "s/'[^']*'/ /g" \
+      -e 's/"[^"]*"/""/g' \
+      -e "s/'[^']*'/\"\"/g" \
       -e "s/$mark/\"/g"
+}
+
+# guard_inner_commands <command> — the command text that a shell or eval in it runs, one per line (its own newlines
+# as \001): the word after sh|bash|zsh|dash|ksh -c (also -lc, -ic, -ec …) or after <<<, the body of a heredoc fed to
+# one, and all that eval is given. guard_strip_prose would drop it as quoted prose; guard_shell checks it as a command.
+guard_inner_commands() {
+  printf '%s\n' "$1" | LC_ALL=C /usr/bin/awk '
+    # one shell word from s at p, unquoted as the shell would (double, single and ANSI-C quotes, \x); p ends after it
+    function word(   out, ch, q, c2) {
+      out = ""
+      while (p <= n) {
+        ch = substr(s, p, 1)
+        if (ch ~ /[ \t\n;&|()<>]/) break
+        if (ch == "\047") {
+          q = index(substr(s, p + 1), "\047")
+          if (q == 0) { out = out substr(s, p + 1); p = n + 1; break }
+          out = out substr(s, p + 1, q - 1); p += q + 1; continue
+        }
+        if (ch == "$" && substr(s, p + 1, 1) == "\047") {
+          for (p += 2; p <= n; p++) {
+            ch = substr(s, p, 1)
+            if (ch == "\\" && p < n) { c2 = substr(s, ++p, 1); out = out (c2 == "n" ? "\n" : (c2 == "t" ? "\t" : c2)); continue }
+            if (ch == "\047") { p++; break }
+            out = out ch
+          }
+          continue
+        }
+        if (ch == "\"") {
+          for (p++; p <= n; p++) {
+            ch = substr(s, p, 1)
+            if (ch == "\\" && p < n && index("\\\"$`\n", substr(s, p + 1, 1))) { out = out substr(s, ++p, 1); continue }
+            if (ch == "\"") { p++; break }
+            out = out ch
+          }
+          continue
+        }
+        if (ch == "\\" && p < n) { c2 = substr(s, p + 1, 1); if (c2 != "\n") out = out c2; p += 2; continue }
+        out = out ch; p++
+      }
+      return out
+    }
+    function emit(text) { if (text != "") { gsub(/\n/, "\001", text); print text } }
+    { s = s (NR > 1 ? "\n" : "") $0 }
+    END {
+      n = length(s); p = 1
+      shell = "(^|[^A-Za-z0-9_.-])[\"\047]?([^[:space:];&|()<>\"\047`]*/)?(ba|z|da|k|fi|tc|c)?sh[\"\047]?"
+      opts = "([ \t]+-[-A-Za-z]+([ \t]+[a-z]+)?)*"
+      kinds = 4
+      re[1] = shell opts "[ \t]+-[A-Za-z]*c[A-Za-z]*[ \t]+"
+      re[2] = shell opts "[ \t]*<<<[ \t]*"
+      re[3] = shell opts "[ \t]*<<-?[ \t]*[\"\047\\\\]?[A-Za-z_][A-Za-z0-9_]*[\"\047]?"
+      re[4] = "(^|[^A-Za-z0-9_.-])eval[ \t]+"
+      while (p <= n) {
+        rest = substr(s, p); best = 0; at = 0
+        for (k = 1; k <= kinds; k++) if (match(rest, re[k]) && (best == 0 || RSTART < at)) { best = k; at = RSTART; len = RLENGTH }
+        if (best == 0) break
+        p += at - 1 + len
+        if (best <= 2) { emit(word()); continue }
+        if (best == 4) {
+          out = ""
+          while (p <= n) {
+            while (p <= n && substr(s, p, 1) ~ /[ \t]/) p++
+            if (p > n || substr(s, p, 1) ~ /[\n;&|()<>]/) break
+            w = word(); out = out (out == "" ? "" : " ") w
+          }
+          emit(out); continue
+        }
+        # a heredoc: its marker, then the lines up to the one that is only the marker
+        marker = substr(rest, at, len); sub(/^.*<<-?[ \t]*["\047\\]?/, "", marker); sub(/["\047]$/, "", marker)
+        nl = index(substr(s, p), "\n"); if (nl == 0) break
+        p += nl; body = ""
+        while (p <= n) {
+          nl = index(substr(s, p), "\n"); line = nl ? substr(s, p, nl - 1) : substr(s, p)
+          p += nl ? nl : n
+          probe = line; sub(/^\t+/, "", probe)
+          if (probe == marker) break
+          body = body (body == "" ? "" : "\n") line
+        }
+        emit(body)
+      }
+    }'
 }
 
 # guard_home <command> — ~ and $HOME (also ${HOME}) spelled out as the home directory, so that
 # ~/.wolfmux/state and "$HOME/.wolfmux/memory" are the paths the tokens below look for. Only a ~
 # that starts a word, as the shell expands it (and a quoted one too: refusing more is the safe side).
+# ~<name> is that user's home: yours for your own name, /Users/<name> for another; ~+ is the folder the
+# command runs in (GUARD_CWD).
 guard_home() {
   local c="$1" h="${HOME%/}"
   [ -n "$h" ] || {
@@ -144,22 +248,47 @@ guard_home() {
   }
   c="${c//\$\{HOME\}/$h}"
   c="${c//\$HOME/$h}"
-  printf '%s' "$c" | LC_ALL=C /usr/bin/awk -v h="$h" '
+  printf '%s' "$c" | LC_ALL=C /usr/bin/awk -v h="$h" -v me="${USER:-}" -v here="${GUARD_CWD:-.}" '
     { out = ""; line = $0
-      while (match(line, /(^|[[:space:]=:;&|(<>"\047`])~(\/|[[:space:];&|)"\047`]|$)/)) {
+      while (match(line, /(^|[[:space:]=:;&|(<>"\047`])~([A-Za-z_][A-Za-z0-9._-]*|\+)?(\/|[[:space:];&|)"\047`]|$)/)) {
         lead = substr(line, RSTART, 1); if (RSTART == 1 && substr(line, 1, 1) == "~") lead = ""
-        out = out substr(line, 1, RSTART - 1) lead h
-        line = substr(line, RSTART + length(lead) + 1)
+        name = substr(line, RSTART + length(lead) + 1, RLENGTH - length(lead) - 1); sub(/[\/[:space:];&|)"\047`]$/, "", name)
+        out = out substr(line, 1, RSTART - 1) lead (name == "" || name == me ? h : (name == "+" ? here : "/Users/" name))
+        line = substr(line, RSTART + length(lead) + 1 + length(name))
       }
       print out line }'
 }
 
+# guard_resolve_word <word> <cwd> — the path a word names: absolute, its ".." climbed through the disk where the
+# folders exist and by the letter past them (guard_abspath leaves a/missing/../.. as it is)
+guard_resolve_word() {
+  local path
+  path="$(guard_abspath "$1" "$2")"
+  case "$path" in
+    */../* | */..)
+      path="$(printf '%s\n' "$path" | LC_ALL=C /usr/bin/awk -F/ '{ n = 0
+        for (i = 2; i <= NF; i++) { if ($i == "..") { if (n) n-- } else if ($i != "" && $i != ".") part[++n] = $i }
+        out = ""; for (i = 1; i <= n; i++) out = out "/" part[i]; print (out == "" ? "/" : out) }')"
+      ;;
+  esac
+  printf '%s\n' "${path:-/}"
+}
+
+# guard_climbs <word> — the word is a path the text does not spell out: one that climbs (a ".." part) or starts
+# where the command runs ("." or "./…")
+guard_climbs() {
+  case "$1" in .. | ../* | */../* | */.. | . | ./*) return 0 ;; esac
+  return 1
+}
+
 # guard_tree_walk <command, ~ and $HOME spelled out> — prints a reason when a tool that walks a whole tree
 # (grep -r, rg, find, ls -R, du, tar) is given a folder that holds a memory folder or the leads'
-# conversations: `grep -r x ~` reads ~/.wolfmux/memory as surely as a cat of it does. Only absolute
-# arguments are seen; prose (quoted text, heredoc bodies) is not a command (guard_strip_prose).
+# conversations: `grep -r x ~` reads ~/.wolfmux/memory as surely as a cat of it does. Absolute arguments
+# are seen, and relative ones that climb or start here (../../.., ., ./x: guard_climbs), resolved against
+# GUARD_CWD; grep's and rg's pattern is not a folder. Prose (quoted text, heredoc bodies) is not a command
+# (guard_strip_prose); lines that end in "\" go on in the next one.
 guard_tree_walk() {
-  local line i n tool word lw walks
+  local line i j n tool word lw walks takes pattern skip ended
   local -a words
   GUARD_WALK_AT=""
   while IFS= read -r line; do
@@ -176,10 +305,12 @@ guard_tree_walk() {
     done
     [ "$i" -lt "$n" ] || continue
     tool="$(basename -- "${words[$i]}" 2>/dev/null || true)"
-    walks=0
+    walks=0 takes="" pattern=0 skip=0 ended=0
     case "$tool" in
-      rg | find | du | tar | gtar | bsdtar) walks=1 ;;
-      grep | egrep | fgrep | ls) ;;
+      rg) walks=1 takes="ABCEMTefgjmrt" pattern=1 ;;
+      find | du | tar | gtar | bsdtar) walks=1 ;;
+      grep | egrep | fgrep) takes="ABCDdefm" pattern=1 ;;
+      ls) ;;
       *) continue ;;
     esac
     i=$((i + 1))
@@ -191,6 +322,42 @@ guard_tree_walk() {
       case "$tool:$word" in
         ls:--recursive | ls:-*R* | *grep:--recursive | *grep:--dereference-recursive | *grep:--directories=recurse | *grep:-[rR]* | *grep:-[!-]*[rR]*) walks=1 ;;
       esac
+      # grep and rg: the first word that is not an option is the PATTERN, not a folder (grep -rn "/Users/" src/),
+      # unless -e, -f, --regexp or --file gave the pattern; the argument of an option is neither.
+      if [ -n "$takes" ] && [ "$skip" -eq 1 ]; then
+        skip=0
+        continue
+      fi
+      if [ -n "$takes" ] && [ "$ended" -eq 0 ]; then
+        case "$word" in
+          --) ended=1 && continue ;;
+          --regexp=* | --file=*) pattern=0 && continue ;;
+          --regexp | --file) pattern=0 skip=1 && continue ;;
+          --files) pattern=0 && continue ;;
+          --type | --type-not | --glob | --iglob | --max-count | --context | --after-context | --before-context | --include | --exclude | --exclude-dir | --max-depth | --threads | --replace) skip=1 && continue ;;
+          --*) continue ;;
+          -?*)
+            j=1
+            while [ "$j" -lt "${#word}" ]; do
+              case "$takes" in
+                *"${word:$j:1}"*)
+                  case "${word:$j:1}" in e | f) pattern=0 ;; esac
+                  if [ "$j" -eq $((${#word} - 1)) ]; then skip=1; fi
+                  break
+                  ;;
+              esac
+              j=$((j + 1))
+            done
+            continue
+            ;;
+        esac
+      fi
+      if [ "$pattern" -eq 1 ]; then
+        pattern=0
+        continue
+      fi
+      # a word that climbs (../../..) or starts here (., ./x) is the folder it names
+      if guard_climbs "$word"; then word="$(guard_resolve_word "$word" "${GUARD_CWD:-$PWD}")"; fi
       case "$word" in /*) ;; *) continue ;; esac
       while [ "${#word}" -gt 1 ] && [ "${word%/}" != "$word" ]; do word="${word%/}"; done
       lw="$(guard_lower "$word")"
@@ -209,27 +376,62 @@ guard_tree_walk() {
 
 # guard_shell <command> — prints a reason when the command reaches outside
 guard_shell() {
-  local c lc word
+  local c lc word inner extra="" prefix lp private home depth="${2:-0}"
+  # What sh -c, bash -lc, a here-string, a heredoc fed to a shell, or eval will run is a command and
+  # not prose, though it is quoted: each is checked as one (guard_inner_commands), three levels deep.
+  while IFS= read -r inner; do
+    [ -n "$inner" ] || continue
+    if [ "$depth" -ge 3 ]; then printf 'that command nests sh -c or eval more than three levels deep; run the inner command itself.' && return 0; fi
+    word="$(guard_shell "${inner//$'\001'/$'\n'}" $((depth + 1)))"
+    if [ -n "$word" ]; then printf '%s' "$word" && return 0; fi
+  done < <(guard_inner_commands "$1")
   # Literal paths become tokens first, so no path can confuse a pattern below. A path can
   # be written in more than one way (as configured, with symlinks resolved, /private/tmp
-  # as /tmp, doubled slashes, "/./", ~ or $HOME for the home directory), so every spelling we know
+  # as /tmp, doubled slashes, "/./", ~, ~<name> or $HOME for a home directory), so every spelling we know
   # of is replaced. What stays out of reach: a relative path after a cd (cd ~/.wolfmux &&
   # cat memory/…), a path built at run time, code in a string (python3 -c "…") — the guard
   # reads text, not what the shell will resolve (docs/SECURITY.md).
   c="$(guard_squeeze "$(guard_home "$1")")"
-  # Other teammates' worktrees, teamctl's state, the memory folders and the leads' conversations, in
-  # lower case (the disk does not tell ~/.WOLFMUX/MEMORY from ~/.wolfmux/memory), and after the prose
-  # is gone: a commit message or a heredoc may SAY .wolfmux/memory, a command may not name it.
-  lc="$(guard_lower "$c")"
+  # Paths the text does not spell out: a word that climbs (cat ../../../../../memory/…) or starts here (./x)
+  # is resolved against the folder the command runs in, and a wildcard (cat ~/.wolfmux/mem*/…, grep -r x ~/.*)
+  # is refused when what comes before it could still become a private folder, or is your home itself.
+  home="$(guard_lower "${HOME%/}")"
+  local wild='[][*?{}]*' # in a variable: bash 3.2 ends ${word%%…} at the first "}" of a literal pattern
+  while IFS= read -r word; do
+    case "$word" in "" | *'$'* | *'`'*) continue ;; esac # built at run time: out of reach (docs/SECURITY.md)
+    case "$word" in
+      *[][*?{}]*)
+        prefix="${word%%$wild}"
+        if guard_climbs "$prefix"; then prefix="$(guard_resolve_word "$prefix" "$GUARD_CWD")"; fi
+        case "$prefix" in /*) ;; *) continue ;; esac
+        extra="$extra $prefix"
+        lp="$(guard_lower "$prefix")"
+        lp="${lp%/}"
+        if [ "$lp" = "$home" ]; then printf "that command has a wildcard in your home folder (%s), which also matches the leads' private folders under it; name the files." "$word" && return 0; fi
+        for private in "$GUARD_MEMORY_LC" "$GUARD_STATE_LC" "$GUARD_TREES_LC" "$GUARD_TRANSCRIPTS_LC" ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"}; do
+          [ -n "$private" ] || continue
+          case "$private/" in "$lp"*) printf "that command has a wildcard (%s) that can match a private folder (%s); name the files." "$word" "$private" && return 0 ;; esac
+        done
+        ;;
+      *) if guard_climbs "$word"; then extra="$extra $(guard_resolve_word "$word" "$GUARD_CWD")"; fi ;;
+    esac
+  done < <(guard_strip_prose "$c" ";" | LC_ALL=C /usr/bin/tr -s " \t\n;|&()<>\`\"'" '\n' | LC_ALL=C /usr/bin/grep -E '(^|/)\.\.(/|$)|^\.(/|$)|[][*?{}]' | /usr/bin/head -40)
+  # Other teammates' worktrees, teamctl's state, the memory folders, the leads' conversations and Claude Code's
+  # other records, in lower case (the disk does not tell ~/.WOLFMUX/MEMORY from ~/.wolfmux/memory), and after
+  # the prose is gone: a commit message or a heredoc may SAY .wolfmux/memory, a command may not name it. The
+  # paths resolved above come first, on a line of their own: nothing that follows can turn them into prose.
+  lc="$(guard_lower "${extra# }"$'\n'"$c")"
   lc="$(guard_tokenize "$lc" @OWN@ "$(guard_lower "$GUARD_OWN")" "$(guard_lower "${WOLFMUX_WORKTREE:-}")")"
   lc="$(guard_tokenize "$lc" @TREES@ "$GUARD_TREES_LC" "$(guard_lower "$WOLFMUX_DATA/worktrees")")"
   lc="$(guard_tokenize "$lc" @STATE@ "$GUARD_STATE_LC" "$(guard_lower "$WOLFMUX_DATA/state")")"
   lc="$(guard_tokenize "$lc" @MEMORY@ "$GUARD_MEMORY_LC" "$(guard_lower "$WOLFMUX_DATA/memory")")"
   lc="$(guard_tokenize "$lc" @TRANSCRIPTS@ "$GUARD_TRANSCRIPTS_LC" "$(guard_lower "$GUARD_TRANSCRIPTS_AS")")"
+  lc="$(guard_tokenize "$lc" @CLAUDE@ ${GUARD_CLAUDE_LC[@]+"${GUARD_CLAUDE_LC[@]}"})"
   lc="$(guard_strip_prose "$lc")"
   case "$lc" in
     *@TREES@* | *@STATE@*) printf "that command names another teammate's worktree or teamctl's state." && return 0 ;;
     *@MEMORY@* | *.wolfmux/memory*) printf "that command names a lead's private memory folder (~/.wolfmux/memory), which no worker reads." && return 0 ;;
+    *@CLAUDE@*) printf "that command names Claude Code's own records of sessions (file-history, todos, paste-cache under ~/.claude), which hold copies of other agents' work; no worker reads them." && return 0 ;;
   esac
   case "$(printf '%s' "$lc" | sed -E 's#@TRANSCRIPTS@/memory([^a-z0-9_.-]|$)#\1#g')" in
     *@TRANSCRIPTS@*) printf "that command names the folder of the leads' conversations (%s); only its memory/ is shared." "$GUARD_TRANSCRIPTS" && return 0 ;;
@@ -241,11 +443,23 @@ guard_shell() {
   c="$(guard_tokenize "$c" @STATE@ "$GUARD_STATE" "$WOLFMUX_DATA/state")"
   c="$(guard_tokenize "$c" @MEMORY@ "$GUARD_MEMORY" "$WOLFMUX_DATA/memory")"
   c="$(guard_tokenize "$c" @ROOT@ "$GUARD_ROOT" "${WOLFMUX_ROOT:-}" "$GUARD_REPO")"
+  # A quoted one-word "tmux" ('tmux', "/opt/homebrew/bin/tmux") is the program, not prose
+  c="$(printf '%s' "$c" | sed -E "s#[\"']([^\"'[:space:]]*/)?tmux[\"']# \\1tmux #g")"
   c="$(guard_strip_prose "$c")"
   local edge='(^|[;&|(){}[:space:]])' git='git([[:space:]]+-[^[:space:]]+([[:space:]]+[^-][^[:space:]]*)?)*[[:space:]]+'
+  local ids='(TEAM_ROLE|TMUX_PANE|WOLFMUX_TEAM|BEADS_ACTOR)' after='([[:space:];&|)]|$)'
 
-  if printf '%s' "$c" | grep -Eq "${edge}tmux([[:space:]]|\$)"; then
+  if printf '%s' "$c" | grep -Eq "(^|[;&|(){}[:space:]/\\])tmux([[:space:]]|\$)"; then
     printf 'tmux belongs to teamctl; panes of other agents are not yours to read or type into.' && return 0
+  fi
+  # Who may act is decided by the identity this pane gives the agent (caller_resolve, lib/policy.sh): a command
+  # that drops or rewrites it would run teamctl as somebody else. Cooperative, like the rest of the guard.
+  if printf '%s' "$c" | grep -Eq "(^|[^A-Za-z0-9_\${])${ids}\\+?=" ||
+    printf '%s' "$c" | grep -Eq "${edge}(unset|export[[:space:]]+-[a-z]*n[a-z]*)([[:space:]]+-[a-z]+)*([[:space:]]+[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]+${ids}${after}" ||
+    printf '%s' "$c" | grep -Eq "(^|[[:space:]])(-u|--unset)([[:space:]]+|=)?${ids}${after}" ||
+    printf '%s' "$c" | grep -Eq "${edge}env([[:space:]]+(-[uPSC][[:space:]]+[^-[:space:];&|][^[:space:];&|]*|-[^[:space:];&|]*|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*))*[[:space:]]+(-[A-Za-z0-9]*i[A-Za-z0-9]*|--ignore-environment|-)${after}" ||
+    printf '%s' "$c" | grep -Eq "${edge}exec[[:space:]]+-[a-z]*c"; then
+    printf 'that command unsets or overrides TEAM_ROLE, TMUX_PANE, WOLFMUX_TEAM or BEADS_ACTOR (env -i, env -u, unset, X=…): teamctl decides who may act by the identity your pane gives you, and a command without it is not you. Run it with them as they are.' && return 0
   fi
   if printf '%s' "$c" | grep -Eq "${edge}${git}worktree[[:space:]]+(add|remove|move|prune|repair|lock|unlock)"; then
     printf 'git worktrees are created and removed by teamctl only.' && return 0
@@ -305,6 +519,14 @@ cmd_guard() {
   fi
   GUARD_TREES_LC="$(guard_lower "$GUARD_TREES")" GUARD_STATE_LC="$(guard_lower "$GUARD_STATE")"
   GUARD_MEMORY_LC="$(guard_lower "$GUARD_MEMORY")" GUARD_TRANSCRIPTS_LC="$(guard_lower "$GUARD_TRANSCRIPTS")"
+  # Claude Code's records of sessions outside the project folders (guard_claude_private), as configured and resolved
+  GUARD_CLAUDE_LC=()
+  for path in "${HOME:+$HOME/.claude}" "${CLAUDE_CONFIG_DIR:-}"; do
+    [ -n "$path" ] || continue
+    for target in file-history todos paste-cache; do
+      GUARD_CLAUDE_LC+=("$(guard_lower "$(guard_abspath "$path/$target" /)")" "$(guard_lower "$(guard_squeeze "${path%/}/$target")")")
+    done
+  done
   # A teammate spawned with --repo has its worktree in another repository: that repository's
   # own checkout is read-only for it, exactly as the lead's is.
   GUARD_REPO=""
@@ -317,6 +539,7 @@ cmd_guard() {
   tool="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_name // ""' 2>/dev/null || true)"
   cwd="$(printf '%s' "$input" | "$JQ_BIN" -r '.cwd // ""' 2>/dev/null || true)"
   [ -n "$cwd" ] && [ -d "$cwd" ] || cwd="$GUARD_OWN"
+  GUARD_CWD="$(cd "$cwd" && /bin/pwd -P)" || GUARD_CWD="$GUARD_OWN"
   case "$tool" in
     Edit | Write | MultiEdit | NotebookEdit)
       target="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.file_path // .tool_input.notebook_path // ""' 2>/dev/null || true)"
@@ -334,6 +557,9 @@ cmd_guard() {
       if guard_transcript "$lpath"; then
         guard_deny "'$target' is in the folder of the leads' conversations; no worker writes there." && return 0
       fi
+      if guard_claude_private "$lpath"; then
+        guard_deny "'$target' is in Claude Code's own records of sessions (file-history, todos, paste-cache); no worker writes there." && return 0
+      fi
       if [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT"; then
         guard_deny "'$target' is in the lead's checkout, which is read-only for you." && return 0
       fi
@@ -350,7 +576,11 @@ cmd_guard() {
       # Glob takes an absolute pattern without a path: /a/b/**/*.md searches /a/b
       if [ "$tool" = "Glob" ]; then
         pattern="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.pattern // ""' 2>/dev/null || true)"
-        case "$pattern" in /* | "~" | "~/"*) target="$(guard_glob_root "$pattern")" ;; esac
+        case "$pattern" in
+          /* | "~" | "~/"*) target="$(guard_glob_root "$pattern")" ;;
+          # a relative pattern that climbs (../../../../../memory/**) searches where it climbs to, from path or here
+          .. | ../* | */../* | */..) target="$(guard_glob_root "$(guard_resolve_word "$pattern" "$(guard_abspath "${target:-$cwd}" "$cwd")")")" ;;
+        esac
       fi
       [ -n "$target" ] || return 0
       path="$(guard_abspath "$target" "$cwd")"
@@ -363,6 +593,8 @@ cmd_guard() {
         guard_deny "'$target' is in a lead's private memory folder (~/.wolfmux/memory), which no worker reads."
       elif guard_transcript "$lpath"; then
         guard_deny "'$target' is in the folder of the leads' conversations, which no worker reads (its memory/ is shared: that one you may read)."
+      elif guard_claude_private "$lpath"; then
+        guard_deny "'$target' is in Claude Code's own records of sessions (file-history keeps a copy of every file a session changed, a lead's too), which no worker reads."
       elif [ "$tool" = "Grep" ] || [ "$tool" = "Glob" ] && guard_holds_private "$lpath"; then
         # A search of a folder that holds them (~/.wolfmux, ~/.claude, your home) would read them too.
         guard_deny "a search of '$target' would reach into the private memory folders (~/.wolfmux/memory) or the leads' conversations under it; search a narrower folder."
@@ -386,6 +618,9 @@ cmd_guard() {
         if guard_transcript "$lpath"; then
           guard_deny "'$target' is in the folder of the leads' conversations." && return 0
         fi
+        if guard_claude_private "$lpath"; then
+          guard_deny "'$target' is in Claude Code's own records of sessions (file-history, todos, paste-cache)." && return 0
+        fi
         if { { [ -n "$GUARD_ROOT" ] && guard_inside "$path" "$GUARD_ROOT"; } ||
           { [ -n "$GUARD_REPO" ] && guard_inside "$path" "$GUARD_REPO"; }; } &&
           printf '%s' "$tool" | grep -Eiq '(write|edit|create|delete|remove|move|rename|patch|apply|append|insert|replace|mkdir|upload|save)'; then
@@ -396,6 +631,12 @@ cmd_guard() {
     Bash)
       target="$(printf '%s' "$input" | "$JQ_BIN" -r '.tool_input.command // ""' 2>/dev/null || true)"
       [ -n "$target" ] || return 0
+      # A shell that runs inside a private folder reads it with every relative word
+      lpath="$(guard_lower "$GUARD_CWD")"
+      if ! guard_inside "$GUARD_CWD" "$GUARD_OWN" && { guard_inside "$lpath" "$GUARD_TREES_LC" || guard_inside "$lpath" "$GUARD_STATE_LC" ||
+        guard_inside "$lpath" "$GUARD_MEMORY_LC" || guard_transcript "$lpath" || guard_claude_private "$lpath"; }; then
+        guard_deny "this shell runs in $GUARD_CWD, a folder that is not yours to read; cd back into your worktree." && return 0
+      fi
       reason="$(guard_shell "$target" 2>/dev/null || true)"
       if [ -n "$reason" ]; then guard_deny "$reason"; fi
       ;;
