@@ -2724,14 +2724,18 @@ def erase_hash(key, words):
 def erase_record(tree, erase_id, subject):
     """One .meta/erased line: time, erase id, word count and the HMAC-SHA256 of the subject's
     words under the tree's key (.meta/erase-key: 32 random bytes, made on first use, never
-    printed). The subject itself is never stored."""
+    printed). The subject itself is never stored. False when the record already holds it."""
     key = tree.read_or_none(".meta/erase-key")
     if not key:
         key = os.urandom(32)
         write_file(tree, ".meta/erase-key", key, expect=MISSING)
     words = erase_words(subject)
+    digest = erase_hash(key, words)
+    if digest in erased_subjects(tree)[1].get(len(words), ()):
+        return False
     append_file(tree, ".meta/erased", ("%s erase id %s words=%d hmac=%s\n" % (
-        second(now()), erase_id, len(words), erase_hash(key, words))).encode("utf-8"))
+        second(now()), erase_id, len(words), digest)).encode("utf-8"))
+    return True
 
 
 def erased_subjects(tree):
@@ -2822,10 +2826,21 @@ def cmd_erase(tree, args):
             print("left behind outside the tree: %s" % path)
     if not plans and not tars:
         if left and all(place.endswith(" (key)") for place in left):
-            print("nothing to erase: only a JSON key names that subject")
+            message = "nothing to erase: only a JSON key names that subject"
         else:
-            print("nothing to erase: only what is listed as left behind names that subject" if left
-                  else "nothing in the tree names that subject")
+            message = ("nothing to erase: only what is listed as left behind names that subject" if left
+                       else "nothing in the tree names that subject")
+        if args.confirm != 0:
+            print(message)
+            if args.confirm is None:
+                print("--confirm 0 records the subject in .meta/erased (a keyed hash, never the name), so that "
+                      "mem migrate skips it")
+            return 0
+        # Nothing to change, but a migrate from sources that still name the subject must skip it.
+        erase_id = os.urandom(4).hex()
+        if erase_record(tree, erase_id, subject):
+            log(tree, "erase on the owner's word: erase id %s; nothing in the tree, recorded for migrate" % erase_id)
+        print("%s; recorded so that mem migrate skips it" % message)
         return 0
     count = sum(len(where) for _, _, _, _, where in plans) + sum(len(members) for _, members in tars)
     if args.confirm is None:

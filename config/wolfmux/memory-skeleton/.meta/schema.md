@@ -252,7 +252,11 @@ or status) of the subject's words: normalised as above (NFC, accent fold, lower 
 runs of letters and digits joined by one space. The subject itself is never stored. Anyone
 who can read the tree can test a guessed name against the record, the same as reading the
 tree itself. A tree without the key has nothing to test. The record is written before the
-first edit; erase never edits it, live or in a tar.
+first edit; erase never edits it, live or in a tar. A subject already recorded is not added
+again. When nothing in the tree names the subject, the listing says so and adds that
+`--confirm 0` records it; `erase <subject> --confirm 0` then writes the record (and the key
+on first use) and prints "nothing in the tree names that subject; recorded so that mem
+migrate skips it", so a first migrate from sources that still name it skips it too.
 
 `.meta/schema.md` and `bin/` ship with mem and are never edited, live or in a tar.
 Without `--confirm` it lists every item and the count; `--confirm <count>` erases only when

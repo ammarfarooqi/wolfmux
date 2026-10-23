@@ -1420,6 +1420,27 @@ check "a migrate re-run from the untouched source skips each row that names an e
   '[ "$RC" -eq 0 ] && [ "$(printf "%s\n" "$AGAIN7" | grep -c "^line [245] skip    (not shown) -> (not shown): erased earlier: skipped$")" -eq 3 ] && printf "%s\n" "$AGAIN7" | grep -q "^line 3 exists  zinc.md -> topics/zinc.md" && [ ! -e "$T3/people/dana-smith.md" ] && [ ! -e "$T3/topics/notes.md" ] && ! grep -rqi "dana\|ruiz" "$T3/people" "$T3/topics" "$T3/archive" "$T3/MEMORY.md" "$T3"/.meta/migrate-*.md'
 check "the re-run's pre-migration tar leaves those sources out and the report says so; its .sha256 list does not name them" \
   '[ -n "$TAR7" ] && [ "$(tar -tf "$TAR7")" = "source/zinc.md" ] && printf "%s\n" "$AGAIN7" | grep -qx "left out of the pre-migration tar: 3 source files that name an erased subject" && ! grep -qi "dana\|notes\|escaped" "${TAR7%.tar}.sha256"'
+# A subject nothing in the tree names yet (never migrated): --confirm 0 records it anyway, so the
+# first migrate from sources that still name it skips it.
+SRC5="$WORK/early-src"
+/bin/mkdir -p "$SRC5"
+printf 'Kim Lee owns billing.\n' >"$SRC5/kim.md"
+printf 'Zinc price is up.\n' >"$SRC5/zinc.md"
+printf 'source,source_type,dest,region,action,hold,name,keywords,summary,importance,authority,links,repo_ref,notes\nkim.md,file,topics/billing.md,topics,copy,no,billing,"billing, owner",who owns billing,3,,,,\nzinc.md,file,topics/zinc.md,topics,copy,no,zinc,"zinc, price",zinc price,3,,,,\n' >"$WORK/map-early.csv"
+T4="$WORK/migrate-early"
+fresh "$T4"
+SUM_BEFORE="$(tree_sum "$T4")"
+DRY5="$("$T4/bin/mem" erase "Kim Lee")"
+check "erase of a subject the tree does not hold yet lists nothing, says --confirm 0 records it, and writes nothing" \
+  'printf "%s\n" "$DRY5" | grep -qx "nothing in the tree names that subject" && printf "%s\n" "$DRY5" | grep -q "^--confirm 0 records the subject in .meta/erased" && [ ! -e "$T4/.meta/erased" ] && [ ! -e "$T4/.meta/erase-key" ] && [ "$SUM_BEFORE" = "$(tree_sum "$T4")" ]'
+OUT5="$("$T4/bin/mem" erase "Kim Lee" --confirm 0)"; RC=$?
+OUT6="$("$T4/bin/mem" erase kim-lee --confirm 0)"
+check "erase <subject> --confirm 0 writes the record (and the 32-byte key) and says so; the same subject again adds no second line" \
+  '[ "$RC" -eq 0 ] && [ "$OUT5" = "nothing in the tree names that subject; recorded so that mem migrate skips it" ] && [ "$OUT6" = "$OUT5" ] && [ "$(wc -c <"$T4/.meta/erase-key" | tr -d " ")" -eq 32 ] && [ "$(grep -c "^2026-10-23T09:00:00Z erase id [0-9a-f]\{8\} words=2 hmac=[0-9a-f]\{64\}$" "$T4/.meta/erased")" -eq 1 ] && grep -q "nothing in the tree, recorded for migrate" "$T4/.meta/drain.log" && ! grep -qi kim "$T4/.meta/erased" "$T4/.meta/drain.log"'
+EARLY="$("$T4/bin/mem" migrate --from "$SRC5" --map "$WORK/map-early.csv" 2>&1)"; RC=$?
+TAR5="$(printf '%s\n' "$EARLY" | sed -n 's/^rollback: .*, and \(.*\.tar\) (sha256 list .*)$/\1/p')"
+check "the first migrate then skips the row naming that subject and leaves its source out of the pre-migration tar" \
+  '[ "$RC" -eq 0 ] && printf "%s\n" "$EARLY" | grep -q "^line 2 skip    (not shown) -> (not shown): erased earlier: skipped$" && printf "%s\n" "$EARLY" | grep -q "^line 3 copy    zinc.md -> topics/zinc.md" && [ ! -e "$T4/topics/billing.md" ] && [ -n "$TAR5" ] && [ "$(tar -tf "$TAR5")" = "source/zinc.md" ]'
 /bin/rm -rf "$HOME/.wolfmux"
 unset MEM_NOW
 
