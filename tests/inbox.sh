@@ -401,9 +401,17 @@ LOOKUP_OUT="$(
   hook_in "$AUX_PANE" aux _inbox-stop
 )"
 check "tmux fails list-panes: the hook never needs a lookup by role, and blocks" 'printf "%s" "$LOOKUP_OUT" | jq -r .reason | grep -q "lookup-1" && delivered_of aux lookup-1 true'
+# v1.22.1: policy idle too. Under idle the Stop hook still answered here, and Claude Code
+# printed it as "Stop hook error" after almost every turn of the communication lead, in the
+# pane Ammar is attached to (2026-10-26). idle decides typing; the Stop hook keeps out.
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id idle-stop-1 >/dev/null 2>&1
-IDLE_STOP="$(WOLFMUX_HUMAN_PANE_TYPING=idle hook lead _inbox-stop)"
-check "policy idle: the watched lead pane gets the block answer exactly as before" 'printf "%s" "$IDLE_STOP" | jq -e ".decision == \"block\"" && printf "%s" "$IDLE_STOP" | jq -r .reason | grep -q "idle-stop-1" && delivered_of lead idle-stop-1 true'
+SILENT_BEFORE="$(stop_silent_events)"
+WOLFMUX_HUMAN_PANE_TYPING=idle hook lead _inbox-stop >"$WORK/idle-stop.out"
+IDLE_STOP_STATUS=$?
+check "policy idle, a client attached: the lead's Stop hook exits 0 and prints NOTHING" '[ "$IDLE_STOP_STATUS" -eq 0 ] && [ ! -s "$WORK/idle-stop.out" ]'
+check "policy idle, a client attached: the notice is still undelivered" 'delivered_of lead idle-stop-1 false'
+check "policy idle, a client attached: the newest silent event names idle, and the cooldown stamp is left alone" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "human-pane-typing=idle: a client is attached" && [ ! -e "$INBOX/.stop.lead" ]'
+check "policy idle, a client attached: the next prompt hands it over and marks it delivered" 'WOLFMUX_HUMAN_PANE_TYPING=idle hook lead _inbox-prompt | grep -q "idle-stop-1" && delivered_of lead idle-stop-1 true'
 detach_client
 /bin/rm -f "$INBOX/.stop.lead"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id unwatched-1 >/dev/null 2>&1
@@ -442,7 +450,9 @@ check "attached + a quiet lead pane: typed at once (exit 0), with no human keyst
 check "attached + a quiet lead pane: typing marked it delivered, so no hook hands it over twice" '[ "$(state_of lead 1)" = "nd" ]'
 # Both directions, because a notice delivered TWICE looks like the agent being nagged
 # with nothing in the inbox to explain it, and that is worse than one delivered late.
-check "attached + a quiet lead pane: and the Stop hook therefore has nothing to say about it" '[ -z "$(hook lead _inbox-stop)" ]'
+# v1.22.1: the Stop hook is silent in this pane whatever it holds, so the prompt hook is the
+# one that proves "not twice" here.
+check "attached + a quiet lead pane: and neither hook therefore has anything to say about it" '[ -z "$(hook lead _inbox-stop)" ] && [ -z "$(hook lead _inbox-prompt)" ]'
 check "attached + a quiet lead pane: the notice is still filed, unread, and NOT on the badge" '[ "$(notices_new)" = "1" ] && [ -z "$(badge)" ]'
 check "attached + a quiet lead pane: no banner — the notice reached the agent" '[ "$(banners)" = "0" ]'
 # The blocks below count the lead's inbox lines from the first one, so this episode
@@ -492,18 +502,33 @@ teamctl nudge qa --id worker-1 >/dev/null 2>&1
 sleep 2
 check "stall: a WORKER raises no banner — it gets the typed fallback instead" '[ "$(banners)" = "$QBEFORE" ] && teamctl capture qa --all | grep -q "Beads update for qa (worker-1)"'
 
-echo "== the Stop hook: the agent is told, once, and cannot loop"
-STOP_OUT="$(hook lead _inbox-stop)"
-check "Stop hook: it blocks, and the reason carries the notices and the Beads command" 'printf "%s" "$STOP_OUT" | jq -e ".decision == \"block\"" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "quiet-1" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "bd list --assignee lead"'
-check "Stop hook: the lines were marked delivered BEFORE it answered" '[ "$(state_of lead 1)" = "nd" ]'
-check "Stop hook: and the human's column is untouched, so they still count as unread" '[ "$(notices_new)" -gt 0 ]'
-check "Stop hook: a second turn ending at once says nothing (cooldown)" '[ -z "$(hook lead _inbox-stop)" ]'
-/bin/rm -f "$INBOX/.stop.lead"
-check "Stop hook: and with the cooldown gone it STILL says nothing, because they are delivered" '[ -z "$(hook lead _inbox-stop)" ]'
+echo "== the Stop hook under idle: silent in the watched lead pane, and told once, no loop, elsewhere"
+# v1.22.1: this block expected the block answer in the lead's pane. That pane is in front of
+# the human (a client is attached), so under idle too the Stop hook says nothing there and
+# the next prompt hands the notices over. The two loop guards are asserted on aux instead,
+# a worker pane nobody is showing, where the hook still has to speak.
+SILENT_BEFORE="$(stop_silent_events)"
+hook lead _inbox-stop >"$WORK/idle-lead-stop.out"
+IDLE_LEAD_STATUS=$?
+check "Stop hook, watched lead pane under idle: it exits 0 and prints NOTHING, with notices waiting" '[ "$IDLE_LEAD_STATUS" -eq 0 ] && [ ! -s "$WORK/idle-lead-stop.out" ]'
+check "Stop hook, watched lead pane under idle: nothing was taken, and no cooldown stamp was written" '[ "$(state_of lead 1)" = "nu" ] && delivered_of lead quiet-1 false && [ ! -e "$INBOX/.stop.lead" ]'
+check "Stop hook, watched lead pane under idle: the newest silent event names idle and the reason" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "human-pane-typing=idle: a client is attached"'
+LEAD_PROMPT="$(hook lead _inbox-prompt)"
+check "watched lead pane under idle: the next prompt hands them over, with the Beads command" 'printf "%s" "$LEAD_PROMPT" | grep -q "quiet-1" && printf "%s" "$LEAD_PROMPT" | grep -q "bd list --assignee lead" && [ "$(state_of lead 1)" = "nd" ]'
+check "watched lead pane under idle: and the human's column is untouched, so they still count as unread" '[ "$(notices_new)" -gt 0 ]'
+check "watched lead pane under idle: after that the Stop hook has nothing left to say" '[ -z "$(hook lead _inbox-stop)" ]'
+/bin/rm -f "$INBOX/.stop.aux"
+WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id loop-aux-1 >/dev/null 2>&1
+STOP_OUT="$(hook_in "$AUX_PANE" aux _inbox-stop)"
+check "Stop hook, unwatched aux pane under idle: it blocks, and the reason carries the notice and the Beads command" 'printf "%s" "$STOP_OUT" | jq -e ".decision == \"block\"" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "loop-aux-1" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "bd list --assignee aux"'
+check "Stop hook, aux: the line was marked delivered BEFORE it answered, and the stamp written" 'delivered_of aux loop-aux-1 true && [ -s "$INBOX/.stop.aux" ]'
+WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id loop-aux-2 >/dev/null 2>&1
+check "Stop hook, aux: a second turn ending at once says nothing (cooldown), and takes nothing" '[ -z "$(hook_in "$AUX_PANE" aux _inbox-stop)" ] && delivered_of aux loop-aux-2 false'
+/bin/rm -f "$INBOX/.stop.aux"
+check "Stop hook, aux: with the cooldown gone, the NEW notice blocks, so nothing is starved by the two guards" 'hook_in "$AUX_PANE" aux _inbox-stop | jq -r .reason | grep -q "loop-aux-2" && delivered_of aux loop-aux-2 true'
+/bin/rm -f "$INBOX/.stop.aux"
+check "Stop hook, aux: it blocked exactly once for that notice, not twice" '[ -z "$(hook_in "$AUX_PANE" aux _inbox-stop)" ]'
 check "Stop hook: an agent with no notices at all says nothing" '[ -z "$(hook no-such-role _inbox-stop)" ]'
-teamctl nudge lead --id loop-1 >/dev/null 2>&1
-check "Stop hook: a NEW notice blocks again, so nothing is starved by the two guards" 'hook lead _inbox-stop | jq -e ".decision == \"block\""'
-check "Stop hook: it blocked exactly once for that notice, not twice" '[ -z "$(hook lead _inbox-stop)" ]'
 
 echo "== the UserPromptSubmit hook: the same notices, on stdout, when the human types"
 teamctl nudge lead --id prompt-1 >/dev/null 2>&1
@@ -523,8 +548,8 @@ check "teamctl inbox --all: reading every role left no notice unread" '[ "$(noti
 check "teamctl inbox: it cleared new-ness WITHOUT touching delivered-ness" '[ "$(state_of lead 1)" = "sd" ] && [ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.delivered == false)] | length")" = "0" ]'
 teamctl nudge lead --id both-1 >/dev/null 2>&1
 check "independence the other way: a new notice is new for the human AND undelivered" '[ "$(teamctl inbox lead --keep --json | jq "[.[] | select(.new and (.delivered | not))] | length")" = "1" ]'
-hook lead _inbox-stop >/dev/null 2>&1
-check "independence the other way: the agent having it does NOT mark it read for the human" '[ "$(notices_new)" = "1" ] && [ "$(inbox_count_new_of lead)" = "1" ]'
+hook lead _inbox-prompt >/dev/null 2>&1 # v1.22.1: the Stop hook is silent in this watched pane
+check "independence the other way: the agent having it does NOT mark it read for the human" 'delivered_of lead both-1 true && [ "$(notices_new)" = "1" ] && [ "$(inbox_count_new_of lead)" = "1" ]'
 check "teamctl notices: the alias is the same command" 'teamctl notices lead --keep | grep -q "both-1"'
 check "teamctl inbox --all: every role of the team, the worker included" 'teamctl inbox --all --keep | grep -q "^qa" && teamctl inbox --all --keep | grep -q "^lead"'
 check "teamctl inbox: it is no longer the pointer-to-Beads message it used to print" '! teamctl inbox lead --keep 2>&1 | grep -q "is not a teamctl command"'
@@ -832,15 +857,18 @@ check "a human's pane: a tmux error, no tmux, or the error seam all read as watc
   _inbox_stop_watched || exit 1
   INBOX_ROLE=lead
   _inbox_stop_watched || exit 1
-  # 6. policy idle: never watched, and tmux is not asked anything at all
+  # 6. policy idle (v1.22.1): the same answers as off. tmux IS asked, a pane on a client's
+  #    screen is watched, and one on nobody's screen is not
   : >"$CALLS"
   FAKE_POLICY=idle FAKE_SHOWN="%7" INBOX_ROLE=qa INBOX_PANE=%7
+  _inbox_stop_watched || exit 1
+  grep -q list-clients "$CALLS" || exit 1
+  FAKE_SHOWN="%3"
   _inbox_stop_watched && exit 1
-  [ ! -s "$CALLS" ] || exit 1
   exit 0
 ) >/dev/null 2>&1
 STOP_PANE_STATUS=$?
-check "the pane proof: this role's pane of this session on this server, its process among our parents, one read; no pane reads as watched; idle asks nothing" '[ "$STOP_PANE_STATUS" -eq 0 ]'
+check "the pane proof: this role's pane of this session on this server, its process among our parents, one read; no pane reads as watched; idle watches the same panes" '[ "$STOP_PANE_STATUS" -eq 0 ]'
 (
   cd "$PROJECT" || exit 1
   # shellcheck disable=SC1090

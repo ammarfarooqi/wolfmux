@@ -794,14 +794,16 @@ inbox_hook_body() {
 # no turn is blocked again inside WOLFMUX_INBOX_STOP_COOLDOWN, so a burst of beads
 # arriving one a second cannot block one turn per second either.
 #
-# v1.20.0: in a pane a human is watching it says NOTHING (policy human-pane-typing off,
-# the default). Claude Code prints a Stop hook's reason in the terminal, labelled "Stop
-# hook error", and Ammar saw exactly that in the pane he watches: "i am still seeing such
-# messages" (2026-10-15). Its docs give Stop no channel the human does not see (the
-# reason is shown, additionalContext is shown as "Stop hook feedback", suppressOutput
-# changes neither), while a UserPromptSubmit hook's output reaches the model alone. So
-# the notices stay undelivered, and cmd_inbox_prompt hands them over with the next
-# prompt: the human's, or the agent's own loop, whose tick arrives as a prompt too.
+# v1.20.0: in a pane a human is watching it says NOTHING. Claude Code prints a Stop
+# hook's reason in the terminal, labelled "Stop hook error", and Ammar saw exactly that in
+# the pane he watches: "i am still seeing such messages" (2026-10-15). Its docs give Stop
+# no channel the human does not see (the reason is shown, additionalContext is shown as
+# "Stop hook feedback", suppressOutput changes neither), while a UserPromptSubmit hook's
+# output reaches the model alone. So the notices stay undelivered, and cmd_inbox_prompt
+# hands them over with the next prompt: the human's, or the agent's own loop, whose tick
+# arrives as a prompt too. v1.22.1: under human-pane-typing idle as well, not only off
+# (_inbox_stop_watched says why); under idle the waiter also types them once the pane is
+# quiet, and the next prompt hands over whatever is still undelivered.
 cmd_inbox_stop() {
   local notices stamp last
   /bin/cat >/dev/null 2>&1 || true # the hook's JSON on stdin; nothing here needs it
@@ -815,7 +817,7 @@ cmd_inbox_stop() {
   # to hand over. Nothing is taken and the cooldown stamp is left alone: a pane nobody
   # watches any more gets today's answer at the very next turn end.
   if _inbox_stop_watched; then
-    event_log inbox-stop-silent "$INBOX_ROLE" "$(inbox_count_undelivered "$INBOX_ROLE") notice(s) left for the next prompt (human-pane-typing=off: $INBOX_HUMAN_REASON)" 2>/dev/null || true
+    event_log inbox-stop-silent "$INBOX_ROLE" "$(inbox_count_undelivered "$INBOX_ROLE") notice(s) left for the next prompt (human-pane-typing=$(policy_get human-pane-typing 2>/dev/null || printf off): $INBOX_HUMAN_REASON)" 2>/dev/null || true
     return 0
   fi
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
@@ -839,15 +841,20 @@ cmd_inbox_stop() {
   return 0
 }
 
-# _inbox_stop_watched — 0 when the Stop hook must keep quiet: the policy is off and a human
-# is watching this agent's pane (inbox_keep_off_human_pane, the question every typed path
-# asks). Fails CLOSED like that question: a pane or a session we cannot find reads as
-# watched, and the notices wait for the next prompt rather than land on a human's screen.
+# _inbox_stop_watched — 0 when the Stop hook must keep quiet: a human is watching this
+# agent's pane (inbox_human_pane, the question every typed path asks), whatever
+# human-pane-typing says. Fails CLOSED like that question: a pane or a session we cannot
+# find reads as watched, and the notices wait rather than land on a human's screen.
+#
+# v1.22.1: under idle too. That value decides TYPING only (inbox_keep_off_human_pane), and
+# a typed line is not what the human saw: under idle the Stop hook still answered in the
+# lead's pane, and Claude Code printed it as "Stop hook error" after almost every turn of
+# the communication lead (2026-10-26). Nothing is lost by the silence: under idle the
+# waiter types the notice once that pane is quiet, and the next prompt hands over the rest.
 #
 # The pane and the session are the ones _inbox_hook_ready proved: this agent's own.
 _inbox_stop_watched() {
-  inbox_human_typing_off || return 1 # idle: today's answer, and no tmux read for it
-  inbox_keep_off_human_pane "$INBOX_ROLE" "$INBOX_PANE"
+  inbox_human_pane "$INBOX_ROLE" "$INBOX_PANE"
 }
 
 # cmd_inbox_prompt — internal (`teamctl _inbox-prompt`): a Claude Code UserPromptSubmit
