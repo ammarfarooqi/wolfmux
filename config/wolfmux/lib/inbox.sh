@@ -39,9 +39,9 @@ WOLFMUX_INBOX_TEXT_MAX=400        # one line stays well inside an atomic append
 WOLFMUX_INBOX_LOCK_TRIES=10       # ~1 s, then give up: a notice may not delay anybody
 WOLFMUX_INBOX_LOCK_STALE=15       # a lock older than this was left by a dead process
 
-# How long after blocking a turn the Stop hook may block again. A loop is impossible
-# because the hook also marks what it delivered, but a burst of beads arriving one per
-# second must not turn into one blocked turn per second either.
+# How long after continuing a turn the Stop hook may continue one again. A loop is
+# impossible because the hook also marks what it delivered, but a burst of beads arriving
+# one per second must not turn into one continued turn per second either.
 WOLFMUX_INBOX_STOP_COOLDOWN="${WOLFMUX_INBOX_STOP_COOLDOWN:-10}"
 
 # An approval request blocks a WORKER until the lead answers, so it may not get slower
@@ -725,7 +725,7 @@ _inbox_approval_pending() {
 # The pane proof (identity_in_own_pane, lib/common.sh): the hook hands notices only to a
 # process that runs inside this role's own pane of this team's session. A chat that merely
 # inherited the agent's environment (a background chat of Claude's daemon, 2026-10-19) is
-# given nothing, nothing is taken from the inbox for it and nothing is blocked; one
+# given nothing, nothing is taken from the inbox for it and no turn is continued; one
 # identity-refused line goes to the event log, at most once a minute. INBOX_NOT_HERE then
 # says why, and cmd_inbox_prompt tells that chat who it is not. No fallback that looks the
 # pane up by role: that is how an inherited environment found the real agent's pane.
@@ -785,14 +785,21 @@ inbox_hook_body() {
 
 # cmd_inbox_stop — internal (`teamctl _inbox-stop`): a Claude Code Stop hook, added as a
 # SECOND entry in the Stop array next to lib/notify.sh's. When the role's inbox holds
-# notices the agent has not been given, it answers {"decision":"block","reason":…}, and
-# the agent carries straight on and reads its beads — no keystroke anywhere. The reason
-# IS printed in that pane's terminal, though, which is the v1.20.0 part below.
+# notices the agent has not been given, it answers
+# {"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":…}}, and the agent
+# carries straight on and reads its beads — no keystroke anywhere. The text IS printed in
+# that pane's terminal, though, which is the v1.20.0 part below.
+#
+# v1.22.1: additionalContext, not {"decision":"block","reason":…}. Claude Code's hooks docs
+# ("Stop decision control"): it keeps the conversation going through the same loop
+# protections as a block (stop_hook_active, the 8-continuation cap), "but the transcript
+# labels it `Stop hook feedback` and no hook error notification is shown". A block is
+# labelled "Stop hook error", and nothing here is an error.
 #
 # A loop is impossible for two reasons, and both are needed: the lines are marked
-# delivered BEFORE the answer is printed, so the same notice can never block twice; and
-# no turn is blocked again inside WOLFMUX_INBOX_STOP_COOLDOWN, so a burst of beads
-# arriving one a second cannot block one turn per second either.
+# delivered BEFORE the answer is printed, so the same notice can never continue a turn
+# twice; and no turn is continued again inside WOLFMUX_INBOX_STOP_COOLDOWN, so a burst of
+# beads arriving one a second cannot continue one turn per second either.
 #
 # v1.20.0: in a pane a human is watching it says NOTHING. Claude Code prints a Stop
 # hook's reason in the terminal, labelled "Stop hook error", and Ammar saw exactly that in
@@ -823,9 +830,9 @@ cmd_inbox_stop() {
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0
   now_epoch >"$stamp" 2>/dev/null || true
-  if "$JQ_BIN" -n --arg reason "$(inbox_hook_body "$INBOX_IDENTITY" "$notices" "$(inbox_count_undelivered "$INBOX_ROLE")")" \
-    '{decision: "block", reason: $reason}' 2>/dev/null; then
-    event_log inbox-stop "$INBOX_ROLE" "blocked once with $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
+  if "$JQ_BIN" -n --arg body "$(inbox_hook_body "$INBOX_IDENTITY" "$notices" "$(inbox_count_undelivered "$INBOX_ROLE")")" \
+    '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $body}}' 2>/dev/null; then
+    event_log inbox-stop "$INBOX_ROLE" "continued once with $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s)" 2>/dev/null || true
   else
     # The one path that reaches the agent failed after the lines were marked delivered.
     # Put them back, or they are lost for good: the next hook would see nothing to hand

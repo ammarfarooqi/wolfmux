@@ -159,6 +159,14 @@ hook_bare() {
 delivered_of() {
   teamctl inbox "$1" --keep --json | jq -e --arg t "$2" --argjson want "$3" '[.[] | select(.text | contains($t)) | .delivered] == [$want]' >/dev/null
 }
+# stop_continues <answer> — the Stop hook's answer that keeps the turn going (v1.22.1): the
+# notices in hookSpecificOutput.additionalContext, which Claude Code shows as "Stop hook
+# feedback", and no decision or reason key, which it would show as "Stop hook error"
+stop_continues() {
+  printf '%s' "$1" | jq -e '.hookSpecificOutput.hookEventName == "Stop" and (.hookSpecificOutput.additionalContext | type) == "string" and (has("decision") | not) and (has("reason") | not)' >/dev/null
+}
+# stop_body — what the agent is given, read from that answer on stdin
+stop_body() { jq -r '.hookSpecificOutput.additionalContext'; }
 attach_client() {
   script -q /dev/null tmux -L "$WOLFMUX_TMUX_SOCKET" attach -t "$SESSION" >/dev/null 2>&1 &
   ATTACH_PID=$!
@@ -376,7 +384,7 @@ check "watched worker pane (the client shows qa): silent, both ways the fixture 
 check "watched worker pane: qa's next prompt hands it over" 'hook_in "$PANE" qa _inbox-prompt | grep -q "silent-qa-1" && delivered_of qa silent-qa-1 true'
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id silent-aux-1 >/dev/null 2>&1
 AUX_STOP="$(hook_in "$AUX_PANE" aux _inbox-stop)"
-check "UNwatched worker pane (aux, same team, same time): the block answer exactly as before" 'printf "%s" "$AUX_STOP" | jq -e ".decision == \"block\"" && printf "%s" "$AUX_STOP" | jq -r .reason | grep -q "silent-aux-1" && delivered_of aux silent-aux-1 true && [ -s "$INBOX/.stop.aux" ]'
+check "UNwatched worker pane (aux, same team, same time): the hook still continues the turn, as feedback" 'stop_continues "$AUX_STOP" && printf "%s" "$AUX_STOP" | stop_body | grep -q "silent-aux-1" && delivered_of aux silent-aux-1 true && [ -s "$INBOX/.stop.aux" ]'
 /bin/rm -f "$INBOX/.stop.aux"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id tmuxerr-1 >/dev/null 2>&1
 TMUXERR_OUT="$(
@@ -384,7 +392,7 @@ TMUXERR_OUT="$(
   hook_in "$AUX_PANE" aux _inbox-stop
 )"
 check "a tmux error on who is watching: read as watched, so silent, and the notice waits" '[ -z "$TMUXERR_OUT" ] && delivered_of aux tmuxerr-1 false && [ ! -e "$INBOX/.stop.aux" ]'
-check "a tmux error: and the same hook with tmux answering blocks as before" 'hook_in "$AUX_PANE" aux _inbox-stop | jq -r .reason | grep -q "tmuxerr-1" && delivered_of aux tmuxerr-1 true'
+check "a tmux error: and the same hook with tmux answering continues the turn as before" 'hook_in "$AUX_PANE" aux _inbox-stop | stop_body | grep -q "tmuxerr-1" && delivered_of aux tmuxerr-1 true'
 /bin/rm -f "$INBOX/.stop.aux"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id lookup-1 >/dev/null 2>&1
 # The pane proof reads the pane once (display-message). When that read fails, the hook cannot
@@ -400,7 +408,7 @@ LOOKUP_OUT="$(
   export PATH="$FAKE_TMUX_DIR:$PATH" FAKE_TMUX_FAIL=list-panes
   hook_in "$AUX_PANE" aux _inbox-stop
 )"
-check "tmux fails list-panes: the hook never needs a lookup by role, and blocks" 'printf "%s" "$LOOKUP_OUT" | jq -r .reason | grep -q "lookup-1" && delivered_of aux lookup-1 true'
+check "tmux fails list-panes: the hook never needs a lookup by role, and continues the turn" 'printf "%s" "$LOOKUP_OUT" | stop_body | grep -q "lookup-1" && delivered_of aux lookup-1 true'
 # v1.22.1: policy idle too. Under idle the Stop hook still answered here, and Claude Code
 # printed it as "Stop hook error" after almost every turn of the communication lead, in the
 # pane Ammar is attached to (2026-10-26). idle decides typing; the Stop hook keeps out.
@@ -415,11 +423,11 @@ check "policy idle, a client attached: the next prompt hands it over and marks i
 detach_client
 /bin/rm -f "$INBOX/.stop.lead"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id unwatched-1 >/dev/null 2>&1
-check "detached (nobody watching), policy off: the lead's Stop hook blocks as before" 'hook lead _inbox-stop | jq -r .reason | grep -q "unwatched-1" && delivered_of lead unwatched-1 true'
+check "detached (nobody watching), policy off: the lead's Stop hook continues the turn as before" 'hook lead _inbox-stop | stop_body | grep -q "unwatched-1" && delivered_of lead unwatched-1 true'
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id unwatched-2 >/dev/null 2>&1
 check "detached, policy off: the cooldown still holds the next block back" '[ -z "$(hook lead _inbox-stop)" ] && delivered_of lead unwatched-2 false'
 /bin/rm -f "$INBOX/.stop.lead"
-check "detached, policy off: and once it has passed, the next turn end blocks with it" 'hook lead _inbox-stop | jq -r .reason | grep -q "unwatched-2"'
+check "detached, policy off: and once it has passed, the next turn end continues with it" 'hook lead _inbox-stop | stop_body | grep -q "unwatched-2"'
 
 # The blocks below count the lead's inbox lines from the first one and the banners from
 # zero, so this section hands everything back empty.
@@ -520,14 +528,14 @@ check "watched lead pane under idle: after that the Stop hook has nothing left t
 /bin/rm -f "$INBOX/.stop.aux"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id loop-aux-1 >/dev/null 2>&1
 STOP_OUT="$(hook_in "$AUX_PANE" aux _inbox-stop)"
-check "Stop hook, unwatched aux pane under idle: it blocks, and the reason carries the notice and the Beads command" 'printf "%s" "$STOP_OUT" | jq -e ".decision == \"block\"" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "loop-aux-1" && printf "%s" "$STOP_OUT" | jq -r .reason | grep -q "bd list --assignee aux"'
-check "Stop hook, aux: the line was marked delivered BEFORE it answered, and the stamp written" 'delivered_of aux loop-aux-1 true && [ -s "$INBOX/.stop.aux" ]'
+check "Stop hook, unwatched aux pane under idle: it continues the turn, and the feedback carries the notice and the Beads command" 'stop_continues "$STOP_OUT" && printf "%s" "$STOP_OUT" | stop_body | grep -q "loop-aux-1" && printf "%s" "$STOP_OUT" | stop_body | grep -q "bd list --assignee aux"'
+check "Stop hook, aux: the line was marked delivered BEFORE it answered, the stamp written, the event says continued" 'delivered_of aux loop-aux-1 true && [ -s "$INBOX/.stop.aux" ] && grep "\"type\":\"inbox-stop\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "continued once with 1 notice(s)"'
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id loop-aux-2 >/dev/null 2>&1
 check "Stop hook, aux: a second turn ending at once says nothing (cooldown), and takes nothing" '[ -z "$(hook_in "$AUX_PANE" aux _inbox-stop)" ] && delivered_of aux loop-aux-2 false'
 /bin/rm -f "$INBOX/.stop.aux"
-check "Stop hook, aux: with the cooldown gone, the NEW notice blocks, so nothing is starved by the two guards" 'hook_in "$AUX_PANE" aux _inbox-stop | jq -r .reason | grep -q "loop-aux-2" && delivered_of aux loop-aux-2 true'
+check "Stop hook, aux: with the cooldown gone, the NEW notice continues the turn, so nothing is starved by the two guards" 'hook_in "$AUX_PANE" aux _inbox-stop | stop_body | grep -q "loop-aux-2" && delivered_of aux loop-aux-2 true'
 /bin/rm -f "$INBOX/.stop.aux"
-check "Stop hook, aux: it blocked exactly once for that notice, not twice" '[ -z "$(hook_in "$AUX_PANE" aux _inbox-stop)" ]'
+check "Stop hook, aux: it continued exactly once for that notice, not twice" '[ -z "$(hook_in "$AUX_PANE" aux _inbox-stop)" ]'
 check "Stop hook: an agent with no notices at all says nothing" '[ -z "$(hook no-such-role _inbox-stop)" ]'
 
 echo "== the UserPromptSubmit hook: the same notices, on stdout, when the human types"
@@ -635,7 +643,7 @@ check "killed waiter: the notice was parked, because the pane holds a half-typed
 /bin/rm -rf "$(pending_dir qa)" # exactly what a waiter that was killed leaves behind
 check "killed waiter: the parked notice is gone from the typed path" '[ ! -d "$(pending_dir qa)" ]'
 check "killed waiter: the file still has it, new and undelivered" 'teamctl inbox qa --keep | grep -q "survive-1"'
-check "killed waiter: and the agent is still given it by its own Stop hook" 'hook qa _inbox-stop | jq -r .reason | grep -q "survive-1"'
+check "killed waiter: and the agent is still given it by its own Stop hook" 'hook qa _inbox-stop | stop_body | grep -q "survive-1"'
 tmx send-keys -t "$PANE" Enter
 sleep 0.5
 
