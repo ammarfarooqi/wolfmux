@@ -183,6 +183,7 @@ Never run `codex login --with-api-key`, never export `ANTHROPIC_API_KEY` or
 ```bash
 teamctl destroy --worktrees     # in each project that has a team
 ./uninstall.sh                  # add --purge to also remove an empty ~/.wolfmux
+                                # (refused while ~/.wolfmux/memory holds a lead's notes: --purge --purge-memory)
 security delete-generic-password -s zai-coding-plan     # optional, and the same for
 security delete-generic-password -s wolfmux-kimi        # every provider key you added
 ```

@@ -3,7 +3,9 @@
 # commits and branches are not touched. Edited files are backed up first.
 #
 #   ./uninstall.sh            remove the tool, keep ~/.wolfmux (worktrees + state)
-#   ./uninstall.sh --purge    also remove ~/.wolfmux, but only when it holds no worktree
+#   ./uninstall.sh --purge    also remove ~/.wolfmux, but only when it holds no worktree,
+#                             and refused while a lead's memory folder holds anything
+#   ./uninstall.sh --purge --purge-memory    the same, memory folders included
 #
 # Not done for you, on purpose:
 #   security delete-generic-password -s zai-coding-plan     (your Keychain item)
@@ -15,18 +17,26 @@ STAMP="$(date +%Y%m%d-%H%M%S)"
 BIN_DIR="$HOME/bin"
 CONF_DIR="$HOME/.config/wolfmux"
 PURGE=0
-case "${1:-}" in
-  "") ;;
-  --purge) PURGE=1 ;;
-  -h | --help)
-    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
-    exit 0
-    ;;
-  *)
-    echo "uninstall.sh: unknown option: $1" >&2
-    exit 64
-    ;;
-esac
+PURGE_MEMORY=0
+for arg in "$@"; do
+  case "$arg" in
+    --purge) PURGE=1 ;;
+    --purge-memory) PURGE_MEMORY=1 ;;
+    -h | --help)
+      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *)
+      echo "uninstall.sh: unknown option: $arg" >&2
+      exit 64
+      ;;
+  esac
+done
+# Deleting a lead's private notes takes both words: --purge-memory never brings --purge in by itself.
+if [ "$PURGE_MEMORY" -eq 1 ] && [ "$PURGE" -ne 1 ]; then
+  echo "uninstall.sh: --purge-memory goes with --purge (nothing was removed): ./uninstall.sh --purge --purge-memory" >&2
+  exit 64
+fi
 
 note() { printf '  %s\n' "$*"; }
 backup() {
@@ -44,6 +54,24 @@ for socket in "$SOCKET" "${WOLFMUX_LEGACY_SOCKET:-ai-team}"; do # the second: a 
   fi
 done
 note "no team running"
+
+# Team memory (lib/memory.sh): a lead's private notes exist nowhere else, and --purge takes ~/.wolfmux
+# whole. While a memory folder holds anything, that needs a word of its own, --purge-memory; what it
+# would delete is said first, and without the word nothing at all is removed.
+MEMORY_DIR="$HOME/.wolfmux/memory"
+if [ "$PURGE" -eq 1 ] && [ -n "$(find "$MEMORY_DIR" -type f -print -quit 2>/dev/null || true)" ]; then
+  echo "== team memory (~/.wolfmux/memory)"
+  for dir in "$MEMORY_DIR"/*/*/; do
+    [ -d "$dir" ] && note "$(du -sh "$dir" 2>/dev/null | cut -f1)	${dir%/}"
+  done
+  if [ "$PURGE_MEMORY" -ne 1 ]; then
+    echo "uninstall.sh: --purge would delete these private memory folders with ~/.wolfmux. Nothing was removed." >&2
+    echo "  keep them:        ./uninstall.sh            (the tool goes, ~/.wolfmux stays)" >&2
+    echo "  delete them too:  ./uninstall.sh --purge --purge-memory" >&2
+    exit 1
+  fi
+  note "--purge-memory: they are deleted with ~/.wolfmux below"
+fi
 
 echo "== launchers and CLI"
 for name in teamctl claude-fable codex-astra claude-glm; do
@@ -137,7 +165,7 @@ if [ "$PURGE" -eq 1 ] && [ -d "$HOME/.wolfmux" ]; then
   held="$(find "$HOME/.wolfmux/worktrees" -mindepth 2 -maxdepth 2 -type d ! -name teams -print -quit 2>/dev/null || true)"
   [ -n "$held" ] || held="$(find "$HOME/.wolfmux/worktrees" -mindepth 4 -maxdepth 4 -type d -path '*/teams/*' -print -quit 2>/dev/null || true)"
   if [ -n "$held" ]; then
-    note "KEPT: worktrees still exist under ~/.wolfmux/worktrees (they may hold uncommitted work)"
+    note "KEPT: worktrees still exist under ~/.wolfmux/worktrees (they may hold uncommitted work); ~/.wolfmux/memory stays with them"
   else
     /bin/rm -rf "$HOME/.wolfmux"
     note "removed: ~/.wolfmux"

@@ -10,7 +10,7 @@ set -euo pipefail
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard completion; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -122,9 +122,27 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       stop a team you founded while its lead is not running. Yours alone: 77)
                                                       lead-model <model>|default (for the whole project: what a NEW lead starts
                                                       on; default opus. Yours alone: 77)
+                                                      team-memory <team>|off (for the whole project: the one team whose lead keeps
+                                                      a private memory folder; teamctl memory below. Yours alone to turn on: 77)
                                                       restore-on-limit report|<model> (default report: name a model to restart
                                                       a restored lead on it when its transcript reports a usage limit)
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
+  Team memory  one team's lead keeps a private memory folder, ~/.wolfmux/memory/<project>/<team>/ (default: none)
+    teamctl memory [status]                           anyone: which team has it, the folder's sizes, the MEMORY.md index against
+                                                      its 25,000-byte cap, and whether the running lead was started with it. The
+                                                      folder's path and the lead's conversation id: only to you or that lead
+    teamctl memory enable <team>                      yours alone (77 for an agent): sets policy team-memory, creates the folder
+                                                      (mode 700) from the installed skeleton, runs mem init. An existing folder is kept.
+                                                      Refused for a team an agent founded: its lead would never get it
+    teamctl memory adopt <team>                       yours alone (77 for an agent): the team's founder becomes you (record and
+                                                      meta.json), logged; then enable may give its lead the memory
+    teamctl memory disable                            you, or that team's own lead: policy off. Nothing is deleted
+    teamctl memory path · teamctl memory check        the folder's path (exit 1 when off) · its own lint (mem check);
+                                                      both yours or that team's own lead's (77 for anyone else)
+                                                      Every change reaches a running lead only at its next restart. That lead is
+                                                      started with "run <folder>/bin/mem boot" every time. While it is on, every
+                                                      lead's --continue needs a stored conversation id (they share one folder).
+                                                      Workers are refused the folder (worktree guard)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
@@ -226,10 +244,12 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl destroy [--worktrees] [--yes]             end the team. A worker whose work is all in main goes with it
                                                       (policy auto-reclaim), every other worktree and branch stays;
                                                       --worktrees also removes workers that hold nothing
-    teamctl destroy --purge [--force] [--keep-transcripts] [--yes]
+    teamctl destroy --purge [--force] [--keep-transcripts] [--memory] [--yes]
                                                       DELETE the team: session, every worktree, the branches teamctl
                                                       created, records, transcripts. Lists uncommitted and unmerged work and asks first;
-                                                      --force deletes it anyway. teamctl teams shows what a team takes on disk
+                                                      --force deletes it anyway. teamctl teams shows what a team takes on disk.
+                                                      The lead's memory folder (team memory) stays, unless --memory: then it goes
+                                                      too: yours alone (77 for an agent), and you type the team's name (no --yes for that)
     teamctl version | help
 
   Tasks and messages are Beads, not teamctl:
@@ -304,6 +324,7 @@ main() {
     nudge) cmd_nudge "$@" ;;
     inbox | notices) cmd_inbox "$@" ;;
     policy) cmd_policy "$@" ;;
+    memory) cmd_memory "$@" ;;
     layout) cmd_layout "$@" ;;
     approvals) cmd_approvals "$@" ;;
     approve) cmd_approve "$@" ;;

@@ -63,7 +63,7 @@ agent_view_hint() {
 }
 
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir model cctx repo session_id recorded_id label view_roles=" " continued
+  local role kind pane state branch ahead dirty workdir model cctx repo session_id recorded_id label view_roles=" " continued shown_id shown_continued
   # Which panes run Claude's agent view: asked once for the whole team, not once per agent.
   if [ -n "$SESSION_LIVE" ]; then view_roles=" $(agent_view_roles "$SESSION" | tr '\n' ' ')"; fi
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
@@ -97,6 +97,12 @@ _status_rows() { # emits one JSON object per agent
           ;;
       esac
     fi
+    # The memory lead's conversation ids, as printed: "hidden" for anybody but you and that lead (memory_id_hidden).
+    # The real ones still read its transcript, just above and below.
+    shown_id="$session_id" shown_continued="$continued"
+    if memory_id_hidden "$role"; then
+      shown_id="${session_id:+hidden}" shown_continued="${continued:+hidden}"
+    fi
     recorded_id="$(reg_field "$role" model_id)"
     agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)" "$recorded_id" "$(reg_field "$role" model_at)"
     # A /model typed into its pane: the record follows, so its next restart keeps that model (agent_adopt_live).
@@ -124,11 +130,11 @@ _status_rows() { # emits one JSON object per agent
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
       --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
-      --arg session_id "$session_id" --arg keep "$(reg_field "$role" keep_build)" \
+      --arg session_id "$shown_id" --arg keep "$(reg_field "$role" keep_build)" \
       --arg model_id "$MR_ID" --arg recorded_id "$recorded_id" --arg known_from "$MR_HOW" --arg mark "$MR_MARK" \
       --arg model_source "$(reg_field "$role" model_source)" \
       --arg hw "$(reg_field "$role" hold_why)" --arg hk "$(reg_field "$role" hold_kb)" --arg ha "$(reg_field "$role" hold_at)" \
-      --arg continued "$continued" --arg hint "$(if [ "$state" = "backgrounded" ]; then agent_view_hint "$continued"; fi)" \
+      --arg continued "$shown_continued" --arg hint "$(if [ "$state" = "backgrounded" ]; then agent_view_hint "$shown_continued"; fi)" \
       '{role: $role, kind: $kind, model: $model, label: $label, label_mark: $mark, family: $family, billing: $billing, state: $state, pane: $pane,
         keep_build: (if $keep == "on" then "on" else "off" end),
         holding: (if $kind == "worker" and $state != "running" and $state != "backgrounded" and $hw != "" then
@@ -470,6 +476,12 @@ cmd_capture() {
   case "$lines" in all) ;; "" | *[!0-9]*) die_usage "-n expects a number" ;; esac
   require_tools
   load_project
+  # The memory team's lead reads its private memory in that pane (mem boot prints the card): its screen is
+  # yours to look at, nobody else's (lib/memory.sh). The pane proof decides, as for every owner-only command.
+  # Also a lead that was started with the memory and still holds it after the policy moved (memory_lead_started_with).
+  if { memory_lead_dir "$role" >/dev/null || memory_lead_started_with "$role"; } && ! is_operator; then
+    die "the pane of '$role' of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}' shows that lead's private team memory, so only the human captures it, from their own terminal. Nothing to do for you: ask that lead by Beads for what you need." 77
+  fi
   require_session
   pane="$(_pane_or_die "$role")"
   tm_capture "$pane" "$lines"

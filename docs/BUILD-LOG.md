@@ -2012,6 +2012,138 @@ The documents were edited after that pass. `tests/docs.sh` was **re-run at the f
 assert are ABSENT under `docs/` were searched for by hand in the shipping content. Neither
 appears, and each pattern was first shown to match a line that does contain it.
 
+## 37. One lead keeps a private memory (v1.22.0, team memory)
+
+Asked for by the owner for the communication-management lead, planned by `comms-memory.lead`, built
+in two lanes with disjoint files: this one (teamctl) and `memtool` (the folder's contents, under
+`config/wolfmux/memory-skeleton/`). The contract between them: teamctl runs only `mem init` (enable)
+and `mem check` (memory check), passes the lead a boot prompt that tells it to run `mem boot` (teamctl
+never runs `mem boot` itself), and reads only the size of `core/card.md` (since review round 2). Decision and findings:
+[ADR-0030](adr/0030-one-lead-keeps-a-private-memory.md).
+
+| Piece | Where |
+|-------|-------|
+| policy `team-memory <team>\|off`, project-level, owner-only on, lead-allowed off, logged to `team-memory.jsonl` and `events.jsonl` | `lib/policy.sh`, `lib/memory.sh` |
+| `teamctl memory status\|enable\|disable\|adopt\|path\|check` (`adopt` since review round 3) | `lib/memory.sh` |
+| the "Team memory" prompt block: the folder, the rules, the boot line; never the card (review round 2) | `build_role_prompt` |
+| `autoMemoryDirectory` for that lead only | `write_agent_settings` |
+| the boot prompt at every launch | `cmd_run_agent` |
+| `--continue` refused with no stored id (for every lead while the policy is on, since review round 3); `destroy --purge --memory` | `cmd_start`, `cmd_restart`, `cmd_run_agent`, `cmd_destroy` |
+| guard: the folder for every file tool, searches of a folder that holds it, `.wolfmux/memory` in a command, `~` / `$HOME` / `${HOME}` expanded (also for `~/.wolfmux/state`) | `lib/guard.sh` |
+| the skeleton installed to `~/.config/wolfmux/memory-skeleton/`; `uninstall.sh --purge` refused while memory exists, `--purge-memory` | `install.sh`, `uninstall.sh` |
+
+Found on the way: the project memory folder Claude Code shares per repository is named by the
+existing `transcripts_dir` rule (every character but a letter or digit becomes `-`), not by `/`
+alone: `~/.wolfmux` is `--wolfmux` in such a name. Checked against the real folders under
+`~/.claude/projects/`. A live interactive pty probe of `claude --resume <id> "<prompt>"` did not
+reach a first turn in 90 s (print mode did), so the boot prompt rests on the CLI reference; see the ADR.
+
+`tests/memory.sh` (new, 51 checks) covers it end to end with a stub agent and a fake skeleton.
+
+**Review round 2.** An adversarial review found the switch, the settings and the prompt wiring right
+and five read channels open. All five are closed: (1) the card is out of the prompt, because `ps
+-axww -o command=` shows every agent's `--append-system-prompt` to every process and `teamctl _prompt`
+prints it to any caller (`mem boot` prints the card inside the lead's conversation instead); (2)
+`teamctl capture` of the memory lead's pane is the owner's alone; (3) the worktree guard closes the
+leads' transcript folder `~/.claude/projects/<project path>/` (all but its shared `memory/`) to
+workers' file tools and Bash text; (4) `teamctl memory check` (it writes and prints names) and
+`teamctl memory path` are the owner's and that lead's only; (5) `destroy --purge --memory` needs the
+pane proof (`require_operator`), since a piped `script -q /dev/null` fakes a terminal. Also: no owner,
+no memory (`team_founder` must be the operator and `bin/mem` must run); the guard compares paths
+without regard to letter case, drops `/./`, judges an absolute Glob pattern by its root, refuses tree
+walks of `~`, `~/.wolfmux`, `~/.claude` or `/`, and reads the `.wolfmux/memory` rule after the prose is
+gone (a commit message passes, a quoted path does not); `uninstall.sh --purge-memory` alone is exit 64;
+`memory status` warns about a Codex lead. The suite unsets `BEADS_DIR` and gives the test project a
+`.beads` of its own: the caller's `BEADS_DIR` had decided whether `teamctl finish` could take the team.
+`tests/memory.sh` has 75 checks.
+
+**Review round 3.** A read-only re-review of round 2 confirmed its eleven fixes and found eleven more.
+R1, a regression: `bash -c "…"`, `sh -c`, `zsh -c` and `eval "…"` passed the guard again, because the
+prose stripper ran before the memory rules and dropped the quoted command. R2: from a lane under
+`~/.wolfmux/worktrees/`, a `..` climb (`cat ../../../../../memory/…`, a Glob with `..`) reached the
+folder with no `cd` at all. R3: an agent that unset `TEAM_ROLE` and `TMUX_PANE` was taken for the owner
+by every owner-only gate, and a quoted or pathed `tmux` slipped past the tmux rule. R4: Claude Code's
+`file-history/`, `todos/` and `paste-cache/` under `~/.claude` were open to workers, and `memory status`
+printed the folder's path and the lead's conversation id to anyone. R5: since round 2 the card lives
+only in the lead's conversation, so ANOTHER lead's `--continue` without a stored id could open it. R6:
+`capture` opened to everyone after `memory disable` while the running lead still held the memory. R7:
+`enable` accepted a team an agent founded and promised a memory its lead would never get. R8: a grep or
+rg pattern such as `"/Users/"` was taken for a folder and refused. R9: wildcards, `~<name>`, a mid-line
+`/.` and a `\` line continuation slipped past. R10: comments and documents said `mem boot` runs after
+every compaction (the lead is only told to) and that teamctl calls it (it passes the prompt). R11:
+tests the re-review listed as missing. How they closed: the guard items (R1, R2, R3's guard part, R4's
+folders, R8, R9) are in `lib/guard.sh` (commit 9bc7c1d, plus `guard_follow`, which follows a literal
+`cd` or `pushd`, from the guard lane); the command items in `lib/memory.sh`, `lib/agents.sh` and
+`lib/views.sh`: `--continue` without an id is refused for every lead while the policy is on, `capture`
+also while the lead's settings carry `autoMemoryDirectory`, `enable` refuses an agent-founded team and
+the new owner-only `teamctl memory adopt <team>` makes the owner its founder, and `memory status` gives
+the path and the id to the owner and that lead only. SECURITY.md now says plainly that every owner-only
+gate is a pane proof a process can drop, which forms the worker guard refuses, that leads are not
+guarded, and that `uninstall.sh --purge --purge-memory` checks no identity. Still open, and named
+there: a `cd` to a folder known only at run time, `CDPATH`, a `cd` to a wildcard, code in another
+language, a script the command runs, and the memory lead's id in its records under `~/.wolfmux/state`,
+which the guard closes to workers and not to leads. A follow-up in the same round hides that id
+everywhere a view prints it: `teamctl status` (plain and `--json`, the id and the agent-view chat it
+continued in), `model --now` and `restore` print `hidden` to anyone but the owner and that lead.
+
+**Review round 4.** A re-review of round 3 found one blocker. A slow guard is no guard: Claude Code runs a
+tool call whose hook times out (10 s), and the round-3 guard took 17.6 s on a padded command (a `cat` of
+the card, four `cd`s, then `sh -c` with 99 `x/../f` words), because every `..` word cost about 15 forks
+and the cheap rules ran last. The fix is one awk pass, `GUARD_SCAN` in `lib/guard.sh`: it reads the
+command as the shell does, runs the cheap name rules first, then follows `cd` and the inner commands,
+with no fork per word, and refuses ("split this command") over 4,000 words, over 300 paths outside the
+worktree or after 2 seconds (round 5 found that this clock never bounded the lexer: see below). Setup is one jq and one awk; symlinks are tested with the builtin `[ -L ]`
+and read through in a second pass only when one exists. Timings on the reviewer's harness, before and
+after: the padded command 19.7 s → 0.03 s (refused), `prettier --write` on 99 worktree files 9.3 s →
+0.03 s, on 101 files refused → allowed (paths inside the worktree no longer count), `git status`
+0.29 s → 0.02 s. Of the harness's 498 cases, 107 changed, all as the review asked. False positives
+gone: `tmux` counts only as the program (`grep -n "tmux"`, `rg 'tmux'`, `git log -S tmux`, `echo tmux`
+pass), and a search pattern is never a path (`grep -rn "../utils" src/`, `rg "../lib"`, `git grep
+'../shared'` pass). Bypasses closed: quotes and `\` inside a word (`mem""ory`, `mem\ory`,
+`~/.wolfmux/"memory"`, `$'…'`), a `\` line continuation inside a word, `sh -c` with options around `-c`
+or `--`, `echo`/`printf`/a heredoc piped into a shell, `bash -`, `source /dev/stdin`, `<( )`, `ssh` and
+`watch` text, `grep -r ~ -e x` and `grep -d recurse x ~` (the pattern is chosen after every option), the
+`claude --resume` refusal after `timeout`, `nice`, `caffeinate`, `script`, `xargs`, `npx
+@anthropic-ai/claude-code` and `$(which claude)`, quoted and un-export identity drops (`unset "X"`,
+`declare +x`, `read`, `printf -v`, `env -S`), a symlink in the worktree (`ln -s ~/.wolfmux w`, then
+`cat w/memory/…`: the `ln` is refused and an existing folder link is followed by Bash, Read and Glob;
+a link at the end of a path was followed only after round 5), and a
+worktree named like the start of another (`w1` and `w10`). Claude Code's records widened: `sessions/`,
+`session-env/`, `history.jsonl` and its temporary folder `/private/tmp/claude-<uid>` (except the
+worker's own scratchpad) are closed, MCP `file://` URLs count as paths, and `fd`, `ag` and `ack` are
+tree walkers. SECURITY.md now says the conversation id is no secret (`ps -axww` and
+`~/.claude/sessions` show it to every process), that `find /tmp` is refused, and what still passes:
+a folder, path or program built at run time (`c=claude; $c -r <id>`), `CDPATH`, code in another
+language, a script the command runs and a chain of more than three symlinks (round 5 found the chain
+claim stale: a chain is followed as deep as macOS goes, 32 links). `tests/memory.sh` has eight
+new checks (all fail on the round-3 guard), including the three timings through `teamctl _guard`.
+
+**Review round 5.** The final review of round 4 (8572a05) found a lexer time hole, a shell mismatch, an
+unguarded tool and links at the end of a path. B1: the lexer was unbounded (a 600 KB word took 17.3 s, a
+400 KB heredoc 11.1 s, 400 KB of comments 9.3 s); now a command over 64 KB is refused before awk starts
+in 0.02 to 0.04 s, the lexer counts characters, words and paths (a step budget, with the clock only as a
+backstop), and every 60 KB shape takes 0.02 to 0.53 s (it was up to 7.7 s). M1 (H2): the Bash tool runs
+`$SHELL`, which is `/bin/zsh` for every agent on this Mac; workers now launch with `SHELL` and
+`CLAUDE_CODE_SHELL` set to `/bin/bash`, and the lexer reads an in-word `(` as a zsh glob group and strips a
+leading `=` (`=tmux`). Shell proof (fe9d657): Claude Code 2.1.309 reads `CLAUDE_CODE_SHELL` first;
+`claude -p --model haiku` answered `/bin/zsh 5.9` by default and `/bin/bash 3.2.57(1)-release` with the
+two variables. M2 (H3): the hook matcher is `.*`; Monitor and PowerShell commands go through the Bash
+check, and any other tool has every string value read as a quoted word and its `command`, `cmd` and
+`script` fields as shell text. M3 (H4): a quoted word that holds a `/` is a path even with a blank in it
+(a commit message that names a private folder by path is refused on purpose). M4 (H5): the last
+component of a path is resolved with the link rule too (Read, Grep, Glob, LS, Edit, Write, Bash), and the
+`ln` rule covers `gln`, `link`, `cp -s/-l`, run-time words, `xargs`, `find -exec` and
+`git update-index --cacheinfo 120000`. S1 to S4 (H6): a word is also read with its run-time parts deleted
+(`mem${x}ory`), what `$( )` prints is shell text, and MCP `file:` strings are normalised. H7 (db1cb6e):
+a portability audit of the awk program and the bash (no gawk or bash 4 forms) with a check that keeps
+it. H8 (6151e70): test honesty. `check()` runs each body in a subshell, because nine checks ended the
+whole suite at their first failure, and a masked `$?` was fixed; of the 43 guard checks the 15 of
+rounds 4 and 5 fail on 1538605's guard and the 26 older ones pass (they test rules it already has); no
+check passed on old code where it should not. Commits: H1 0efa2f2 and e415173, H2 fe9d657 and b0dc1ac,
+H3 ad76f41, H4 89fd842, H5 202d022, H6 fafd2e6, H7 db1cb6e, H8 6151e70. Harness flips against the
+reviewer's 8572a05 baseline, all allow to deny, 37 of 742: H2 14, H3 3, H4 6, H5 7, H6 8. `tests/memory.sh`
+went from 122 to 130 checks, each new one failing on its parent's guard.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

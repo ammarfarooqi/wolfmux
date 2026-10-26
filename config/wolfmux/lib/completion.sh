@@ -160,6 +160,7 @@ complete_first_word() {
   complete_emit "$prefix" inbox "<role>: the pane notices filed for an agent (alias: notices)"
   complete_emit "$prefix" notices "alias of inbox"
   complete_emit "$prefix" policy "show or set what the team may do (permissions, spawning, isolation)"
+  complete_emit "$prefix" memory "team memory: status, enable <team>, disable, adopt <team>, path, check"
   complete_emit "$prefix" layout "how the panes are arranged (lead-left, lead-top, tiled)"
   complete_emit "$prefix" approvals "workers' permission requests waiting for the lead"
   complete_emit "$prefix" approve "<id>: allow a worker's permission request"
@@ -196,7 +197,7 @@ complete_options() {
     restart) options="--continue --resume --model" ;;
     model) options="--now" ;;
     remove) options="--force --yes" ;;
-    destroy) options="--worktrees --purge --force --keep-transcripts --yes" ;;
+    destroy) options="--worktrees --purge --force --keep-transcripts --memory --yes" ;;
     prune) options="--dry-run --keep-node-modules --all-teams" ;;
     reclaim) options="--dry-run --all-teams" ;;
     finish) options="--dry-run" ;;
@@ -235,6 +236,7 @@ complete_options() {
       # --quiet is deliberately not described here: nudge and heavy both take it and it means
       # a different thing in each, and this case block is shared by every command.
       --timeout) complete_emit "$prefix" "$option" "<seconds>: give up waiting for the heavy lock (exit 75)" ;;
+      --memory) complete_emit "$prefix" "$option" "with --purge: also the lead's memory folder (yours alone; you type the team's name)" ;;
       *) complete_emit "$prefix" "$option" ;;
     esac
   done
@@ -445,6 +447,12 @@ cmd_complete() {
           ;;
         completion)
           [ "$position" -eq 0 ] && complete_policy_choices "$cur" zsh bash
+          ;;
+        memory)
+          case "$position" in
+            0) complete_policy_choices "$cur" status enable disable adopt path check ;;
+            1) case "${pos[0]}" in enable | adopt) complete_teams "$cur" "" ;; esac ;;
+          esac
           ;;
       esac
       ;;

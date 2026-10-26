@@ -57,6 +57,12 @@
 #                                           `teamctl start fable`, or `teamctl model lead fable` for a running
 #                                           team. A team that has a lead keeps that lead's own recorded model.
 #                                           For the whole project, kept beside orphan-steward; yours alone.
+#   team-memory         <team> | off        DEFAULT off. The one team of this project whose LEAD keeps a
+#                                           private memory folder, ~/.wolfmux/memory/<project>/<team>/
+#                                           (lib/memory.sh). For the whole project, kept beside
+#                                           orphan-steward. Only you may turn it on (require_operator);
+#                                           off may also come from that team's own lead. Never read from
+#                                           the environment or the config file: no default but off.
 #   restore-on-limit    report | <model>    DEFAULT report. What `teamctl restore` does with a lead
 #                                           that comes back to a used-up model limit ("You've
 #                                           reached your Fable limit"): report = name it at the end
@@ -66,7 +72,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing orphan-steward lead-model restore-on-limit"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing orphan-steward lead-model team-memory restore-on-limit"
 
 policy_default() {
   case "$1" in
@@ -85,6 +91,7 @@ policy_default() {
     human-pane-typing) printf '%s\n' "${WOLFMUX_HUMAN_PANE_TYPING:-off}" ;;
     orphan-steward) printf '%s\n' "${WOLFMUX_ORPHAN_STEWARD:-off}" ;;
     lead-model) printf '%s\n' "${WOLFMUX_LEAD_MODEL:-opus}" ;;
+    team-memory) printf 'off\n' ;; # no setting: only `teamctl memory enable` turns it on
     restore-on-limit) printf '%s\n' "${WOLFMUX_RESTORE_ON_LIMIT:-report}" ;;
     *) return 1 ;;
   esac
@@ -113,7 +120,7 @@ policy_valid() { # <key> <value>
     return
   fi
   # A team's name, or off. Whether that team exists is asked where it is set (cmd_policy).
-  if [ "$1" = "orphan-steward" ]; then
+  if [ "$1" = "orphan-steward" ] || [ "$1" = "team-memory" ]; then
     [ "$2" = "off" ] || valid_team_name "$2"
     return
   fi
@@ -162,14 +169,14 @@ policy_choices() {
     human-pane-typing) printf 'off|idle\n' ;;
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
-    orphan-steward) printf 'a team of this project, or off\n' ;;
+    orphan-steward | team-memory) printf 'a team of this project, or off\n' ;;
     lead-model) printf 'a model (opus, fable, sonnet, haiku, astra, …), or default\n' ;;
     restore-on-limit) printf 'report, or a model (opus, sonnet, claude:<model-id>, ...)\n' ;;
   esac
 }
 
-# The keys that belong to the project, not to a team: orphan-steward names a team of the project, and lead-model is
-# what a team that does not exist yet starts on, so no team's meta.json can hold it. In a team's
+# The keys that belong to the project, not to a team: orphan-steward and team-memory name a team of the project, and
+# lead-model is what a team that does not exist yet starts on, so no team's meta.json can hold it. In a team's
 # meta.json it would be read by that team only, and the default team's goes with `teamctl destroy --purge`.
 project_policy_file() { printf '%s/policy.json\n' "$PROJECT_STATE"; }
 
@@ -189,7 +196,7 @@ project_policy_put() { # <field> <value>
 # to the safe side (ask / off) instead of silently widening what agents may do.
 policy_get() {
   local key="$1" value
-  if [ "$key" = "orphan-steward" ] || [ "$key" = "lead-model" ]; then
+  if [ "$key" = "orphan-steward" ] || [ "$key" = "lead-model" ] || [ "$key" = "team-memory" ]; then
     value="$(project_policy_get "policy_${key//-/_}" 2>/dev/null || true)"
   else
     value="$(meta_get "policy_${key//-/_}" 2>/dev/null || true)"
@@ -230,8 +237,9 @@ policy_get() {
   elif [ "$key" = "human-pane-typing" ]; then
     # Unreadable means the human's screen stays quiet: a typo must not bring the lines back.
     printf 'off\n'
-  elif [ "$key" = "orphan-steward" ]; then
+  elif [ "$key" = "orphan-steward" ] || [ "$key" = "team-memory" ]; then
     # Unreadable means nobody but you and a team's founder may act on a team: no steward.
+    # And no lead gets a private memory that nobody can say was turned on.
     printf 'off\n'
   elif [ "$key" = "lead-model" ]; then
     # A model nobody can start a lead on (a typo in the config file) is the built-in default, not a refused start.
@@ -263,7 +271,7 @@ policy_set() { # <key> <value>
     return 0
   fi
   policy_valid "$1" "$2" || die_usage "$1 must be one of: $(policy_choices "$1")"
-  if [ "$1" = "orphan-steward" ] || [ "$1" = "lead-model" ]; then
+  if [ "$1" = "orphan-steward" ] || [ "$1" = "lead-model" ] || [ "$1" = "team-memory" ]; then
     project_policy_put "policy_${1//-/_}" "$2"
     return 0
   fi
@@ -569,7 +577,7 @@ cmd_policy() {
   local key="${1:-}" value="${2:-}" template teams
   require_tools
   # orphan-steward and lead-model are the project's, not a team's: they are set without naming a team.
-  if [ "$key" = "orphan-steward" ] || [ "$key" = "lead-model" ]; then load_project any; else load_project; fi
+  if [ "$key" = "orphan-steward" ] || [ "$key" = "lead-model" ] || [ "$key" = "team-memory" ]; then load_project any; else load_project; fi
   if [ -z "$key" ]; then
     say "policy for $(short_path "$ROOT")"
     say "  lead-permissions    $(policy_get lead-permissions)    (skip|ask)"
@@ -600,6 +608,8 @@ cmd_policy() {
     say "  lead-model          $(policy_get lead-model)      (<model>|default) for the whole project: what a NEW lead starts on when"
     say "                      teamctl start names no model. Fable only when asked: teamctl start fable · teamctl model lead fable."
     say "                      A running team's lead keeps its own recorded model (teamctl model). Yours alone to change."
+    say "  team-memory         $(policy_get team-memory)       (<team>|off)      for the whole project: the one team whose lead keeps a private memory"
+    say "                      folder (teamctl memory status). Yours alone to turn on; that lead may turn it off. Nothing is ever deleted by it."
     say "  restore-on-limit    $(policy_get restore-on-limit)    (report|<model>)  teamctl restore and a lead that comes back to a used-up model limit:"
     say "                      report = name it at the end, change nothing · a model (opus…) = restart that lead on it"
     say ""
@@ -630,6 +640,13 @@ cmd_policy() {
     policy_set "$key" "$value"
     event_log policy "" "$key=$value"
     say "policy: $key = $value   (for the whole project)"
+    return 0
+  fi
+  # Which lead keeps notes no team can see is the human's call; turning it off only narrows, so the memory team's own
+  # lead may do that too. The same path as teamctl memory enable / disable (lib/memory.sh), folder and log included.
+  if [ "$key" = "team-memory" ]; then
+    policy_valid "$key" "$value" || die_usage "team-memory must be $(policy_choices "$key")"
+    memory_policy_set "$value"
     return 0
   fi
   # What every new lead of the project runs on is the human's call, as orphan-steward is: one team's lead would be
