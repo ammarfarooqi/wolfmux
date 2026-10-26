@@ -338,12 +338,18 @@ go; nothing is added to `~/.claude/settings.json`.
 
 - `teamctl _inbox-stop` is a **second entry in the Stop array**, beside the notification
   hook rather than instead of it. When the role's inbox holds undelivered notices it
-  answers `{"decision":"block","reason":"<the notices + the agent's own Beads command>"}`,
-  so the agent carries straight on and reads its beads. A loop is impossible for two
-  reasons and both are needed: the lines are marked delivered **before** the answer is
-  printed, so one notice can never block twice, and no turn is blocked again inside
-  `WOLFMUX_INBOX_STOP_COOLDOWN` (10 s), so a burst of beads one a second cannot block
-  one turn a second.
+  answers `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"<the notices + the agent's own Beads command>"}}`,
+  so the agent carries straight on and reads its beads. Claude Code shows that as
+  `Stop hook feedback`; v1.22.1 replaced `{"decision":"block","reason":…}`, which it shows
+  as `Stop hook error`, and both go through the same loop protections (`stop_hook_active`,
+  the 8-continuation cap). A loop is impossible here for two reasons and both are needed:
+  the lines are marked delivered **before** the answer is printed, so one notice can never
+  continue a turn twice, and no turn is continued again inside
+  `WOLFMUX_INBOX_STOP_COOLDOWN` (10 s), so a burst of beads one a second cannot continue
+  one turn a second. In a pane a human is watching (the lead's pane while a client is
+  attached, or any pane on an attached screen) it answers **nothing**, under either value
+  of `human-pane-typing` (v1.20.0 for `off`, v1.22.1 for `idle`): the notices wait for the
+  next prompt.
 - `teamctl _inbox-prompt` runs on **UserPromptSubmit**: Claude Code adds such a hook's
   stdout to the model's context, so the notices arrive alongside whatever the human just
   typed. No cooldown — a human pressed Enter.
@@ -372,7 +378,8 @@ for the human. Two things close most of it:
   a click opens the team and nothing reaches the conversation. It is raised the moment we
   **decline to type** for the lead, not after a timer: nothing can tell us whether the
   agent's turn will ever end, so "it cannot reach the agent now" is the honest trigger,
-  and if the agent was mid-turn its Stop hook delivers the notice as well. It
+  and if the agent was mid-turn its next prompt delivers the notice as well (its Stop
+  hook keeps out of a pane the human is watching). It
   **collapses** — one banner per role per `WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE` (120 s,
   deliberately not the 3 s nudge debounce: a banner with a sound is the one channel that
   interrupts whatever the human is doing, and this machine runs dozens of teams whose

@@ -990,7 +990,7 @@ this would regenerate every agent's settings document for nothing. Every setting
 is a `set -g` overwrite, so re-sourcing is safe to repeat, and it re-reads your own
 `~/.tmux.conf` as well.
 | you, when an agent is stuck | one desktop notification, at most one per role every two minutes, carrying the count: "team/lead: 4 notices waiting". A click opens the team | no |
-| the agent | its own session hands them over when its turn ends, or when you next prompt it. In its transcript that is a `[wolfmux] You have team notices:` block | no |
+| the agent | its own session hands them over when its turn ends, or when you next prompt it. In its transcript that is a `[wolfmux] You have team notices:` block. At a turn's end only in a pane **you are not watching**, under either value of `human-pane-typing`, and Claude Code labels it `Stop hook feedback` (before 1.22.1: `Stop hook error`). In a pane you watch, the next prompt carries them: yours, or the agent's own loop | no |
 | the agent, typed | a worker's idle pane is still typed into, as before, and the lead's pane while nobody is attached. A pane **you are watching** never is (policy `human-pane-typing`, default `off`): your lead pane while you are attached, quiet or not, and any pane on your screen. A tmux read that fails counts as watching. Under `human-pane-typing idle` the v1.16.1 rule is back: typed in once the pane is quiet, no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE` (5 minutes), nothing half-typed on its input line, not in copy mode | never, under the default |
 
 The price of the default: an **idle** lead you are attached to is not woken by a notice.
@@ -1005,7 +1005,10 @@ given it. Reading your notices never hides them from the agent, and an agent rea
 them never clears your count.
 
 Under `human-pane-typing idle` only, two cases still put a line in your conversation on
-purpose (under the default `off`, neither is typed into a pane you are watching):
+purpose (under the default `off`, neither is typed into a pane you are watching). The Stop
+hook is never one of them: since 1.22.1 it says nothing in a pane you watch under `idle`
+too, where before it printed `Stop hook error: [wolfmux] You have team notices: …` after
+the agent's turns.
 
 - **A permission request.** It holds a worker until you answer, so if it is still
   PENDING after `WOLFMUX_INBOX_APPROVAL_GRACE` (20 s) it is typed in after all.

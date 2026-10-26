@@ -170,7 +170,7 @@ fi
 echo "== the agent's hooks"
 STOP_OUT="$(hook qa _inbox-stop)"
 PROMPT_OUT="$(hook lead _inbox-prompt)"
-check "_inbox-stop did its work: it blocked once, with qa's filed notice" 'printf "%s" "$STOP_OUT" | jq -e ".decision == \"block\"" && printf "%s" "$STOP_OUT" | grep -qF "$T2"'
+check "_inbox-stop did its work: it continued the turn once (Stop hook feedback, no decision key), with qa's filed notice" 'printf "%s" "$STOP_OUT" | jq -e ".hookSpecificOutput.hookEventName == \"Stop\" and (has(\"decision\") | not)" && printf "%s" "$STOP_OUT" | jq -r .hookSpecificOutput.additionalContext | grep -qF "$T2" && printf "%s" "$STOP_OUT" | jq -r .hookSpecificOutput.additionalContext | grep -q "bd list --assignee qa"'
 check "_inbox-prompt did its work: it handed the lead its filed notice" 'printf "%s" "$PROMPT_OUT" | grep -qF "$M2"'
 
 echo "== the status bar"
