@@ -43,6 +43,8 @@
 #                                           showing? off = never; the notice is filed and the agent
 #                                           gets it from its own hooks (lib/inbox.sh). idle = the
 #                                           v1.16.1 rule: typed once that pane has been quiet.
+#                                           Typing only: under both values the Stop hook says
+#                                           nothing in a watched pane (v1.22.1).
 #                                           Only you may change it, never an agent: it is about
 #                                           your own screen (require_operator).
 #   orphan-steward      <team> | off        DEFAULT off. The one team of this project whose LEAD may

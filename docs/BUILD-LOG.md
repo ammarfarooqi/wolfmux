@@ -2144,6 +2144,55 @@ H3 ad76f41, H4 89fd842, H5 202d022, H6 fafd2e6, H7 db1cb6e, H8 6151e70. Harness 
 reviewer's 8572a05 baseline, all allow to deny, 37 of 742: H2 14, H3 3, H4 6, H5 7, H6 8. `tests/memory.sh`
 went from 122 to 130 checks, each new one failing on its parent's guard.
 
+## 38. The Stop hook keeps out of a watched pane under idle too (v1.22.1)
+
+**What the owner saw.** On 2026-10-26, from 06:12Z to 06:41Z, in the pane he is attached to:
+after almost every turn of the communication-management lead, `Ran 7 stop hooks` and
+`Stop hook error: [wolfmux] You have team notices: …`. teamctl 1.22.0, Claude Code 2.1.310.
+
+**Cause.** `_inbox_stop_watched` (lib/inbox.sh) began with `inbox_human_typing_off || return 1`.
+The communication-management team has policy `human-pane-typing idle` (set by the owner on
+2026-10-21 at 15:33Z; deployment-manager too; every other team is unset, which is `off`). Under
+`idle` that line returned before tmux was asked, so `cmd_inbox_stop` answered
+`{"decision":"block","reason":…}` in the lead's pane while a client was attached, and Claude Code
+prints a Stop block's reason labelled "Stop hook error". That team's event log for the day: 20
+`inbox-stop` lines for the lead, 0 `inbox-stop-silent`. The v1.20.0 silence worked under `off`;
+`idle` had been left on the v1.16.1 rule on purpose (tests/inbox.sh asserted "policy idle: the
+watched lead pane gets the block answer exactly as before").
+
+**Decision.** That is reversed: a pane a human is watching gets nothing from the Stop hook under
+either value. `idle` decides typing only (`inbox_keep_off_human_pane` is untouched). Nothing is
+lost: under `idle` the nudge path still parks a waiter that types the notice once the attached
+lead's pane is quiet (`WOLFMUX_NUDGE_LEAD_IDLE`), and `_inbox-prompt` hands over whatever is
+still undelivered at the next prompt. The `inbox-stop-silent` event now names the real value
+(`human-pane-typing=idle: …` or `=off: …`).
+
+**The answer where the hook still speaks** (a pane nobody watches) is
+`{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":…}}`, not a block. Claude
+Code's hooks docs, "Stop decision control": additionalContext "keeps the conversation going
+through the same loop protections as `decision: "block"`, namely the `stop_hook_active` input and
+the 8-consecutive-continuation cap, but the transcript labels it `Stop hook feedback` and no hook
+error notification is shown". The installed 2.1.310 binary holds `Stop hook feedback` 8 times,
+`stop_hook_active` 7 times and `Stop hook error` 6 times. Proved live before the code: a settings
+file with one Stop hook that printed that shape once (a stamp file) made
+`claude -p 'reply with the single word ok' --model haiku --settings <file>` answer `pineapple`,
+the word the hook's text asked for. The cooldown, mark-delivered-before-print and the re-queue on
+a jq failure stay as they were; the event says "continued once with N notice(s)".
+
+**What the human sees after the install.** Nothing in a pane he watches, under `off` or `idle`.
+In a worker pane he scrolls through later: `Stop hook feedback`, not `Stop hook error`. The
+install reaches every running session at once, with no restart: each agent's settings document
+names the installed `teamctl`, and teamctl reads the installed library on every call.
+
+**Tests.** tests/inbox.sh: the `idle` checks that expected the block in the watched lead pane now
+expect silence (exit 0, nothing printed), an undelivered notice, a silent event naming `idle`, no
+`.stop.lead`, and the hand-over at the next prompt; the two loop guards (delivered before the
+answer, the cooldown; a new notice continues once, never twice) moved to `aux`, a worker pane
+nobody shows, under `idle`; the pane-proof unit case says `idle` watches the same panes as `off`.
+On 870a2bd's inbox.sh the 9 flipped checks fail and nothing else does. Every Stop answer check
+reads `.hookSpecificOutput` and asserts no `decision` key (tests/beads-hotpath.sh too).
+Commits: S1 ff06966, S2 c593472, S3 this one.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
