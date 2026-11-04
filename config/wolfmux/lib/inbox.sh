@@ -684,12 +684,15 @@ inbox_type_when_idle() {
 # as watched: the client attached to a team always shows its active pane. The Stop hook
 # then kept quiet, the next prompt was the only way in, and an idle lead has no next
 # prompt: tagging.lead sat 16 hours on 4 messages. Now a pane in a background tab, or in
-# iTerm2 while another app is in front, is not in use, so its Stop hook hands the notices
-# over at turn end, and an idle lead's wake waiter (cmd_inbox_wake) wakes it.
+# iTerm2 while another app is in front, is not in use. A worker's (or a Codex lead's) Stop
+# hook then hands the notices over at turn end; a Claude lead with a client attached is
+# woken by its wake waiter (cmd_inbox_wake) instead, and its Stop hook stays silent
+# (_inbox_stop_watched says why).
 #
 # Why "never typed" and not "once it is quiet" (the v1.16.1 rule, still there as idle):
 # Ammar, 2026-10-15, "i still see beads messages in my terminal". That has not changed, and
-# for a Claude-family lead it is stricter than this function (inbox_keep_off_human_pane).
+# for a Claude-family lead it is stricter than this function (inbox_keep_off_human_pane,
+# _inbox_stop_watched).
 inbox_human_pane() {
   local role="$1" pane="$2"
   INBOX_HUMAN_REASON=""
@@ -719,9 +722,10 @@ inbox_human_typing_off() { [ "$(policy_get human-pane-typing 2>/dev/null || true
 # inbox_claude_lead_attached <role> — 0 for a Claude-family LEAD of a team a client is
 # attached to. Under human-pane-typing off NOTHING is typed into that pane, in use or not:
 # the pane is the human's conversation and he rejected typed lines there (2026-10-10,
-# 2026-10-15). Its own hooks reach that agent instead: the Stop hook at turn end, the wake
-# waiter while it is idle (cmd_inbox_wake), the next prompt. A Codex-family lead has no
-# hooks, so typing stays its one channel, gated by inbox_human_pane like a worker's.
+# 2026-10-15). Its own hooks reach that agent instead: the wake waiter while it is idle
+# (cmd_inbox_wake) and the next prompt. Not its Stop hook: that one would print the notices
+# in full in the pane, so it is silent here too (_inbox_stop_watched). A Codex-family lead
+# has no hooks, so typing stays its one channel, gated by inbox_human_pane like a worker's.
 inbox_claude_lead_attached() {
   [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
   [ "$(reg_field "$1" family 2>/dev/null || true)" != "codex" ] || return 1
@@ -1015,9 +1019,23 @@ cmd_inbox_stop() {
 # the communication lead (2026-10-26). Nothing is lost by the silence: under idle the
 # waiter types the notice once that pane is quiet, and the next prompt hands over the rest.
 #
+# v1.23.0: and in a Claude-family LEAD's pane whenever a client is attached to the team, in
+# use or not, under either value of human-pane-typing (inbox_claude_lead_attached). Claude
+# Code prints a Stop hook's additionalContext IN FULL in the pane, as "Stop hook feedback":
+# a lead in a background tab would show the whole notice text in the human's conversation
+# when he comes back to it, which is what he objected to (2026-10-15, 2026-10-26). That
+# lead's wake waiter (cmd_inbox_wake) hands the notices over instead, at most
+# WOLFMUX_WAKE_POLL seconds later, and a wake prints one line only: "wolfmux: team notice".
+# Workers and Codex-family leads keep the plain answer: a pane nobody uses gets the hand-over.
+#
 # The pane and the session are the ones _inbox_hook_ready proved: this agent's own.
 _inbox_stop_watched() {
-  inbox_human_pane "$INBOX_ROLE" "$INBOX_PANE"
+  inbox_human_pane "$INBOX_ROLE" "$INBOX_PANE" && return 0
+  if inbox_claude_lead_attached "$INBOX_ROLE"; then
+    INBOX_HUMAN_REASON="a client is attached to the team and this lead's wake waiter hands its notices over (a Stop hook would print them in full)"
+    return 0
+  fi
+  return 1
 }
 
 # cmd_inbox_prompt — internal (`teamctl _inbox-prompt`): a Claude Code UserPromptSubmit
