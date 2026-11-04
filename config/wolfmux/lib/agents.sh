@@ -2043,8 +2043,13 @@ notify_lead() {
   # An approval still gets the bell on the status bar and the banner, and the lead's agent
   # gets the notice from its own hooks. WOLFMUX_INBOX_APPROVAL_TYPE (grace, always) applies
   # again only under human-pane-typing idle.
+  # v1.23.0: the question is whether a human is USING the pane (inbox_human_pane), and for a
+  # Claude-family lead the answer stays "never typed" while any client is attached
+  # (INBOX_KEEP_OFF=lead); its wake waiter hands an approval over once nobody is using it.
+  # A Codex-family lead has no hooks, so it falls through to the typed path when not in use.
   if inbox_keep_off_human_pane "$WOLFMUX_LEAD_ROLE" "$pane"; then
-    event_log inbox-filed "$WOLFMUX_LEAD_ROLE" "$kind (human-pane-typing=off: $INBOX_HUMAN_REASON)"
+    inbox_held_words "$WOLFMUX_LEAD_ROLE" "$(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE")"
+    event_log inbox-filed "$WOLFMUX_LEAD_ROLE" "$kind (human-pane-typing=off: $INBOX_HUMAN_REASON; $INBOX_HELD_WHY)"
     inbox_stall_notify "$WOLFMUX_LEAD_ROLE" "$kind"
     return 4
   fi
@@ -2239,9 +2244,21 @@ _nudge_one() {
   # v1.20.0: a pane a human is watching is not typed into at all, quiet or not, unless he
   # has asked for the v1.16.1 rule (policy human-pane-typing idle). Filed only: the agent
   # gets it from its own Stop and UserPromptSubmit hooks. See inbox_human_pane.
+  # v1.23.0: and a Claude-family LEAD's pane is not typed into while a client is attached,
+  # in use or not (inbox_keep_off_human_pane, INBOX_KEEP_OFF=lead): that lead's hooks carry
+  # the notice, the wake waiter (cmd_inbox_wake) among them. The sender is told which
+  # (NUDGE_HELD=1, inbox_held_words): waking itself soon, or waiting for a human's prompt.
+  NUDGE_HELD=0
   if inbox_keep_off_human_pane "$role" "$pane"; then
-    NUDGE_FILED_WHY="a human is watching ${role}'s pane ($INBOX_HUMAN_REASON) and policy human-pane-typing is off"
-    event_log inbox-filed "$role" "${bead:-no bead} (human-pane-typing=off: $INBOX_HUMAN_REASON)"
+    if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then
+      inbox_held_words "$role" "$who"
+      NUDGE_HELD=1
+      NUDGE_FILED_WHY="$INBOX_HELD_WHY"
+      event_log inbox-filed "$role" "${bead:-no bead} (human-pane-typing=off: $INBOX_HUMAN_REASON; $INBOX_HELD_WHY)"
+    else
+      NUDGE_FILED_WHY="a human is watching ${role}'s pane ($INBOX_HUMAN_REASON) and policy human-pane-typing is off"
+      event_log inbox-filed "$role" "${bead:-no bead} (human-pane-typing=off: $INBOX_HUMAN_REASON)"
+    fi
     inbox_stall_notify "$role" beads
     return 4
   fi
@@ -2483,7 +2500,11 @@ cmd_nudge() {
       return 3
       ;;
     4)
-      say "filed: $NUDGE_FILED_WHY. The notice is in its inbox: the status bar counts it, the agent is given it by its own Stop hook when its turn ends or when somebody prompts it, and you can read it now with: teamctl inbox $role"
+      if [ "${NUDGE_HELD:-0}" = "1" ]; then
+        say "filed: $NUDGE_FILED_WHY. Nothing is typed into its pane; the status bar counts the notice, and you can read it now with: teamctl inbox $role"
+      else
+        say "filed: $NUDGE_FILED_WHY. The notice is in its inbox: the status bar counts it, the agent is given it by its own Stop hook when its turn ends or when somebody prompts it, and you can read it now with: teamctl inbox $role"
+      fi
       return 4
       ;;
     *) die "'$role' has no running pane (its beads are waiting in Beads; start it with: teamctl restart $role)" ;;

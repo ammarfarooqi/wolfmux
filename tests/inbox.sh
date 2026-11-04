@@ -316,19 +316,22 @@ HBEFORE="$(notices lead "Beads update for lead")"
 teamctl nudge lead --id human-lead-1 >"$WORK/human-lead-1.log" 2>&1
 HUMAN_LEAD_STATUS=$?
 sleep 2
-check "attached + the lead pane: filed, not typed (exit 4), and the message names the policy" '[ "$HUMAN_LEAD_STATUS" -eq 4 ] && grep -q "^filed: a human is watching lead" "$WORK/human-lead-1.log" && grep -q "human-pane-typing is off" "$WORK/human-lead-1.log"'
+# v1.23.0 (issue #34): the client shows qa, so nobody is USING the lead's pane. A Claude-family
+# lead is still never typed into while a client is attached; the sender is told it is held.
+check "attached + the lead pane: filed, not typed (exit 4), and the sender is told it is held" '[ "$HUMAN_LEAD_STATUS" -eq 4 ] && grep -q "^filed: held for lead" "$WORK/human-lead-1.log" && grep -q "no wake waiter runs for it" "$WORK/human-lead-1.log"'
 check "attached + the lead pane: nothing reached it, though it is quiet and not on screen" '[ "$(notices lead "Beads update for lead")" = "$HBEFORE" ] && ! teamctl capture lead --all | grep -q "human-lead-1"'
 check "attached + the lead pane: no waiter was parked either, so nothing types it in later" '[ ! -d "$(pending_dir lead)" ]'
-check "attached + the lead pane: the event log names the rule" 'grep -q "human-pane-typing=off: a client is attached" "$STATE_DIR/events.jsonl"'
-# v1.20.0, second path: Claude Code prints a Stop hook's reason in the pane ("Stop hook
-# error"), so in a watched pane the Stop hook keeps quiet and the next prompt hands it over.
-check "attached + the lead pane: the agent's own Stop hook keeps quiet, and the notice waits" '[ -z "$(hook lead _inbox-stop)" ] && delivered_of lead human-lead-1 false'
-check "attached + the lead pane: the next prompt hands it over, and it is marked delivered" 'hook lead _inbox-prompt | grep -q "human-lead-1" && delivered_of lead human-lead-1 true'
+check "attached + the lead pane: the event log names the rule and what the sender was told" 'grep -q "human-pane-typing=off: a client is attached.*held for lead" "$STATE_DIR/events.jsonl"'
+# v1.23.0: a lead pane nobody is using (the client shows qa) is not watched, so its Stop
+# hook hands the notice over at turn end instead of leaving it for a prompt that may never come.
+check "attached + the lead pane not in use: its Stop hook hands the notice over at turn end (issue #34)" 'hook lead _inbox-stop | stop_body | grep -q "human-lead-1" && delivered_of lead human-lead-1 true'
+check "attached + the lead pane not in use: the next prompt then has nothing left to hand over" '[ -z "$(hook lead _inbox-prompt)" ]'
+/bin/rm -f "$INBOX/.stop.lead"
 QBEFORE="$(notices qa "Beads update for qa")"
 teamctl nudge qa --id human-qa-1 >"$WORK/human-qa-1.log" 2>&1
 HUMAN_QA_STATUS=$?
 sleep 2
-check "attached + the human viewing the qa pane: qa is not typed into (exit 4)" '[ "$HUMAN_QA_STATUS" -eq 4 ] && grep -q "an attached client is showing this pane" "$WORK/human-qa-1.log" && [ "$(notices qa "Beads update for qa")" = "$QBEFORE" ]'
+check "attached + the human viewing the qa pane: qa is not typed into (exit 4)" '[ "$HUMAN_QA_STATUS" -eq 4 ] && grep -q "an attached client shows this pane" "$WORK/human-qa-1.log" && [ "$(notices qa "Beads update for qa")" = "$QBEFORE" ]'
 check "attached + the human viewing qa: it is filed, qa's Stop hook keeps quiet, its next prompt hands it over" 'grep -q "human-qa-1" "$(inbox_file qa)" && [ -z "$(hook qa _inbox-stop)" ] && delivered_of qa human-qa-1 false && hook qa _inbox-prompt | grep -q "human-qa-1" && delivered_of qa human-qa-1 true'
 teamctl nudge aux --id human-aux-1 >"$WORK/human-aux-1.log" 2>&1
 HUMAN_AUX_STATUS=$?
@@ -369,18 +372,26 @@ chmod +x "$FAKE_TMUX_DIR/tmux"
 /bin/rm -f "$INBOX/.stop.lead" "$INBOX/.stop.qa" "$INBOX/.stop.aux"
 stop_silent_events() { grep -c '"type":"inbox-stop-silent"' "$STATE_DIR/events.jsonl" 2>/dev/null || true; }
 SILENT_BEFORE="$(stop_silent_events)"
+# v1.23.0: "watched" is a pane a client SHOWS and a human uses (its terminal has focus: a pty
+# client that sends no focus reports reads focused from the start). So the client shows the
+# lead's pane for these checks, and goes back to qa after them.
+tmx select-pane -t "$LEAD_PANE" >/dev/null 2>&1
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id silent-lead-1 >/dev/null 2>&1
 hook lead _inbox-stop >"$WORK/silent-lead.out"
 SILENT_LEAD_STATUS=$?
 check "watched lead pane: the Stop hook exits 0 and prints NOTHING" '[ "$SILENT_LEAD_STATUS" -eq 0 ] && [ ! -s "$WORK/silent-lead.out" ]'
 check "watched lead pane: the notice is still undelivered, waiting for the next prompt" 'delivered_of lead silent-lead-1 false'
-check "watched lead pane: one event line says why, and the cooldown stamp is left alone" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "next prompt (human-pane-typing=off: a client is attached" && [ ! -e "$INBOX/.stop.lead" ]'
+check "watched lead pane: one event line says why, and the cooldown stamp is left alone" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "next prompt (human-pane-typing=off: an attached client shows this pane and its terminal has focus" && [ ! -e "$INBOX/.stop.lead" ]'
 check "watched lead pane (TMUX_PANE named directly): silent as well" '[ -z "$(hook_in "$LEAD_PANE" lead _inbox-stop)" ] && delivered_of lead silent-lead-1 false'
 PROMPT_SILENT="$(hook lead _inbox-prompt)"
 check "watched lead pane: the next prompt hands it over and marks it delivered" 'printf "%s" "$PROMPT_SILENT" | grep -q "silent-lead-1" && printf "%s" "$PROMPT_SILENT" | grep -q "bd list --assignee lead" && delivered_of lead silent-lead-1 true'
 check "watched lead pane: after that the Stop hook has nothing left to say" '[ -z "$(hook lead _inbox-stop)" ]'
+tmx select-pane -t "$PANE" >/dev/null 2>&1 # the client shows qa again
+WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id bg-lead-1 >/dev/null 2>&1
+check "the same lead pane once the client shows qa (a background pane): the Stop hook hands it over (issue #34)" 'hook lead _inbox-stop | stop_body | grep -q "bg-lead-1" && delivered_of lead bg-lead-1 true'
+/bin/rm -f "$INBOX/.stop.lead"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge qa --id silent-qa-1 >/dev/null 2>&1
-check "watched worker pane (the client shows qa): silent, both ways the fixture runs it" '[ -z "$(hook_in "$PANE" qa _inbox-stop)" ] && [ -z "$(hook qa _inbox-stop)" ] && delivered_of qa silent-qa-1 false && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "an attached client is showing this pane"'
+check "watched worker pane (the client shows qa): silent, both ways the fixture runs it" '[ -z "$(hook_in "$PANE" qa _inbox-stop)" ] && [ -z "$(hook qa _inbox-stop)" ] && delivered_of qa silent-qa-1 false && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "an attached client shows this pane"'
 check "watched worker pane: qa's next prompt hands it over" 'hook_in "$PANE" qa _inbox-prompt | grep -q "silent-qa-1" && delivered_of qa silent-qa-1 true'
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id silent-aux-1 >/dev/null 2>&1
 AUX_STOP="$(hook_in "$AUX_PANE" aux _inbox-stop)"
@@ -412,14 +423,16 @@ check "tmux fails list-panes: the hook never needs a lookup by role, and continu
 # v1.22.1: policy idle too. Under idle the Stop hook still answered here, and Claude Code
 # printed it as "Stop hook error" after almost every turn of the communication lead, in the
 # pane Ammar is attached to (2026-10-26). idle decides typing; the Stop hook keeps out.
+tmx select-pane -t "$LEAD_PANE" >/dev/null 2>&1 # in use: shown, and focused
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id idle-stop-1 >/dev/null 2>&1
 SILENT_BEFORE="$(stop_silent_events)"
 WOLFMUX_HUMAN_PANE_TYPING=idle hook lead _inbox-stop >"$WORK/idle-stop.out"
 IDLE_STOP_STATUS=$?
 check "policy idle, a client attached: the lead's Stop hook exits 0 and prints NOTHING" '[ "$IDLE_STOP_STATUS" -eq 0 ] && [ ! -s "$WORK/idle-stop.out" ]'
 check "policy idle, a client attached: the notice is still undelivered" 'delivered_of lead idle-stop-1 false'
-check "policy idle, a client attached: the newest silent event names idle, and the cooldown stamp is left alone" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "human-pane-typing=idle: a client is attached" && [ ! -e "$INBOX/.stop.lead" ]'
+check "policy idle, a client attached: the newest silent event names idle, and the cooldown stamp is left alone" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "human-pane-typing=idle: an attached client shows this pane" && [ ! -e "$INBOX/.stop.lead" ]'
 check "policy idle, a client attached: the next prompt hands it over and marks it delivered" 'WOLFMUX_HUMAN_PANE_TYPING=idle hook lead _inbox-prompt | grep -q "idle-stop-1" && delivered_of lead idle-stop-1 true'
+tmx select-pane -t "$PANE" >/dev/null 2>&1
 detach_client
 /bin/rm -f "$INBOX/.stop.lead"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id unwatched-1 >/dev/null 2>&1
@@ -516,15 +529,17 @@ echo "== the Stop hook under idle: silent in the watched lead pane, and told onc
 # the next prompt hands the notices over. The two loop guards are asserted on aux instead,
 # a worker pane nobody is showing, where the hook still has to speak.
 SILENT_BEFORE="$(stop_silent_events)"
+tmx select-pane -t "$LEAD_PANE" >/dev/null 2>&1 # v1.23.0: watched = shown and in use
 hook lead _inbox-stop >"$WORK/idle-lead-stop.out"
 IDLE_LEAD_STATUS=$?
 check "Stop hook, watched lead pane under idle: it exits 0 and prints NOTHING, with notices waiting" '[ "$IDLE_LEAD_STATUS" -eq 0 ] && [ ! -s "$WORK/idle-lead-stop.out" ]'
 check "Stop hook, watched lead pane under idle: nothing was taken, and no cooldown stamp was written" '[ "$(state_of lead 1)" = "nu" ] && delivered_of lead quiet-1 false && [ ! -e "$INBOX/.stop.lead" ]'
-check "Stop hook, watched lead pane under idle: the newest silent event names idle and the reason" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "human-pane-typing=idle: a client is attached"'
+check "Stop hook, watched lead pane under idle: the newest silent event names idle and the reason" '[ "$(stop_silent_events)" -gt "$SILENT_BEFORE" ] && grep "\"type\":\"inbox-stop-silent\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "human-pane-typing=idle: an attached client shows this pane"'
 LEAD_PROMPT="$(hook lead _inbox-prompt)"
 check "watched lead pane under idle: the next prompt hands them over, with the Beads command" 'printf "%s" "$LEAD_PROMPT" | grep -q "quiet-1" && printf "%s" "$LEAD_PROMPT" | grep -q "bd list --assignee lead" && [ "$(state_of lead 1)" = "nd" ]'
 check "watched lead pane under idle: and the human's column is untouched, so they still count as unread" '[ "$(notices_new)" -gt 0 ]'
 check "watched lead pane under idle: after that the Stop hook has nothing left to say" '[ -z "$(hook lead _inbox-stop)" ]'
+tmx select-pane -t "$PANE" >/dev/null 2>&1
 /bin/rm -f "$INBOX/.stop.aux"
 WOLFMUX_NUDGE_TYPE=off teamctl nudge aux --id loop-aux-1 >/dev/null 2>&1
 STOP_OUT="$(hook_in "$AUX_PANE" aux _inbox-stop)"
@@ -778,9 +793,11 @@ check "is anybody watching: a tmux read we cannot make sense of counts as attach
   tm_pane_watched "%3" || exit 1
   tm_pane_watched "%31" && exit 1
   inbox_human_pane qa "%5" && exit 1
-  # the lead's pane of an attached team, wherever the client is looking
+  # a shown pane whose client record carries no readable keystroke time: in use (fail closed)
+  inbox_human_pane qa "%3" || exit 1
+  # v1.23.0 (issue #34): the lead's pane of an attached team is NOT watched by that alone
   WOLFMUX_INBOX_CLIENTS=1
-  inbox_human_pane lead "%5" || exit 1
+  inbox_human_pane lead "%5" && exit 1
   inbox_human_pane qa "%5" && exit 1
   # the seam, and its error word
   WOLFMUX_INBOX_WATCHED="%2 %4"
@@ -800,6 +817,101 @@ check "is anybody watching: a tmux read we cannot make sense of counts as attach
 ) >/dev/null 2>&1
 HUMAN_CLOSED_STATUS=$?
 check "a human's pane: a tmux error, no tmux, or the error seam all read as watched; only shown panes count; nonsense policy is off" '[ "$HUMAN_CLOSED_STATUS" -eq 0 ]'
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/policy.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  unset WOLFMUX_INBOX_WATCHED WOLFMUX_INBOX_CLIENTS WOLFMUX_INBOX_CLIENT_LIST WOLFMUX_WATCH_QUIET
+  NOW="$(date +%s)" OLD=$(($(date +%s) - 600)) RECENT=$(($(date +%s) - 40))
+  # 1. the seam: shown + focused, shown + a recent key, shown + neither, not shown, error
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached,focused,UTF-8|$OLD"
+  tm_pane_in_use %7 || exit 1
+  case "$TM_IN_USE_WHY" in *"has focus"*) ;; *) exit 1 ;; esac
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached,UTF-8|$RECENT"
+  tm_pane_in_use %7 || exit 1
+  case "$TM_IN_USE_WHY" in *"keystroke 4"*"s ago"*) ;; *) exit 1 ;; esac
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached,UTF-8|$OLD"
+  tm_pane_in_use %7 && exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="%3|attached,focused,UTF-8|$NOW %9|attached|$NOW"
+  tm_pane_in_use %7 && exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="error"
+  tm_pane_in_use %7 || exit 1
+  # "focused" is a whole flag, not a substring of another one
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached,unfocused-ish|$OLD"
+  tm_pane_in_use %7 && exit 1
+  # two clients on one pane: either one in use is enough
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached|$OLD %7|attached,focused|$OLD"
+  tm_pane_in_use %7 || exit 1
+  # 2. fail closed: no pane id, a keystroke time that is not a number
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached|$OLD"
+  tm_pane_in_use "" || exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached|"
+  tm_pane_in_use %7 || exit 1
+  # 3. WOLFMUX_WATCH_QUIET is the keystroke window; nonsense falls back to 120
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached|$RECENT"
+  WOLFMUX_WATCH_QUIET=30 tm_pane_in_use %7 && exit 1
+  WOLFMUX_WATCH_QUIET=junk tm_pane_in_use %7 || exit 1
+  #    WOLFMUX_WATCH_FOCUS_MAX: 0 (the default) = focus counts with no limit; above 0, focus
+  #    counts only with a key that recent (a tab attached in the background reads focused)
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached,focused|$OLD"
+  WOLFMUX_WATCH_FOCUS_MAX=0 tm_pane_in_use %7 || exit 1
+  WOLFMUX_WATCH_FOCUS_MAX=300 tm_pane_in_use %7 && exit 1
+  WOLFMUX_WATCH_FOCUS_MAX=junk tm_pane_in_use %7 || exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached,focused|$((NOW - 200))"
+  WOLFMUX_WATCH_FOCUS_MAX=300 tm_pane_in_use %7 || exit 1
+  case "$TM_IN_USE_WHY" in *"has focus and a key was pressed"*) ;; *) exit 1 ;; esac
+  WOLFMUX_INBOX_CLIENT_LIST="%7|attached|$((NOW - 200))"
+  WOLFMUX_WATCH_FOCUS_MAX=300 tm_pane_in_use %7 && exit 1
+  # 4. the real read: ONE list-clients with the three fields, for every client of the server;
+  #    a read that fails is in use
+  unset WOLFMUX_INBOX_CLIENT_LIST
+  CALLS="$WORK/in-use.calls"
+  : >"$CALLS"
+  tmx() { printf '%s\n' "$*" >>"$CALLS"; printf '%%7|attached,UTF-8|%s\n%%8|attached,focused|%s\n' "$OLD" "$OLD"; }
+  tm_pane_in_use %7 && exit 1
+  tm_pane_in_use %8 || exit 1
+  [ "$(wc -l <"$CALLS" | tr -d ' ')" = "2" ] || exit 1
+  grep -qx 'list-clients -F #{pane_id}|#{client_flags}|#{client_activity}' "$CALLS" || exit 1
+  tmx() { return 1; }
+  tm_pane_in_use %7 || exit 1
+  # 5. inbox_human_pane is that question now, for the lead too, attached or not
+  TMUX_BIN=/usr/bin/true WOLFMUX_INBOX_CLIENTS=1 SESSION=irrelevant
+  WOLFMUX_INBOX_CLIENT_LIST="%5|attached,UTF-8|$OLD"
+  inbox_human_pane lead %5 && exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="%5|attached,focused|$OLD"
+  inbox_human_pane lead %5 || exit 1
+  case "$INBOX_HUMAN_REASON" in *"has focus"*) ;; *) exit 1 ;; esac
+  # 6. what is TYPED (policy off): a pane in use never; a Claude-family LEAD's pane never while
+  #    a client is attached, in use or not; a Codex lead's and a worker's only while not in use
+  FAMILY=claude
+  reg_field() { [ "$2" = "family" ] && printf '%s\n' "$FAMILY"; }
+  policy_get() { printf '%s\n' "${FAKE_POLICY:-off}"; }
+  WOLFMUX_INBOX_CLIENT_LIST="%5|attached,UTF-8|$OLD"
+  inbox_keep_off_human_pane lead %5 || exit 1
+  case "$INBOX_HUMAN_REASON" in *"own hooks deliver"*) ;; *) exit 1 ;; esac
+  WOLFMUX_INBOX_CLIENTS=0
+  inbox_keep_off_human_pane lead %5 && exit 1 # nobody attached: today's detached rule
+  WOLFMUX_INBOX_CLIENTS=1
+  FAMILY=codex
+  inbox_keep_off_human_pane lead %5 && exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="%5|attached,focused|$OLD"
+  inbox_keep_off_human_pane lead %5 || exit 1
+  FAMILY=claude
+  inbox_keep_off_human_pane qa %5 || exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="%5|attached,UTF-8|$OLD"
+  inbox_keep_off_human_pane qa %5 && exit 1
+  # under idle the v1.16.1 rule decides, as before: nothing is kept off here
+  FAKE_POLICY=idle inbox_keep_off_human_pane lead %5 && exit 1
+  exit 0
+) >/dev/null 2>&1
+IN_USE_STATUS=$?
+check "in use (v1.23.0): shown AND (focused or a key within WOLFMUX_WATCH_QUIET); one read; fails closed; the lead's pane by the same rule; a Claude lead is still never typed into while attached" '[ "$IN_USE_STATUS" -eq 0 ]'
 (
   cd "$PROJECT" || exit 1
   # shellcheck disable=SC1090
@@ -860,6 +972,16 @@ check "a human's pane: a tmux error, no tmux, or the error seam all read as watc
   _inbox_stop_watched && exit 1
   FAKE_SHOWN="%7"
   _inbox_stop_watched || exit 1
+  # v1.23.0: on a client's screen but in a background tab (no focus, no key for 10 min): the
+  #    Stop hook speaks, for the lead too, with a client attached to its team
+  FAKE_SHOWN="%7|attached,UTF-8|$(($(date +%s) - 600))"
+  _inbox_stop_watched && exit 1
+  INBOX_ROLE=lead WOLFMUX_INBOX_CLIENTS=1
+  _inbox_stop_watched && exit 1
+  FAKE_SHOWN="%7|attached,focused,UTF-8|$(($(date +%s) - 600))"
+  _inbox_stop_watched || exit 1
+  INBOX_ROLE=qa
+  unset WOLFMUX_INBOX_CLIENTS
   # 5. no pane: that reads as WATCHED (fail closed), for a worker and for the lead alike
   INBOX_PANE="" FAKE_SHOWN="%3"
   _inbox_stop_watched || exit 1
@@ -1753,6 +1875,117 @@ check "doctor: no other environment variable is ever printed (no token, no HOME,
 check "doctor: no daemon at all is one ok line" 'doctor_daemons "$WORK/empty-ps" | grep -q "ok .*no Claude daemon running"'
 
 teamctl inbox --all >/dev/null 2>&1
+
+echo "== v1.23.0 (issue #34): what the sender is told, the lead-wake policy, and teamctl status"
+# What _nudge_one decides for a lead, with tmux and typing stubbed: nothing here starts a
+# process or reads the suite's tmux. The client list is the WOLFMUX_INBOX_CLIENT_LIST seam.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/policy.sh"
+  . "$WOLFMUX_HOME/lib/approvals.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/brand.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  . "$WOLFMUX_HOME/lib/agents.sh"
+  STATE_DIR="$WORK/held-words"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  TEAM=default SESSION=irrelevant WOLFMUX_INBOX_STALL_NOTIFY=off WOLFMUX_NUDGE_TYPE=detached-lead WOLFMUX_WAKE_POLL=15
+  unset WOLFMUX_INBOX_WATCHED
+  OLD=$(($(date +%s) - 600))
+  TYPED="$WORK/held-words.typed"
+  : >"$TYPED"
+  # the policy's own reader first (no meta.json here): the default, and an unreadable value
+  [ "$(policy_get lead-wake)" = "unwatched" ] || exit 1
+  [ "$(WOLFMUX_LEAD_WAKE=off policy_get lead-wake)" = "off" ] || exit 1
+  [ "$(WOLFMUX_LEAD_WAKE=junk policy_get lead-wake)" = "unwatched" ] || exit 1
+  FAMILY=claude
+  reg_field() { [ "$2" = "family" ] && printf '%s\n' "$FAMILY"; }
+  policy_get() { case "$1" in human-pane-typing) printf 'off\n' ;; *) printf 'unwatched\n' ;; esac; }
+  tm_pane_for_role() { printf '%%5\n'; }
+  tm_pane_state() { printf 'running\n'; }
+  tm_pane_human_busy() { return 1; }
+  tm_type_line() { printf '%s\n' "$2" >>"$TYPED"; }
+  event_log() { :; }
+  held() { # <bead> <expected exit> <expected words: a case pattern>
+    local rc=0
+    _nudge_one lead "$1" || rc=$?
+    [ "$rc" -eq "$2" ] || return 1
+    case "$NUDGE_FILED_WHY" in $3) return 0 ;; esac
+    return 1
+  }
+  # 1. a Claude lead, a client attached, its pane not in use: filed, NOT typed (the typing
+  #    rule is v1.20.0's); no waiter on record, so the sender is not promised a wake
+  WOLFMUX_INBOX_CLIENTS=1 WOLFMUX_INBOX_CLIENT_LIST="%5|attached,UTF-8|$OLD"
+  held w-1 4 "held for lead: no wake waiter runs for it*" || exit 1
+  [ ! -s "$TYPED" ] || exit 1
+  # 2. a live waiter on record: idle since when it armed, wakes itself within ~poll
+  inbox_wake_write lead tok-1 "$OLD" "$$" || exit 1
+  held w-2 4 "held for lead (idle since $(inbox_hhmmz "$OLD")): it wakes itself within ~15s" || exit 1
+  # 3. a waiter whose process has gone is no waiter
+  sleep 0 &
+  gone=$!
+  wait "$gone"
+  inbox_wake_write lead tok-2 "$OLD" "$gone" || exit 1
+  held w-3 4 "held for lead: no wake waiter runs*" || exit 1
+  # 4. a prompt started a turn; 5. lead-wake off
+  inbox_wake_write lead busy "$OLD" - || exit 1
+  held w-4 4 "held for lead (in a turn since $(inbox_hhmmz "$OLD")): its Stop hook hands this over when that turn ends" || exit 1
+  inbox_wake_write lead off "$OLD" - || exit 1
+  held w-5 4 "held for lead: policy lead-wake is off*" || exit 1
+  # 6. its pane in use (shown and focused): in front of a human
+  WOLFMUX_INBOX_CLIENT_LIST="%5|attached,focused|$OLD"
+  held w-6 4 "held for lead: its pane is in front of a human; it reads this at the next prompt" || exit 1
+  [ ! -s "$TYPED" ] || exit 1
+  # 7. a CODEX lead, a client attached, its pane not in use: typed (its only channel), and
+  #    marked delivered; in use: filed
+  FAMILY=codex WOLFMUX_INBOX_CLIENT_LIST="%5|attached,UTF-8|$OLD"
+  rc=0
+  _nudge_one lead w-7 || rc=$?
+  [ "$rc" -eq 0 ] && grep -q "Beads update for lead (w-7)" "$TYPED" || exit 1
+  grep "w-7" "$STATE_DIR/inbox/lead" | awk -F'\t' '{ exit !(substr($3, 2, 1) == "d") }' || exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="%5|attached,focused|$OLD"
+  rc=0
+  _nudge_one lead w-8 || rc=$?
+  [ "$rc" -eq 4 ] && ! grep -q "w-8" "$TYPED" || exit 1
+  # 8. a Claude lead with NOBODY attached: typed, exactly as v1.14.0 did it
+  FAMILY=claude WOLFMUX_INBOX_CLIENTS=0 WOLFMUX_INBOX_CLIENT_LIST=""
+  rc=0
+  _nudge_one lead w-9 || rc=$?
+  [ "$rc" -eq 0 ] && grep -q "Beads update for lead (w-9)" "$TYPED" || exit 1
+  # 9. a worker the human is using keeps its v1.20.0 words; one shown but not in use is typed
+  WOLFMUX_INBOX_CLIENTS=1 WOLFMUX_INBOX_CLIENT_LIST="%5|attached,focused|$OLD"
+  rc=0
+  _nudge_one qa w-11 || rc=$?
+  [ "$rc" -eq 4 ] && case "$NUDGE_FILED_WHY" in "a human is watching qa's pane (an attached client shows this pane and its terminal has focus)"*) true ;; *) false ;; esac || exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="%5|attached,UTF-8|$OLD"
+  rc=0
+  _nudge_one qa w-12 || rc=$?
+  [ "$rc" -eq 0 ] && grep -q "Beads update for qa (w-12)" "$TYPED" || exit 1
+  exit 0
+) >/dev/null 2>&1
+HELD_WORDS_STATUS=$?
+check "lead-wake reads unwatched by default and for nonsense; held for a lead: a Claude lead attached is filed with words that say whether it wakes itself (waiter, gone, turn, off, in use); a Codex lead is typed when not in use; a worker keeps its words" '[ "$HELD_WORDS_STATUS" -eq 0 ]'
+check "lead-wake: unwatched by default, and teamctl policy shows it" 'teamctl policy | grep -qE "^  lead-wake +unwatched "'
+check "lead-wake: an agent may not set it (exit 77), not the lead and not a worker, and it stays unwatched" '{ TEAM_ROLE=lead WOLFMUX_TEAM=default "$REPO/tests/in-pane" policy lead-wake off >/dev/null 2>&1; [ $? -eq 77 ]; } && { TEAM_ROLE=qa WOLFMUX_TEAM=default "$REPO/tests/in-pane" policy lead-wake off >/dev/null 2>&1; [ $? -eq 77 ]; } && teamctl policy | grep -qE "^  lead-wake +unwatched "'
+check "lead-wake: you may set it, off and back, and nonsense is refused (exit 64)" 'teamctl policy lead-wake off | grep -q "lead-wake = off" && teamctl policy | grep -qE "^  lead-wake +off " && { teamctl policy lead-wake sometimes >/dev/null 2>&1; [ $? -eq 64 ]; } && teamctl policy lead-wake unwatched >/dev/null 2>&1 && teamctl policy | grep -qE "^  lead-wake +unwatched "'
+# teamctl status: the lead's held notices, oldest first, and whether its waiter runs. The suite
+# shell's own pid stands in for a live waiter.
+/bin/cp "$(inbox_file lead)" "$WORK/lead-inbox.saved" 2>/dev/null || : >"$WORK/lead-inbox.saved"
+printf '%s\tbeads\tnu\t[wolfmux] status-1\n%s\tbeads\tnu\t[wolfmux] status-2\n%s\tbeads\tnd\t[wolfmux] status-3\n' \
+  "$(($(date +%s) - 900))" "$(($(date +%s) - 60))" "$(($(date +%s) - 3000))" >"$(inbox_file lead)"
+printf 'tok-status %s %s\n' "$(($(date +%s) - 1200))" "$$" >"$INBOX/.wake.lead"
+STATUS_TEXT="$(teamctl status 2>&1)"
+STATUS_JSON="$(teamctl status --json 2>/dev/null)"
+check "status: under the lead, one line with the held count, the oldest age and the waiter" 'printf "%s\n" "$STATUS_TEXT" | grep -q "held: 2 notices not yet given to the agent, oldest 15 min · it wakes itself when nobody is using its pane (idle since "'
+check "status --json: held {count, oldest_epoch, wake} on the lead's row, and a worker with none has count 0" 'printf "%s" "$STATUS_JSON" | jq -e "(.agents[] | select(.role == \"lead\") | .held | .count == 2 and .wake == \"waiting\" and (.oldest_epoch | type) == \"number\") and (.agents[] | select(.role == \"aux\") | .held.count == 0)"'
+/bin/rm -f "$INBOX/.wake.lead"
+/bin/cp "$WORK/lead-inbox.saved" "$(inbox_file lead)"
+check "status: no held line when the lead has nothing undelivered" ': >"$(inbox_file lead)" && ! teamctl status 2>&1 | grep -q "held: " && /bin/cp "$WORK/lead-inbox.saved" "$(inbox_file lead)"'
 
 teamctl destroy --worktrees --yes >/dev/null 2>&1
 

@@ -47,6 +47,15 @@
 #                                           nothing in a watched pane (v1.22.1).
 #                                           Only you may change it, never an agent: it is about
 #                                           your own screen (require_operator).
+#   lead-wake           unwatched | off     DEFAULT unwatched (v1.23.0, issue #34). May an IDLE
+#                                           Claude-family lead wake ITSELF when a notice arrives
+#                                           and nobody is using its pane (not focused, no key for
+#                                           WOLFMUX_WATCH_QUIET seconds)? unwatched = yes: a waiter
+#                                           hook (teamctl _inbox-wake, lib/inbox.sh) hands the
+#                                           notices over and the lead takes a turn; nothing is
+#                                           typed. off = the v1.22.1 answer: it gets them at its
+#                                           next turn end or prompt. Only you may change it, never
+#                                           an agent (require_operator).
 #   orphan-steward      <team> | off        DEFAULT off. The one team of this project whose LEAD may
 #                                           bring back a team YOU founded while that team's lead is
 #                                           not running: restart its lead, stop its agents, nothing
@@ -74,7 +83,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing orphan-steward lead-model team-memory restore-on-limit"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit"
 
 policy_default() {
   case "$1" in
@@ -91,6 +100,7 @@ policy_default() {
     auto-reclaim) printf '%s\n' "${WOLFMUX_AUTO_RECLAIM:-on}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     human-pane-typing) printf '%s\n' "${WOLFMUX_HUMAN_PANE_TYPING:-off}" ;;
+    lead-wake) printf '%s\n' "${WOLFMUX_LEAD_WAKE:-unwatched}" ;;
     orphan-steward) printf '%s\n' "${WOLFMUX_ORPHAN_STEWARD:-off}" ;;
     lead-model) printf '%s\n' "${WOLFMUX_LEAD_MODEL:-opus}" ;;
     team-memory) printf 'off\n' ;; # no setting: only `teamctl memory enable` turns it on
@@ -148,6 +158,7 @@ policy_valid() { # <key> <value>
     auto-prune:on | auto-prune:off) return 0 ;;
     auto-reclaim:on | auto-reclaim:off) return 0 ;;
     human-pane-typing:off | human-pane-typing:idle) return 0 ;;
+    lead-wake:unwatched | lead-wake:off) return 0 ;;
     # A number, not a word: whole gigabytes, 0 switches the limit off, and the ceiling is
     # only there so that a slip of the hand cannot refuse every spawn for ever.
     # A leading zero is refused on purpose. `test -le` reads base ten but shell arithmetic
@@ -169,6 +180,7 @@ policy_choices() {
     worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim) printf 'on|off\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
     human-pane-typing) printf 'off|idle\n' ;;
+    lead-wake) printf 'unwatched|off\n' ;;
     disk-min-gb) printf 'a whole number of GB, no leading zero (0 = no limit)\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
     orphan-steward | team-memory) printf 'a team of this project, or off\n' ;;
@@ -239,6 +251,10 @@ policy_get() {
   elif [ "$key" = "human-pane-typing" ]; then
     # Unreadable means the human's screen stays quiet: a typo must not bring the lines back.
     printf 'off\n'
+  elif [ "$key" = "lead-wake" ]; then
+    # Unreadable means the default. The wake types nothing into any pane, and off would leave
+    # an idle lead deaf to its team again (issue #34): a typo must not bring that back.
+    printf 'unwatched\n'
   elif [ "$key" = "orphan-steward" ] || [ "$key" = "team-memory" ]; then
     # Unreadable means nobody but you and a team's founder may act on a team: no steward.
     # And no lead gets a private memory that nobody can say was turned on.
@@ -605,6 +621,8 @@ cmd_policy() {
     say "  human-pane-typing   $(policy_get human-pane-typing)       (off|idle)        type a notice into a pane you are watching (the lead's while you are attached,"
     say "                      and any pane on your screen)? off = never, it is filed for the agent's own hooks · idle = once that pane is quiet."
     say "                      Yours alone to change, from your own terminal. Who is typed into at all: WOLFMUX_NUDGE_TYPE=$WOLFMUX_NUDGE_TYPE"
+    say "  lead-wake           $(policy_get lead-wake) (unwatched|off)  may an idle lead wake itself for a notice while nobody is using its pane"
+    say "                      (no focus, no key for ${WOLFMUX_WATCH_QUIET:-120}s)? Nothing is typed. off = it waits for its next turn end or prompt. Yours alone."
     say "  orphan-steward      $(policy_get orphan-steward)       (<team>|off)      for the whole project: the team whose lead may restart the lead of a team"
     say "                      you founded, or stop its agents, while that lead is not running. Nothing else. Yours alone to change."
     say "  lead-model          $(policy_get lead-model)      (<model>|default) for the whole project: what a NEW lead starts on when"
@@ -625,6 +643,12 @@ cmd_policy() {
   if [ "$key" = "human-pane-typing" ]; then
     require_operator "policy human-pane-typing" "the human's own screen (may a notice be typed into a pane they are watching)" \
       "nothing to change: your notices reach you through your own Stop and UserPromptSubmit hooks. If that is not enough, tell the human"
+  fi
+  # Whether an idle lead takes a turn by itself is the human's call too: each wake is a model
+  # request, and the lead it wakes may be the one asking.
+  if [ "$key" = "lead-wake" ]; then
+    require_operator "policy lead-wake" "this team's lead (may it take a turn by itself for a notice while it is idle)" \
+      "nothing to change: your notices reach you through your own hooks. If that is not enough, tell the human"
   fi
   # Who may bring back the teams the human founded is the human's call, and the steward's own lead is the
   # last one who should decide that it is the steward.
