@@ -157,14 +157,25 @@
 #   off                      nobody, ever, not even a Codex pane
 #   all                      everybody (but see WOLFMUX_HUMAN_PANE_TYPING just below)
 #WOLFMUX_NUDGE_TYPE=workers
-# A pane YOU are watching: the lead's pane while you are attached to the team, and any
-# pane on your screen. The default of the human-pane-typing policy (teamctl policy shows it).
-#   off (default)  never typed into, whatever WOLFMUX_NUDGE_TYPE says. The agent gets the
-#                  notice from its own hooks when its turn ends or when you prompt it. The
-#                  price: an IDLE lead you are attached to is woken by its own loop or by
-#                  you, not by a notice.
-#   idle           the v1.16.1 rule: typed in once that pane has been quiet (next setting)
+# A pane YOU are using: your client shows it, and its terminal has focus or saw a key in
+# the last 2 minutes. The default of the human-pane-typing policy (teamctl policy shows it).
+#   off (default)  never typed into, whatever WOLFMUX_NUDGE_TYPE says. Nor is a Claude
+#                  lead's pane while you are attached, in use or not. The agent gets the
+#                  notice from its own hooks: when its turn ends, when you prompt it, and an
+#                  idle lead wakes itself (WOLFMUX_LEAD_WAKE, next).
+#   idle           the v1.16.1 rule: typed in once that pane has been quiet (WOLFMUX_NUDGE_LEAD_IDLE)
 #WOLFMUX_HUMAN_PANE_TYPING=idle
+# May an IDLE Claude lead wake itself for a notice while you are not using its pane (a
+# background tab, or you are in another app)? The default of the lead-wake policy. Nothing
+# is typed: a hook hands the notices over, and the pane shows one line, "wolfmux: team
+# notice", then the lead's turn. Each wake is one model turn.
+#   unwatched (default)  yes            off  no: it waits for its next turn end or prompt
+#WOLFMUX_LEAD_WAKE=off
+# How long a FOCUSED terminal counts as "you are using this pane" with no key pressed, in
+# seconds. 0 (default) = no limit. A terminal that never reports focus reads focused for
+# ever, and so does a tab attached in the background until you first visit it. Set this
+# (for example 600) if a lead in such a tab should still wake itself.
+#WOLFMUX_WATCH_FOCUS_MAX=600
 # Under idle only: how quiet the LEAD's pane has to be first, in seconds, with no keystroke
 # in it for this long. Default 300. Only the keystroke check uses it; a half-typed line or
 # copy mode is busy at any setting.

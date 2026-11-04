@@ -346,10 +346,12 @@ go; nothing is added to `~/.claude/settings.json`.
   the lines are marked delivered **before** the answer is printed, so one notice can never
   continue a turn twice, and no turn is continued again inside
   `WOLFMUX_INBOX_STOP_COOLDOWN` (10 s), so a burst of beads one a second cannot continue
-  one turn a second. In a pane a human is watching (the lead's pane while a client is
-  attached, or any pane on an attached screen) it answers **nothing**, under either value
-  of `human-pane-typing` (v1.20.0 for `off`, v1.22.1 for `idle`): the notices wait for the
-  next prompt.
+  one turn a second. In a pane a human is using (an attached client shows it and its
+  terminal has focus or saw a key in the last 2 minutes: `tm_pane_in_use`, v1.23.0), and
+  in a Claude lead's pane whenever a client is attached, it answers **nothing**, under
+  either value of `human-pane-typing` (v1.20.0 for `off`, v1.22.1 for `idle`): Claude Code
+  prints the answer in full in the pane. The notices wait for the next prompt, or for the
+  lead's wake waiter (below).
 - `teamctl _inbox-prompt` runs on **UserPromptSubmit**: Claude Code adds such a hook's
   stdout to the model's context, so the notices arrive alongside whatever the human just
   typed. No cooldown — a human pressed Enter.
@@ -362,9 +364,20 @@ so the next turn takes the next batch and the body says how many are still waiti
 that marked them delivered without showing them would be the lost-notice bug in a new
 place, which is why it is written this way round.
 
-Neither hook fires for an agent that is simply **sitting idle**, and that is the hole in
-this design. A bead landing for an idle lead with a client attached would otherwise wait
-for the human. Two things close most of it:
+Neither hook fires for an agent that is simply **sitting idle**, and that was the hole in
+this design: a bead landing for an idle lead with a client attached waited for the human
+(tagging.lead, 16 hours, issue #34). Three things close it:
+
+- **The wake waiter** (v1.23.0, [ADR-0031](adr/0031-idle-lead-wake-waiter.md)).
+  `teamctl _inbox-wake` is a Claude Code hook with `asyncRewake` on the lead's Stop and
+  SessionStart. It runs in the background while the lead is idle and looks every
+  `WOLFMUX_WAKE_POLL` (15) s. With a notice waiting and nobody using the lead's pane, it
+  takes the notices, prints them and exits 2: Claude Code gives the text to the model and
+  the lead takes a turn; the pane shows only `wolfmux: team notice`. Nothing is typed. One
+  waiter per role (a token in `inbox/.wake.<role>`; UserPromptSubmit replaces it), exit 2
+  only with notices, a re-arm before Claude Code's 7-day hook timeout, and it ends itself
+  when its agent, its pane or its team is gone. Policy `lead-wake` (default `unwatched`)
+  is the human's off switch.
 
 - **The badge.** `status-left` calls `teamctl _inbox-badge <session-name>` every 5 s. It
   resolves the project and team from the session's own `@wolfmux_root` and
@@ -388,9 +401,9 @@ for the human. Two things close most of it:
   Inside the window the notice still lands in the file and the badge still rises.
   `WOLFMUX_INBOX_STALL_NOTIFY=off`, or `WOLFMUX_NOTIFY=off`, drops it.
 
-What is left, and it is a product decision rather than a bug: a client is attached, the
-human is looking at another pane, and the lead is idle. The bead waits for the badge to
-be noticed, for that notification, or for the human's next prompt. Nothing is lost — the
+What is left: a lead whose pane the human IS using (focused, or a key lately) waits for
+his next prompt, by design; and a terminal that never reports focus reads focused for
+ever, so its lead waits too (`WOLFMUX_WATCH_FOCUS_MAX` caps that). Nothing is lost — the
 bead is in Beads and the notice is in the file.
 
 **Approvals may not get slower than they were.** A permission request blocks a worker

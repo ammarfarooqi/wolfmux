@@ -222,6 +222,7 @@ teamctl policy link-node-modules on|off         # share the repository's node_mo
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
 teamctl policy human-pane-typing off|idle       # type notices into a pane you are watching?  default off (yours alone)
+teamctl policy lead-wake unwatched|off          # may an idle lead wake itself for a notice?  default unwatched (yours alone)
 teamctl policy orphan-steward <team>|off        # whose lead may bring back a team YOU founded  default off (yours alone)
 teamctl policy team-memory <team>|off           # the one team whose lead keeps a private memory folder  default off (yours alone to turn on)
 teamctl start fable --worker-permissions lead --worker-spawn on    # or set them at start
@@ -497,18 +498,29 @@ there by whoever needs it.
   command, so a notice that lost its bead id still leads to the work.
 - **Typed, still**: a worker's idle pane is typed into as before, and so is the lead's
   pane while nobody is attached to the team (the line only goes to scrollback).
-- **Never typed: a pane you are watching** (v1.20.0, policy `human-pane-typing`, default
-  `off`). That is your lead pane while you are attached to the team, quiet or not, and
-  whatever pane is on your screen, a worker's included. If tmux cannot say who is
-  watching, the answer is "you are". Such a notice is filed only, and the agent gets it
-  from its own hooks. In such a pane the turn-end hook stays silent too, under either
-  value of the policy (Claude Code prints what a `Stop` hook says), so the notices arrive
-  with the next prompt: yours, or the agent's own loop's, which is a prompt as well and
-  shows you nothing. In a pane nobody watches, the turn-end hand-over is labelled
-  `Stop hook feedback` (since 1.22.1; before it, `Stop hook error`). The price: an **idle**
-  lead you are attached to is not woken by a
-  notice; its own loop wakes it (the communication lead runs one every 20 minutes), or you
-  do by prompting it. `teamctl policy human-pane-typing idle` brings back the v1.16.1
+- **Never typed: a pane you are using** (v1.20.0, policy `human-pane-typing`, default
+  `off`; v1.23.0 for what "using" means). Your client shows it, and its terminal has
+  focus or saw a key in the last 2 minutes, a worker's pane included. Nor is a Claude
+  lead's pane typed into while you are attached, in use or not. If tmux cannot say, the
+  answer is "you are using it". Such a notice is filed only, and the agent gets it from
+  its own hooks. In a pane in use the turn-end hook stays silent too, under either value
+  of the policy (Claude Code prints what a `Stop` hook says), so the notices arrive with
+  the next prompt: yours, or the agent's own loop's. In a pane nobody uses (a background
+  tab, or you are in another app), the turn-end hand-over is labelled
+  `Stop hook feedback` (since 1.22.1; before it, `Stop hook error`). Not for a Claude lead
+  while you are attached: that text would print in full in your conversation, so its wake
+  waiter (next) hands the notices over instead.
+- **An idle lead wakes itself** (v1.23.0, policy `lead-wake`, default `unwatched`). A
+  small waiter hook runs while a Claude lead is idle and looks every 15 seconds. When a
+  notice is waiting and nobody is using the lead's pane, it hands the notices over and
+  the lead takes a turn. Nothing is typed: the pane shows one line, `wolfmux: team
+  notice`. `teamctl nudge` tells the sender "held for <lead> (idle since 10:46Z): it
+  wakes itself within ~15s", or why not; `teamctl status` shows held notices under the
+  lead. Once a week the waiter re-arms with one short "nothing to do" turn (Claude Code
+  kills a hook after 7 days). `teamctl policy lead-wake off` is yours alone; an agent
+  gets exit 77. A terminal that never reports focus reads focused for ever, so its lead
+  waits as before; `WOLFMUX_WATCH_FOCUS_MAX` changes that.
+- `teamctl policy human-pane-typing idle` brings back the v1.16.1
   rule for typing: typed in once the pane is quiet, no keystroke in it for `WOLFMUX_NUDGE_LEAD_IDLE`
   (300 s), nothing half-typed on the input line, not in copy mode. Only you may change
   it, from your own terminal; an agent gets exit 77.
@@ -841,7 +853,9 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_DISK_MIN_GB` | `20` | that limit, in whole gigabytes, where 1 GB is 1024 MB (a gibibyte — the unit teamctl prints sizes in). A lane costs about 3 GB once it has installed and built; `0` switches the check off; no leading zero (write `8`, not `08`) |
 | `WOLFMUX_LINK_NODE_MODULES` | `off` | `on` links every new lane's `node_modules` to the copy in the repository that lane belongs to (`teamctl spawn --repo` can make that another one). One directory for all of them: an install in any lane changes them all |
 | `WOLFMUX_AUTO_PRUNE` | `on` | the default of the `auto-prune` policy: sweep a lane's build output as soon as the lane is parked. `off` is v1.16.1's behaviour (the build caches only, `node_modules` kept). A value that is neither word is read as `off`: an unreadable setting is not permission to delete. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
-| `WOLFMUX_HUMAN_PANE_TYPING` | `off` | the default of the `human-pane-typing` policy: may a notice be typed into a pane you are watching (your lead pane while you are attached, any pane on your screen)? `off`: never, it is filed for the agent's own hooks. `idle`: the v1.16.1 rule, typed once that pane is quiet. A value that is neither word is read as `off` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
+| `WOLFMUX_HUMAN_PANE_TYPING` | `off` | the default of the `human-pane-typing` policy: may a notice be typed into a pane you are using (your client shows it, with focus or a key in the last 2 minutes)? `off`: never, and never into a Claude lead's pane while you are attached; it is filed for the agent's own hooks. `idle`: the v1.16.1 rule, typed once that pane is quiet. A value that is neither word is read as `off` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
+| `WOLFMUX_LEAD_WAKE` | `unwatched` | the default of the `lead-wake` policy: may an idle Claude lead wake itself for a notice while you are not using its pane? `unwatched`: yes, its waiter hook hands the notices over and it takes a turn; nothing is typed. `off`: it waits for its next turn end or prompt. A value that is neither word is read as `unwatched` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
+| `WOLFMUX_WATCH_FOCUS_MAX` | `0` | how long, in seconds, a focused terminal counts as "you are using this pane" with no key pressed. `0`: no limit. A terminal that never reports focus reads focused for ever, so a lead shown in it never wakes itself; `600` makes focus count only with a key in the last 10 minutes |
 | `WOLFMUX_AUTO_RECLAIM` | `on` | the default of the `auto-reclaim` policy: take a parked lane off the books by itself (worktree, branch, record) once its task is closed, its content is in main, nothing is uncommitted or stashed and no PR is open. `off`: nothing is removed unless you run `teamctl reclaim`. A value that is neither word is read as `off`: this one deletes a checkout and a branch, so an unreadable setting must never read as yes. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
 | `WOLFMUX_HUMAN` | `human` | your own name in Beads. Agents write to you with `bd create "Subject" -t message -a human`; the 📨 number next to the wolf counts those still unread, and `prefix N` or a click on the number opens them (Enter reads one, `r` marks it read). Letters, digits, `.`, `_`, `-` |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |

@@ -70,16 +70,23 @@ WOLFMUX_INBOX_STALL_NOTIFY="${WOLFMUX_INBOX_STALL_NOTIFY:-on}"
 WOLFMUX_INBOX_HANDOVER_MAX="${WOLFMUX_INBOX_HANDOVER_MAX:-20}"
 WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE="${WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE:-120}"
 
+# The wake waiter (v1.23.0, cmd_inbox_wake): how often it looks at the inbox, and the
+# timeout Claude Code is given for the hook. Claude Code kills a hook at its timeout without
+# a wake (measured 2026-11-04), so the waiter ends itself 300 s before that and re-arms.
+WOLFMUX_WAKE_POLL="${WOLFMUX_WAKE_POLL:-15}"
+WOLFMUX_WAKE_TIMEOUT="${WOLFMUX_WAKE_TIMEOUT:-604800}"
+
 # Who is typed into at all. off: nobody, ever. workers: workers only. detached-lead:
 # workers, plus the lead while NO client is attached to the team's session — nobody is
 # looking then, the agent wakes at once, and the line only goes to scrollback. all: the
 # v1.14.0 behaviour, the lead's pane included whoever is watching.
 #
 # On top of this knob, and whatever it says, sits the policy human-pane-typing (default
-# off, v1.20.0): a pane a HUMAN is watching is never typed into — the lead's pane while a
-# client is attached to the team, and any pane an attached client is showing. See
-# inbox_human_pane. So under the default policy `all` types into the same panes as
-# `detached-lead`; the difference between them comes back only with human-pane-typing idle.
+# off, v1.20.0): a pane a HUMAN is using is never typed into (shown by an attached client
+# whose terminal has focus or saw a keystroke lately: inbox_human_pane), and neither is a
+# Claude-family lead's pane while a client is attached to the team, in use or not
+# (inbox_keep_off_human_pane). So under the default policy `all` types into the same panes
+# as `detached-lead`; the difference between them comes back only with human-pane-typing idle.
 WOLFMUX_NUDGE_TYPE="${WOLFMUX_NUDGE_TYPE:-detached-lead}"
 case "$WOLFMUX_NUDGE_TYPE" in
   off | workers | detached-lead | all) ;;
@@ -97,7 +104,8 @@ esac
 for _wm_knob in WOLFMUX_INBOX_STOP_COOLDOWN:10 WOLFMUX_INBOX_APPROVAL_GRACE:20 \
   WOLFMUX_INBOX_HANDOVER_MAX:20 \
   WOLFMUX_INBOX_STALL_NOTIFY_DEBOUNCE:120 WOLFMUX_INBOX_MAX:200 \
-  WOLFMUX_INBOX_TEXT_MAX:400 WOLFMUX_INBOX_LOCK_TRIES:10 WOLFMUX_INBOX_LOCK_STALE:15; do
+  WOLFMUX_INBOX_TEXT_MAX:400 WOLFMUX_INBOX_LOCK_TRIES:10 WOLFMUX_INBOX_LOCK_STALE:15 \
+  WOLFMUX_WAKE_POLL:15 WOLFMUX_WAKE_TIMEOUT:604800; do
   _wm_name="${_wm_knob%%:*}"
   eval "_wm_val=\"\${$_wm_name}\""
   case "$_wm_val" in
@@ -105,6 +113,9 @@ for _wm_knob in WOLFMUX_INBOX_STOP_COOLDOWN:10 WOLFMUX_INBOX_APPROVAL_GRACE:20 \
   esac
 done
 unset _wm_knob _wm_name _wm_val
+# Zero is all digits too: a poll of 0 would spin, a timeout of 0 would never arm.
+[ "$WOLFMUX_WAKE_POLL" -ge 1 ] 2>/dev/null || WOLFMUX_WAKE_POLL=15
+[ "$WOLFMUX_WAKE_TIMEOUT" -ge 1 ] 2>/dev/null || WOLFMUX_WAKE_TIMEOUT=604800
 
 # The marks the status bar shows, both settable. U+1F4E8 INCOMING ENVELOPE is the
 # default because it is the one "bird carrying letter" mark a terminal can be relied on
@@ -331,6 +342,127 @@ inbox_count_undelivered() {
     printf '0\n'
 }
 
+# inbox_text_delivered <role> <text> — 0 when the inbox holds this notice and EVERY record
+# of it is already delivered: a hook handed it over, so typing it now would deliver it twice.
+# 1 when it is undelivered, and when there is no record of it at all (type it, as before).
+inbox_text_delivered() {
+  local text file
+  text="$(inbox_text "$2")"
+  file="$(inbox_file "$1")"
+  [ -n "$text" ] && [ -f "$file" ] || return 1
+  WM_WANT="$text" LC_ALL=C /usr/bin/awk -F'\t' '
+    BEGIN { want = ENVIRON["WM_WANT"] }
+    NF >= 4 && $4 == want { seen = 1; if (substr($3, 2, 1) == "u") open = 1 }
+    END { exit !(seen && !open) }' "$file" 2>/dev/null
+}
+
+# inbox_oldest_undelivered <role> — the epoch of the oldest notice the agent has not been
+# given, or nothing
+inbox_oldest_undelivered() {
+  local file
+  file="$(inbox_file "$1")"
+  [ -f "$file" ] || return 0
+  LC_ALL=C /usr/bin/awk -F'\t' 'NF >= 4 && substr($3, 2, 1) == "u" && $1 ~ /^[0-9]+$/ {
+      if (oldest == "" || $1 + 0 < oldest + 0) oldest = $1
+    } END { if (oldest != "") print oldest }' "$file" 2>/dev/null || true
+}
+
+# --- the wake waiter's record (v1.23.0) ---------------------------------------
+# $(inbox_dir)/.wake.<role>, one line, replaced whole (temp file, then mv):
+#   <token> <epoch> <pid>   a waiter (cmd_inbox_wake) armed at <epoch>: "idle since"
+#   busy <epoch> -          a prompt started a turn at <epoch> (cmd_inbox_prompt)
+#   off <epoch> -           a waiter found policy lead-wake off and did not arm
+# A dotfile, like every scratch file here, so inbox_roles never reads it as a role.
+inbox_wake_file() { printf '%s\n' "$(inbox_dir)/.wake.$1"; }
+
+# inbox_wake_read <role> — sets WAKE_TOKEN WAKE_SINCE WAKE_PID; 1 when there is no record
+inbox_wake_read() {
+  local line
+  WAKE_TOKEN="" WAKE_SINCE="" WAKE_PID=""
+  line="$(/bin/cat "$(inbox_wake_file "$1")" 2>/dev/null)" || return 1
+  read -r WAKE_TOKEN WAKE_SINCE WAKE_PID _ <<EOF
+$line
+EOF
+  case "$WAKE_SINCE" in "" | *[!0-9]*) WAKE_SINCE="" ;; esac
+  case "$WAKE_PID" in "" | *[!0-9]*) WAKE_PID="" ;; esac
+  [ -n "$WAKE_TOKEN" ]
+}
+
+# inbox_wake_write <role> <token> <epoch> <pid> — best-effort, never half a line
+inbox_wake_write() {
+  local file
+  file="$(inbox_wake_file "$1")"
+  /bin/mkdir -p "$(inbox_dir)" 2>/dev/null || return 1
+  printf '%s %s %s\n' "$2" "$3" "$4" >"$file.$$" 2>/dev/null && /bin/mv -f "$file.$$" "$file" 2>/dev/null && return 0
+  /bin/rm -f "$file.$$" 2>/dev/null
+  return 1
+}
+
+# inbox_wake_state <role> — sets WAKE_STATE (and inbox_wake_read's three) and prints nothing,
+# so a caller keeps WAKE_SINCE: waiting (a live waiter; WAKE_SINCE is when it armed), turn (a
+# prompt started a turn at WAKE_SINCE), off (lead-wake is off), none (no waiter runs: a lead
+# started before v1.23.0, or one whose waiter has gone)
+inbox_wake_state() {
+  if ! inbox_wake_read "$1"; then
+    WAKE_STATE=none
+  elif [ "$WAKE_TOKEN" = "busy" ]; then
+    WAKE_STATE=turn
+  elif [ "$WAKE_TOKEN" = "off" ]; then
+    WAKE_STATE=off
+  elif [ -n "$WAKE_PID" ] && kill -0 "$WAKE_PID" 2>/dev/null; then
+    WAKE_STATE=waiting
+  else
+    WAKE_STATE=none
+  fi
+  return 0
+}
+
+# inbox_hhmmz <epoch> — "10:46Z", or "?"
+inbox_hhmmz() { date -u -r "$1" '+%H:%MZ' 2>/dev/null || printf '?\n'; }
+
+# inbox_held_words <role> <identity> — what a sender is told when a notice for a LEAD is held
+# (filed, not typed), in INBOX_HELD_WHY. The caller has just asked inbox_keep_off_human_pane,
+# so INBOX_KEEP_OFF says which rule held it: in-use, or lead (a client is attached).
+inbox_held_words() {
+  local role="$1" who="$2"
+  if [ "${INBOX_KEEP_OFF:-}" = "in-use" ]; then
+    INBOX_HELD_WHY="held for $who: its pane is in front of a human; it reads this at the next prompt"
+    return 0
+  fi
+  inbox_wake_state "$role"
+  case "$WAKE_STATE" in
+    waiting) INBOX_HELD_WHY="held for $who (idle since $(inbox_hhmmz "${WAKE_SINCE:-0}")): it wakes itself within ~${WOLFMUX_WAKE_POLL}s" ;;
+    turn) INBOX_HELD_WHY="held for $who (in a turn since $(inbox_hhmmz "${WAKE_SINCE:-0}")): its Stop hook hands this over when that turn ends" ;;
+    off) INBOX_HELD_WHY="held for $who: policy lead-wake is off, so it reads this at its next turn end or prompt" ;;
+    *) INBOX_HELD_WHY="held for $who: no wake waiter runs for it (started before v1.23.0, or its waiter ended), so it reads this at its next turn end or prompt" ;;
+  esac
+  return 0
+}
+
+# inbox_held_line <role> <count> <oldest epoch> <wake state> <since epoch> — the one line
+# `teamctl status` prints under a lead with notices its agent has not been given
+inbox_held_line() {
+  local count="$2" oldest="$3" wake="$4" since="$5" age what
+  case "$count" in "" | *[!0-9]* | 0) return 0 ;; esac
+  if [ "$count" -eq 1 ]; then what="1 notice"; else what="$count notices"; fi
+  age=""
+  case "$oldest" in
+    "" | *[!0-9]*) ;;
+    *)
+      age=$(($(now_epoch) - oldest))
+      if [ "$age" -lt 120 ]; then age="${age}s"; elif [ "$age" -lt 7200 ]; then age="$((age / 60)) min"; elif [ "$age" -lt 172800 ]; then age="$((age / 3600)) h"; else age="$((age / 86400)) d"; fi
+      age=", oldest $age"
+      ;;
+  esac
+  case "$wake" in
+    waiting) wake="it wakes itself when nobody is using its pane (idle since $(inbox_hhmmz "${since:-0}"))" ;;
+    turn) wake="its Stop hook hands them over when its turn ends (in a turn since $(inbox_hhmmz "${since:-0}"))" ;;
+    off) wake="lead-wake is off: they wait for its next turn end or prompt" ;;
+    *) wake="no wake waiter runs: they wait for its next turn end or prompt" ;;
+  esac
+  printf 'held: %s not yet given to the agent%s · %s\n' "$what" "$age" "$wake"
+}
+
 # --- the two independent state changes ----------------------------------------
 # _inbox_restate <role> <field 1|2> <letter> — rewrite one letter of the state column
 # on every line, leaving the other letter exactly as it was. Without the lock the file
@@ -539,44 +671,46 @@ inbox_type_when_idle() {
   return 0
 }
 
-# inbox_human_pane <role> <pane> — 0 when this pane is in front of a human right now, so
-# under human-pane-typing off NOTHING is typed into it. Two cases, and either is enough:
-#   a. it is the LEAD's pane and a client is attached to the team's session. That pane is
-#      the human's conversation, whether he is looking at it this second or not.
-#   b. an attached client is showing it: the active pane of the window on his screen, in
-#      any session of this server. A worker's pane he is reading counts too.
-# Both reads fail CLOSED (inbox_clients_attached, tm_pane_watched): when tmux cannot tell
-# us, the answer is "a human is there". INBOX_HUMAN_REASON says which case it was.
+# inbox_human_pane <role> <pane> — 0 when this pane is in front of a human right now: an
+# attached client shows it AND that human is using it (its terminal has focus, or a key was
+# pressed there within WOLFMUX_WATCH_QUIET seconds: tm_pane_in_use). The same question for
+# every role, the lead's pane included. Under human-pane-typing off nothing is typed into
+# such a pane, and the Stop hook says nothing in it (_inbox_stop_watched).
+# The read fails CLOSED (tm_pane_in_use): when tmux cannot tell us, the answer is "a human
+# is there". INBOX_HUMAN_REASON says why.
 #
-# Why "never" and not "once it is quiet" (the v1.16.1 rule, still there as idle): Ammar,
-# 2026-10-15, "i still see beads messages in my terminal". Quiet for 300 s is a human
-# reading, or thinking, or away for a coffee; any of those, and a line arrives in his
-# conversation. The price is issue #12 again for that one pane: an IDLE lead that a human
-# is attached to is not woken by a notice. Its own loop wakes it (the communication lead
-# runs one every 20 minutes), or the human does, and the Stop and UserPromptSubmit hooks
-# hand the notices over then. That trade is the human's to make, hence a policy.
+# v1.23.0 (issue #34) dropped two older answers. "The lead's pane while any client is
+# attached to the team" and "a client shows this pane" both read a lead in a BACKGROUND tab
+# as watched: the client attached to a team always shows its active pane. The Stop hook
+# then kept quiet, the next prompt was the only way in, and an idle lead has no next
+# prompt: tagging.lead sat 16 hours on 4 messages. Now a pane in a background tab, or in
+# iTerm2 while another app is in front, is not in use. A worker's (or a Codex lead's) Stop
+# hook then hands the notices over at turn end; a Claude lead with a client attached is
+# woken by its wake waiter (cmd_inbox_wake) instead, and its Stop hook stays silent
+# (_inbox_stop_watched says why).
+#
+# Why "never typed" and not "once it is quiet" (the v1.16.1 rule, still there as idle):
+# Ammar, 2026-10-15, "i still see beads messages in my terminal". That has not changed, and
+# for a Claude-family lead it is stricter than this function (inbox_keep_off_human_pane,
+# _inbox_stop_watched).
 inbox_human_pane() {
   local role="$1" pane="$2"
   INBOX_HUMAN_REASON=""
-  if [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && inbox_clients_attached "${SESSION:-}"; then
-    INBOX_HUMAN_REASON="a client is attached to the team and this is the lead's pane"
-    return 0
-  fi
-  if [ -n "${WOLFMUX_INBOX_WATCHED+x}" ]; then # test seam: the panes on screen, or "error"
+  if [ -n "${WOLFMUX_INBOX_WATCHED+x}" ]; then # test seam: the panes in use, or "error"
     case " $WOLFMUX_INBOX_WATCHED " in
       *" error "* | *" $pane "*)
-        INBOX_HUMAN_REASON="an attached client is showing this pane"
+        INBOX_HUMAN_REASON="an attached client shows this pane and a human is using it"
         return 0
         ;;
     esac
     return 1
   fi
-  [ -n "$TMUX_BIN" ] || {
+  [ -n "$TMUX_BIN" ] || [ -n "${WOLFMUX_INBOX_CLIENT_LIST+x}" ] || {
     INBOX_HUMAN_REASON="tmux cannot be asked who is watching"
     return 0
   }
-  if tm_pane_watched "$pane"; then
-    INBOX_HUMAN_REASON="an attached client is showing this pane"
+  if tm_pane_in_use "$pane"; then
+    INBOX_HUMAN_REASON="$TM_IN_USE_WHY"
     return 0
   fi
   return 1
@@ -585,11 +719,37 @@ inbox_human_pane() {
 # inbox_human_typing_off — 0 under the default: a pane a human is watching is not typed into
 inbox_human_typing_off() { [ "$(policy_get human-pane-typing 2>/dev/null || true)" != "idle" ]; }
 
+# inbox_claude_lead_attached <role> — 0 for a Claude-family LEAD of a team a client is
+# attached to. Under human-pane-typing off NOTHING is typed into that pane, in use or not:
+# the pane is the human's conversation and he rejected typed lines there (2026-10-10,
+# 2026-10-15). Its own hooks reach that agent instead: the wake waiter while it is idle
+# (cmd_inbox_wake) and the next prompt. Not its Stop hook: that one would print the notices
+# in full in the pane, so it is silent here too (_inbox_stop_watched). A Codex-family lead
+# has no hooks, so typing stays its one channel, gated by inbox_human_pane like a worker's.
+inbox_claude_lead_attached() {
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  [ "$(reg_field "$1" family 2>/dev/null || true)" != "codex" ] || return 1
+  inbox_clients_attached "${SESSION:-}"
+}
+
 # inbox_keep_off_human_pane <role> <pane> — the one question every typed path asks: 0 when
-# this notice must NOT be typed into that pane now (the policy is off and a human is there)
+# this notice must NOT be typed into that pane now. Under the default policy that is a pane
+# a human is using (inbox_human_pane), and a Claude-family lead's pane whenever a client is
+# attached (inbox_claude_lead_attached), so the typing rule for that pane is v1.20.0's.
+# INBOX_KEEP_OFF says which: in-use or lead.
 inbox_keep_off_human_pane() {
+  INBOX_KEEP_OFF=""
   inbox_human_typing_off || return 1
-  inbox_human_pane "$1" "$2"
+  if inbox_human_pane "$1" "$2"; then
+    INBOX_KEEP_OFF="in-use"
+    return 0
+  fi
+  if inbox_claude_lead_attached "$1"; then
+    INBOX_KEEP_OFF="lead"
+    INBOX_HUMAN_REASON="a client is attached to the team and this lead's own hooks deliver its notices"
+    return 0
+  fi
+  return 1
 }
 
 # inbox_stall_notify <role> <kind> — the third human-facing channel, and the only
@@ -859,9 +1019,23 @@ cmd_inbox_stop() {
 # the communication lead (2026-10-26). Nothing is lost by the silence: under idle the
 # waiter types the notice once that pane is quiet, and the next prompt hands over the rest.
 #
+# v1.23.0: and in a Claude-family LEAD's pane whenever a client is attached to the team, in
+# use or not, under either value of human-pane-typing (inbox_claude_lead_attached). Claude
+# Code prints a Stop hook's additionalContext IN FULL in the pane, as "Stop hook feedback":
+# a lead in a background tab would show the whole notice text in the human's conversation
+# when he comes back to it, which is what he objected to (2026-10-15, 2026-10-26). That
+# lead's wake waiter (cmd_inbox_wake) hands the notices over instead, at most
+# WOLFMUX_WAKE_POLL seconds later, and a wake prints one line only: "wolfmux: team notice".
+# Workers and Codex-family leads keep the plain answer: a pane nobody uses gets the hand-over.
+#
 # The pane and the session are the ones _inbox_hook_ready proved: this agent's own.
 _inbox_stop_watched() {
-  inbox_human_pane "$INBOX_ROLE" "$INBOX_PANE"
+  inbox_human_pane "$INBOX_ROLE" "$INBOX_PANE" && return 0
+  if inbox_claude_lead_attached "$INBOX_ROLE"; then
+    INBOX_HUMAN_REASON="a client is attached to the team and this lead's wake waiter hands its notices over (a Stop hook would print them in full)"
+    return 0
+  fi
+  return 1
 }
 
 # cmd_inbox_prompt — internal (`teamctl _inbox-prompt`): a Claude Code UserPromptSubmit
@@ -877,6 +1051,12 @@ cmd_inbox_prompt() {
     if [ -n "$INBOX_NOT_HERE" ]; then inbox_not_you || true; fi
     return 0
   fi
+  # v1.23.0: a turn starts here, so the wake waiter armed at the last Stop must not fire into
+  # it. Replacing its token ends it at its next look (cmd_inbox_wake). Only where a waiter has
+  # ever written a record: a lead started before v1.23.0 has none, and keeps none.
+  if [ -f "$(inbox_wake_file "$INBOX_ROLE")" ]; then
+    inbox_wake_write "$INBOX_ROLE" busy "$(now_epoch)" - || true
+  fi
   [ "$(inbox_count_undelivered "$INBOX_ROLE")" != "0" ] || return 0
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0
@@ -890,6 +1070,175 @@ cmd_inbox_prompt() {
     fi
   fi
   return 0
+}
+
+# --- the wake waiter (v1.23.0, issue #34) ---------------------------------------
+# cmd_inbox_wake — internal (`teamctl _inbox-wake`): a Claude Code hook with asyncRewake, on
+# Stop and on SessionStart, for Claude-family LEADS only (write_agent_settings). It runs in
+# the background while the lead is idle and wakes it when a notice arrives and nobody is
+# using its pane. Nothing is typed, so a half-typed line cannot be glued to anything (#9).
+#
+# Why it exists: under human-pane-typing off, a client attached to a team made the lead's
+# pane read as watched, so its notices were filed for the next prompt, and an idle lead has
+# no next prompt. tagging.lead sat 16 hours on 4 messages (2026-11-03). A Stop hook speaks
+# only at a turn end; this is the channel for an agent that has no turn left.
+#
+# What Claude Code does with it (2.1.318, measured 2026-11-04 on a throwaway socket):
+#   exit 2   the hook's stdout goes to the MODEL and the agent takes a turn, within ~2 s,
+#            even with a dialog open. The pane shows only the rewakeSummary line,
+#            "wolfmux: team notice". A half-typed draft stays in the input box, unsent.
+#   timeout  kills the hook silently, no wake. 604800 s is accepted.
+#   /exit    kills its hooks. kill -9 of Claude does not: the hook lives on under PID 1.
+#   every Stop starts its own copy, so two can run at once.
+#
+# So, and each of these is load-bearing:
+#   · exit 2 ONLY with notices to hand over (or the re-arm below). A hook that always exits 2
+#     wakes the agent, whose next Stop starts it again: a wake loop, measured.
+#   · ONE waiter per role: a fresh token in $(inbox_dir)/.wake.<role> at start; any other
+#     token there ends this one at its next look. cmd_inbox_prompt writes "busy", so a waiter
+#     never fires into a turn a human started; the next Stop arms a new one.
+#   · it ends itself (exit 0) when its agent is gone (_inbox_wake_owner_gone), its pane is
+#     not running, the team's state is gone, or the policy is off.
+#   · it never runs into Claude's timeout: at WOLFMUX_WAKE_TIMEOUT - 300 s it exits 2 once
+#     with a short "nothing to do" body, and the wake turn's own Stop arms a fresh waiter.
+#     One short turn per idle week; without it a lead idle longer than that is deaf again.
+#   · the take happens under the role's nudge lock, the one the typed waiter holds while it
+#     types, so under human-pane-typing idle the two cannot hand over the same line.
+# Every outcome is one event: inbox-wake, -superseded, -gone, -off, -rearm, -failed.
+cmd_inbox_wake() {
+  local start owner token life notices left count
+  set +e # a long-running loop: one read that fails in passing must not end it
+  # A write to a Claude that has just gone fails with an error rather than killing this
+  # process mid-hand-over, so the notices it took are put back (inbox_requeue)
+  trap '' PIPE
+  start="$(now_epoch)"
+  owner="$PPID" # the hook command execs teamctl, so this is Claude itself
+  /bin/cat >/dev/null 2>&1 || true
+  _inbox_hook_ready || return 0
+  [ "$INBOX_ROLE" = "$WOLFMUX_LEAD_ROLE" ] || return 0
+  if [ "$(policy_get lead-wake 2>/dev/null || true)" = "off" ]; then
+    inbox_wake_write "$INBOX_ROLE" off "$start" - || true
+    event_log inbox-wake-off "$INBOX_ROLE" "policy lead-wake is off: not armed" 2>/dev/null || true
+    return 0
+  fi
+  # A prompt stamped in a LATER second than this hook started came after the Stop that
+  # started it: that turn is the human's, so this waiter does not arm.
+  if inbox_wake_read "$INBOX_ROLE" && [ "$WAKE_TOKEN" = "busy" ] && [ -n "$WAKE_SINCE" ] && [ "$WAKE_SINCE" -gt "$start" ]; then
+    event_log inbox-wake-superseded "$INBOX_ROLE" "a prompt started a turn before this waiter armed" 2>/dev/null || true
+    return 0
+  fi
+  token="w$$.$start.$RANDOM"
+  if ! inbox_wake_write "$INBOX_ROLE" "$token" "$start" "$$"; then
+    event_log inbox-wake-failed "$INBOX_ROLE" "could not write the waiter record: not armed" 2>/dev/null || true
+    return 0
+  fi
+  life="$(_inbox_wake_life)"
+  while :; do
+    sleep "$WOLFMUX_WAKE_POLL"
+    if ! inbox_wake_read "$INBOX_ROLE" || [ "$WAKE_TOKEN" != "$token" ]; then
+      event_log inbox-wake-superseded "$INBOX_ROLE" "${WAKE_TOKEN:-no record} replaced this waiter after $(($(now_epoch) - start))s" 2>/dev/null || true
+      return 0
+    fi
+    if _inbox_wake_owner_gone "$owner"; then
+      event_log inbox-wake-gone "$INBOX_ROLE" "its agent (pid $owner) is gone after $(($(now_epoch) - start))s" 2>/dev/null || true
+      return 0
+    fi
+    if [ ! -d "$STATE_DIR" ] || [ "$(tm_pane_state "$INBOX_PANE")" != "running" ]; then
+      event_log inbox-wake-gone "$INBOX_ROLE" "its pane $INBOX_PANE or its team is gone after $(($(now_epoch) - start))s" 2>/dev/null || true
+      return 0
+    fi
+    if [ $(($(now_epoch) - start)) -ge "$life" ]; then
+      _inbox_wake_rearm "$token" "$start"
+      return $?
+    fi
+    count="$(inbox_count_undelivered "$INBOX_ROLE")"
+    case "$count" in "" | *[!0-9]* | 0) continue ;; esac
+    if [ "$(policy_get lead-wake 2>/dev/null || true)" = "off" ]; then
+      inbox_wake_write "$INBOX_ROLE" off "$(now_epoch)" - || true
+      event_log inbox-wake-off "$INBOX_ROLE" "policy lead-wake turned off; $count notice(s) wait for the next turn end or prompt" 2>/dev/null || true
+      return 0
+    fi
+    # A human using the pane gets the notices with his own next prompt, as before
+    inbox_human_pane "$INBOX_ROLE" "$INBOX_PANE" && continue
+    nudge_begin "$INBOX_ROLE" || continue # the typed waiter is mid-line: look again next time
+    notices="$(inbox_take_undelivered "$INBOX_ROLE")"
+    nudge_end "$INBOX_ROLE"
+    [ -n "$notices" ] || continue
+    # A prompt between the read and the take: that turn hands them over, not a wake
+    if ! inbox_wake_read "$INBOX_ROLE" || [ "$WAKE_TOKEN" != "$token" ]; then
+      inbox_requeue "$INBOX_ROLE" "$notices" || true
+      event_log inbox-wake-superseded "$INBOX_ROLE" "replaced while taking; notices put back" 2>/dev/null || true
+      return 0
+    fi
+    left="$(inbox_count_undelivered "$INBOX_ROLE")"
+    if inbox_hook_body "$INBOX_IDENTITY" "$notices" "$left"; then
+      inbox_wake_write "$INBOX_ROLE" busy "$(now_epoch)" - || true # the wake turn is a turn
+      event_log inbox-wake "$INBOX_ROLE" "woke the agent with $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) after $(($(now_epoch) - start))s idle" 2>/dev/null || true
+      return 2
+    fi
+    if inbox_requeue "$INBOX_ROLE" "$notices"; then
+      event_log inbox-wake-failed "$INBOX_ROLE" "stdout failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) re-queued" 2>/dev/null || true
+    else
+      event_log inbox-wake-failed "$INBOX_ROLE" "stdout failed AND the re-queue failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) LOST" 2>/dev/null || true
+    fi
+    return 0
+  done
+}
+
+# _inbox_wake_life — how long a waiter may wait: WOLFMUX_WAKE_TIMEOUT - 300 s, so it ends
+# itself before Claude Code kills it (a killed hook wakes nobody). A timeout of 600 s or less
+# (a test) halves instead.
+_inbox_wake_life() {
+  if [ "$WOLFMUX_WAKE_TIMEOUT" -gt 600 ]; then
+    printf '%s\n' $((WOLFMUX_WAKE_TIMEOUT - 300))
+  elif [ "$WOLFMUX_WAKE_TIMEOUT" -ge 2 ]; then
+    printf '%s\n' $((WOLFMUX_WAKE_TIMEOUT / 2))
+  else
+    printf '1\n'
+  fi
+}
+
+# _inbox_wake_rearm <token> <start> — the lifetime is up. With lead-wake on, wake the agent
+# once with nothing to do, so its next Stop arms a fresh waiter; with it off, just end.
+_inbox_wake_rearm() {
+  if [ "$(policy_get lead-wake 2>/dev/null || true)" = "off" ]; then
+    inbox_wake_write "$INBOX_ROLE" off "$(now_epoch)" - || true
+    event_log inbox-wake-off "$INBOX_ROLE" "lifetime up and policy lead-wake is off: not re-armed" 2>/dev/null || true
+    return 0
+  fi
+  local after="$((WOLFMUX_WAKE_TIMEOUT / 86400)) days"
+  [ "$WOLFMUX_WAKE_TIMEOUT" -ge 86400 ] || after="$(_inbox_wake_life)s"
+  if printf '%s\n' "[wolfmux] Your notice waiter re-arms after $after. No new notices; nothing to do. End your turn."; then
+    inbox_wake_write "$INBOX_ROLE" busy "$(now_epoch)" - || true
+    event_log inbox-wake-rearm "$INBOX_ROLE" "lifetime of $(($(now_epoch) - $2))s is up: one wake with nothing to do, so the next Stop arms a fresh waiter" 2>/dev/null || true
+    return 2
+  fi
+  event_log inbox-wake-failed "$INBOX_ROLE" "the re-arm line could not be written: not re-armed" 2>/dev/null || true
+  return 0
+}
+
+# _inbox_wake_owner_gone <pid> — 0 when the agent this waiter belongs to has gone: that pid
+# (its parent at start) no longer exists, or this process has been re-parented to PID 1.
+# Claude Code kills its hooks on a clean /exit; after a kill -9 of Claude the hook lives on
+# under PID 1 (measured 2026-11-04), and this is how it notices. The pane check in the loop
+# catches a pane that died; this catches the agent dying while its pane lives on (a respawn).
+# Test seams: WOLFMUX_WAKE_ALIVE (the pids that count as alive) and WOLFMUX_WAKE_PPID (this
+# process's parent now), so a test needs no live process.
+_inbox_wake_owner_gone() {
+  local owner="$1" ppid
+  case "$owner" in "" | *[!0-9]* | 0 | 1) return 0 ;; esac
+  if [ -n "${WOLFMUX_WAKE_ALIVE+x}" ]; then
+    case " $WOLFMUX_WAKE_ALIVE " in *" $owner "*) ;; *) return 0 ;; esac
+  else
+    kill -0 "$owner" 2>/dev/null || return 0
+  fi
+  if [ -n "${WOLFMUX_WAKE_PPID+x}" ]; then
+    ppid="$WOLFMUX_WAKE_PPID"
+  else
+    ppid="$("$WOLFMUX_PS_BIN" -o ppid= -p "$$" 2>/dev/null | /usr/bin/tr -d ' ')"
+  fi
+  [ "$ppid" != "1" ] || return 0
+  return 1
 }
 
 # --- teamctl inbox ------------------------------------------------------------

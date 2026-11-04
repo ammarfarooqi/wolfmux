@@ -2193,6 +2193,51 @@ On 870a2bd's inbox.sh the 9 flipped checks fail and nothing else does. Every Sto
 reads `.hookSpecificOutput` and asserts no `decision` key (tests/beads-hotpath.sh too).
 Commits: S1 ff06966, S2 c593472, S3 this one.
 
+## 39. An idle lead wakes itself (v1.23.0, issue #34)
+
+**What happened.** On 2026-11-03 tagging.lead sat 16 hours on 4 messages. The owner was
+attached to the team in another iTerm2 tab. Under `human-pane-typing off`, `inbox_human_pane`
+read the lead's pane as watched whenever any client was attached (its case a), so `_nudge_one`
+only filed, the Stop hook stayed silent, and the next prompt was the only way in. An idle lead
+has no next prompt. The desktop banner fired 5 times.
+
+**Measured first** (the lead, on a throwaway socket, Claude Code 2.1.318 with haiku): an
+`asyncRewake` Stop hook that exits 2 wakes the idle model within about 2 s, even with a dialog
+open; the pane shows only `⏺ wolfmux: team notice` (the `rewakeSummary`), the hook's stdout goes
+to the model alone; a hook killed at its `timeout` wakes nobody, and `604800` is accepted; a
+half-typed draft stays in the input box, unsent; every Stop starts its own copy; `/exit` kills
+the hook, `kill -9` of Claude leaves it under PID 1; a pty client that sends no focus reports
+reads `focused` from the start. A hook that always exits 2 loops: wake, Stop, wake. On the live
+socket (read-only, earlier): `focused` follows iTerm2 tab and app switches, at most one client
+has it.
+
+**Decision** ([ADR-0031](adr/0031-idle-lead-wake-waiter.md)):
+- `tm_pane_in_use`: shown by a client whose terminal has focus or saw a key within
+  `WOLFMUX_WATCH_QUIET` (120 s). One `list-clients` read, fails closed. `inbox_human_pane` asks
+  only that, for every role. `WOLFMUX_WATCH_FOCUS_MAX` (0 = no limit) caps focus alone.
+- A Claude-family lead with a client attached is still never typed into, and its Stop hook
+  stays silent (`inbox_claude_lead_attached`): a Stop hook's text prints in full in the pane.
+  A Codex lead and workers use the new gate.
+- `teamctl _inbox-wake`, an asyncRewake hook on the lead's Stop and SessionStart (exec'd, so its
+  parent is Claude). One waiter per role by a token in `inbox/.wake.<role>`; UserPromptSubmit
+  writes `busy`. Every 15 s: token, agent gone (parent pid gone, or PPID 1), pane or team gone,
+  lifetime, count, policy, gate. Takes under the nudge lock, prints, exits 2. Exit 2 only with
+  notices, or once at `WOLFMUX_WAKE_TIMEOUT - 300` s to re-arm. A failed print re-queues.
+- Under `human-pane-typing idle` the typed waiter drops a line a hook already handed over.
+- Sender words from the wake record (waiting / turn / off / none / in use), in `teamctl nudge`
+  and the event log; a `held:` line under the lead in `teamctl status`, `held` in `--json`.
+- Policy `lead-wake unwatched|off`, default `unwatched`, the owner's alone; unreadable reads as
+  `unwatched` (the wake types nothing; `off` would make a lead deaf again).
+
+**Tests.** tests/inbox.sh: the gate (focus, keystroke, neither, not shown, read error, empty
+pane, the focus cap, one read), the new `inbox_human_pane` (the lead of an attached team is no
+longer watched by that alone), the Claude-lead typing and Stop rules, Codex lead typed when not
+in use, the held words, the policy, status, the settings of lead and worker, every waiter
+outcome on a fake clock (no notices never exits 2 until the re-arm, two waiters, a prompt, off,
+pane gone, agent gone, PID 1, a failed print, the typed waiter's skip), and an end-to-end pair of
+waiters whose `bin/teamctl` process exits 2. Checks that meant "a pane in use" now show the
+lead's pane to the client. Commits: S1 b08e900, S2 9a4ee6d, S3 the Stop rule, S4 this one.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

@@ -353,6 +353,85 @@ $1
   return 1
 }
 
+# tm_pane_in_use <pane-id> — 0 when a human is USING this pane right now (v1.23.0, issue
+# #34): an attached client shows it (tm_pane_watched's test) AND that client's terminal
+# has focus, or a key was pressed on that client within WOLFMUX_WATCH_QUIET seconds
+# (default 120). Sets TM_IN_USE_WHY.
+#
+# "Shown" alone is not enough. The client attached to a team always shows that team's
+# active pane, usually the lead's, so "shown" read the lead as watched for as long as its
+# tab existed, and an idle lead in a background tab stayed deaf for 16 hours (tagging,
+# 2026-11-03). tmux tracks each client's terminal focus (`focused` in #{client_flags},
+# with focus-events on): measured on tmux 3.7c with iTerm2 on 2026-11-04, it follows tab
+# switches and app switches, and at most one client has it. #{client_activity} moves on
+# real keystrokes only (tm_client_idle).
+#
+# A terminal that never reports focus: tmux marks its client focused from the start and it
+# stays so (measured 2026-11-04 with a pty client), so its pane reads in use for as long as
+# it is shown. That fails closed, notices wait as before v1.23.0. The same is true of a tab
+# attached in the background (after teamctl restore) until it is first visited. For that,
+# WOLFMUX_WATCH_FOCUS_MAX (seconds, default 0 = no limit): above 0, a focused client counts
+# as in use only while its last keystroke is that recent.
+#
+# One tmux read for every client of the server, whichever session it is on. Fails CLOSED:
+# no pane to ask about, a read that fails, or a matching client whose last keystroke
+# cannot be read all count as in use. Being wrong that way costs a notice that waits.
+#
+# Test seam: WOLFMUX_INBOX_CLIENT_LIST holds the records the read would return
+# ("<pane>|<flags>|<activity epoch>", separated by spaces or newlines), or "error".
+tm_pane_in_use() {
+  local pane="${1:-}" records id flags act age quiet focus_max focused
+  TM_IN_USE_WHY=""
+  if [ -z "$pane" ]; then
+    TM_IN_USE_WHY="there is no pane to ask about, so it counts as in use"
+    return 0
+  fi
+  quiet="${WOLFMUX_WATCH_QUIET:-120}"
+  case "$quiet" in "" | *[!0-9]*) quiet=120 ;; esac
+  focus_max="${WOLFMUX_WATCH_FOCUS_MAX:-0}"
+  case "$focus_max" in "" | *[!0-9]*) focus_max=0 ;; esac
+  if [ -n "${WOLFMUX_INBOX_CLIENT_LIST+x}" ]; then
+    if [ "$WOLFMUX_INBOX_CLIENT_LIST" = "error" ]; then
+      TM_IN_USE_WHY="the client list could not be read, so it counts as in use"
+      return 0
+    fi
+    records="$(printf '%s\n' "$WOLFMUX_INBOX_CLIENT_LIST" | /usr/bin/tr ' ' '\n')"
+  else
+    records="$(tmx list-clients -F '#{pane_id}|#{client_flags}|#{client_activity}' 2>/dev/null)" || {
+      TM_IN_USE_WHY="the client list could not be read, so it counts as in use"
+      return 0
+    }
+  fi
+  while IFS='|' read -r id flags act; do
+    [ -n "$id" ] && [ "$id" = "$pane" ] || continue
+    focused=0
+    case ",$flags," in *,focused,*) focused=1 ;; esac
+    if [ "$focused" -eq 1 ] && [ "$focus_max" -eq 0 ]; then
+      TM_IN_USE_WHY="an attached client shows this pane and its terminal has focus"
+      return 0
+    fi
+    case "$act" in
+      "" | *[!0-9]*)
+        TM_IN_USE_WHY="an attached client shows this pane and its last keystroke cannot be read"
+        return 0
+        ;;
+    esac
+    age=$(($(now_epoch) - act))
+    [ "$age" -ge 0 ] || age=0
+    if [ "$focused" -eq 1 ] && [ "$age" -lt "$focus_max" ]; then
+      TM_IN_USE_WHY="an attached client shows this pane, its terminal has focus and a key was pressed ${age}s ago"
+      return 0
+    fi
+    if [ "$age" -lt "$quiet" ]; then
+      TM_IN_USE_WHY="an attached client shows this pane, a keystroke ${age}s ago"
+      return 0
+    fi
+  done <<EOF
+$records
+EOF
+  return 1
+}
+
 # Why a notice is typed in at all, rather than shown with display-message or a popup:
 # the notice is FOR THE AGENT in that pane, not for the human. The agent reads it as
 # input and runs the inbox command it names. The status line and a popup put text in

@@ -63,7 +63,7 @@ agent_view_hint() {
 }
 
 _status_rows() { # emits one JSON object per agent
-  local role kind pane state branch ahead dirty workdir model cctx repo session_id recorded_id label view_roles=" " continued shown_id shown_continued
+  local role kind pane state branch ahead dirty workdir model cctx repo session_id recorded_id label view_roles=" " continued shown_id shown_continued held_n held_oldest wake
   # Which panes run Claude's agent view: asked once for the whole team, not once per agent.
   if [ -n "$SESSION_LIVE" ]; then view_roles=" $(agent_view_roles "$SESSION" | tr '\n' ' ')"; fi
   for role in $(reg_list | awk -v lead="$WOLFMUX_LEAD_ROLE" '$0 == lead { print; next } { rest = rest $0 "\n" } END { printf "%s", rest }'); do
@@ -104,6 +104,13 @@ _status_rows() { # emits one JSON object per agent
       shown_id="${session_id:+hidden}" shown_continued="${continued:+hidden}"
     fi
     recorded_id="$(reg_field "$role" model_id)"
+    # Notices its agent has not been given yet (lib/inbox.sh), and for a lead whether its wake
+    # waiter runs (v1.23.0): two file reads, no tmux.
+    held_n="$(inbox_count_undelivered "$role")" held_oldest="$(inbox_oldest_undelivered "$role")" wake="" WAKE_SINCE=""
+    if [ "$kind" = "lead" ]; then
+      inbox_wake_state "$role"
+      wake="$WAKE_STATE"
+    fi
     agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)" "$recorded_id" "$(reg_field "$role" model_at)"
     # A /model typed into its pane: the record follows, so its next restart keeps that model (agent_adopt_live).
     if [ "$MR_HOW" = "transcript" ]; then
@@ -134,6 +141,7 @@ _status_rows() { # emits one JSON object per agent
       --arg model_id "$MR_ID" --arg recorded_id "$recorded_id" --arg known_from "$MR_HOW" --arg mark "$MR_MARK" \
       --arg model_source "$(reg_field "$role" model_source)" \
       --arg hw "$(reg_field "$role" hold_why)" --arg hk "$(reg_field "$role" hold_kb)" --arg ha "$(reg_field "$role" hold_at)" \
+      --arg held_n "$held_n" --arg held_oldest "$held_oldest" --arg wake "$wake" --arg wake_since "$WAKE_SINCE" \
       --arg continued "$shown_continued" --arg hint "$(if [ "$state" = "backgrounded" ]; then agent_view_hint "$shown_continued"; fi)" \
       '{role: $role, kind: $kind, model: $model, label: $label, label_mark: $mark, family: $family, billing: $billing, state: $state, pane: $pane,
         keep_build: (if $keep == "on" then "on" else "off" end),
@@ -149,7 +157,9 @@ _status_rows() { # emits one JSON object per agent
         session_id: $session_id,
         branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir, repo: $repo,
         context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
-        context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx}
+        context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx,
+        held: {count: ($held_n | tonumber? // 0), oldest_epoch: ($held_oldest | tonumber? // null),
+               wake: (if $wake == "" then null else $wake end), wake_since: ($wake_since | tonumber? // null)}}
         + (if $state == "backgrounded" then {hint: $hint, continued_in: (if $continued == "" then null else $continued end)} else {} end)'
   done
 }
@@ -273,8 +283,9 @@ _status_team_text() {
   # The three hold fields come last, and the reason last of all: it is the one free text in
   # the row, and `read` gives whatever is left to its final variable.
   printf '%s\n' "$rows" | "$JQ_BIN" -r '[.kind, .role, (.label + .label_mark + (if .billing == "metered" then "$" else "" end)), .state, (if .pane == "" then "-" else .pane end), .permissions, .spawned_by, .branch, .commits_ahead, .uncommitted, .context, .workdir, (.repo // ""), (.continued_in // ""),
+      (.held.count | tostring), ((.held.oldest_epoch // "") | tostring), (.held.wake // ""), ((.held.wake_since // "") | tostring),
       ((.holding.kb // "") | tostring), ((.holding.checked_epoch // "") | tostring), (.holding.reason // "")] | join("|")' |
-    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo continued hold_kb hold_epoch hold_why; do
+    while IFS='|' read -r kind role label state pane permissions spawned_by branch ahead dirty cctx workdir repo continued held_n held_oldest wake wake_since hold_kb hold_epoch hold_why; do
       if [ "$kind" = "lead" ]; then
         printf '  %s %-*s' "$WOLFMUX_LEAD_MARK" "$((width + 2))" "$role"
       else
@@ -289,6 +300,11 @@ _status_team_text() {
       # under its own row: space nobody can see is the complaint this line answers. A parked
       # lane nobody has asked yet says that instead of saying nothing.
       # A backgrounded agent (Claude's agent view in its pane) says where its conversation went.
+      # A lead whose agent has notices it has not been given (v1.23.0, issue #34): how many, how
+      # old, and whether it wakes itself for them.
+      if [ "$kind" = "lead" ] && [ "${held_n:-0}" != "0" ]; then
+        printf '        %s\n' "$(inbox_held_line "$role" "$held_n" "$held_oldest" "$wake" "$wake_since")"
+      fi
       if [ "$state" = "backgrounded" ]; then
         printf '        %s\n' "$(agent_view_hint "$continued")"
       elif [ "$kind" = "worker" ] && [ "$state" != "running" ] && [ -d "$workdir" ]; then
