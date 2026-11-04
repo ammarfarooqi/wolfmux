@@ -97,9 +97,13 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Messages for you  agents write to you in Beads: bd create "Subject" -t message -a human -d "..."
          The status bar shows 📨 and how many are unread (🔔: a permission request is waiting).
          prefix N, or a click on the number, opens them: Enter reads one, r marks it read.
-  Notices  nothing is typed into a pane YOU are watching (policy human-pane-typing): a notice for an
-         agent is filed and the agent is given it by its own hooks: in a pane you are watching,
-         only with its next prompt (yours or its loop's), never at the end of its turn.
+  Notices  nothing is typed into a pane YOU are using (policy human-pane-typing): one your client
+         shows, with focus or a key in the last 2 min. Nor into a Claude lead's pane while you are
+         attached. A notice for an agent is filed and its own hooks hand it over: in a pane you
+         are using, with its next prompt; a worker's elsewhere at its turn end. A lead you are
+         attached to is not told at its turn end (that text would print in full in your pane):
+         its waiter wakes it within ~15 s once you are not using its pane (policy lead-wake),
+         and the pane shows one line, "wolfmux: team notice".
          This is NOT an agent's Beads inbox — the work itself is always bd list --assignee <role>
     teamctl inbox [<role>] [--all] [--json] [--keep]       (alias: notices)
                                                       for debugging: the PANE notices filed for a
@@ -118,6 +122,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
                                                       human-pane-typing off|idle (type a notice into a pane you are watching?
                                                       default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
+                                                      lead-wake unwatched|off (may an idle lead wake itself for a notice while
+                                                      you are not using its pane? default unwatched. Yours alone: 77)
                                                       orphan-steward <team>|off (for the whole project: whose lead may restart or
                                                       stop a team you founded while its lead is not running. Yours alone: 77)
                                                       lead-model <model>|default (for the whole project: what a NEW lead starts

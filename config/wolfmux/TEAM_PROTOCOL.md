@@ -120,14 +120,18 @@ How that notice reaches you depends on where you are, and you may get it without
 word appearing in your pane at all. It is filed first, then handed to you by your own
 session when your turn ends or when somebody prompts you (that is the
 `[wolfmux] You have team notices:` block). A worker's idle pane may also be typed into
-directly. A pane a human is watching never is: the lead's pane while a human is attached
-to the team, and any pane on the human's screen (policy `human-pane-typing`, default
-`off`; only the human changes it). Such a notice waits in the file. In such a pane the
-end of your turn stays silent too, because Claude Code would print the notice there: you
-are given it with the next prompt, the human's or your own loop's. The trade-off,
-for a lead the human is attached to: an IDLE lead is not woken by a notice. Its own loop
-wakes it (the communication lead runs one every 20 minutes), or the human does; so sweep
-your Beads inbox at every turn. The file can be read at any time with `teamctl inbox`
+directly. A pane a human is USING never is: one a client shows whose terminal has focus,
+or saw a key in the last two minutes (policy `human-pane-typing`, default `off`; only the
+human changes it). Nor is a Claude lead's pane while a human is attached to the team.
+In a pane in use the end of your turn stays silent too, because Claude Code would print
+the notice there: you are given it with the next prompt, the human's or your own loop's.
+The same holds for a Claude lead's turn end while a human is attached, in use or not.
+An IDLE lead whose pane nobody is using (a background tab, or the human is in another
+app) wakes itself: a waiter hook hands it the notices within about 15 seconds, and its
+pane shows one line, `wolfmux: team notice` (policy `lead-wake`, default `unwatched`; only
+the human changes it). Act on such a wake as on any notice. Once a week an idle lead is
+woken with "your notice waiter re-arms ... nothing to do": just end that turn. Sweep your
+Beads inbox at every turn anyway. The file can be read at any time with `teamctl inbox`
 (that command is the pane notices, for debugging, NOT your Beads inbox).
 
 Nothing is ever typed over a half-typed line: a pane somebody is typing in is left
