@@ -342,6 +342,20 @@ inbox_count_undelivered() {
     printf '0\n'
 }
 
+# inbox_text_delivered <role> <text> — 0 when the inbox holds this notice and EVERY record
+# of it is already delivered: a hook handed it over, so typing it now would deliver it twice.
+# 1 when it is undelivered, and when there is no record of it at all (type it, as before).
+inbox_text_delivered() {
+  local text file
+  text="$(inbox_text "$2")"
+  file="$(inbox_file "$1")"
+  [ -n "$text" ] && [ -f "$file" ] || return 1
+  WM_WANT="$text" LC_ALL=C /usr/bin/awk -F'\t' '
+    BEGIN { want = ENVIRON["WM_WANT"] }
+    NF >= 4 && $4 == want { seen = 1; if (substr($3, 2, 1) == "u") open = 1 }
+    END { exit !(seen && !open) }' "$file" 2>/dev/null
+}
+
 # inbox_oldest_undelivered <role> — the epoch of the oldest notice the agent has not been
 # given, or nothing
 inbox_oldest_undelivered() {
@@ -1019,6 +1033,12 @@ cmd_inbox_prompt() {
     if [ -n "$INBOX_NOT_HERE" ]; then inbox_not_you || true; fi
     return 0
   fi
+  # v1.23.0: a turn starts here, so the wake waiter armed at the last Stop must not fire into
+  # it. Replacing its token ends it at its next look (cmd_inbox_wake). Only where a waiter has
+  # ever written a record: a lead started before v1.23.0 has none, and keeps none.
+  if [ -f "$(inbox_wake_file "$INBOX_ROLE")" ]; then
+    inbox_wake_write "$INBOX_ROLE" busy "$(now_epoch)" - || true
+  fi
   [ "$(inbox_count_undelivered "$INBOX_ROLE")" != "0" ] || return 0
   notices="$(inbox_take_undelivered "$INBOX_ROLE")"
   [ -n "$notices" ] || return 0
@@ -1032,6 +1052,175 @@ cmd_inbox_prompt() {
     fi
   fi
   return 0
+}
+
+# --- the wake waiter (v1.23.0, issue #34) ---------------------------------------
+# cmd_inbox_wake — internal (`teamctl _inbox-wake`): a Claude Code hook with asyncRewake, on
+# Stop and on SessionStart, for Claude-family LEADS only (write_agent_settings). It runs in
+# the background while the lead is idle and wakes it when a notice arrives and nobody is
+# using its pane. Nothing is typed, so a half-typed line cannot be glued to anything (#9).
+#
+# Why it exists: under human-pane-typing off, a client attached to a team made the lead's
+# pane read as watched, so its notices were filed for the next prompt, and an idle lead has
+# no next prompt. tagging.lead sat 16 hours on 4 messages (2026-11-03). A Stop hook speaks
+# only at a turn end; this is the channel for an agent that has no turn left.
+#
+# What Claude Code does with it (2.1.318, measured 2026-11-04 on a throwaway socket):
+#   exit 2   the hook's stdout goes to the MODEL and the agent takes a turn, within ~2 s,
+#            even with a dialog open. The pane shows only the rewakeSummary line,
+#            "wolfmux: team notice". A half-typed draft stays in the input box, unsent.
+#   timeout  kills the hook silently, no wake. 604800 s is accepted.
+#   /exit    kills its hooks. kill -9 of Claude does not: the hook lives on under PID 1.
+#   every Stop starts its own copy, so two can run at once.
+#
+# So, and each of these is load-bearing:
+#   · exit 2 ONLY with notices to hand over (or the re-arm below). A hook that always exits 2
+#     wakes the agent, whose next Stop starts it again: a wake loop, measured.
+#   · ONE waiter per role: a fresh token in $(inbox_dir)/.wake.<role> at start; any other
+#     token there ends this one at its next look. cmd_inbox_prompt writes "busy", so a waiter
+#     never fires into a turn a human started; the next Stop arms a new one.
+#   · it ends itself (exit 0) when its agent is gone (_inbox_wake_owner_gone), its pane is
+#     not running, the team's state is gone, or the policy is off.
+#   · it never runs into Claude's timeout: at WOLFMUX_WAKE_TIMEOUT - 300 s it exits 2 once
+#     with a short "nothing to do" body, and the wake turn's own Stop arms a fresh waiter.
+#     One short turn per idle week; without it a lead idle longer than that is deaf again.
+#   · the take happens under the role's nudge lock, the one the typed waiter holds while it
+#     types, so under human-pane-typing idle the two cannot hand over the same line.
+# Every outcome is one event: inbox-wake, -superseded, -gone, -off, -rearm, -failed.
+cmd_inbox_wake() {
+  local start owner token life notices left count
+  set +e # a long-running loop: one read that fails in passing must not end it
+  # A write to a Claude that has just gone fails with an error rather than killing this
+  # process mid-hand-over, so the notices it took are put back (inbox_requeue)
+  trap '' PIPE
+  start="$(now_epoch)"
+  owner="$PPID" # the hook command execs teamctl, so this is Claude itself
+  /bin/cat >/dev/null 2>&1 || true
+  _inbox_hook_ready || return 0
+  [ "$INBOX_ROLE" = "$WOLFMUX_LEAD_ROLE" ] || return 0
+  if [ "$(policy_get lead-wake 2>/dev/null || true)" = "off" ]; then
+    inbox_wake_write "$INBOX_ROLE" off "$start" - || true
+    event_log inbox-wake-off "$INBOX_ROLE" "policy lead-wake is off: not armed" 2>/dev/null || true
+    return 0
+  fi
+  # A prompt stamped in a LATER second than this hook started came after the Stop that
+  # started it: that turn is the human's, so this waiter does not arm.
+  if inbox_wake_read "$INBOX_ROLE" && [ "$WAKE_TOKEN" = "busy" ] && [ -n "$WAKE_SINCE" ] && [ "$WAKE_SINCE" -gt "$start" ]; then
+    event_log inbox-wake-superseded "$INBOX_ROLE" "a prompt started a turn before this waiter armed" 2>/dev/null || true
+    return 0
+  fi
+  token="w$$.$start.$RANDOM"
+  if ! inbox_wake_write "$INBOX_ROLE" "$token" "$start" "$$"; then
+    event_log inbox-wake-failed "$INBOX_ROLE" "could not write the waiter record: not armed" 2>/dev/null || true
+    return 0
+  fi
+  life="$(_inbox_wake_life)"
+  while :; do
+    sleep "$WOLFMUX_WAKE_POLL"
+    if ! inbox_wake_read "$INBOX_ROLE" || [ "$WAKE_TOKEN" != "$token" ]; then
+      event_log inbox-wake-superseded "$INBOX_ROLE" "${WAKE_TOKEN:-no record} replaced this waiter after $(($(now_epoch) - start))s" 2>/dev/null || true
+      return 0
+    fi
+    if _inbox_wake_owner_gone "$owner"; then
+      event_log inbox-wake-gone "$INBOX_ROLE" "its agent (pid $owner) is gone after $(($(now_epoch) - start))s" 2>/dev/null || true
+      return 0
+    fi
+    if [ ! -d "$STATE_DIR" ] || [ "$(tm_pane_state "$INBOX_PANE")" != "running" ]; then
+      event_log inbox-wake-gone "$INBOX_ROLE" "its pane $INBOX_PANE or its team is gone after $(($(now_epoch) - start))s" 2>/dev/null || true
+      return 0
+    fi
+    if [ $(($(now_epoch) - start)) -ge "$life" ]; then
+      _inbox_wake_rearm "$token" "$start"
+      return $?
+    fi
+    count="$(inbox_count_undelivered "$INBOX_ROLE")"
+    case "$count" in "" | *[!0-9]* | 0) continue ;; esac
+    if [ "$(policy_get lead-wake 2>/dev/null || true)" = "off" ]; then
+      inbox_wake_write "$INBOX_ROLE" off "$(now_epoch)" - || true
+      event_log inbox-wake-off "$INBOX_ROLE" "policy lead-wake turned off; $count notice(s) wait for the next turn end or prompt" 2>/dev/null || true
+      return 0
+    fi
+    # A human using the pane gets the notices with his own next prompt, as before
+    inbox_human_pane "$INBOX_ROLE" "$INBOX_PANE" && continue
+    nudge_begin "$INBOX_ROLE" || continue # the typed waiter is mid-line: look again next time
+    notices="$(inbox_take_undelivered "$INBOX_ROLE")"
+    nudge_end "$INBOX_ROLE"
+    [ -n "$notices" ] || continue
+    # A prompt between the read and the take: that turn hands them over, not a wake
+    if ! inbox_wake_read "$INBOX_ROLE" || [ "$WAKE_TOKEN" != "$token" ]; then
+      inbox_requeue "$INBOX_ROLE" "$notices" || true
+      event_log inbox-wake-superseded "$INBOX_ROLE" "replaced while taking; notices put back" 2>/dev/null || true
+      return 0
+    fi
+    left="$(inbox_count_undelivered "$INBOX_ROLE")"
+    if inbox_hook_body "$INBOX_IDENTITY" "$notices" "$left"; then
+      inbox_wake_write "$INBOX_ROLE" busy "$(now_epoch)" - || true # the wake turn is a turn
+      event_log inbox-wake "$INBOX_ROLE" "woke the agent with $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) after $(($(now_epoch) - start))s idle" 2>/dev/null || true
+      return 2
+    fi
+    if inbox_requeue "$INBOX_ROLE" "$notices"; then
+      event_log inbox-wake-failed "$INBOX_ROLE" "stdout failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) re-queued" 2>/dev/null || true
+    else
+      event_log inbox-wake-failed "$INBOX_ROLE" "stdout failed AND the re-queue failed; $(printf '%s\n' "$notices" | wc -l | tr -d ' ') notice(s) LOST" 2>/dev/null || true
+    fi
+    return 0
+  done
+}
+
+# _inbox_wake_life — how long a waiter may wait: WOLFMUX_WAKE_TIMEOUT - 300 s, so it ends
+# itself before Claude Code kills it (a killed hook wakes nobody). A timeout of 600 s or less
+# (a test) halves instead.
+_inbox_wake_life() {
+  if [ "$WOLFMUX_WAKE_TIMEOUT" -gt 600 ]; then
+    printf '%s\n' $((WOLFMUX_WAKE_TIMEOUT - 300))
+  elif [ "$WOLFMUX_WAKE_TIMEOUT" -ge 2 ]; then
+    printf '%s\n' $((WOLFMUX_WAKE_TIMEOUT / 2))
+  else
+    printf '1\n'
+  fi
+}
+
+# _inbox_wake_rearm <token> <start> — the lifetime is up. With lead-wake on, wake the agent
+# once with nothing to do, so its next Stop arms a fresh waiter; with it off, just end.
+_inbox_wake_rearm() {
+  if [ "$(policy_get lead-wake 2>/dev/null || true)" = "off" ]; then
+    inbox_wake_write "$INBOX_ROLE" off "$(now_epoch)" - || true
+    event_log inbox-wake-off "$INBOX_ROLE" "lifetime up and policy lead-wake is off: not re-armed" 2>/dev/null || true
+    return 0
+  fi
+  local after="$((WOLFMUX_WAKE_TIMEOUT / 86400)) days"
+  [ "$WOLFMUX_WAKE_TIMEOUT" -ge 86400 ] || after="$(_inbox_wake_life)s"
+  if printf '%s\n' "[wolfmux] Your notice waiter re-arms after $after. No new notices; nothing to do. End your turn."; then
+    inbox_wake_write "$INBOX_ROLE" busy "$(now_epoch)" - || true
+    event_log inbox-wake-rearm "$INBOX_ROLE" "lifetime of $(($(now_epoch) - $2))s is up: one wake with nothing to do, so the next Stop arms a fresh waiter" 2>/dev/null || true
+    return 2
+  fi
+  event_log inbox-wake-failed "$INBOX_ROLE" "the re-arm line could not be written: not re-armed" 2>/dev/null || true
+  return 0
+}
+
+# _inbox_wake_owner_gone <pid> — 0 when the agent this waiter belongs to has gone: that pid
+# (its parent at start) no longer exists, or this process has been re-parented to PID 1.
+# Claude Code kills its hooks on a clean /exit; after a kill -9 of Claude the hook lives on
+# under PID 1 (measured 2026-11-04), and this is how it notices. The pane check in the loop
+# catches a pane that died; this catches the agent dying while its pane lives on (a respawn).
+# Test seams: WOLFMUX_WAKE_ALIVE (the pids that count as alive) and WOLFMUX_WAKE_PPID (this
+# process's parent now), so a test needs no live process.
+_inbox_wake_owner_gone() {
+  local owner="$1" ppid
+  case "$owner" in "" | *[!0-9]* | 0 | 1) return 0 ;; esac
+  if [ -n "${WOLFMUX_WAKE_ALIVE+x}" ]; then
+    case " $WOLFMUX_WAKE_ALIVE " in *" $owner "*) ;; *) return 0 ;; esac
+  else
+    kill -0 "$owner" 2>/dev/null || return 0
+  fi
+  if [ -n "${WOLFMUX_WAKE_PPID+x}" ]; then
+    ppid="$WOLFMUX_WAKE_PPID"
+  else
+    ppid="$("$WOLFMUX_PS_BIN" -o ppid= -p "$$" 2>/dev/null | /usr/bin/tr -d ' ')"
+  fi
+  [ "$ppid" != "1" ] || return 0
+  return 1
 }
 
 # --- teamctl inbox ------------------------------------------------------------

@@ -355,6 +355,7 @@ main() {
     _inbox-badge) cmd_inbox_badge "$@" ;;
     _inbox-stop) cmd_inbox_stop "$@" ;;
     _inbox-prompt) cmd_inbox_prompt "$@" ;;
+    _inbox-wake) cmd_inbox_wake "$@" ;;
     _human-inbox) cmd_human_inbox "$@" ;;
     _popup) cmd_popup "$@" ;;
     _human-inbox-hook) cmd_human_inbox_hook "$@" ;;

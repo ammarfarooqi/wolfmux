@@ -899,6 +899,14 @@ cmd_prompt() {
 # notification hook rather than instead of it, and `_inbox-prompt` runs on
 # UserPromptSubmit. Nothing is added to ~/.claude/settings.json — this file is per
 # agent, written at run time, and goes when the team goes.
+#
+# v1.23.0, the LEAD only: `_inbox-wake`, the wake waiter (lib/inbox.sh cmd_inbox_wake), a
+# THIRD Stop entry and a SessionStart entry, with asyncRewake: it runs in the background while
+# the lead is idle and wakes it for a notice when nobody is using its pane. SessionStart covers
+# a resumed lead that has had no turn yet. Workers keep the typed path. The command execs
+# teamctl, so no shell sits between Claude and the waiter: its parent pid is Claude's, which is
+# how it notices its agent has gone. The timeout is WOLFMUX_WAKE_TIMEOUT (a hook killed at its
+# timeout wakes nobody; the waiter ends itself 300 s earlier and re-arms).
 write_agent_settings() {
   local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command="" memdir=""
   /bin/mkdir -p "$STATE_DIR/settings"
@@ -926,14 +934,19 @@ write_agent_settings() {
     --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$(($(approval_timeout) + 30))" \
     --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" \
     --arg inbox_stop "\"$TEAMCTL_SELF\" _inbox-stop" --arg inbox_prompt "\"$TEAMCTL_SELF\" _inbox-prompt" \
+    --arg inbox_wake "exec \"$TEAMCTL_SELF\" _inbox-wake" --argjson wake_timeout "$WOLFMUX_WAKE_TIMEOUT" \
     --arg browser_allow "$(policy_get browser-writes)" '
-    (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
+    {type: "command", command: $inbox_wake, asyncRewake: true, timeout: $wake_timeout,
+     rewakeSummary: "wolfmux: team notice"} as $wake
+    | (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
     * {env: {ECC_DISABLED_HOOKS: $silence, CLAUDE_CODE_DISABLE_AGENT_VIEW: "1"}, disableAgentView: true}
-    * {hooks: {
+    * {hooks: ({
          Stop: (
            (if $notify_command != "" then [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}] else [] end)
-           + [{hooks: [{type: "command", command: $inbox_stop, timeout: 10}]}]),
-         UserPromptSubmit: [{hooks: [{type: "command", command: $inbox_prompt, timeout: 10}]}]}}
+           + [{hooks: [{type: "command", command: $inbox_stop, timeout: 10}]}]
+           + (if $kind == "lead" then [{hooks: [$wake]}] else [] end)),
+         UserPromptSubmit: [{hooks: [{type: "command", command: $inbox_prompt, timeout: 10}]}]}
+         + (if $kind == "lead" then {SessionStart: [{hooks: [$wake]}]} else {} end))}
     * (if $guard_command != ""
        then {hooks: {PreToolUse: [{matcher: ".*",
                                    hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
@@ -2385,6 +2398,9 @@ _nudge_defer_wait() {
     # exactly when a human starts typing, and each line carries its own 300 ms window.
     # Each line leaves the marker as it is typed, so stopping here, or being killed
     # mid-delivery, can never re-send what already went out.
+    # v1.23.0: a line a hook has handed over in the meantime (the lead's wake waiter takes
+    # under this same nudge lock, cmd_inbox_wake) is dropped, not typed: typing it would
+    # deliver it twice (inbox_text_delivered).
     while nudge_pending_has_lines "$role"; do
       if _notice_pane_busy "$role" "$pane" "$idlew"; then
         busy_again=1
@@ -2392,6 +2408,10 @@ _nudge_defer_wait() {
       fi
       line="$(nudge_pending_shift_line "$role")" || break
       [ -n "$line" ] || continue
+      if inbox_text_delivered "$role" "$line"; then
+        event_log nudge-skip-delivered "$role" "a hook already handed it over: not typed"
+        continue
+      fi
       tm_type_line "$pane" "$line"
       inbox_mark_typed "$role" "$line" # only this line: the rest may still need a hook
       delivered=$((delivered + 1))
@@ -2402,10 +2422,17 @@ _nudge_defer_wait() {
       else
         bead="$(nudge_pending_bead "$role")"
         line="$(_nudge_text "$who" "$bead")"
-        tm_type_line "$pane" "$line"
-        inbox_mark_typed "$role" "$line"
-        delivered=$((delivered + 1))
-        event_log nudge "$role" "${bead:-collapsed} (waited ${waited}s)"
+        # The collapsed line names no single record, so for it "handed over" means: the inbox
+        # holds notices and not one of them is still undelivered.
+        if inbox_text_delivered "$role" "$line" ||
+          { [ "$(inbox_count_undelivered "$role")" = "0" ] && [ "$(inbox_count_lines "$role")" != "0" ]; }; then
+          event_log nudge-skip-delivered "$role" "${bead:-collapsed}: a hook already handed it over, not typed"
+        else
+          tm_type_line "$pane" "$line"
+          inbox_mark_typed "$role" "$line"
+          delivered=$((delivered + 1))
+          event_log nudge "$role" "${bead:-collapsed} (waited ${waited}s)"
+        fi
       fi
     fi
     if [ "$delivered" -gt 0 ]; then nudge_mark "$role"; fi

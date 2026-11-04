@@ -181,7 +181,12 @@ detach_client() {
 
 echo "== the agent's settings file carries both hooks, and keeps the notification one"
 SETTINGS="$STATE_DIR/settings/lead.json"
-check "settings: the Stop array has TWO entries, the notification hook and the inbox hook" '[ "$(jq ".hooks.Stop | length" "$SETTINGS")" = "2" ] && jq -e ".hooks.Stop[].hooks[].command | select(test(\"_notify$\"))" "$SETTINGS" && jq -e ".hooks.Stop[].hooks[].command | select(test(\"_inbox-stop\"))" "$SETTINGS"'
+check "settings: the lead's Stop array has THREE entries, the notification hook, the inbox hook and the wake waiter" '[ "$(jq ".hooks.Stop | length" "$SETTINGS")" = "3" ] && jq -e ".hooks.Stop[].hooks[].command | select(test(\"_notify$\"))" "$SETTINGS" && jq -e ".hooks.Stop[].hooks[].command | select(test(\"_inbox-stop\"))" "$SETTINGS"'
+# v1.23.0: the wake waiter, the lead's only, on Stop and SessionStart: asyncRewake, the 7-day
+# timeout, its own summary line, and the command EXECs teamctl so no shell sits in between
+WAKE_HOOK_JQ='[.hooks.Stop[].hooks[], .hooks.SessionStart[].hooks[]] | map(select(.command | test("_inbox-wake$"))) | length == 2 and all(.asyncRewake == true and .timeout == 604800 and .rewakeSummary == "wolfmux: team notice" and (.command | startswith("exec \"")))'
+check "settings: the lead's wake waiter is on Stop and SessionStart, asyncRewake, timeout 604800, its summary, exec'd" 'jq -e "$WAKE_HOOK_JQ" "$SETTINGS"'
+check "settings: a worker's file has no wake waiter, and its Stop array keeps two entries" '! grep -q "_inbox-wake" "$STATE_DIR/settings/qa.json" && [ "$(jq ".hooks.Stop | length" "$STATE_DIR/settings/qa.json")" = "2" ] && [ "$(jq ".hooks.SessionStart // [] | length" "$STATE_DIR/settings/qa.json")" = "0" ]'
 check "settings: UserPromptSubmit runs the inbox hook" 'jq -e ".hooks.UserPromptSubmit[0].hooks[0].command | test(\"_inbox-prompt\")" "$SETTINGS"'
 check "settings: nothing of this went into your own ~/.claude/settings.json" '[ ! -e "$WORK/.claude" ]'
 
@@ -1707,7 +1712,8 @@ DEFAULT_LEAD_HOOKS="$(settings_hooks lead)"
 DEFAULT_QA_HOOKS="$(settings_hooks qa)"
 DEFAULT_LEAD_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of lead)" 2>/dev/null)"
 DEFAULT_QA_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of qa)" 2>/dev/null)"
-EXPECT_LEAD_HOOKS='{"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt"]}'
+# v1.23.0: the lead's wake waiter on SessionStart and as the third Stop entry (exec'd)
+EXPECT_LEAD_HOOKS='{"SessionStart":["exec \"<TEAMCTL>\" _inbox-wake"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","exec \"<TEAMCTL>\" _inbox-wake"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt"]}'
 EXPECT_QA_HOOKS='{"PreToolUse":["\"<TEAMCTL>\" _guard"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt"]}'
 teamctl policy browser-writes allow >/dev/null 2>&1
 teamctl restart lead >/dev/null 2>&1
@@ -1725,7 +1731,7 @@ check "settings delta (lead): at the default there is no permissions key at all,
 check "settings delta (worker): the same both ways round" '[ "$DEFAULT_QA_PERMKEY" = "false" ] && [ "$DEFAULT_QA_DOC" = "$(settings_doc_noperm qa)" ]'
 # The DRIFT, which the delta cannot see: if something else in that jq chain quietly changes
 # shape, BOTH documents change together and the delta still passes.
-check "settings drift (lead): the key set is exactly disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook and the inbox UserPromptSubmit hook" '[ "$DEFAULT_LEAD_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
+check "settings drift (lead): the key set is exactly disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook, the wake waiter (Stop and SessionStart) and the inbox UserPromptSubmit hook" '[ "$DEFAULT_LEAD_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
 check "settings drift (worker): exactly disableAgentView, env, hooks and teammateMode, and exactly the guard, the notification hook and the two inbox hooks" '[ "$DEFAULT_QA_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
 # rgi60 F5: Claude Code's agent view is off for every agent, by the setting AND by its
 # environment switch. With it on, /bg turned the comms lead's pane into the agent view, which
@@ -1986,6 +1992,172 @@ check "status --json: held {count, oldest_epoch, wake} on the lead's row, and a 
 /bin/rm -f "$INBOX/.wake.lead"
 /bin/cp "$WORK/lead-inbox.saved" "$(inbox_file lead)"
 check "status: no held line when the lead has nothing undelivered" ': >"$(inbox_file lead)" && ! teamctl status 2>&1 | grep -q "held: " && /bin/cp "$WORK/lead-inbox.saved" "$(inbox_file lead)"'
+
+echo "== v1.23.0 (issue #34): the wake waiter, teamctl _inbox-wake"
+# Its loop with the pane proof, tmux, time and the agent's process stubbed: sleep moves a fake
+# clock, so each run takes no time and starts no process. on_tick runs after every sleep and is
+# where a check makes something happen mid-wait. One end-to-end run on the suite's team follows.
+(
+  cd "$PROJECT" || exit 1
+  # shellcheck disable=SC1090
+  . "$WOLFMUX_HOME/lib/provider-env.sh"
+  . "$WOLFMUX_HOME/lib/common.sh"
+  . "$WOLFMUX_HOME/lib/registry.sh"
+  . "$WOLFMUX_HOME/lib/tmuxctl.sh"
+  . "$WOLFMUX_HOME/lib/policy.sh"
+  . "$WOLFMUX_HOME/lib/approvals.sh"
+  . "$WOLFMUX_HOME/lib/notify.sh"
+  . "$WOLFMUX_HOME/lib/brand.sh"
+  . "$WOLFMUX_HOME/lib/inbox.sh"
+  . "$WOLFMUX_HOME/lib/agents.sh"
+  STATE_DIR="$WORK/wake-unit"
+  /bin/mkdir -p "$STATE_DIR/inbox"
+  TEAM=default SESSION=irrelevant WOLFMUX_WAKE_POLL=15 WOLFMUX_WAKE_TIMEOUT=600
+  unset WOLFMUX_INBOX_WATCHED WOLFMUX_INBOX_CLIENTS
+  EVENTS="$WORK/wake-unit.events"
+  OUT="$WORK/wake-unit.out"
+  event_log() { printf '%s|%s|%s\n' "$1" "$2" "$3" >>"$EVENTS"; }
+  FAKE_NOW=1000000000
+  now_epoch() { printf '%s\n' "$FAKE_NOW"; }
+  on_tick() { :; }
+  sleep() { FAKE_NOW=$((FAKE_NOW + ${1%.*})); TICKS=$((TICKS + 1)); on_tick; [ "$TICKS" -lt 1000 ] || exit 9; }
+  ROLE=lead
+  _inbox_hook_ready() { INBOX_ROLE="$ROLE" INBOX_IDENTITY="$ROLE" INBOX_PANE=%5; return 0; }
+  PANE_STATE=running POLICY=unwatched
+  tm_pane_state() { printf '%s\n' "$PANE_STATE"; }
+  policy_get() { case "$1" in lead-wake) printf '%s\n' "$POLICY" ;; human-pane-typing) printf 'off\n' ;; *) printf '\n' ;; esac; }
+  FREE="%5|attached,UTF-8|0" BUSY="%5|attached,focused|0" # no key since 1970: only focus counts
+  export WOLFMUX_INBOX_CLIENT_LIST="$FREE" WOLFMUX_WAKE_ALIVE="$PPID" WOLFMUX_WAKE_PPID=4242
+  add() { inbox_add lead beads "[wolfmux] Beads update for lead ($1). Run: bd show $1"; }
+  state() { awk -F'\t' -v t="$1" 'index($4, "(" t ")") { print substr($3, 2, 1) }' "$STATE_DIR/inbox/lead"; }
+  last_event() { tail -1 "$EVENTS" | cut -d'|' -f1; }
+  run() { TICKS=0 RC=0; : >"$EVENTS"; cmd_inbox_wake </dev/null >"$OUT" 2>/dev/null || RC=$?; }
+  # 1. a notice waiting and nobody using the pane: exit 2 at the first look, the body on stdout,
+  #    the notice taken, the record says a turn runs; the prompt hook then has nothing to give
+  add n-1
+  run
+  [ "$RC" -eq 2 ] && [ "$TICKS" -eq 1 ] && grep -q "(n-1)" "$OUT" && grep -q "Read it now: bd list --assignee lead" "$OUT" || exit 1
+  [ "$(state n-1)" = "d" ] && [ "$(last_event)" = "inbox-wake" ] || exit 1
+  inbox_wake_read lead && [ "$WAKE_TOKEN" = "busy" ] || exit 1
+  [ -z "$(cmd_inbox_prompt </dev/null)" ] || exit 1
+  # 2. NO notices: never exit 2 with nothing to hand over (the measured wake loop); it waits
+  #    out its lifetime (600 s timeout: 300 s, 20 looks) and then re-arms with one short line
+  run
+  [ "$RC" -eq 2 ] && [ "$TICKS" -eq 20 ] && [ "$(last_event)" = "inbox-wake-rearm" ] || exit 1
+  grep -qx "\[wolfmux\] Your notice waiter re-arms after 300s. No new notices; nothing to do. End your turn." "$OUT" || exit 1
+  ! grep -q "team notices" "$OUT" || exit 1
+  # and the real timeout's words: 7 days, 300 s before Claude Code's 604800
+  [ "$(WOLFMUX_WAKE_TIMEOUT=604800 _inbox_wake_life)" = "604500" ] || exit 1
+  WOLFMUX_WAKE_TIMEOUT=604800 _inbox_wake_rearm tok 0 | grep -q "re-arms after 7 days. No new notices; nothing to do. End your turn." || exit 1
+  # the lifetime is up under lead-wake off: it just ends
+  on_tick() { [ "$TICKS" -ne 19 ] || POLICY=off; }
+  run
+  [ "$RC" -eq 0 ] && [ ! -s "$OUT" ] && [ "$(last_event)" = "inbox-wake-off" ] || exit 1
+  POLICY=unwatched
+  on_tick() { :; }
+  # 3. a human using the pane: it keeps waiting, and wakes at the first look after he leaves
+  add n-3
+  WOLFMUX_INBOX_CLIENT_LIST="$BUSY"
+  on_tick() { [ "$TICKS" -ne 5 ] || WOLFMUX_INBOX_CLIENT_LIST="$FREE"; }
+  run
+  [ "$RC" -eq 2 ] && [ "$TICKS" -eq 5 ] && grep -q "(n-3)" "$OUT" && [ "$(state n-3)" = "d" ] || exit 1
+  # 4. two waiters one after the other: the first sees the second's token and ends, without waking
+  on_tick() { [ "$TICKS" -ne 1 ] || { inbox_wake_write lead tok-second "$FAKE_NOW" 4243; add n-4; }; }
+  run
+  [ "$RC" -eq 0 ] && [ ! -s "$OUT" ] && [ "$(state n-4)" = "u" ] && [ "$(last_event)" = "inbox-wake-superseded" ] || exit 1
+  # 5. a prompt (cmd_inbox_prompt) supersedes it as well; that prompt hands the notice over.
+  #    The human is at the pane (in use), or the waiter would rightly wake at its first look.
+  WOLFMUX_INBOX_CLIENT_LIST="$BUSY"
+  on_tick() { [ "$TICKS" -ne 2 ] || cmd_inbox_prompt </dev/null >"$WORK/wake-unit.prompt"; }
+  run
+  [ "$RC" -eq 0 ] && [ "$TICKS" -eq 2 ] && [ ! -s "$OUT" ] && grep -q "(n-4)" "$WORK/wake-unit.prompt" && [ "$(last_event)" = "inbox-wake-superseded" ] || exit 1
+  WOLFMUX_INBOX_CLIENT_LIST="$FREE"
+  on_tick() { :; }
+  #    and a prompt stamped LATER than the waiter started (the Stop/prompt race): it never arms
+  inbox_wake_write lead busy $((FAKE_NOW + 1)) -
+  add n-5
+  run
+  [ "$RC" -eq 0 ] && [ "$TICKS" -eq 0 ] && [ "$(state n-5)" = "u" ] && [ "$(last_event)" = "inbox-wake-superseded" ] || exit 1
+  # 6. lead-wake off: not armed at all; turned off while waiting: ends, notices left alone
+  POLICY=off
+  run
+  [ "$RC" -eq 0 ] && [ "$TICKS" -eq 0 ] && [ "$(last_event)" = "inbox-wake-off" ] || exit 1
+  inbox_wake_read lead && [ "$WAKE_TOKEN" = "off" ] || exit 1
+  POLICY=unwatched
+  WOLFMUX_INBOX_CLIENT_LIST="$BUSY"
+  on_tick() { [ "$TICKS" -ne 3 ] || POLICY=off; }
+  run
+  [ "$RC" -eq 0 ] && [ "$(state n-5)" = "u" ] && [ "$(last_event)" = "inbox-wake-off" ] || exit 1
+  POLICY=unwatched
+  # 7. it ends itself: the pane is gone; its agent is gone; it was re-parented to PID 1
+  on_tick() { [ "$TICKS" -ne 2 ] || PANE_STATE=gone; }
+  run
+  [ "$RC" -eq 0 ] && [ "$TICKS" -eq 2 ] && [ "$(last_event)" = "inbox-wake-gone" ] || exit 1
+  PANE_STATE=running
+  on_tick() { :; }
+  WOLFMUX_WAKE_ALIVE=""
+  run
+  [ "$RC" -eq 0 ] && [ "$TICKS" -eq 1 ] && [ "$(last_event)" = "inbox-wake-gone" ] || exit 1
+  WOLFMUX_WAKE_ALIVE="$PPID" WOLFMUX_WAKE_PPID=1
+  run
+  [ "$RC" -eq 0 ] && [ "$TICKS" -eq 1 ] && [ "$(last_event)" = "inbox-wake-gone" ] || exit 1
+  WOLFMUX_WAKE_PPID=4242
+  _inbox_wake_owner_gone "$PPID" && exit 1
+  _inbox_wake_owner_gone "" || exit 1
+  _inbox_wake_owner_gone 1 || exit 1
+  # 8. a worker never has one; and stdout that cannot be written puts the notices back
+  ROLE=qa
+  run
+  [ "$RC" -eq 0 ] && [ "$TICKS" -eq 0 ] && [ ! -s "$EVENTS" ] || exit 1
+  ROLE=lead WOLFMUX_INBOX_CLIENT_LIST="$FREE"
+  eval "orig_$(declare -f inbox_hook_body)"
+  inbox_hook_body() { return 1; } # the write to Claude fails
+  run
+  [ "$RC" -eq 0 ] && [ "$(state n-5)" = "u" ] && [ "$(last_event)" = "inbox-wake-failed" ] || exit 1
+  grep -q "re-queued" "$EVENTS" || exit 1
+  eval "$(declare -f orig_inbox_hook_body | sed '1s/^orig_//')"
+  # 9. human-pane-typing idle: the typed waiter does not type a line a hook already handed over
+  #    (and still types one that is waiting)
+  TYPED="$WORK/wake-unit.typed"
+  : >"$TYPED"
+  tm_type_line() { printf '%s\n' "$2" >>"$TYPED"; }
+  _notice_pane_busy() { return 1; }
+  APPROVAL="[wolfmux] Permission request A9 from qa. Run: teamctl approvals"
+  inbox_add lead approval "$APPROVAL"
+  inbox_take_undelivered lead >/dev/null # the wake waiter took them all
+  nudge_pending_open lead && nudge_pending_put_line lead "$APPROVAL" && nudge_pending_put_bead lead n-9 || exit 1
+  : >"$EVENTS"
+  _nudge_defer_wait lead %5
+  [ ! -s "$TYPED" ] && ! nudge_pending_exists lead && [ "$(grep -c nudge-skip-delivered "$EVENTS")" = "2" ] || exit 1
+  OTHER="[wolfmux] Team change: lead spawned teammate qa2 (flash). Run: teamctl status"
+  inbox_add lead spawn "$OTHER"
+  nudge_pending_open lead && nudge_pending_put_line lead "$OTHER" || exit 1
+  _nudge_defer_wait lead %5
+  grep -qxF "$OTHER" "$TYPED" || exit 1
+  exit 0
+) >/dev/null 2>&1
+WAKE_UNIT_STATUS=$?
+check "wake waiter: exit 2 only with notices (or the 7-day re-arm); waits while in use; one waiter (token), a prompt supersedes it; off, pane gone, agent gone, PID 1 end it; a failed print re-queues; the typed waiter skips what it took" '[ "$WAKE_UNIT_STATUS" -eq 0 ]'
+# End to end, on the suite's own team: the dispatch, the pane proof and the real reads. Two
+# waiters one after the other (the second is a later Stop), then a notice: the first ends
+# without waking, the second wakes the lead with it. WOLFMUX_INBOX_CLIENT_LIST="" = nobody
+# attached, so nobody is using the pane.
+/bin/rm -f "$INBOX/.wake.lead" "$WORK"/wake-e2e.*
+teamctl inbox lead >/dev/null 2>&1
+hook lead _inbox-prompt >/dev/null 2>&1 # nothing undelivered before the waiters arm
+( WOLFMUX_WAKE_POLL=1 WOLFMUX_INBOX_CLIENT_LIST="" hook_in "$LEAD_PANE" lead _inbox-wake >"$WORK/wake-e2e.1.out"; echo $? >"$WORK/wake-e2e.1.rc" ) &
+sleep 2
+( WOLFMUX_WAKE_POLL=1 WOLFMUX_INBOX_CLIENT_LIST="" hook_in "$LEAD_PANE" lead _inbox-wake >"$WORK/wake-e2e.2.out"; echo $? >"$WORK/wake-e2e.2.rc" ) &
+sleep 3
+WOLFMUX_NUDGE_TYPE=off teamctl nudge lead --id wake-e2e-1 >/dev/null 2>&1
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+  [ -s "$WORK/wake-e2e.1.rc" ] && [ -s "$WORK/wake-e2e.2.rc" ] && break
+  sleep 1
+done
+check "wake end to end: the first waiter ends (exit 0) without waking once a second one arms" '[ "$(cat "$WORK/wake-e2e.1.rc" 2>/dev/null)" = "0" ] && [ ! -s "$WORK/wake-e2e.1.out" ]'
+check "wake end to end: the second wakes the lead (exit 2) with the notice, marked delivered, and the event says so" '[ "$(cat "$WORK/wake-e2e.2.rc" 2>/dev/null)" = "2" ] && grep -q "wake-e2e-1" "$WORK/wake-e2e.2.out" && delivered_of lead wake-e2e-1 true && grep "\"type\":\"inbox-wake\"" "$STATE_DIR/events.jsonl" | tail -1 | grep -q "woke the agent with"'
+check "wake end to end: the record now says a turn runs, so a sender is told so" 'read -r t _ <"$INBOX/.wake.lead" && [ "$t" = "busy" ]'
+/bin/rm -f "$INBOX/.wake.lead"
 
 teamctl destroy --worktrees --yes >/dev/null 2>&1
 
