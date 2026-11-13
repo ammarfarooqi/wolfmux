@@ -1196,30 +1196,16 @@ transcripts_dir() {
 # the tail of a transcript: status must stay fast, and a half-written line must never
 # break it. Every failure means "unknown", not an error.
 
-# _ctx_of_claude <workdir> [<session-id>] — sets CTX_TOKENS ("" when nothing is readable) and CTX_REQUESTS
-# from the transcript of the agent's own conversation (a record from before conversation ids: the
-# newest *.jsonl of its folder): what the last assistant turn saw (its input
-# plus what the prompt cache holds), and how many assistant turns with usage the tail holds.
-_ctx_of_claude() {
-  local tdir file f m newest="" newest_m=0 stats last="" reqs=0 line
+# _ctx_of_transcript <file> — sets CTX_TOKENS ("" when nothing is readable) and CTX_REQUESTS
+# from the tail of ONE transcript file: what the last assistant turn saw (its input plus what
+# the prompt cache holds), and how many assistant turns with usage the tail holds.
+_ctx_of_transcript() {
+  local file="$1" stats last="" reqs=0 line
   CTX_TOKENS="" CTX_REQUESTS=""
-  if [ -n "${2:-}" ]; then
-    # Its own conversation, by id. Never the newest file of the folder: every lead of a project works
-    # in the same folder, and so do your own sessions, so the newest one is usually somebody else's.
-    newest="$(session_transcript "$2" "$1")"
-  else
-    tdir="$(transcripts_dir "$1" 2>/dev/null)" || return 0
-    [ -d "$tdir" ] || return 0
-    for f in "$tdir"/*.jsonl; do
-      [ -f "$f" ] || continue
-      m="$(stat -f %m "$f" 2>/dev/null || printf 0)"
-      if [ "$m" -gt "$newest_m" ]; then newest_m="$m" newest="$f"; fi
-    done
-  fi
-  [ -n "$newest" ] || return 0
+  [ -n "$file" ] && [ -f "$file" ] || return 0
   # -R first: jq's own parser must never see a raw line, a half-written one included;
   # fromjson? then decodes what parses and yields nothing for what does not.
-  stats="$(tail -n 400 "$newest" 2>/dev/null | "$JQ_BIN" -Rr '
+  stats="$(tail -n 400 "$file" 2>/dev/null | "$JQ_BIN" -Rr '
     fromjson? | select(.type == "assistant" and (.message.usage != null)) |
     [(.message.usage.input_tokens // 0),
      (.message.usage.cache_read_input_tokens // 0),
@@ -1235,6 +1221,29 @@ EOF
   CTX_TOKENS="$(printf '%s' "$last" | awk -F'\t' '{ print $1 + $2 + $3 }')"
   CTX_REQUESTS="$reqs"
   return 0
+}
+
+# _ctx_of_claude <workdir> [<session-id>] — sets CTX_TOKENS and CTX_REQUESTS from the transcript
+# of the agent's own conversation (a record from before conversation ids: the newest *.jsonl of
+# its folder), via _ctx_of_transcript.
+_ctx_of_claude() {
+  local tdir f m newest="" newest_m=0
+  CTX_TOKENS="" CTX_REQUESTS=""
+  if [ -n "${2:-}" ]; then
+    # Its own conversation, by id. Never the newest file of the folder: every lead of a project works
+    # in the same folder, and so do your own sessions, so the newest one is usually somebody else's.
+    newest="$(session_transcript "$2" "$1")"
+  else
+    tdir="$(transcripts_dir "$1" 2>/dev/null)" || return 0
+    [ -d "$tdir" ] || return 0
+    for f in "$tdir"/*.jsonl; do
+      [ -f "$f" ] || continue
+      m="$(stat -f %m "$f" 2>/dev/null || printf 0)"
+      if [ "$m" -gt "$newest_m" ]; then newest_m="$m" newest="$f"; fi
+    done
+  fi
+  [ -n "$newest" ] || return 0
+  _ctx_of_transcript "$newest"
 }
 
 # _ctx_of_codex <workdir> — sets CTX_TOKENS, CTX_REQUESTS and CTX_WINDOW from the newest
