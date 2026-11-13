@@ -575,7 +575,9 @@ store_beads_memory_text() {
 }
 
 store_beads_memory_forget() { _store_bd forget "$1" --json >/dev/null 2>&1; }
-store_beads_unread_count() { _store_bd list --type message --status open --include-infra --json --limit 0 2>/dev/null | "$JQ_BIN" 'length' 2>/dev/null || printf 0; }
+# A message is only ever open (unread) or closed (read); the task statuses in the filter
+# below never match one, but they keep this the same shape as every other inbox listing.
+store_beads_unread_count() { _store_bd list --type message --status open,in_progress,blocked --include-infra --json --limit 0 2>/dev/null | "$JQ_BIN" 'length' 2>/dev/null || printf 0; }
 
 # =======================================================================================
 # teamctl store (cmd_store, will be wired in by bin/teamctl at integration)
@@ -625,7 +627,7 @@ _store_migrate_task_deps() {
 # the "migrated from <old-id>" line goes at the top of the body instead
 _store_migrate_messages() {
   local old_id item sender recipient subject body
-  for old_id in $(_store_bd list --type message --status open --include-infra --json --limit 0 2>/dev/null | "$JQ_BIN" -r '.[].id'); do
+  for old_id in $(_store_bd list --type message --status open,in_progress,blocked --include-infra --json --limit 0 2>/dev/null | "$JQ_BIN" -r '.[].id'); do
     [ -n "$(_store_migrated_new_id "$old_id")" ] && continue
     item="$(_store_bd show "$old_id" --json 2>/dev/null)" || continue
     sender="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].created_by // ""')"
