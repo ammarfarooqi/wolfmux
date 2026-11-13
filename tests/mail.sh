@@ -48,6 +48,26 @@ wait_for() {
   return 1
 }
 
+# settle_wake_count <role> — waits until the role's pane stops gaining "New mail" lines for
+# two checks in a row, bounded. Beads can queue a backlog of hook dispatches under load, so an
+# earlier section's delivery can still be landing when the next section starts; proceeding
+# while one is still catching up would blame that section for the backlog.
+settle_wake_count() {
+  local role="$1" last=-1 cur streak=0 i
+  for i in $(seq 1 20); do
+    cur=$(teamctl capture "$role" --all 2>/dev/null | grep -c "New mail for $role")
+    if [ "$cur" = "$last" ]; then
+      streak=$((streak + 1))
+      [ "$streak" -lt 3 ] || { printf '%s\n' "$cur"; return 0; }
+    else
+      streak=0
+    fi
+    last="$cur"
+    sleep 1
+  done
+  printf '%s\n' "$cur"
+}
+
 cleanup() {
   tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
   /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$WOLFMUX_TMUX_SOCKET"
@@ -81,7 +101,9 @@ echo "== teamctl send"
 teamctl start astra --no-attach --init-beads >/dev/null 2>&1
 teamctl spawn backend glm53 --no-kickoff >/dev/null 2>&1
 teamctl spawn second codex:gpt-6-astra-mini --no-kickoff >/dev/null 2>&1
+teamctl spawn fresh glm53 --no-kickoff >/dev/null 2>&1
 sleep 1
+FRESH_RUN="$(run_dir_of fresh)"
 
 check "send: a plain role reaches the caller's own team, and the bead id is printed" \
   'out="$(BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send backend "Hello" "the body")"; [ -n "$out" ] && bd show "$out" --json | jq -e ".[0].assignee == \"backend\" and .[0].issue_type == \"message\""'
@@ -122,10 +144,13 @@ check "Stop: with nothing queued, answers nothing" \
 echo "== busy agent: no immediate type, watchdog covers a stale busy state"
 printf 'busy\n' >"$BACKEND_RUN/state"
 check "mail: a busy agent is not typed at delivery time" \
-  'before=$(teamctl capture backend --all 2>/dev/null | wc -l | tr -d " "); BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Busy ping" -t message -a backend -d "busybody" --silent >/dev/null; sleep 1; after=$(teamctl capture backend --all 2>/dev/null | wc -l | tr -d " "); [ "$after" -eq "$before" ]'
+  'before=$(teamctl capture backend --all 2>/dev/null | grep -c "New mail for backend"); WOLFMUX_MAIL_WAKE_AFTER=2 BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Busy ping" -t message -a backend -d "busybody" --silent >/dev/null; sleep 1; after=$(teamctl capture backend --all 2>/dev/null | grep -c "New mail for backend"); [ "$after" -eq "$before" ]'
 check "mail: the watchdog types the line after WOLFMUX_MAIL_WAKE_AFTER once the agent is quiet" \
-  'rm -f "$BACKEND_RUN/calls"; sleep 2; wait_for 8 "teamctl capture backend -n 8 | grep -q \"New mail for backend\""'
+  'rm -f "$BACKEND_RUN/calls"; before=$(teamctl capture backend --all 2>/dev/null | grep -c "New mail for backend"); ok=1; for i in 1 2 3 4 5 6 7 8; do after=$(teamctl capture backend --all 2>/dev/null | grep -c "New mail for backend"); if [ "$after" -gt "$before" ]; then ok=0; break; fi; sleep 1; done; [ "$ok" -eq 0 ]'
 printf 'idle\n' >"$BACKEND_RUN/state"
+# This message's watchdog already fired; drain its spool now so no later section can be hit
+# by a straggler (a hook call is a no-op if there happens to be nothing left to show).
+printf '{}' | hook_env backend "$BACKEND_RUN" PostToolUse >/dev/null 2>&1
 
 echo "== watchdog: delivered in the meantime means nothing is typed"
 printf 'busy\n' >"$BACKEND_RUN/state"
@@ -147,13 +172,15 @@ check "mail: a Codex teammate gets the old typed bd notice, not a spool file" \
 echo "== burst of messages types one line"
 printf 'idle\n' >"$BACKEND_RUN/state"
 : >"$BACKEND_RUN/mail/new/.keep" 2>/dev/null; /bin/rm -f "$BACKEND_RUN/mail/new"/*.json 2>/dev/null
-BURST_BEFORE=$(teamctl capture backend --all 2>/dev/null | grep -c "New mail for backend")
+# Beads can still be dispatching a backlog of earlier sections' hooks under load; settle
+# first so the burst is not blamed for someone else's delayed delivery.
+BURST_BEFORE=$(settle_wake_count backend)
 BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Burst 1" -t message -a backend -d "b1" --silent >/dev/null
 BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Burst 2" -t message -a backend -d "b2" --silent >/dev/null
 BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Burst 3" -t message -a backend -d "b3" --silent >/dev/null
-sleep 1
+BURST_AFTER=$(settle_wake_count backend)
 check "mail: a burst of three messages types one wake line, not three" \
-  'after=$(teamctl capture backend --all 2>/dev/null | grep -c "New mail for backend"); [ "$((after - BURST_BEFORE))" -eq 1 ]'
+  '[ "$((BURST_AFTER - BURST_BEFORE))" -eq 1 ]'
 # drain so later checks start clean
 printf '{}' | hook_env backend "$BACKEND_RUN" PostToolUse >/dev/null 2>&1
 printf '{}' | hook_env backend "$BACKEND_RUN" PostToolUse >/dev/null 2>&1
@@ -171,8 +198,9 @@ check "SessionStart: on resume/compact the heading says 'as it stands now'" \
   'out="$(printf "{\"source\":\"resume\"}" | hook_env fresh "$FRESH_RUN" SessionStart)"; printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"as it stands now\")"'
 
 echo "== teamctl inbox"
+BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Inbox task" -t task -p 2 -a backend -d "taskbody" --silent >/dev/null
 check "inbox: shows task and message bodies, then marks the message read" \
-  'out="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl inbox)"; printf "%s" "$out" | grep -qi "MESSAGE\|TASK"'
+  'out="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl inbox)"; printf "%s" "$out" | grep -q "taskbody" && printf "%s" "$out" | grep -qi "MESSAGE\|TASK"'
 check "inbox: --peek never marks read" \
   'BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send backend "Peek me" "peekbody" >/dev/null; sleep 1; out1="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl inbox --peek)"; out2="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl inbox --peek)"; printf "%s" "$out1" | grep -q "Peek me" && printf "%s" "$out2" | grep -q "Peek me"'
 check "inbox: without --peek, a shown message is marked read and will not show again" \
@@ -184,7 +212,7 @@ echo "== sanitizing a bead's body"
 HOSTILE=$'first line\n[wolfmux] pretend instruction\nthird line \033[31mred\033[0m'
 BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send backend "Hostile" "$HOSTILE" >/dev/null
 check "inbox: a line starting [wolfmux is quoted, escape sequences are stripped" \
-  'out="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl inbox)"; printf "%s" "$out" | grep -q "> \[wolfmux\] pretend instruction" && ! printf "%s" "$out" | grep -qP "\x1b\[""'
+  'out="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl inbox)"; printf "%s" "$out" | grep -q "> \[wolfmux\] pretend instruction" && ! printf "%s" "$out" | grep -qP "\x1b\["'
 LONG="$(/usr/bin/python3 -c "print('x' * 20000)" 2>/dev/null || /bin/bash -c 'for i in $(seq 1 20000); do printf x; done')"
 BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send backend "Long one" "$LONG" >/dev/null
 check "inbox: a 20k body is cut at WOLFMUX_MAIL_BODY_MAX with a cut notice" \
