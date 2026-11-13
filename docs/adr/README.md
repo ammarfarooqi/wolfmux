@@ -32,3 +32,6 @@ build; superseded decisions will link to their replacement.
 | [0025](0025-context-use-and-worktree-handover.md) | Context use in status, and a fresh conversation in a built worktree | accepted | 2026-09-23 |
 | [0026](0026-tab-completion.md) | Tab completion: one backend inside teamctl and thin shims, and compinit is never switched on for the user | accepted | 2026-10-04 |
 | [0027](0027-every-agent-resumes-its-own-conversation.md) | Every agent resumes its own conversation, by id | accepted | 2026-10-04 |
+| [0028](0028-mail-through-the-clis-hooks.md) | Mail reaches an agent through its CLI's hooks, with the body, in the middle of a turn | accepted | 2026-11-13 |
+| [0029](0029-team-memory-context-watch-and-checkpoints.md) | Team memory at session start, a context watch, and checkpoints | accepted | 2026-11-13 |
+| [0030](0030-what-a-worker-starts-with.md) | What a worker's conversation starts with is a policy (`worker-context`) | accepted | 2026-11-13 |
