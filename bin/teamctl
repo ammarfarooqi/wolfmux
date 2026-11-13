@@ -25,7 +25,7 @@ fi
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout guard completion hooks mail memory tasks; do
+for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout guard completion hooks store mail memory tasks; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -118,20 +118,16 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
 EOF
 }
 
-moved_to_beads() {
+removed_command() {
   /bin/cat >&2 <<EOF
-teamctl: '$1' is not a teamctl command — tasks and messages live in Beads (bd).
+teamctl: '$1' is not a teamctl command.
 
-  message an agent     bd create "Subject" -t message -a <role> -d "body"      (long body: --body-file <file>)
-  your inbox           bd list --assignee \$BEADS_ACTOR --status open,in_progress,blocked --include-infra
-  read / mark read     bd show <id>   then   bd close <id> -r read
-  reply in a thread    bd create "Re: ..." -t message -a <role> -d "..." --deps replies-to:<id>
-  message history      bd list --type message --all          thread: bd show <id> --thread
-  create a task        bd create "Title" -t task -p 1 -a <role> -d "details" [--deps <blocker-id>]
-  claim / block / done bd update <id> --claim · bd update <id> --status blocked · bd close <id> -r "commit <sha>; tests pass"
-  what is ready        bd ready            everything in progress: bd list --status in_progress
+  message everyone    teamctl send --all "<subject>" "<body>"
+  one task or message teamctl show <id> [--json]       its thread: teamctl show <id>
+  a list of tasks      teamctl tasks [<role>|--all] [--status <list>]
+  your inbox           teamctl inbox
 
-The recipient's pane is notified automatically (Beads hook -> teamctl nudge).
+See: teamctl help
 EOF
   exit 64
 }
@@ -199,13 +195,14 @@ main() {
     _guard) cmd_guard "$@" ;;
     _hook) cmd_hook "$@" ;;
     _deliver) cmd_deliver "$@" ;;
+    store) cmd_store "$@" ;;
     send) cmd_send "$@" ;;
     inbox) cmd_inbox "$@" ;;
     checkpoint) cmd_checkpoint "$@" ;;
     task) cmd_task "$@" ;;
     done) cmd_done "$@" ;;
     blocked) cmd_blocked "$@" ;;
-    broadcast | tasks | message-history) moved_to_beads "$command" ;;
+    broadcast | tasks | message-history) removed_command "$command" ;;
     version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;
     *)

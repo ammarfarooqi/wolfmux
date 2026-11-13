@@ -72,12 +72,16 @@ force_through() { : >"$2/attention"; } # the PostToolUse hot path: force the 10t
 echo "== team memory (SessionStart) =="
 RUN_W1="$WORK/run-w1"
 /bin/mkdir -p "$RUN_W1"
-check "no memories: SessionStart says nothing" '[ -z "$(hook_json source=startup | TEAM_ROLE=w1 WOLFMUX_RUN_DIR="$RUN_W1" teamctl _hook SessionStart)" ]'
+# "w1" has no registry record, so mail_hook's own SessionStart briefing ("nothing is
+# assigned yet...") fires regardless (cmd_hook asks only a valid role name, not a
+# registered one); these checks are about the memory heading specifically, not the whole
+# hook answer being empty.
+check "no memories: SessionStart says nothing about memory" '! printf "%s" "$(hook_json source=startup | TEAM_ROLE=w1 WOLFMUX_RUN_DIR="$RUN_W1" teamctl _hook SessionStart)" | grep -q "\[wolfmux memory\]"'
 bd remember "always run tests before reporting" --key test-habit >/dev/null 2>&1
 check "a remembered fact: SessionStart shows it under the wolfmux heading, bd's own banner lines gone" \
   'out="$(hook_json source=startup | TEAM_ROLE=w1 WOLFMUX_RUN_DIR="$RUN_W1" teamctl _hook SessionStart)"; printf "%s" "$out" | grep -q "\[wolfmux memory\] What this project" && printf "%s" "$out" | grep -q "always run tests before reporting" && ! printf "%s" "$out" | grep -q "If this output is truncated" && ! printf "%s" "$out" | grep -q "Stored via"'
 bd forget test-habit >/dev/null 2>&1
-check "forgotten again: SessionStart says nothing" '[ -z "$(hook_json source=startup | TEAM_ROLE=w1 WOLFMUX_RUN_DIR="$RUN_W1" teamctl _hook SessionStart)" ]'
+check "forgotten again: SessionStart says nothing about memory" '! printf "%s" "$(hook_json source=startup | TEAM_ROLE=w1 WOLFMUX_RUN_DIR="$RUN_W1" teamctl _hook SessionStart)" | grep -q "\[wolfmux memory\]"'
 
 echo "== context watch (PostToolUse) =="
 TRANS="$WORK/transcript.jsonl"

@@ -45,8 +45,57 @@ store_set_kind() {
   /bin/mv -f "$tmp" "$PROJECT_STATE/store"
 }
 
+# _bd_bounded <seconds> <command...> — <command...>'s own stdout within <seconds>, or
+# nothing (exit 1) if it does not finish in time. For a Beads read made from inside a hook:
+# a hook may never hang an agent on a slow write queue (Beads issue #6039), and macOS ships
+# no timeout(1). The native backend is fast enough that nothing calls this for it. Polls for
+# the background job to end rather than blocking on `wait "$pid"`: under this script's
+# `set -e`, that blocking form was measured to hang past its own bound once a second
+# background job exists to track, so a poll is the only shape that reliably comes back on time.
+_bd_bounded() {
+  local secs="$1" tmp rc=1 waited=0 pid
+  shift
+  tmp="$(mktemp 2>/dev/null)" || return 1
+  "$@" >"$tmp" 2>/dev/null &
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$((secs * 10))" ]; then
+      kill -9 "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      /bin/rm -f "$tmp" 2>/dev/null
+      return 1
+    fi
+    /bin/sleep 0.1 2>/dev/null || true
+    waited=$((waited + 1))
+  done
+  if wait "$pid" 2>/dev/null; then rc=0; fi
+  [ "$rc" -eq 0 ] && /bin/cat "$tmp"
+  /bin/rm -f "$tmp" 2>/dev/null
+  return "$rc"
+}
+
 # --- the public interface: validate what both backends share, then dispatch -----------
 store_ensure() { "store_$(store_kind)_ensure"; }
+
+# store_ensure_project — ROOT and PROJECT_STATE, without the tmux call load_project makes to
+# pick a team (store_kind and every store_* call need only these two; team selection is a
+# separate concern). WOLFMUX_ROOT is already exported into every agent's own environment, so
+# this is cheap even on a hook's hot path. Silent failure: a hook may never die on it.
+store_ensure_project() {
+  [ -n "${PROJECT_STATE:-}" ] && [ -n "${ROOT:-}" ] && return 0
+  ROOT="$(resolve_root 2>/dev/null)" || return 1
+  PROJECT_KEY="$(project_key "$ROOT")"
+  PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
+}
+
+# store_backend_ready — dies with a clear message when the backend this project is set to
+# is missing what it needs, naming the switch to the other one.
+store_backend_ready() {
+  case "$(store_kind)" in
+    native) _store_sqlite_ok || die "store: sqlite3 ${WOLFMUX_SQLITE_MIN_MINOR:+3.$WOLFMUX_SQLITE_MIN_MINOR}+ required for the native store (found: ${SQLITE_BIN:-none}); the other backend is WOLFMUX_STORE=beads" ;;
+    beads) [ -n "$BD_BIN" ] || die "Beads (bd) is not installed; this team's store is beads. Switch it: teamctl store native" ;;
+  esac
+}
 
 store_task_create() {
   case "${3:-}" in [0-4]) ;; *) return 1 ;; esac

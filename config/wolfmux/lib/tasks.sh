@@ -1,92 +1,64 @@
 #!/bin/bash
 # tasks.sh — hand out work, report it, never stop with work forgotten.
-# The contract is the header of lib/hooks.sh. Beads (bd) stays the record; these three
-# commands are the short, safe spelling of what the protocol already asks for in a few
-# `bd` calls, plus the Stop reminder (tasks_hook) that catches work left open under an
-# agent's name when its turn ends.
+# The contract is the header of lib/hooks.sh. Every task read and write here goes through
+# lib/store.sh's store_* interface, plus the Stop reminder (tasks_hook) that catches work
+# left open under an agent's name when its turn ends.
 #
-# Every `bd` invocation of this module lives in one of the tasks_store_* functions below:
-# plain arguments in, JSON or plain text on stdout, exit status says whether it worked.
-# Nothing else in this file calls bd, or knows a bead's JSON shape beyond id, title,
-# status and (through length) how many a list holds — so the store can be swapped for a
-# faster one later (a local sqlite3 index is planned) without touching a command above it.
+# A write that should tell someone calls mail_announce after it (a no-op in Beads mode: its
+# own hook already delivers). The functions below name what each one means for a task;
+# nothing else in this file knows a bead's JSON shape beyond id, title and status.
 
-# tasks_store_create <title> <priority> <assignee> [<description>] — prints the new id.
-tasks_store_create() {
-  local title="$1" priority="$2" assignee="$3" desc="${4:-}"
-  if [ -n "$desc" ]; then
-    "$BD_BIN" create "$title" -t task -p "$priority" -a "$assignee" -d "$desc" --silent
-  else
-    "$BD_BIN" create "$title" -t task -p "$priority" -a "$assignee" --silent
-  fi
-}
+# tasks_store_create <creator> <assignee> <priority> <title> [<description>] — prints the new id.
+tasks_store_create() { store_task_create "$1" "$2" "$3" "$4" "${5:-}"; }
 
 # tasks_store_add_dependency <id> <blocker-id> — <id> cannot start before <blocker-id> is closed.
-tasks_store_add_dependency() { "$BD_BIN" dep add "$1" "$2" >/dev/null; }
+tasks_store_add_dependency() { store_task_dep_add "$1" "$2"; }
 
-# tasks_store_title <id> — empty when there is no such bead.
-tasks_store_title() { "$BD_BIN" show "$1" --json 2>/dev/null | "$JQ_BIN" -r '.[0].title // empty'; }
+# tasks_store_title <id> — empty when there is no such task.
+tasks_store_title() { store_item_json "$1" 2>/dev/null | "$JQ_BIN" -r '.title // empty' 2>/dev/null; }
 
-# tasks_store_close <id> <reason>
-tasks_store_close() { "$BD_BIN" close "$1" -r "$2" >/dev/null; }
-
-# tasks_store_block <id> <note> — status blocked, note appended
-tasks_store_block() { "$BD_BIN" update "$1" --status blocked --append-notes "$2" >/dev/null; }
-
-# tasks_store_reply <to-identity> <subject> <body> <reply-to-id> — a message bead that
-# replies to a task; `bd dep add` accepts a free-form dependency type (confirmed against a
-# throwaway repo), so this needs no fallback that names the task id in the body instead.
-tasks_store_reply() {
-  local to="$1" subject="$2" body="$3" reply_to="$4"
-  "$BD_BIN" create "$subject" -t message -a "$to" -d "$body" --deps "replies-to:$reply_to" --silent >/dev/null
+# _tasks_close <id> <reason> <actor-identity> [failed] — closes the task and announces it.
+_tasks_close() {
+  local id="$1" reason="$2" actor="$3" failed="${4:-}"
+  store_task_close "$id" "$reason" "$failed" || return 1
+  mail_announce close "$(store_item_json "$id")" "$actor"
 }
 
-# tasks_store_list <identity> <status-csv> [<timeout-seconds>] — that identity's beads in
-# those statuses, as JSON. `bd list` without --include-infra already hides messages (an
-# infra bead type), so a task lookup never has to filter them out by hand. With a timeout,
-# the call is bounded by wall clock instead of running straight (a hook may never hang the
-# agent on a slow write queue; no `timeout` binary is a dependency here, macOS ships none).
-tasks_store_list() {
-  local me="$1" statuses="$2" secs="${3:-0}"
-  if [ "$secs" -gt 0 ]; then
-    _tasks_bd_timeout "$secs" list --assignee "$me" --status "$statuses" --json
-  else
-    "$BD_BIN" list --assignee "$me" --status "$statuses" --json 2>/dev/null
-  fi
+# _tasks_block <id> <actor-identity> <note> — status blocked, note appended, announced.
+_tasks_block() {
+  local id="$1" actor="$2" note="$3"
+  store_task_status "$id" blocked || return 1
+  store_task_note "$id" "$actor" "$note" || true
+  mail_announce update "$(store_item_json "$id")" "$actor"
 }
 
-# _tasks_bd_timeout <seconds> <bd argument>... — the wall-clock bound behind tasks_store_list.
-_tasks_bd_timeout() {
-  local secs="$1" out pid waited=0 rc=0
-  shift
-  out="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/wolfmux-bd.XXXXXX")" || return 1
-  ("$BD_BIN" "$@" >"$out" 2>/dev/null) &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$waited" -ge "$secs" ]; then
-      # Both can legitimately fail here (the process may have just exited on its own,
-      # between the check above and this line): a hook may never die on that race.
-      kill "$pid" >/dev/null 2>&1 || true
-      wait "$pid" >/dev/null 2>&1 || true
-      /bin/rm -f "$out"
-      return 1
-    fi
-    sleep 1 2>/dev/null || true
-    waited=$((waited + 1))
-  done
-  # `wait`'s own exit status is bd's; captured through an if, not a bare statement,
-  # so a nonzero one (bd failed) does not trip this script's `set -e`.
-  if wait "$pid"; then rc=0; else rc=$?; fi
-  /bin/cat "$out" 2>/dev/null
-  /bin/rm -f "$out"
-  return "$rc"
+# _tasks_reply <sender-identity> <to-identity> <subject> <body> <reply-to-id> — a message
+# that replies to a task, announced.
+_tasks_reply() {
+  local sender="$1" to="$2" subject="$3" body="$4" reply_to="$5" id
+  id="$(store_msg_create "$sender" "$to" "$subject" "$body" "$reply_to")" || return 1
+  mail_announce create "$(store_item_json "$id")" "$sender"
+}
+
+# tasks_store_list <identity> <status-csv> — that identity's tasks in those statuses, as
+# JSON, straight (no bound: for an interactive command, not a hook).
+tasks_store_list() { store_tasks_json "$1" "$2"; }
+
+# _tasks_hook_list <identity> <status-csv> — the same, but bounded to 5s on the Beads
+# backend (tasks_hook runs inside a hook, which may never hang on a slow write queue; the
+# native backend is fast enough to call straight). Empty, not an error, past the bound.
+_tasks_hook_list() {
+  case "$(store_kind)" in
+    native) store_tasks_json "$1" "$2" ;;
+    beads) _bd_bounded 5 store_tasks_json "$1" "$2" ;;
+  esac
 }
 
 # _tasks_default_id <identity> — the caller's only in_progress task, when no bead id was
 # given on the command line.
 _tasks_default_id() {
   local me="$1" json count
-  json="$(tasks_store_list "$me" in_progress)" || die "bd list failed"
+  json="$(tasks_store_list "$me" in_progress)" || die "could not read the store"
   count="$(printf '%s' "$json" | "$JQ_BIN" -r 'length' 2>/dev/null)"
   case "$count" in
     1) printf '%s' "$json" | "$JQ_BIN" -r '.[0].id' ;;
@@ -106,7 +78,7 @@ _tasks_commit_report() {
 
 # teamctl task <role> "<title>" [-d "<text>" | --body-file <file> | -] [-p <0-4>] [--after <bead-id>]... [--spawn <model>]
 cmd_task() {
-  local role="" title="" desc="" body_file="" priority="2" spawn_model="" after=() positional=0 id me blocker
+  local role="" title="" desc="" body_file="" priority="2" spawn_model="" after=() positional=0 id me creator blocker
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -d)
@@ -152,26 +124,28 @@ cmd_task() {
     die_usage 'usage: teamctl task <role> "<title>" [-d "<text>" | --body-file <file> | -] [-p <0-4>] [--after <bead-id>]... [--spawn <model>]'
   require_role_arg "$role"
   case "$priority" in [0-4]) ;; *) die_usage "-p must be 0-4" ;; esac
-  [ -n "$BD_BIN" ] || die "Beads (bd) is not installed; the team uses it for tasks and messages. See: teamctl doctor"
   require_tools
   load_project
+  store_backend_ready
   require_manager task
   me="$(team_identity "$TEAM" "$role")"
+  creator="${BEADS_ACTOR:-${TEAM_ROLE:-}}"
   if [ "$body_file" = "-" ]; then
     desc="$(/bin/cat)"
   elif [ -n "$body_file" ]; then
     desc="$(/bin/cat "$body_file" 2>/dev/null)" || die "cannot read --body-file: $body_file"
   fi
-  id="$(tasks_store_create "$title" "$priority" "$me" "$desc")" || die "bd create failed"
+  id="$(tasks_store_create "$creator" "$me" "$priority" "$title" "$desc")" || die "could not create the task"
   id="$(printf '%s' "$id" | tr -d '[:space:]')"
-  [ -n "$id" ] || die "bd create produced no id"
+  [ -n "$id" ] || die "task creation produced no id"
   for blocker in "${after[@]:-}"; do
     [ -n "$blocker" ] || continue
-    tasks_store_add_dependency "$id" "$blocker" || die "bd dep add $id $blocker failed"
+    tasks_store_add_dependency "$id" "$blocker" || die "could not add dependency $id -> $blocker"
   done
+  mail_announce create "$(store_item_json "$id")" "$creator"
   if [ -n "$spawn_model" ]; then
     if reg_exists "$role"; then
-      say "--spawn ignored: '$role' is already running; the Beads hook delivers the task."
+      say "--spawn ignored: '$role' is already running; it is already told."
     else
       cmd_spawn "$role" "$spawn_model"
     fi
@@ -209,9 +183,9 @@ cmd_done() {
     *) die_usage 'usage: teamctl done [<bead-id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]' ;;
   esac
   [ -n "$summary" ] || die_usage 'usage: teamctl done [<bead-id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]'
-  [ -n "$BD_BIN" ] || die "Beads (bd) is not installed; the team uses it for tasks and messages. See: teamctl doctor"
   require_tools
   load_project
+  store_backend_ready
   role="$(caller_role)"
   [ -n "$role" ] || die_usage "run 'teamctl done' from inside your own agent pane (TEAM_ROLE is unset)"
   reg_exists "$role" || die "no registry record for role '$role' in $(short_path "$ROOT")"
@@ -249,10 +223,10 @@ $extra"
 
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
-    tasks_store_reply "$lead_id" "Done: $title" "$report" "$id" || die "bd create (report message to $lead_id) failed"
+    _tasks_reply "$me" "$lead_id" "Done: $title" "$report" "$id" || die "could not send the report message to $lead_id"
     say "sent: Done: $title -> $lead_id"
   fi
-  tasks_store_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" || die "bd close $id failed"
+  _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" || die "could not close $id"
   say "closed: $id"
 }
 
@@ -272,9 +246,9 @@ cmd_blocked() {
     *) die_usage 'usage: teamctl blocked [<bead-id>] "<why>"' ;;
   esac
   [ -n "$why" ] || die_usage 'usage: teamctl blocked [<bead-id>] "<why>"'
-  [ -n "$BD_BIN" ] || die "Beads (bd) is not installed; the team uses it for tasks and messages. See: teamctl doctor"
   require_tools
   load_project
+  store_backend_ready
   role="$(caller_role)"
   [ -n "$role" ] || die_usage "run 'teamctl blocked' from inside your own agent pane (TEAM_ROLE is unset)"
   me="$(team_identity "$TEAM" "$role")"
@@ -285,10 +259,10 @@ cmd_blocked() {
   fi
   title="$(tasks_store_title "$id")"
   [ -n "$title" ] || die "no such task: $id"
-  tasks_store_block "$id" "$why" || die "bd update $id failed"
+  _tasks_block "$id" "$me" "$why" || die "could not mark $id blocked"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
-    tasks_store_reply "$lead_id" "Blocked: $title" "$why" "$id" || die "bd create (blocked message to $lead_id) failed"
+    _tasks_reply "$me" "$lead_id" "Blocked: $title" "$why" "$id" || die "could not send the blocked message to $lead_id"
     say "sent: Blocked: $title -> $lead_id"
   fi
   say "blocked: $id"
@@ -316,9 +290,8 @@ tasks_hook() {
   [ "$1" = "Stop" ] || return 0
   [ "$HOOK_ROLE" != "$WOLFMUX_LEAD_ROLE" ] || return 0
   [ "$(hook_input .stop_hook_active)" != "true" ] || return 0
-  [ -n "$BD_BIN" ] || return 0
   local me="${BEADS_ACTOR:-$HOOK_ROLE}" json dir id title marker
-  json="$(tasks_store_list "$me" open,in_progress 5)" || return 0
+  json="$(_tasks_hook_list "$me" open,in_progress)" || return 0
   printf '%s' "$json" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || return 0
   dir="$HOOK_RUN/tasks"
   /bin/mkdir -p "$dir" 2>/dev/null || return 0
@@ -341,5 +314,5 @@ tasks_hook() {
   [ -e "$marker" ] && return 0
   title="$(printf '%s' "$json" | "$JQ_BIN" -r --arg id "$id" '[.[] | select(.id == $id)][0].title')"
   : >"$marker" 2>/dev/null || true
-  hook_context "[wolfmux] $id \"$title\" is assigned to you and not started. Claim it and start: bd update $id --claim   (the body is in its inbox: teamctl inbox)"
+  hook_context "[wolfmux] $id \"$title\" is assigned to you and not started. Claim it and start: teamctl claim $id   (the body is in its inbox: teamctl inbox)"
 }

@@ -179,8 +179,12 @@ BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Burst 1" -t message -a backend -d "b1
 BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Burst 2" -t message -a backend -d "b2" --silent >/dev/null
 BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Burst 3" -t message -a backend -d "b3" --silent >/dev/null
 BURST_AFTER=$(settle_wake_count backend)
+# The stub agent's pane echoes a typed line twice for real (confirmed by hand): the pty's own
+# echo of the literal keys tm_type_line sends, then the stub's `exec /bin/cat` reflecting the
+# same line back once it reads it. So one real wake line raises this count by 2, not 1; a
+# burst of three collapsed into one wake line (not three) is a rise of 2, not 6.
 check "mail: a burst of three messages types one wake line, not three" \
-  '[ "$((BURST_AFTER - BURST_BEFORE))" -eq 1 ]'
+  '[ "$((BURST_AFTER - BURST_BEFORE))" -eq 2 ]'
 # drain so later checks start clean
 printf '{}' | hook_env backend "$BACKEND_RUN" PostToolUse >/dev/null 2>&1
 printf '{}' | hook_env backend "$BACKEND_RUN" PostToolUse >/dev/null 2>&1
@@ -216,7 +220,7 @@ check "inbox: a line starting [wolfmux is quoted, escape sequences are stripped"
 LONG="$(/usr/bin/python3 -c "print('x' * 20000)" 2>/dev/null || /bin/bash -c 'for i in $(seq 1 20000); do printf x; done')"
 BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send backend "Long one" "$LONG" >/dev/null
 check "inbox: a 20k body is cut at WOLFMUX_MAIL_BODY_MAX with a cut notice" \
-  'out="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl inbox)"; printf "%s" "$out" | grep -q "cut: bd show"'
+  'out="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl inbox)"; printf "%s" "$out" | grep -q "cut: teamctl show"'
 
 echo "== cross-team: a named team gets its own run directory"
 teamctl start astra --team review --no-attach --skip-beads >/dev/null 2>&1

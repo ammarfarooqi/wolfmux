@@ -1,11 +1,18 @@
 #!/bin/bash
 # mail.sh — messages and tasks reach an agent through its hooks, with the body, mid-turn.
-# The contract is the header of lib/hooks.sh.
+# The contract is the header of lib/hooks.sh. Every read and write of a task or message in
+# this file goes through lib/store.sh's store_* interface: nothing here knows which backend
+# (native or Beads) is behind it.
 #
-# $STATE_DIR/run/<role>/mail/new/  one bead not yet shown to that agent (the bead JSON, plus
-#                                  the event that delivered it); mail/seen/ = shown, newest 50.
-# Beads stays the record. teamctl never claims or closes a TASK; a MESSAGE that was shown is
-# closed for the agent, detached, so it does not spend a turn doing that itself.
+# $STATE_DIR/run/<role>/mail/new/  one item not yet shown to that agent (its JSON, plus the
+#                                  event that delivered it); mail/seen/ = shown, newest 50.
+# teamctl never claims or closes a TASK; a MESSAGE that was shown is marked read for the
+# agent, detached, so it does not spend a turn doing that itself.
+#
+# Delivery: the Beads backend has its own hook (hooks/beads-nudge) that calls `teamctl
+# _deliver` (cmd_deliver below) whenever a bead changes. The native backend has no hooks of
+# its own, so every command that writes it calls mail_announce itself, after the write.
+# Both end up in _mail_deliver_to, the one path to a recipient's spool/attention/wake.
 
 WOLFMUX_MAIL_BODY_MAX="${WOLFMUX_MAIL_BODY_MAX:-6000}"
 WOLFMUX_MAIL_HOOK_BUDGET=8000 # hooks.sh caps the whole answer at 9000; leave it room for the rest
@@ -98,25 +105,13 @@ _mail_spool_write() {
   printf '%s\n' "$file"
 }
 
-# cmd_deliver <identity> --event <create|update|close> — internal (`teamctl _deliver`); the
-# bead JSON on stdin. Called detached from hooks/beads-nudge, so it must never fail `bd` and
-# never delay the process that ran it: every exit here is 0.
-cmd_deliver() {
-  local identity="${1:-}" event="" payload role bead pane family spool
-  [ -n "$identity" ] || return 0
-  shift
-  while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--event" ] && [ "$#" -ge 2 ]; then
-      event="$2"
-      shift
-    fi
-    shift
-  done
-  case " create update close " in *" $event "*) ;; *) return 0 ;; esac
-  payload="$(/bin/cat 2>/dev/null || true)"
-  printf '%s' "$payload" | "$JQ_BIN" -e 'type == "object"' >/dev/null 2>&1 || return 0
-  mail_quiet_route "$identity" || return 0
-  role="$MAIL_ROLE"
+# _mail_deliver_to <role> <event> <payload-json> <identity> — the one path to a recipient:
+# spool it, flag attention, and wake the pane if it is idle (or watch for it to go idle if
+# busy); a role with no running pane, or a Codex family agent (no hooks yet), gets the old
+# typed nudge instead. Shared by cmd_deliver (the Beads hook) and mail_announce (the native
+# store's own delivery). Must never fail or delay whoever called it: every exit here is 0.
+_mail_deliver_to() {
+  local role="$1" event="$2" payload="$3" identity="$4" bead family pane spool
   known_role_name "$role" && reg_exists "$role" || return 0
   bead="$(printf '%s' "$payload" | "$JQ_BIN" -r '.id // empty' 2>/dev/null)"
   family="$(reg_field "$role" family)"
@@ -135,6 +130,65 @@ cmd_deliver() {
   return 0
 }
 
+# cmd_deliver <identity> --event <create|update|close> — internal (`teamctl _deliver`); the
+# item's JSON on stdin. Called detached from hooks/beads-nudge, so it must never fail and
+# never delay the process that ran it: every exit here is 0. Beads mode only: the native
+# store has no hook of its own and calls mail_announce directly instead.
+cmd_deliver() {
+  local identity="${1:-}" event="" payload
+  [ -n "$identity" ] || return 0
+  shift
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--event" ] && [ "$#" -ge 2 ]; then
+      event="$2"
+      shift
+    fi
+    shift
+  done
+  case " create update close " in *" $event "*) ;; *) return 0 ;; esac
+  payload="$(/bin/cat 2>/dev/null || true)"
+  printf '%s' "$payload" | "$JQ_BIN" -e 'type == "object"' >/dev/null 2>&1 || return 0
+  mail_quiet_route "$identity" || return 0
+  _mail_deliver_to "$MAIL_ROLE" "$event" "$payload" "$identity"
+}
+
+# mail_announce <event: create|update|close> <item-json> <actor-identity> — the native
+# store's own delivery, called by every teamctl command that just wrote it. Applies the same
+# rule hooks/beads-nudge applies for Beads: the assignee when someone else put or changed
+# something on its plate, the team's lead when a worker blocks or closes a task, never the
+# actor itself. A no-op for the Beads backend: its own hook already delivers, and calling
+# this there too would notify twice.
+mail_announce() {
+  local event="$1" item="$2" actor="$3" assignee type status lead target
+  [ "$(store_kind)" = "native" ] || return 0
+  [ -n "$item" ] || return 0
+  assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.assignee // ""' 2>/dev/null)"
+  type="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
+  status="$(printf '%s' "$item" | "$JQ_BIN" -r '.status // ""' 2>/dev/null)"
+  case "$actor" in
+    *.*) lead="${actor%%.*}.$WOLFMUX_LEAD_ROLE" ;;
+    *) lead="$WOLFMUX_LEAD_ROLE" ;;
+  esac
+  target=""
+  case "$event" in
+    create | update)
+      if [ -n "$assignee" ] && [ "$assignee" != "$actor" ] && [ "$status" != "closed" ]; then
+        target="$assignee"
+      elif [ "$type" != "message" ] && [ "$status" = "blocked" ] && [ -n "$actor" ] && [ "$actor" != "$lead" ]; then
+        target="$lead"
+      fi
+      ;;
+    close)
+      if [ "$type" != "message" ] && [ -n "$actor" ] && [ "$actor" != "$lead" ]; then
+        target="$lead"
+      fi
+      ;;
+  esac
+  [ -n "$target" ] || return 0
+  mail_quiet_route "$target" || return 0
+  _mail_deliver_to "$MAIL_ROLE" "$event" "$item" "$target"
+}
+
 # _mail_sanitize_body <text> <bead-id> — strips control characters (and so neutralises escape
 # sequences, which start with one), caps length, and makes sure a bead's own words can never be
 # mistaken for a line wolfmux itself is saying.
@@ -142,7 +196,7 @@ _mail_sanitize_body() {
   local text="$1" id="$2" cut=0 line out=""
   text="$(printf '%s' "$text" | LC_ALL=C /usr/bin/tr -d '\000-\010\013-\037\177')"
   if [ "${#text}" -gt "$WOLFMUX_MAIL_BODY_MAX" ]; then
-    text="$(printf '%s' "$text" | /usr/bin/cut -c1-"$WOLFMUX_MAIL_BODY_MAX")"
+    text="$(printf '%s' "$text" | _hook_cap "$WOLFMUX_MAIL_BODY_MAX")"
     cut=1
   fi
   while IFS= read -r line || [ -n "$line" ]; do
@@ -158,7 +212,7 @@ $text
 MAILBODY
   if [ "$cut" -eq 1 ]; then
     out="$out
-… (cut: bd show $id has the rest)"
+… (cut: teamctl show $id has the rest)"
   fi
   printf '%s' "$out"
 }
@@ -194,7 +248,7 @@ _mail_render_bead() {
       heading="[wolfmux mail] TASK $id from $from, priority P$prio, $status: $title"
     fi
     hint=""
-    [ "$status" != "open" ] || hint="This is your task. Claim it before you start: bd update $id --claim"
+    [ "$status" != "open" ] || hint="This is your task. Claim it before you start: teamctl claim $id"
   fi
   body="$(_mail_sanitize_body "$desc" "$id")"
   out="$heading"
@@ -215,37 +269,33 @@ _mail_prune_seen() {
 }
 
 # _mail_mark_shown <file> <seen-dir> <identity> — moves a shown spool file into seen/, prunes
-# seen/ to the newest 50, and for a message bead closes it for this agent, detached (so the
-# agent does not spend a turn doing that itself, and a hook never blocks on `bd`).
+# seen/ to the newest 50, and for a message marks it read for this agent, detached (so the
+# agent does not spend a turn doing that itself, and a hook never blocks on the store).
 _mail_mark_shown() {
   local file="$1" seen="$2" identity="$3" dest type id
   dest="$seen/$(basename "$file")"
   /bin/mv -f "$file" "$dest" 2>/dev/null || return 0
   type="$("$JQ_BIN" -r '.issue_type // "task"' "$dest" 2>/dev/null)"
   id="$("$JQ_BIN" -r '.id // empty' "$dest" 2>/dev/null)"
-  if [ "$type" = "message" ] && valid_bead_id "$id" && [ -n "$BD_BIN" ]; then
-    ("$BD_BIN" close "$id" -r "delivered to $identity by wolfmux" >/dev/null 2>&1 &)
+  if [ "$type" = "message" ] && valid_bead_id "$id" && [ -n "$identity" ]; then
+    (store_msg_read "$identity" "$id" >/dev/null 2>&1 &)
   fi
   _mail_prune_seen "$seen"
 }
 
 # inbox_read <identity> — this agent's open work as JSON: tasks first by priority, then unread
-# messages by time. 1 when `bd` is missing, unreachable, or answers something that is not JSON;
+# messages by time. 1 when the store is unreachable or answers something that is not JSON;
 # the caller decides what that means (a hook says nothing, `teamctl inbox` reports it).
 inbox_read() {
   local identity="$1" json
-  [ -n "$BD_BIN" ] && [ -n "$JQ_BIN" ] || return 1
-  json="$("$BD_BIN" list --assignee "$identity" --status open,in_progress,blocked --include-infra --json 2>/dev/null)" || return 1
+  [ -n "$JQ_BIN" ] || return 1
+  json="$(store_inbox_json "$identity" 2>/dev/null)" || return 1
   printf '%s' "$json" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || return 1
-  printf '%s' "$json" | "$JQ_BIN" -c '
-    . as $all
-    | ([$all[]? | select((.issue_type // "task") != "message")] | sort_by(.priority // 3))
-    + ([$all[]? | select((.issue_type // "task") == "message")] | sort_by(.created_at // ""))
-  '
+  printf '%s' "$json"
 }
 
 # _mail_hook_drain — PostToolUse, UserPromptSubmit, Stop: whatever is waiting in mail/new/,
-# oldest first. Nothing queued: return at once, no `bd` call either way. More than fits in
+# oldest first. Nothing queued: return at once, no store call either way. More than fits in
 # about 8000 characters: show what fits, leave the rest in new/ for the next tool call.
 _mail_hook_drain() {
   local dir="$HOOK_RUN/mail" identity="${BEADS_ACTOR:-$HOOK_ROLE}" base file json block budget=0 shown=0 more=0
@@ -267,10 +317,10 @@ _mail_hook_drain() {
   [ "$more" -eq 0 ] || agent_attention "$HOOK_ROLE"
 }
 
-# _mail_hook_session_start — Beads is the truth here, not the spool: a task assigned before
-# the worker existed was never spooled. One read, rendered as the agent's briefing; whatever
-# already sat in mail/new/ is already in that briefing, so it moves to seen/ too. `bd` missing
-# or failing: say nothing, leave the spool alone.
+# _mail_hook_session_start — the store is the truth here, not the spool: a task assigned
+# before the worker existed was never spooled. One read, rendered as the agent's briefing;
+# whatever already sat in mail/new/ is already in that briefing, so it moves to seen/ too.
+# The store unreachable or failing: say nothing, leave the spool alone.
 _mail_hook_session_start() {
   local identity="${BEADS_ACTOR:-$HOOK_ROLE}" rows count heading json block budget=0 shown=0 base
   rows="$(inbox_read "$identity")" || return 0
@@ -333,16 +383,14 @@ _mail_send_target() {
   MAIL_SEND_TEAM="$team" MAIL_SEND_ROLE="$role"
 }
 
-# _mail_send_one <team> <role> <subject> <body> <re-bead> — bd create, prints the new bead id.
-# The Beads hook does the delivery: this never notifies anyone itself.
+# _mail_send_one <team> <role> <subject> <body> <re-bead> <sender-identity> — creates the
+# message, prints its new id. In Beads mode the hook does the delivery; in native mode this
+# announces it itself, after the write.
 _mail_send_one() {
-  local team="$1" role="$2" subject="$3" body="$4" re="$5" identity id
+  local team="$1" role="$2" subject="$3" body="$4" re="$5" sender="$6" identity id
   identity="$(team_identity "$team" "$role")"
-  if [ -n "$re" ]; then
-    id="$("$BD_BIN" create "$subject" -t message -a "$identity" -d "$body" --deps "replies-to:$re" --silent 2>&1)" || { info "$id"; return 1; }
-  else
-    id="$("$BD_BIN" create "$subject" -t message -a "$identity" -d "$body" --silent 2>&1)" || { info "$id"; return 1; }
-  fi
+  id="$(store_msg_create "$sender" "$identity" "$subject" "$body" "$re")" || return 1
+  mail_announce create "$(store_item_json "$id")" "$sender"
   printf '%s\n' "$id"
 }
 
@@ -390,18 +438,18 @@ cmd_send() {
   [ -z "$re" ] || valid_bead_id "$re" || die_usage "invalid --re bead id '$re'"
   require_tools
   load_project
-  [ -n "$BD_BIN" ] || die "Beads (bd) is not installed; see: teamctl doctor"
+  store_backend_ready
+  self="${BEADS_ACTOR:-${TEAM_ROLE:-}}"
   if [ "$all" -eq 1 ]; then
-    self="${TEAM_ROLE:-}"
     for r in $(reg_list); do
-      [ "$r" != "$self" ] || continue
-      id="$(_mail_send_one "$TEAM" "$r" "$subject" "$body" "$re")" || die "bd create failed for '$r'"
+      [ "$r" != "${TEAM_ROLE:-}" ] || continue
+      id="$(_mail_send_one "$TEAM" "$r" "$subject" "$body" "$re" "$self")" || die "could not create a message for '$r'"
       ids="$ids $id"
     done
     say "${ids# }"
   else
     _mail_send_target "$target"
-    id="$(_mail_send_one "$MAIL_SEND_TEAM" "$MAIL_SEND_ROLE" "$subject" "$body" "$re")" || die "bd create failed"
+    id="$(_mail_send_one "$MAIL_SEND_TEAM" "$MAIL_SEND_ROLE" "$subject" "$body" "$re" "$self")" || die "could not create the message"
     say "$id"
   fi
 }
@@ -443,7 +491,7 @@ cmd_inbox() {
     simple="$ID_ROLE"
   fi
   [ -z "$caller" ] || [ "$identity" != "$caller" ] || own=1
-  rows="$(inbox_read "$identity")" || die "could not read Beads for '$identity' (is bd installed and initialized?)"
+  rows="$(inbox_read "$identity")" || die "could not read the store for '$identity'"
   count="$(printf '%s' "$rows" | "$JQ_BIN" -r 'length' 2>/dev/null)"
   case "$count" in '' | *[!0-9]*) count=0 ;; esac
   if [ "$asjson" -eq 1 ]; then
@@ -462,19 +510,14 @@ cmd_inbox() {
   _mail_inbox_mark_read "$identity" "$simple" "$rows"
 }
 
-# _mail_inbox_mark_read <identity> <role> <rows-json> — every message row shown is closed
-# (detached), and the caller's own mail/new/ is emptied into seen/.
+# _mail_inbox_mark_read <identity> <role> <rows-json> — every message row shown is marked
+# read (detached, one store call), and the caller's own mail/new/ is emptied into seen/.
 _mail_inbox_mark_read() {
-  local identity="$1" role="$2" rows="$3" line mtype mid new seen base
-  if [ -n "$BD_BIN" ]; then
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      mtype="$(printf '%s' "$line" | "$JQ_BIN" -r '.issue_type // "task"')"
-      [ "$mtype" = "message" ] || continue
-      mid="$(printf '%s' "$line" | "$JQ_BIN" -r '.id // empty')"
-      valid_bead_id "$mid" || continue
-      ("$BD_BIN" close "$mid" -r "delivered to $identity by wolfmux" >/dev/null 2>&1 &)
-    done < <(printf '%s' "$rows" | "$JQ_BIN" -c '.[]' 2>/dev/null)
+  local identity="$1" role="$2" rows="$3" mids seen new base
+  mids="$(printf '%s' "$rows" | "$JQ_BIN" -r '[.[] | select((.issue_type // "task") == "message") | .id] | join(" ")' 2>/dev/null)"
+  if [ -n "$mids" ]; then
+    # shellcheck disable=SC2086
+    (store_msg_read "$identity" $mids >/dev/null 2>&1 &)
   fi
   seen="$(run_dir_ensure "$role")/mail/seen"
   new="$(run_dir "$role")/mail/new"

@@ -57,6 +57,20 @@ WOLFMUX_HOOK_COMPACT_NOTE="Keep in the summary, word for word where you can: the
 # What one hook answer may add to a conversation. A CLI truncates silently above its own limit.
 WOLFMUX_HOOK_MAX_CHARS=9000
 
+# _hook_cap <max-chars> — stdin to stdout, capped to the WHOLE text's length. `cut -c1-N`
+# caps each LINE to N characters, not the text: many short lines then sail straight through
+# a check that already measured the text as too long. A bash substring under a UTF-8 locale
+# counts characters, so this cannot split a multi-byte one into invalid output either.
+_hook_cap() {
+  local max="$1" text
+  text="$(/bin/cat)"
+  if [ "${#text}" -gt "$max" ]; then
+    printf '%s' "${text:0:$max}"
+  else
+    printf '%s' "$text"
+  fi
+}
+
 # run_dir <role> — the agent's run directory in the loaded team
 run_dir() { printf '%s/run/%s\n' "$STATE_DIR" "$1"; }
 
@@ -121,7 +135,7 @@ _hook_emit() {
   local text="$HOOK_CONTEXT"
   [ -n "$text" ] || return 0
   if [ "${#text}" -gt "$WOLFMUX_HOOK_MAX_CHARS" ]; then
-    text="$(printf '%s' "$text" | /usr/bin/cut -c1-"$WOLFMUX_HOOK_MAX_CHARS")
+    text="$(printf '%s' "$text" | _hook_cap "$WOLFMUX_HOOK_MAX_CHARS")
 [wolfmux] cut here: the rest is in your inbox (teamctl inbox)."
   fi
   case "$HOOK_EVENT" in
@@ -153,6 +167,7 @@ cmd_hook() {
   fi
   HOOK_SOURCE="$(hook_input .source)"
   HOOK_TRANSCRIPT="$(hook_input .transcript_path)"
+  store_ensure_project 2>/dev/null || true # cheap (no tmux call): mail/tasks/memory read or write the store below
   case "$HOOK_EVENT" in
     SessionStart)
       # A new conversation counts its own tool calls; one that is resumed or compacted goes on.

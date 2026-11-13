@@ -2,7 +2,11 @@
 # memory.sh — team memory, context watch, checkpoints. The contract is the header of lib/hooks.sh.
 #
 # Three things an agent is otherwise never told: what earlier agents of this project learned
-# (Beads memories), how full its own conversation is, and where it (or its predecessor) left off.
+# (team memory, lib/store.sh), how full its own conversation is, and where it (or its
+# predecessor) left off. Every read of team memory or a task here goes through the store_*
+# interface; _bd_bounded (lib/store.sh) bounds the Beads half of it to 5s, since this runs
+# inside a hook, which may never hang on a slow write queue. The native backend is fast
+# enough that nothing here bounds it.
 
 # Numbers that are not WOLFMUX_CONTEXT_WARN / WOLFMUX_CONTEXT_ROTATE (already on the config
 # allow list in lib/provider-env.sh). These stay environment-only, for a test to override;
@@ -11,41 +15,12 @@ WOLFMUX_MEMORY_CHARS="${WOLFMUX_MEMORY_CHARS:-4000}"
 WOLFMUX_CHECKPOINT_CHARS="${WOLFMUX_CHECKPOINT_CHARS:-8000}"
 WOLFMUX_CHECKPOINT_MAX_AGE_H="${WOLFMUX_CHECKPOINT_MAX_AGE_H:-72}"
 
-# _bd_bounded <seconds> <bd args...> — bd's own stdout, or nothing (exit 1) when bd is not
-# installed, exits non-zero, or does not answer within <seconds>. macOS ships no timeout(1).
-# Polls for the process to end rather than blocking on `wait "$pid"` racing a background
-# killer: under this script's `set -e`, that blocking form was measured to hang past its own
-# bound (bash never returns from the wait once a second background job exists to track), so
-# a poll is the only shape here that reliably comes back on time.
-_bd_bounded() {
-  local secs="$1" tmp rc=1 waited=0 pid
-  shift
-  [ -n "$BD_BIN" ] || return 1
-  tmp="$(mktemp 2>/dev/null)" || return 1
-  "$BD_BIN" "$@" >"$tmp" 2>/dev/null &
-  pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ "$waited" -ge "$((secs * 10))" ]; then
-      kill -9 "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      /bin/rm -f "$tmp" 2>/dev/null
-      return 1
-    fi
-    /bin/sleep 0.1 2>/dev/null || true
-    waited=$((waited + 1))
-  done
-  if wait "$pid" 2>/dev/null; then rc=0; fi
-  [ "$rc" -eq 0 ] && /bin/cat "$tmp"
-  /bin/rm -f "$tmp" 2>/dev/null
-  return "$rc"
-}
-
 # _memory_clean <max-chars> — stdin to stdout: control characters and escape sequences gone
-# (tab and newline kept, since a checkpoint is meant to read like a note), cut to length. A
-# bead's or a transcript's text is data an agent did not write for a terminal; this is read
-# back into one.
+# (tab and newline kept, since a checkpoint is meant to read like a note), cut to the whole
+# text's length, not per line (_hook_cap, lib/hooks.sh). A bead's or a transcript's text is
+# data an agent did not write for a terminal; this is read back into one.
 _memory_clean() {
-  LC_ALL=C tr -d '\000-\010\013-\037\177' | /usr/bin/cut -c1-"$1"
+  LC_ALL=C tr -d '\000-\010\013-\037\177' | _hook_cap "$1"
 }
 
 # _memory_threshold <raw> <default> — an integer 1..99, else <default>; "0" or "off" is 0
@@ -60,46 +35,43 @@ _memory_threshold() {
   if [ "$raw" -ge 1 ] && [ "$raw" -le 99 ]; then printf '%s\n' "$raw"; else printf '%s\n' "$default"; fi
 }
 
-# memory_store_* — every place this module calls bd (Beads), one function per operation, so a
-# second, faster store can sit behind the same verbs later without anything else changing.
-# Inputs are plain arguments, output is JSON or plain text on stdout, exit status says whether
-# it worked. Nothing outside these functions calls bd or knows a bead's JSON shape beyond
-# id, title, description, issue_type, status, priority, assignee, created_by.
+# memory_store_* — every place this module reads or writes the store, one function per
+# operation, through lib/store.sh's store_* interface. On the Beads backend, a read is
+# bounded to 5s (_bd_bounded, lib/store.sh): this runs inside a hook, which may never hang
+# on a slow write queue. The native backend is fast enough that nothing here bounds it.
 
-# memory_store_memories_text — bd's own stdout for the team-memory block, or nothing (exit 1)
-# when bd is missing, failing, or slower than 5s.
+# memory_store_memories_text — the team-memory block's text, or nothing (exit 1) when there
+# are no memories, or the store is unreachable or (Beads) slower than 5s.
 memory_store_memories_text() {
-  _bd_bounded 5 prime --memories-only --max-memory-chars "$WOLFMUX_MEMORY_CHARS"
+  local body
+  case "$(store_kind)" in
+    native) body="$(store_memory_text "$WOLFMUX_MEMORY_CHARS")" ;;
+    beads) body="$(_bd_bounded 5 store_memory_text "$WOLFMUX_MEMORY_CHARS")" ;;
+  esac
+  [ -n "$body" ] || return 1
+  printf '%s\n' "$body"
 }
 
-# memory_store_inprogress_task <identity> — that identity's one in_progress task bead, as a
-# single JSON object (empty when none, or bd is missing, failing, or slower than 5s).
+# memory_store_inprogress_task <identity> — that identity's one in_progress task, as a single
+# JSON object (empty when none, or the store is unreachable or (Beads) slower than 5s).
 memory_store_inprogress_task() {
   local raw
-  raw="$(_bd_bounded 5 list --assignee "$1" --status in_progress --type task --json -n 1)" || return 1
-  printf '%s' "$raw" | "$JQ_BIN" -c '.[0] // empty' 2>/dev/null
+  case "$(store_kind)" in
+    native) raw="$(store_tasks_json "$1" in_progress)" || return 1 ;;
+    beads) raw="$(_bd_bounded 5 store_tasks_json "$1" in_progress)" || return 1 ;;
+  esac
+  printf '%s' "${raw:-[]}" | "$JQ_BIN" -c '.[0] // empty' 2>/dev/null
 }
 
-# memory_store_task_note <id> <text> — appends a note to a task bead.
-memory_store_task_note() {
-  [ -n "$BD_BIN" ] || return 1
-  "$BD_BIN" note "$1" "$2" >/dev/null 2>&1
-}
+# memory_store_task_note <id> <author> <text> — appends a note to a task.
+memory_store_task_note() { store_task_note "$1" "$2" "$3"; }
 
-# memory_store_lead_message <lead-identity> <subject> <body> — a message bead to the lead.
+# memory_store_lead_message <lead-identity> <sender-identity> <subject> <body> — a message to
+# the lead, announced (a no-op in Beads mode: its own hook already delivers).
 memory_store_lead_message() {
-  [ -n "$BD_BIN" ] || return 1
-  "$BD_BIN" create "$2" -t message -a "$1" -d "$3" >/dev/null 2>&1
-}
-
-# _memory_prime_body — the team-memory block's body (bd's own banner lines gone), or nothing
-# (exit 1) when there are no memories, or bd is missing, failing, or slower than 5s.
-_memory_prime_body() {
-  local raw
-  raw="$(memory_store_memories_text)" || return 1
-  [ -n "$raw" ] || return 1
-  case "$raw" in *"No memories stored"*) return 1 ;; esac
-  printf '%s\n' "$raw" | sed -e '/^\[bd prime\] If this output is truncated/d' -e '/^Stored via `bd remember`/d' -e '/./,$!d'
+  local lead="$1" sender="$2" subject="$3" body="$4" id
+  id="$(store_msg_create "$sender" "$lead" "$subject" "$body")" || return 1
+  mail_announce create "$(store_item_json "$id")" "$sender"
 }
 
 # memory_hook <Event> — see lib/hooks.sh for the contract.
@@ -117,8 +89,8 @@ _memory_session_start() {
     startup | clear | compact) /bin/rm -f "$HOOK_RUN/memory/warned" 2>/dev/null || true ;;
   esac
   local body
-  if body="$(_memory_prime_body)" && [ -n "$body" ]; then
-    hook_context "[wolfmux memory] What this project's teams have learned (bd memories <word> to search, bd remember \"<fact>\" --key <slug> to add):
+  if body="$(memory_store_memories_text)" && [ -n "$body" ]; then
+    hook_context "[wolfmux memory] What this project's teams have learned (teamctl memories <word> to search, teamctl remember \"<fact>\" to add):
 
 $body"
   fi
@@ -188,17 +160,17 @@ teamctl checkpoint \"<done so far / what is next / what to watch out for>\""
   fi
 }
 
-# _memory_tell_lead <percent> <tokens> <window> — a message bead to this team's lead, detached:
-# a bd write is slow enough that a hook may never wait on it.
+# _memory_tell_lead <percent> <tokens> <window> — a message to this team's lead, detached: a
+# store write is slow enough (Beads) that a hook may never wait on it.
 _memory_tell_lead() {
-  [ -n "$BD_BIN" ] || return 0
-  local lead body
+  local lead sender body
   lead="$(team_identity "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" lead)"
+  sender="${BEADS_ACTOR:-$HOOK_ROLE}"
   body="tokens: $2 of $3 ($1%)
 checkpoint: $HOOK_RUN/memory/checkpoint.md
 teamctl restart $HOOK_ROLE : a new conversation in the same worktree and branch; it starts from the checkpoint"
   (
-    memory_store_lead_message "$lead" "$HOOK_ROLE: context at $1%" "$body" &
+    memory_store_lead_message "$lead" "$sender" "$HOOK_ROLE: context at $1%" "$body" &
   ) >/dev/null 2>&1
 }
 
@@ -268,6 +240,7 @@ cmd_checkpoint() {
     *) text="${1:-}" ;;
   esac
   require_tools
+  load_project
   if [ "$mode" = "show" ]; then
     role="${show_role:-${TEAM_ROLE:-}}"
     require_role_arg "$role"
@@ -296,9 +269,9 @@ cmd_checkpoint() {
     printf '%s\n' "$clean_text"
   } | _reg_write_atomic "$cur"
   say "checkpoint saved: $(short_path "$cur")"
-  if [ -n "$task_id" ] && [ -n "$BD_BIN" ]; then
+  if [ -n "$task_id" ]; then
     (
-      memory_store_task_note "$task_id" "checkpoint $stamp: $clean_text" &
+      memory_store_task_note "$task_id" "${BEADS_ACTOR:-$role}" "checkpoint $stamp: $clean_text" &
     ) >/dev/null 2>&1
   fi
 }
