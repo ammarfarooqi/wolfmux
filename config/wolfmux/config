@@ -71,6 +71,13 @@
 # Keep every worker inside its own worktree and on its own branch: tool calls that reach
 # outside are refused with a reason (a guard against mistakes, not a sandbox).
 #WOLFMUX_WORKER_ISOLATION=on
+# What of your own Claude Code setup (~/.claude) a worker's conversation starts with. Every token
+# of it is sent with every request a worker makes.
+#   full  all of it: plugins with their skills, agents and session hooks, and your rules
+#   trim  your rules and settings; every plugin off for workers (the default)
+#   lean  only the project's own instructions (CLAUDE.md, .claude/) and wolfmux's
+# The lead always starts with everything. Per team: teamctl policy worker-context <full|trim|lean>
+#WOLFMUX_WORKER_CONTEXT=trim
 # May a lead found further teams (teamctl start <model> --team <new> --handover <bead>)?
 # You are notified every time one does.
 #WOLFMUX_LEAD_TEAMS=on

@@ -723,14 +723,17 @@ write_agent_settings() {
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
   # Workers only: agent teams off, so a worker can never become a second manager.
   # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh).
+  # Workers, by the worker-context policy: your plugins off (trim, lean), see lib/policy.sh.
   # Everyone: the turn hooks (lib/hooks.sh): mail and memory reach an agent through them, and
   # the "finished" notification is the end of the Stop hook (lib/notify.sh).
   # Lead mode only: permission requests go to the lead.
   "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" \
     --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$(($(approval_timeout) + 30))" \
     --arg hook_command "\"$TEAMCTL_SELF\" _hook" --arg events "$WOLFMUX_HOOK_EVENTS" --argjson hook_timeout "$WOLFMUX_HOOK_TIMEOUT" \
-    --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" '
+    --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" \
+    --argjson context "$(worker_context_settings "$kind" "$(policy_get worker-context)")" '
     (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
+    * $context
     * {env: {ECC_DISABLED_HOOKS: $silence}}
     * {hooks: ($events | split(" ") | map({key: ., value: [{hooks: [{type: "command", command: ($hook_command + " " + .), timeout: $hook_timeout}]}]}) | from_entries)}
     * (if $guard_command != ""
@@ -823,6 +826,11 @@ $prompt
       # The same marks as on the pane border, inside Claude Code's own frame: wolf = manager, dog = teammate.
       if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then name="$WOLFMUX_LEAD_MARK team/$role"; else name="$WOLFMUX_WORKER_MARK team/$role"; fi
       args=(--append-system-prompt "$prompt" --name "$name")
+      # lean: nothing from ~/.claude (settings, plugins, rules). The project's own instructions
+      # and the per-agent settings file above still load; so does the login.
+      if [ "$(reg_field "$role" kind)" = "worker" ] && [ "$(policy_get worker-context)" = "lean" ]; then
+        args+=(--setting-sources project,local)
+      fi
       if [ -n "$model_id" ]; then args+=(--model "$model_id"); fi
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
       session_id="$(reg_field "$role" session_id)"

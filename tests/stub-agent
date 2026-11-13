@@ -7,6 +7,7 @@ codexnotify=false
 name=""
 newsession=""
 resumed=""
+sources=""
 previous=""
 for arg in "$@"; do
   case "$arg" in
@@ -16,6 +17,7 @@ for arg in "$@"; do
   if [ "$previous" = "--model" ]; then modelarg="$arg"; fi
   if [ "$previous" = "--session-id" ]; then newsession="$arg"; fi
   if [ "$previous" = "--resume" ]; then resumed="$arg"; fi
+  if [ "$previous" = "--setting-sources" ]; then sources="$arg"; fi
   case "$arg" in notify=*_notify*) codexnotify=true ;; esac
   previous="$arg"
 done
@@ -81,6 +83,8 @@ if [ -n "${WOLFMUX_EXTRA_SETTINGS:-}" ] && [ -r "$WOLFMUX_EXTRA_SETTINGS" ]; the
   echo "STUB settings=$(jq -c '{teams: .env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, mode: .teammateMode, hook: (.hooks.PermissionRequest != null)}' "$WOLFMUX_EXTRA_SETTINGS")"
   echo "STUB guard=$(jq -c '(.hooks.PreToolUse // []) | map(.hooks[].command) | join(" ") | test("_guard")' "$WOLFMUX_EXTRA_SETTINGS")"
   echo "STUB notify=$(jq -c '{stop: (.hooks.Stop != null), silenced: .env.ECC_DISABLED_HOOKS}' "$WOLFMUX_EXTRA_SETTINGS")"
+  # worker-context (lib/policy.sh): which of your plugins are off for this agent, and whether ~/.claude is read at all
+  echo "STUB context=$(jq -r '[.enabledPlugins // {} | to_entries[] | select(.value == false) | .key] | sort | join(",")' "$WOLFMUX_EXTRA_SETTINGS") sources=${sources:-all}"
   # the turn hooks (lib/hooks.sh): which events call `teamctl _hook <Event>`
   echo "STUB hooks=$(jq -r '[.hooks // {} | to_entries[] | select(.key as $k | any(.value[].hooks[]; .command | endswith("_hook " + $k))) | .key] | sort | join(",")' "$WOLFMUX_EXTRA_SETTINGS")"
 else

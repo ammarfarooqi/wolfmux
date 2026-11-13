@@ -89,11 +89,11 @@ _status_team_json() {
   if team_orphaned; then orphaned=1; fi
   _status_rows | "$JQ_BIN" -s --arg team "$TEAM" --arg root "$ROOT" --arg session "$SESSION" \
     --arg running "${SESSION_LIVE:-0}" --arg founder "$(team_founder)" --arg orphaned "$orphaned" --arg lp "$(policy_get lead-permissions)" \
-    --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
+    --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg wc "$(policy_get worker-context)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
       founder: $founder, orphaned: ($orphaned == "1"),
-      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt},
+      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, worker_context: $wc, lead_teams: $lt},
       approvals_pending: ($pending | tonumber), agents: .}'
 }
 

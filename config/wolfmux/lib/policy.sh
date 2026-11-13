@@ -13,6 +13,12 @@
 #                                           <model> --team <new>) and hand work over to them?
 #   worker-isolation    on | off            refuse a worker's tool calls that reach outside its
 #                                           own worktree and branch (lib/guard.sh)
+#   worker-context      full | trim | lean  what of YOUR Claude Code setup a worker's conversation starts
+#                                           with. full = all of it (plugins, their skills, agents and
+#                                           hooks, your rules). trim = your rules and settings, no
+#                                           plugins. lean = the project's own instructions and
+#                                           wolfmux's, nothing from ~/.claude. See worker_context_*
+#                                           below for what that costs and saves.
 #   branch-template     <template>          how this team names its workers' branches, with the
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
@@ -20,7 +26,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation lead-teams branch-template"
+POLICY_KEYS="lead-permissions worker-permissions worker-spawn worker-isolation worker-context lead-teams branch-template"
 
 policy_default() {
   case "$1" in
@@ -29,6 +35,7 @@ policy_default() {
     worker-spawn) printf '%s\n' "${WOLFMUX_WORKER_SPAWN:-off}" ;;
     worker-isolation) printf '%s\n' "${WOLFMUX_WORKER_ISOLATION:-on}" ;;
     lead-teams) printf '%s\n' "${WOLFMUX_LEAD_TEAMS:-on}" ;;
+    worker-context) printf '%s\n' "${WOLFMUX_WORKER_CONTEXT:-trim}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     *) return 1 ;;
   esac
@@ -46,6 +53,7 @@ policy_valid() { # <key> <value>
     worker-spawn:on | worker-spawn:off) return 0 ;;
     worker-isolation:on | worker-isolation:off) return 0 ;;
     lead-teams:on | lead-teams:off) return 0 ;;
+    worker-context:full | worker-context:trim | worker-context:lean) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -55,6 +63,7 @@ policy_choices() {
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
     worker-spawn | worker-isolation | lead-teams) printf 'on|off\n' ;;
+    worker-context) printf 'full|trim|lean\n' ;;
     branch-template) printf "'<template>' with {team} {role} {ts} {ticket}, or the word default\n" ;;
   esac
 }
@@ -79,6 +88,8 @@ policy_get() {
     printf 'on\n'
   elif [ "$key" = "lead-teams" ]; then
     printf 'off\n'
+  elif [ "$key" = "worker-context" ]; then
+    printf 'full\n' # an unreadable value never takes something of yours away from a worker
   else
     printf 'ask\n'
   fi
@@ -227,8 +238,44 @@ team_orphaned_note() {
 }
 
 policy_summary() {
-  printf 'lead: %s · workers: %s · worker spawning: %s · worker isolation: %s\n' \
-    "$(policy_get lead-permissions)" "$(policy_get worker-permissions)" "$(policy_get worker-spawn)" "$(policy_get worker-isolation)"
+  printf 'lead: %s · workers: %s · worker spawning: %s · worker isolation: %s · worker context: %s\n' \
+    "$(policy_get lead-permissions)" "$(policy_get worker-permissions)" "$(policy_get worker-spawn)" "$(policy_get worker-isolation)" "$(policy_get worker-context)"
+}
+
+# --- worker-context: what a worker's conversation starts with ----------------------------
+# Measured on the owner's machine (Claude Code 2.1.323, 2026-11-13): a worker's FIRST request was
+# 111,000 tokens before it had read its task, more than half of a 200k window, and every later
+# request carries it. About 60,000 of that were the listings and session hooks of nine plugins,
+# about 30,000 the rules in ~/.claude; the worker used almost none of it. A `claude -p` probe:
+# full 85,700 tokens, plugins off 56,500, nothing from ~/.claude 19,000.
+#   full  everything, as before v1.13
+#   trim  (default) your rules and settings stay; every plugin is off for the worker
+#   lean  only the project's own instructions (its CLAUDE.md, .claude/) and wolfmux's
+# The lead is never trimmed: it is the conversation you talk to.
+
+# worker_context_plugins_off — a settings fragment that turns off every plugin you have enabled or
+# installed, for one agent ({} when there is none or the files cannot be read)
+worker_context_plugins_off() {
+  local base="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" files=() f
+  for f in "$base/settings.json" "$base/plugins/installed_plugins.json"; do
+    if [ -r "$f" ]; then files+=("$f"); fi
+  done
+  if [ "${#files[@]}" -eq 0 ]; then
+    printf '{}\n'
+    return 0
+  fi
+  "$JQ_BIN" -cs '[.[] | objects | ((.enabledPlugins // {}), (.plugins // {})) | objects | keys[]]
+    | unique | map(select(type == "string" and test("^[A-Za-z0-9._@-]+$"))) | map({key: ., value: false})
+    | if length == 0 then {} else {enabledPlugins: from_entries} end' "${files[@]}" 2>/dev/null || printf '{}\n'
+}
+
+# worker_context_settings <kind> <mode> — the fragment write_agent_settings merges in
+worker_context_settings() {
+  if [ "$1" != "worker" ] || [ "$2" = "full" ]; then
+    printf '{}\n'
+    return 0
+  fi
+  worker_context_plugins_off
 }
 
 # teamctl policy [<key> <value>]
@@ -242,6 +289,8 @@ cmd_policy() {
     say "  worker-permissions  $(policy_get worker-permissions)    (skip|lead|ask)   lead = you decide them: teamctl approvals"
     say "  worker-spawn        $(policy_get worker-spawn)     (on|off)          may workers run 'teamctl spawn'?"
     say "  worker-isolation    $(policy_get worker-isolation)      (on|off)          refuse a worker's tool calls outside its own worktree and branch"
+    say "  worker-context      $(policy_get worker-context)    (full|trim|lean)  what of your ~/.claude a worker starts with: full = all,"
+    say "                      trim = your rules, no plugins · lean = only the project's own instructions and wolfmux's"
     say "  lead-teams          $(policy_get lead-teams)      (on|off)          may the lead found further teams and hand work over?"
     template="$(policy_get branch-template)"
     if [ -n "$template" ]; then

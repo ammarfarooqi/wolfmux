@@ -330,6 +330,28 @@ check "notify: a message the app never fetched is not posted late" 'printf "%s" 
 /bin/rm -f "$WORK/osa.args" "$WORK/open.args"
 check "notify: a click opens a terminal on the team (script with the project and teamctl attach)" 'detached _open-team && grep -q "open-team.command" "$WORK/osa.args" && grep -q "create window with default profile command" "$WORK/osa.args" && grep -qF "$(printf "%q" "$PROJECT_REAL")" "$WOLFMUX_DATA/notify/open-team.command" && grep -q "teamctl --team default attach" "$WOLFMUX_DATA/notify/open-team.command"'
 
+# worker-context: what of your ~/.claude a worker starts with. A throwaway one stands in for yours.
+FAKE_CLAUDE="$WORK/claude-home"
+/bin/mkdir -p "$FAKE_CLAUDE/plugins"
+printf '%s\n' '{"enabledPlugins":{"alpha@market":true,"beta@market":false},"env":{"ECC_DISABLED_HOOKS":"post:example"}}' >"$FAKE_CLAUDE/settings.json"
+printf '%s\n' '{"version":2,"plugins":{"gamma@other":[{"scope":"user"}],"bad name;x@y":[]}}' >"$FAKE_CLAUDE/plugins/installed_plugins.json"
+tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g CLAUDE_CONFIG_DIR "$FAKE_CLAUDE"
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "worker-context: by default (trim) every plugin you enabled or installed is off for a worker, a name that is no plugin id is left out, and ~/.claude is still read" 'teamctl capture qa --all | grep "STUB context=" | tail -1 | grep -q "^STUB context=alpha@market,beta@market,gamma@other sources=all$"'
+teamctl policy worker-context lean >/dev/null 2>&1
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "worker-context: lean also starts the worker with --setting-sources project,local; the per-agent settings (hooks, guard) still go to it" 'teamctl capture qa --all | grep "STUB context=" | tail -1 | grep -q "sources=project,local$" && teamctl capture qa --all | grep "STUB hooks=" | tail -1 | grep -q "Stop" && teamctl policy | grep -q "worker-context  *lean"'
+teamctl policy worker-context full >/dev/null 2>&1
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "worker-context: full leaves a worker everything, and nonsense is refused (exit 64) with the choices named" 'teamctl capture qa --all | grep "STUB context=" | tail -1 | grep -q "^STUB context= sources=all$" && out="$(teamctl policy worker-context tiny 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "full|trim|lean"'
+teamctl policy worker-context trim >/dev/null 2>&1
+check "worker-context: the policy shows in status --json, and a stored choice outranks the environment" 'teamctl status --json | jq -e ".policy.worker_context == \"trim\"" && [ "$(WOLFMUX_WORKER_CONTEXT=lean teamctl status --json | jq -r .policy.worker_context)" = trim ]'
+tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -gu CLAUDE_CONFIG_DIR
+teamctl restart qa >/dev/null 2>&1
+sleep 2
 check "hooks: every Claude agent is wired to teamctl _hook for the five turn events, a Codex agent to none" 'teamctl capture backend --all | grep -q "STUB hooks=PostToolUse,PreCompact,SessionStart,Stop,UserPromptSubmit" && teamctl capture backend --all | grep -q "STUB rundir=yes" && ! teamctl capture fe-review --all | grep -q "STUB hooks=P"'
 check "hooks: PostToolUse with nothing queued counts the call and says nothing; the tenth call and a queued attention go through the full hook" 'd="$WORK/run-hot"; /bin/mkdir -p "$d" && for i in 1 2 3; do printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook PostToolUse || exit 1; done; [ "$(/bin/cat "$d/calls")" = 3 ] && : >"$d/attention" && printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook PostToolUse && [ ! -e "$d/attention" ] && [ "$(/bin/cat "$d/calls")" = 4 ]'
 check "hooks: a turn is busy from the prompt to the stop; garbage in the call counter or on stdin never fails a hook" 'd="$WORK/run-state"; /bin/mkdir -p "$d" && printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook UserPromptSubmit && [ "$(/bin/cat "$d/state")" = busy ] && printf "not json" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" WOLFMUX_NOTIFY=off teamctl _hook Stop && [ "$(/bin/cat "$d/state")" = idle ] && printf "a[\$(touch %s/pwned)]\n" "$WORK" >"$d/calls" && printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook PostToolUse && [ ! -e "$WORK/pwned" ] && [ "$(/bin/cat "$d/calls")" = 1 ] && { printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook Bogus; [ $? -eq 0 ]; }'
@@ -379,7 +401,7 @@ teamctl restart qa >/dev/null 2>&1
 sleep 2
 
 echo "== one manager, permissions, spawning"
-check "policy: defaults are skip / skip / worker spawning off / worker isolation on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", lead_teams: \"on\"}"'
+check "policy: defaults are skip / skip / worker spawning off / worker isolation on / worker context trim" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", worker_context: \"trim\", lead_teams: \"on\"}"'
 check "permissions: lead and workers start in their CLI's bypass mode" 'teamctl capture lead -n 8 | grep -q "flags=--dangerously-bypass-approvals-and-sandbox" && teamctl capture backend -n 8 | grep -q "flags=--dangerously-skip-permissions"'
 check "hierarchy: the CLI's own agent-teams feature is switched off inside workers" 'teamctl capture backend -n 8 | grep -q "settings={\"teams\":\"0\",\"mode\":\"in-process\",\"hook\":false}"'
 check "hierarchy: the lead's own settings are left alone" 'teamctl capture lead -n 8 | grep -q "settings=none"'
@@ -523,7 +545,7 @@ BUILDER_OLD_BRANCH="$(git -C "$BUILDER_DIR" branch --show-current)"
 check "spawn: --from-worktree starts a fresh worker in the same worktree, on a new branch, and the old record is gone" 'teamctl spawn builder2 flash --from-worktree builder && sleep 2 && teamctl status --json | jq -e --arg dir "$BUILDER_DIR" "([.agents[] | select(.role == \"builder2\")][0] | .state == \"running\" and .workdir == \$dir and (.branch | startswith(\"ai/builder2-\"))) and ([.agents[] | select(.role == \"builder\")]) == []"'
 check "spawn: --from-worktree bases the new branch on the project's current HEAD" 'teamctl diff builder2 | grep -q "base:    main @ $(git rev-parse --short=12 HEAD)"'
 check "spawn: the old branch and its commits stay" '[ "$(git show "$BUILDER_OLD_BRANCH:.gitignore" 2>/dev/null)" = "node_modules/" ] && [ "$(git -C "$BUILDER_DIR" branch --show-current)" != "$BUILDER_OLD_BRANCH" ]'
-check "spawn: what git ignores (node_modules) is still there, so no install is repeated, and the fresh pane runs" '[ -f "$BUILDER_DIR/node_modules/x" ] && teamctl capture builder2 -n 8 | grep -q "STUB role=builder2" && teamctl capture builder2 -n 8 | grep -q "STUB kickoff_in_progress=yes"'
+check "spawn: what git ignores (node_modules) is still there, so no install is repeated, and the fresh pane runs" '[ -f "$BUILDER_DIR/node_modules/x" ] && teamctl capture builder2 --all | grep -q "STUB role=builder2" && teamctl capture builder2 --all | grep -q "STUB kickoff_in_progress=yes"'
 check "spawn: the event log says the worktree changed hands" 'grep -q "\"type\":\"from-worktree\"" "$(ls -d "$WOLFMUX_DATA"/state/*/events.jsonl | head -1)"'
 teamctl stop builder2 >/dev/null 2>&1
 teamctl remove builder2 --yes >/dev/null 2>&1
@@ -622,6 +644,7 @@ teamctl start astra --no-attach --skip-beads >/dev/null 2>&1
 FIRST_SESSION="$(teamctl status --json | jq -r .session)"
 check "teams: asking for another lead model while a team runs never hijacks that team; it says how to start a second one" 'out="$(teamctl start fable --no-attach --skip-beads 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start fable --team" && teamctl status --json | jq -e ".agents[0].label == \"GPT-6 Astra\""'
 check "teams: a second, named team gets its own tmux session and its own lead" 'teamctl start fable --team review --no-attach --skip-beads && [ "$(sessions)" = "$FIRST_SESSION $FIRST_SESSION-review " ]'
+check "worker-context: the lead is never trimmed (no plugin is switched off in its settings, and it reads all of ~/.claude), and an unusable configured value means full" 'sleep 1; f="$(ls -d "$WOLFMUX_DATA"/state/*/teams/review/settings)/lead.json" && jq -e "(.enabledPlugins // {}) == {} and (.hooks.Stop != null)" "$f" && teamctl capture lead --team review --all | grep "STUB context=" | tail -1 | grep -q "sources=all$" && [ "$(WOLFMUX_WORKER_CONTEXT=bogus teamctl status --json --team review | jq -r .policy.worker_context)" = full ]'
 check "teams: with several teams a command has to say which one (exit 64, and it lists them)" 'out="$(teamctl spawn backend glm53 --no-kickoff 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "default" && printf "%s" "$out" | grep -q "review"'
 check "teams: the same role name can exist in two teams; --team works before or after the command" 'teamctl spawn backend glm53 --team review --no-kickoff && teamctl --team default spawn backend flash --no-kickoff && sleep 2 && [ "$(git branch --list "ai/review/backend-*" | wc -l | tr -d " ")" = 1 ] && [ "$(git branch --list "ai/backend-*" | wc -l | tr -d " ")" = 1 ] && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0] | (.branch | startswith(\"ai/review/backend-\")) and .commits_ahead == \"0\""'
 check "teams: status shows every team as a hierarchy: team, wolf, dogs" 'out="$(teamctl status)"; printf "%s\n" "$out" | grep -q "^TEAM default" && printf "%s\n" "$out" | grep -q "^TEAM review" && [ "$(printf "%s\n" "$out" | grep -c "🐺 lead")" = 2 ] && [ "$(printf "%s\n" "$out" | grep -c "🐶 backend")" = 2 ]'
