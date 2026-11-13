@@ -7,10 +7,25 @@
 # Docs:    ~/.config/wolfmux/README.md     Worktrees: ~/.wolfmux/worktrees/<project>/
 set -euo pipefail
 
+# The hot path. An agent's CLI runs `teamctl _hook PostToolUse` after every tool call, so the usual
+# case, nothing to say, has to cost one bash start: no module, no fork. It counts the call (the
+# file's age is the agent's last sign of life) and ends, unless something is queued for the agent
+# (the attention file) or this is the tenth call since the last full look (WOLFMUX_HOOK_EVERY in
+# lib/hooks.sh, which this cannot read without loading it).
+if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR" ]; then
+  _calls=0
+  if [ -r "$WOLFMUX_RUN_DIR/calls" ]; then IFS= read -r _calls <"$WOLFMUX_RUN_DIR/calls" || true; fi
+  case "$_calls" in "" | *[!0-9]*) _calls=0 ;; esac
+  [ "${#_calls}" -le 9 ] || _calls=0
+  _calls=$((10#$_calls + 1))
+  printf '%s\n' "$_calls" >"$WOLFMUX_RUN_DIR/calls" 2>/dev/null || true
+  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ $((_calls % 10)) -ne 0 ]; then exit 0; fi
+fi
+
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout guard completion; do
+for module in provider-env common registry tmuxctl worktree beads policy approvals agents views doctor brand notify layout guard completion hooks mail memory tasks; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -182,7 +197,15 @@ main() {
     _notify-pending) cmd_notify_pending "$@" ;;
     _open-team) cmd_open_team "$@" ;;
     _guard) cmd_guard "$@" ;;
-    send | inbox | broadcast | task | tasks | message-history) moved_to_beads "$command" ;;
+    _hook) cmd_hook "$@" ;;
+    _deliver) cmd_deliver "$@" ;;
+    send) cmd_send "$@" ;;
+    inbox) cmd_inbox "$@" ;;
+    checkpoint) cmd_checkpoint "$@" ;;
+    task) cmd_task "$@" ;;
+    done) cmd_done "$@" ;;
+    blocked) cmd_blocked "$@" ;;
+    broadcast | tasks | message-history) moved_to_beads "$command" ;;
     version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;
     *)

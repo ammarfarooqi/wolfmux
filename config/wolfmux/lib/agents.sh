@@ -714,25 +714,25 @@ cmd_prompt() {
 # write_agent_settings <role> — Claude Code settings for one Claude-based agent; prints
 # the file path. Workers never run Claude Code's own agent-teams feature: with it on,
 # any subagent a session names becomes a teammate whose "team lead" — and permission
-# approver — is that worker. The lead's file holds the notification hook and nothing
+# approver — is that worker. The lead's file holds the turn hooks and nothing
 # about teams or permissions: those stay exactly as you have them.
 write_agent_settings() {
-  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command=""
+  local role="$1" path="$STATE_DIR/settings/$1.json" kind guard_command=""
   /bin/mkdir -p "$STATE_DIR/settings"
   kind="$(reg_field "$role" kind)"
-  if notify_wanted "$kind"; then notify_command="\"$TEAMCTL_SELF\" _notify"; fi
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
   # Workers only: agent teams off, so a worker can never become a second manager.
   # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh).
-  # Everyone: notifications are teamctl's job inside a team (lib/notify.sh).
+  # Everyone: the turn hooks (lib/hooks.sh): mail and memory reach an agent through them, and
+  # the "finished" notification is the end of the Stop hook (lib/notify.sh).
   # Lead mode only: permission requests go to the lead.
   "$JQ_BIN" -n --arg kind "$kind" --arg mode "$(reg_field "$role" permissions)" \
     --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$(($(approval_timeout) + 30))" \
-    --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" '
+    --arg hook_command "\"$TEAMCTL_SELF\" _hook" --arg events "$WOLFMUX_HOOK_EVENTS" --argjson hook_timeout "$WOLFMUX_HOOK_TIMEOUT" \
+    --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" '
     (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
     * {env: {ECC_DISABLED_HOOKS: $silence}}
-    * (if $notify_command != ""
-       then {hooks: {Stop: [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}]}} else {} end)
+    * {hooks: ($events | split(" ") | map({key: ., value: [{hooks: [{type: "command", command: ($hook_command + " " + .), timeout: $hook_timeout}]}]}) | from_entries)}
     * (if $guard_command != ""
        then {hooks: {PreToolUse: [{matcher: "Edit|Write|MultiEdit|NotebookEdit|Read|Grep|Glob|LS|Bash|mcp__.*",
                                    hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
@@ -774,7 +774,10 @@ cmd_run_agent() {
   fi
   WOLFMUX_SESSION="$(meta_get session || true)"
   WOLFMUX_MODEL="$(reg_field "$role" model)"
-  export WOLFMUX_SESSION WOLFMUX_MODEL
+  # Where the turn hooks keep this agent's mail, memory and turn state (lib/hooks.sh). The hot
+  # path in bin/teamctl reads it from the environment: it loads nothing that could work it out.
+  WOLFMUX_RUN_DIR="$(run_dir_ensure "$role")"
+  export WOLFMUX_SESSION WOLFMUX_MODEL WOLFMUX_RUN_DIR
   path_prepend "$HOME/.local/bin"
   path_prepend "$WOLFMUX_BIN_DIR"
   export PATH
@@ -1307,7 +1310,7 @@ _purge_report() {
       report_files "$path" '          ' "$dirty" 15
     fi
   done
-  kb="$(disk_kb "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json")"
+  kb="$(disk_kb "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/run" "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json")"
   PURGE_KB=$((PURGE_KB + kb))
   printf '  %-21s %9s   records, approvals, event log\n' "teamctl's state" "$(human_size "$kb")"
   say ""
@@ -1348,7 +1351,7 @@ _purge_team() {
   done
   gitr worktree prune
   # The first team's directory is also the parent of the named teams: take its files, never teams/.
-  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge"
+  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/run"
   /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json"
   /bin/rmdir "$WORKTREES_DIR" 2>/dev/null || true
 }
