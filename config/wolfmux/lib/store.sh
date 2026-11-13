@@ -384,7 +384,10 @@ INSERT INTO event(at,actor,kind,ref,detail) SELECT (SELECT j->>'now' FROM p), (S
 
 store_native_msg_create() {
   local sender="$1" recipient="$2" subject="$3" body="$4" reply_to="${5:-}" rnum="" out
-  if [ -n "$reply_to" ]; then rnum="$(_store_native_num m "$reply_to")" || return 1; fi
+  # A caller may legitimately name a TASK here (a worker's report replies to the task it
+  # is about): the schema can only thread a message under another message, so a reply_to
+  # that is not one is dropped rather than failing the whole send.
+  if [ -n "$reply_to" ]; then rnum="$(_store_native_num m "$reply_to" 2>/dev/null)" || rnum=""; fi
   out="$(_sqx "
 INSERT INTO msg(sender,recipient,subject,body,status,reply_to,created_at,updated_at)
 SELECT j->>'sender', j->>'recipient', j->>'subject', j->>'body', 'open',

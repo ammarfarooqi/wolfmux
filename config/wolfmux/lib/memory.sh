@@ -275,3 +275,72 @@ cmd_checkpoint() {
     ) >/dev/null 2>&1
   fi
 }
+
+# _memory_slug <text> — the first few words, lowercased and hyphenated: a default --key.
+_memory_slug() {
+  printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr -c "${_WM_LOWER}${_WM_DIGITS}" '-' \
+    | cut -c1-48 | sed -E 's/-+/-/g; s/^-//; s/-$//'
+}
+
+# teamctl remember "<fact>" [--key <slug>] — team memory, any agent. Key default: a slug
+# from the first words.
+cmd_remember() {
+  local text="" key="" positional=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --key)
+        [ "$#" -ge 2 ] || die_usage "--key needs a slug"
+        key="$2"
+        shift
+        ;;
+      -*) die_usage "unknown option for remember: $1" ;;
+      *) positional+=("$1") ;;
+    esac
+    shift
+  done
+  text="${positional[0]:-}"
+  [ -n "$text" ] || die_usage 'usage: teamctl remember "<fact>" [--key <slug>]'
+  [ -n "$key" ] || key="$(_memory_slug "$text")"
+  require_tools
+  load_project
+  store_memory_set "$key" "$text" "${BEADS_ACTOR:-$(caller_role)}" ||
+    die_usage "invalid --key '$key' (lowercase letters, digits and '-', max 64) or the store is unreachable"
+  say "remembered: $key"
+}
+
+# teamctl memories [<query>] [--json]
+cmd_memories() {
+  local query="" asjson=0 rows count
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) asjson=1 ;;
+      -*) die_usage "unknown option for memories: $1" ;;
+      *) query="$1" ;;
+    esac
+    shift
+  done
+  require_tools
+  load_project
+  rows="$(store_memory_list_json "$query")" || die "could not read memory"
+  if [ "$asjson" -eq 1 ]; then
+    printf '%s\n' "${rows:-[]}"
+    return 0
+  fi
+  count="$(printf '%s' "${rows:-[]}" | "$JQ_BIN" -r 'length' 2>/dev/null)"
+  case "$count" in '' | *[!0-9]*) count=0 ;; esac
+  if [ "$count" -eq 0 ]; then
+    say "no memories"
+    return 0
+  fi
+  printf '%s' "$rows" | "$JQ_BIN" -r '.[] | "### " + .key + "\n" + .text + "\n"'
+}
+
+# teamctl forget <key>
+cmd_forget() {
+  local key="${1:-}"
+  [ -n "$key" ] || die_usage "usage: teamctl forget <key>"
+  require_tools
+  load_project
+  store_memory_forget "$key" || die "no such memory: $key"
+  say "forgotten: $key"
+}

@@ -202,7 +202,16 @@ main() {
     task) cmd_task "$@" ;;
     done) cmd_done "$@" ;;
     blocked) cmd_blocked "$@" ;;
-    broadcast | tasks | message-history) removed_command "$command" ;;
+    claim) cmd_claim "$@" ;;
+    tasks) cmd_tasks "$@" ;;
+    show) cmd_show "$@" ;;
+    note) cmd_note "$@" ;;
+    reopen) cmd_reopen "$@" ;;
+    close) cmd_close "$@" ;;
+    remember) cmd_remember "$@" ;;
+    memories) cmd_memories "$@" ;;
+    forget) cmd_forget "$@" ;;
+    broadcast | message-history) removed_command "$command" ;;
     version | --version | -V) say "teamctl $WOLFMUX_VERSION" ;;
     help | --help | -h) usage ;;
     *)

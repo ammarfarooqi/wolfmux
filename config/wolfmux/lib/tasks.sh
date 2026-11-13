@@ -268,6 +268,250 @@ cmd_blocked() {
   say "blocked: $id"
 }
 
+# _tasks_default_open_id <identity> — that identity's only open task, when no bead id was
+# given on the command line (teamctl claim).
+_tasks_default_open_id() {
+  local me="$1" json count
+  json="$(tasks_store_list "$me" open)" || die "could not read the store"
+  count="$(printf '%s' "$json" | "$JQ_BIN" -r 'length' 2>/dev/null)"
+  case "$count" in
+    1) printf '%s' "$json" | "$JQ_BIN" -r '.[0].id' ;;
+    0) die "no bead id given, and '$me' has no open task. Name one: teamctl claim <id>" 64 ;;
+    *) die "no bead id given, and '$me' has more than one open task: $(printf '%s' "$json" | "$JQ_BIN" -r '[.[].id] | join(" ")'). Name one of them." 64 ;;
+  esac
+}
+
+# teamctl claim [<id>] — default: the caller's only open task. Refuses one with unclosed
+# blockers, naming them; prints the task's title and body so the agent has it this turn.
+cmd_claim() {
+  local id="${1:-}" role me item blocked_by title desc
+  require_tools
+  load_project
+  store_backend_ready
+  role="$(caller_role)"
+  [ -n "$role" ] || die_usage "run 'teamctl claim' from inside your own agent pane (TEAM_ROLE is unset)"
+  me="${BEADS_ACTOR:-$(team_identity "$TEAM" "$role")}"
+  if [ -n "$id" ]; then
+    valid_bead_id "$id" || die_usage "invalid bead id '$id'"
+  else
+    id="$(_tasks_default_open_id "$me")" || exit $?
+  fi
+  item="$(store_item_json "$id")" || die "no such task: $id"
+  blocked_by="$(printf '%s' "$item" | "$JQ_BIN" -r '[.blocked_by[]?] | join(", ")' 2>/dev/null)"
+  [ -z "$blocked_by" ] || die "$id is waiting on unclosed blockers: $blocked_by"
+  store_task_claim "$id" "$me" || die "could not claim $id (already claimed by someone else, or not open)"
+  mail_announce update "$(store_item_json "$id")" "$me"
+  title="$(printf '%s' "$item" | "$JQ_BIN" -r '.title // empty')"
+  desc="$(printf '%s' "$item" | "$JQ_BIN" -r '.description // empty')"
+  say "claimed: $id $title"
+  [ -z "$desc" ] || say "$desc"
+}
+
+# _tasks_table <rows-json> — id, status (a task waiting on unclosed blockers shows as
+# "waiting" instead of its own status, so it is never mistaken for ready work),
+# priority, assignee, blocked-by, title.
+_tasks_table() {
+  local rows="${1:-[]}" count
+  count="$(printf '%s' "$rows" | "$JQ_BIN" -r 'length' 2>/dev/null)"
+  case "$count" in '' | *[!0-9]*) count=0 ;; esac
+  if [ "$count" -eq 0 ]; then
+    say "no tasks"
+    return 0
+  fi
+  printf '%s' "$rows" | "$JQ_BIN" -r '
+    .[] | [.id, (if ((.blocked_by // []) | length) > 0 then "waiting" else .status end),
+           ("P" + (.priority | tostring)), .assignee, ((.blocked_by // []) | join(",")), .title] | @tsv' \
+    | while IFS=$'\t' read -r tid status prio assignee blockers title; do
+      printf '%-10s %-11s %-3s %-18s %-14s %s\n' "$tid" "$status" "$prio" "$assignee" "${blockers:--}" "$title"
+    done
+}
+
+# teamctl tasks [<role>|--all] [--status <list>] [--json] — default: the caller's own team,
+# not closed. <role>: just that role (bare = this team, team.role = another). --all: every
+# team this project's store knows about.
+cmd_tasks() {
+  local target="" all=0 statuses="" asjson=0 identity="" rows
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --all) all=1 ;;
+      --status)
+        [ "$#" -ge 2 ] || die_usage "--status needs a list"
+        statuses="$2"
+        shift
+        ;;
+      --json) asjson=1 ;;
+      -*) die_usage "unknown option for tasks: $1" ;;
+      *) target="$1" ;;
+    esac
+    shift
+  done
+  [ -z "$target" ] || [ "$all" -eq 0 ] || die_usage "usage: teamctl tasks [<role>|--all] [--status <list>] [--json]"
+  require_tools
+  load_project
+  [ -n "$statuses" ] || statuses="open,in_progress,blocked"
+  if [ -n "$target" ]; then
+    case "$target" in
+      *.*)
+        identity_split "$target"
+        valid_team_name "$ID_TEAM" || die_usage "$(team_name_error "$ID_TEAM")"
+        known_role_name "$ID_ROLE" || die_usage "invalid role '$target'"
+        identity="$(team_identity "$ID_TEAM" "$ID_ROLE")"
+        ;;
+      *)
+        known_role_name "$target" || die_usage "invalid role '$target'"
+        identity="$(team_identity "$TEAM" "$target")"
+        ;;
+    esac
+    rows="$(store_tasks_json "$identity" "$statuses")" || die "could not read the store"
+  else
+    rows="$(store_tasks_json "" "$statuses")" || die "could not read the store"
+    if [ "$all" -eq 0 ]; then
+      rows="$(printf '%s' "$rows" | "$JQ_BIN" -c --arg t "$TEAM" --arg d "$WOLFMUX_DEFAULT_TEAM" '
+        [.[] | select(
+          (($t == $d) and ((.assignee | test("\\.")) | not)) or
+          (($t != $d) and (.assignee | startswith($t + ".")))
+        )]')"
+    fi
+  fi
+  if [ "$asjson" -eq 1 ]; then
+    printf '%s\n' "${rows:-[]}"
+    return 0
+  fi
+  _tasks_table "$rows"
+}
+
+# _show_render_task <item-json> — plain-text view: heading, waiting-on, body, notes.
+_show_render_task() {
+  local item="$1" id title status prio assignee desc notes blocked
+  id="$(printf '%s' "$item" | "$JQ_BIN" -r '.id')"
+  title="$(printf '%s' "$item" | "$JQ_BIN" -r '.title')"
+  status="$(printf '%s' "$item" | "$JQ_BIN" -r '.status')"
+  prio="$(printf '%s' "$item" | "$JQ_BIN" -r '.priority')"
+  assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.assignee')"
+  desc="$(printf '%s' "$item" | "$JQ_BIN" -r '.description // ""')"
+  notes="$(printf '%s' "$item" | "$JQ_BIN" -r '.notes // ""')"
+  blocked="$(printf '%s' "$item" | "$JQ_BIN" -r '[.blocked_by[]?] | join(", ")')"
+  say "$id  P$prio  $status  $assignee  $title"
+  [ -z "$blocked" ] || say "waiting on: $blocked"
+  [ -z "$desc" ] || {
+    say ""
+    say "$desc"
+  }
+  [ -z "$notes" ] || {
+    say ""
+    say "notes:"
+    say "$notes"
+  }
+}
+
+# teamctl show <id> [--json] — one task (body, notes, blockers), or one message with its thread.
+cmd_show() {
+  local id="" asjson=0 item type thread
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) asjson=1 ;;
+      -*) die_usage "unknown option for show: $1" ;;
+      *) id="$1" ;;
+    esac
+    shift
+  done
+  [ -n "$id" ] && valid_bead_id "$id" || die_usage "usage: teamctl show <id> [--json]"
+  require_tools
+  load_project
+  item="$(store_item_json "$id")" || die "no such id: $id"
+  type="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // "task"')"
+  if [ "$type" = "message" ]; then
+    thread="$(store_thread_json "$id" 2>/dev/null)"
+    [ -n "$thread" ] || thread="$(printf '%s' "$item" | "$JQ_BIN" -c '[.]')"
+    if [ "$asjson" -eq 1 ]; then
+      printf '%s\n' "$thread"
+      return 0
+    fi
+    printf '%s' "$thread" | "$JQ_BIN" -c '.[]' | while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      say "$(_mail_render_bead "$m")"
+      say ""
+    done
+    return 0
+  fi
+  if [ "$asjson" -eq 1 ]; then
+    printf '%s\n' "$item"
+    return 0
+  fi
+  _show_render_task "$item"
+}
+
+# teamctl note <id> "<text>" — a durable note on a task. Notifies nobody.
+cmd_note() {
+  local id="" text="" args=() me title
+  for a in "$@"; do args+=("$a"); done
+  case "${#args[@]}" in
+    2) id="${args[0]}" text="${args[1]}" ;;
+    *) die_usage 'usage: teamctl note <id> "<text>"' ;;
+  esac
+  valid_bead_id "$id" || die_usage "invalid bead id '$id'"
+  [ -n "$text" ] || die_usage 'usage: teamctl note <id> "<text>"'
+  require_tools
+  load_project
+  me="${BEADS_ACTOR:-$(caller_role)}"
+  title="$(tasks_store_title "$id")"
+  [ -n "$title" ] || die "no such task: $id"
+  store_task_note "$id" "$me" "$text" || die "could not add the note"
+  say "noted: $id"
+}
+
+# teamctl reopen <id> "<why>" — the lead sends a closed task back: open, the reason noted,
+# the assignee told (mail_announce treats this as an update).
+cmd_reopen() {
+  local id="" why="" args=() me title
+  for a in "$@"; do args+=("$a"); done
+  case "${#args[@]}" in
+    2) id="${args[0]}" why="${args[1]}" ;;
+    *) die_usage 'usage: teamctl reopen <id> "<why>"' ;;
+  esac
+  valid_bead_id "$id" || die_usage "invalid bead id '$id'"
+  [ -n "$why" ] || die_usage 'usage: teamctl reopen <id> "<why>"'
+  require_tools
+  load_project
+  require_manager reopen
+  me="${BEADS_ACTOR:-$(caller_role)}"
+  title="$(tasks_store_title "$id")"
+  [ -n "$title" ] || die "no such task: $id"
+  store_task_status "$id" open || die "could not reopen $id"
+  store_task_note "$id" "$me" "reopened: $why" || true
+  mail_announce update "$(store_item_json "$id")" "$me"
+  say "reopened: $id"
+}
+
+# teamctl close <id> -r "<reason>" [--failed] — the lead closes or rejects any task of its team.
+cmd_close() {
+  local id="" reason="" failed="" positional=() me title
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -r)
+        [ "$#" -ge 2 ] || die_usage '-r needs a reason'
+        reason="$2"
+        shift
+        ;;
+      --failed) failed="failed" ;;
+      -*) die_usage "unknown option for close: $1" ;;
+      *) positional+=("$1") ;;
+    esac
+    shift
+  done
+  id="${positional[0]:-}"
+  valid_bead_id "$id" || die_usage 'usage: teamctl close <id> -r "<reason>" [--failed]'
+  [ -n "$reason" ] || die_usage 'usage: teamctl close <id> -r "<reason>" [--failed]'
+  require_tools
+  load_project
+  require_manager close
+  me="${BEADS_ACTOR:-$(caller_role)}"
+  title="$(tasks_store_title "$id")"
+  [ -n "$title" ] || die "no such task: $id"
+  _tasks_close "$id" "$reason" "$me" "$failed" || die "could not close $id"
+  say "closed: $id"
+}
+
 # --- the Stop hook: nobody stops with work forgotten ------------------------------------
 
 # _tasks_forget_closed <dir> <json> — a marker whose task is no longer in the open/in_progress

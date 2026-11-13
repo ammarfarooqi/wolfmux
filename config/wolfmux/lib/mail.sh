@@ -221,7 +221,7 @@ MAILBODY
 # as the agent's own instruction) then the bead's own text, quoted as it is, then one line on
 # what to do about it. Shared by every hook event and by `teamctl inbox`.
 _mail_render_bead() {
-  local json="$1" id type from title prio status event desc heading hint body out
+  local json="$1" id type from title prio status event desc heading hint body out blocked_by
   id="$(printf '%s' "$json" | "$JQ_BIN" -r '.id // "?"' 2>/dev/null)"
   type="$(printf '%s' "$json" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
   from="$(printf '%s' "$json" | "$JQ_BIN" -r '.created_by // ""' 2>/dev/null)"
@@ -231,6 +231,7 @@ _mail_render_bead() {
   status="$(printf '%s' "$json" | "$JQ_BIN" -r '.status // "open"' 2>/dev/null)"
   event="$(printf '%s' "$json" | "$JQ_BIN" -r '.event // ""' 2>/dev/null)"
   desc="$(printf '%s' "$json" | "$JQ_BIN" -r '.description // ""' 2>/dev/null)"
+  blocked_by="$(printf '%s' "$json" | "$JQ_BIN" -r '[.blocked_by[]?] | join(", ")' 2>/dev/null)"
   if [ "$event" = "close" ] && [ "$type" != "message" ]; then
     local who role
     who="$from"
@@ -242,13 +243,20 @@ _mail_render_bead() {
     heading="[wolfmux mail] MESSAGE $id from $from: $title"
     hint="Marked read. Reply: teamctl send $from \"Re: $title\" \"<text>\""
   else
+    # Waiting on an unclosed blocker shows that instead of its own status, so it is never
+    # mistaken for ready work (teamctl claim refuses it too, for the same reason).
+    [ -z "$blocked_by" ] || status="waiting"
     if [ "$event" = "update" ]; then
       heading="[wolfmux mail] TASK UPDATED $id from $from, priority P$prio, $status: $title"
     else
       heading="[wolfmux mail] TASK $id from $from, priority P$prio, $status: $title"
     fi
     hint=""
-    [ "$status" != "open" ] || hint="This is your task. Claim it before you start: teamctl claim $id"
+    if [ -n "$blocked_by" ]; then
+      hint="Waiting on unclosed blockers: $blocked_by"
+    elif [ "$status" = "open" ]; then
+      hint="This is your task. Claim it before you start: teamctl claim $id"
+    fi
   fi
   body="$(_mail_sanitize_body "$desc" "$id")"
   out="$heading"

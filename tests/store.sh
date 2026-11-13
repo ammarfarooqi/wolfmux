@@ -102,6 +102,8 @@ run_contract() { # <label>
   check "msg_create (reply) prints a valid id" 'valid_bead_id "$rid"'
   check "thread_json: both messages present" \
     '[ "$(store_thread_json "$mid" | "$JQ_BIN" "length")" -ge 2 ]'
+  check "msg_create: replying to a TASK id (a worker's report about it) still creates the message" \
+    'tmid="$(store_msg_create bob alice "Re: a task" "about $tid" "$tid")"; valid_bead_id "$tmid"'
   store_msg_read bob "$mid"
   check "msg_read: no longer in bob's inbox" \
     '[ "$(store_inbox_json bob | "$JQ_BIN" -r --arg id "$mid" "[.[] | select(.id==\$id)] | length")" = 0 ]'
