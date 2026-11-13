@@ -683,17 +683,22 @@ build_role_prompt() {
   fi
   printf -- '- Other teams of this project share this store (list them: `teamctl teams`). Reach another team through its lead: teamctl send <team>.lead (the first team'"'"'s lead is plain "lead"). Their tasks are theirs; hand work across with a message.\n'
   if [ "$kind" = "lead" ] && [ "$(policy_get lead-teams)" = "on" ]; then
-    printf -- '- You may found a further team and hand work over to it: write the handover as a Beads message or task first, then `teamctl start <model> --team <new-name> --no-attach --handover <bead-id>`. The human is told. You do not manage that team afterwards; its lead does. If that lead is not running (teamctl teams says orphaned) you may restart it (teamctl restart lead --team <new-name> --continue), stop, remove or destroy the team (teamctl destroy --team <new-name> --purge); the human is told each time.\n'
+    printf -- '- You may found a further team and hand work over to it: write the handover as a message or task first, then `teamctl start <model> --team <new-name> --no-attach --handover <id>`. The human is told. You do not manage that team afterwards; its lead does. If that lead is not running (teamctl teams says orphaned) you may restart it (teamctl restart lead --team <new-name> --continue), stop, remove or destroy the team (teamctl destroy --team <new-name> --purge); the human is told each time.\n'
   fi
   printf -- '- Your permission mode: %s\n\n' "$(reg_field "$role" permissions)"
   printf 'The %s section of the protocol below is binding for you.\n\n---\n\n' "$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')"
-  if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ] && [ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ]; then
-    /bin/cat "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
-  elif [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then
-    # The protocol's examples address "lead" and plain roles; in a named team those are
-    # <team>.lead and <team>.<role>. Rewrite the examples rather than hope it is remembered.
-    sed -E -e "s/(-a|--assignee) (lead|backend|frontend|qa)([^${_WM_LOWER}${_WM_DIGITS}.-]|\$)/\\1 $TEAM.\\2\\3/g" \
-      -e 's/--assignee \$TEAM_ROLE/--assignee $BEADS_ACTOR/g' "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
+  if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then
+    # Every teamctl verb in the protocol takes a bare role name within your own team, or
+    # <team>.<role> for another team's: no example needs rewriting for a named team. Only
+    # the half that is not yours (<!-- lead-only -->...<!-- /lead-only -->, or the worker
+    # equivalent) is dropped, by its markers; the other side's markers are stripped too.
+    if [ "$kind" = "worker" ]; then
+      sed -e '/<!-- lead-only -->/,/<!-- \/lead-only -->/d' \
+        -e '/<!-- worker-only -->/d' -e '/<!-- \/worker-only -->/d' "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
+    else
+      sed -e '/<!-- worker-only -->/,/<!-- \/worker-only -->/d' \
+        -e '/<!-- lead-only -->/d' -e '/<!-- \/lead-only -->/d' "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
+    fi
   else
     printf 'Team protocol file is missing: %s/TEAM_PROTOCOL.md\n' "$WOLFMUX_HOME"
   fi

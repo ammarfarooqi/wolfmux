@@ -168,7 +168,6 @@ check "doctor: no variable in any script is followed directly by a non-ASCII cha
 # restarted worker is in the middle of, and it would answer "ready" and wait for ever.
 check "inbox: every inbox command we print or teach lists claimed and blocked work too" '! grep -rn --exclude="AUDIT-*.md" -- "--status open --include-infra" "$REPO/bin" "$REPO/config/wolfmux" "$REPO/codex" "$REPO/docs" "$REPO/README.md"'
 # In a named team the inbox belongs to <team>.<role>, which is $BEADS_ACTOR and not $TEAM_ROLE.
-# (TEAM_PROTOCOL.md says $TEAM_ROLE in the file and is rewritten when it is handed to an agent.)
 check "inbox: help and manuals address the inbox by Beads identity, never by plain role" '! grep -rnE -- "--assignee .?.TEAM_ROLE" "$REPO/bin" "$REPO/docs" "$REPO/config/wolfmux/README.md" "$REPO/config/wolfmux/lib" "$REPO/README.md" | grep -v "sed\|-e .s/"'
 
 echo "== lifecycle"
