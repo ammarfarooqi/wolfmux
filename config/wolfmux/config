@@ -78,6 +78,11 @@
 #   lean  only the project's own instructions (CLAUDE.md, .claude/) and wolfmux's
 # The lead always starts with everything. Per team: teamctl policy worker-context <full|trim|lean>
 #WOLFMUX_WORKER_CONTEXT=trim
+# Where a worker's CLI compacts its own conversation, in tokens. Unset: the window teamctl counts
+# that model with (200000 for most; teamctl status shows a share of it). Claude Code would
+# otherwise let a current Claude model run toward 1M before it compacts. A number from 100000 to
+# 1000000, or off to leave it to the CLI.
+#WOLFMUX_WORKER_COMPACT_WINDOW=200000
 # May a lead found further teams (teamctl start <model> --team <new> --handover <bead>)?
 # You are notified every time one does.
 #WOLFMUX_LEAD_TEAMS=on

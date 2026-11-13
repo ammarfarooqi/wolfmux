@@ -28,7 +28,8 @@
 #     hook_context "<text>"        text the agent sees. SessionStart, UserPromptSubmit, PostToolUse:
 #                                  added to the conversation. Stop: the agent does NOT stop, it goes
 #                                  on with this text (so only call it at Stop for something that
-#                                  must be acted on now). PreCompact: ignored.
+#                                  must be acted on now). PreCompact: printed as plain text, which
+#                                  the CLI takes as instructions for the summary it is about to write.
 #     hook_load_project            sets ROOT, TEAM, STATE_DIR, SESSION as `load_project` does, for a
 #                                  module that has to look beyond the agent's own run directory.
 #                                  Costs a tmux call: only on the path that needs it.
@@ -51,6 +52,8 @@ WOLFMUX_HOOK_TIMEOUT=20                  # seconds the CLI waits for one hook
 # module can look at something that changes with the work itself (context use). bin/teamctl
 # carries the same number: it cannot read this file without loading it.
 WOLFMUX_HOOK_EVERY=10
+# Said to the CLI when it is about to summarize a conversation (PreCompact).
+WOLFMUX_HOOK_COMPACT_NOTE="Keep in the summary, word for word where you can: the id and title of the Beads task in progress, the branch, what is finished and committed, what is unfinished, the next step, and every instruction that arrived in a [wolfmux mail] block."
 # What one hook answer may add to a conversation. A CLI truncates silently above its own limit.
 WOLFMUX_HOOK_MAX_CHARS=9000
 
@@ -127,6 +130,7 @@ _hook_emit() {
         '{hookSpecificOutput: {hookEventName: $event, additionalContext: $text}}'
       ;;
     Stop) "$JQ_BIN" -cn --arg text "$text" '{decision: "block", reason: $text}' ;;
+    PreCompact) printf '%s\n' "$text" ;;
   esac
 }
 
@@ -156,6 +160,10 @@ cmd_hook() {
       _hook_state idle
       ;;
     UserPromptSubmit) _hook_state busy ;;
+    PreCompact)
+      # What a summary drops first is what a teammate needs most: who it is and what it was doing.
+      hook_context "$WOLFMUX_HOOK_COMPACT_NOTE"
+      ;;
   esac
   # Whatever was queued is this call's to say; a module that could not say all of it asks again.
   /bin/rm -f "$HOOK_RUN/attention" 2>/dev/null || true

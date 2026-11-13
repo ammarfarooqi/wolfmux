@@ -717,13 +717,15 @@ cmd_prompt() {
 # approver — is that worker. The lead's file holds the turn hooks and nothing
 # about teams or permissions: those stay exactly as you have them.
 write_agent_settings() {
-  local role="$1" path="$STATE_DIR/settings/$1.json" kind guard_command=""
+  local role="$1" path="$STATE_DIR/settings/$1.json" kind guard_command="" compact=""
   /bin/mkdir -p "$STATE_DIR/settings"
   kind="$(reg_field "$role" kind)"
+  if [ "$kind" = "worker" ]; then compact="$(worker_compact_window "$(reg_field "$role" model)")"; fi
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
   # Workers only: agent teams off, so a worker can never become a second manager.
   # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh).
   # Workers, by the worker-context policy: your plugins off (trim, lean), see lib/policy.sh.
+  # Workers: the CLI compacts at the window status counts with (worker_compact_window).
   # Everyone: the turn hooks (lib/hooks.sh): mail and memory reach an agent through them, and
   # the "finished" notification is the end of the Stop hook (lib/notify.sh).
   # Lead mode only: permission requests go to the lead.
@@ -731,9 +733,10 @@ write_agent_settings() {
     --arg permission_command "\"$TEAMCTL_SELF\" _permission-hook" --argjson timeout "$(($(approval_timeout) + 30))" \
     --arg hook_command "\"$TEAMCTL_SELF\" _hook" --arg events "$WOLFMUX_HOOK_EVENTS" --argjson hook_timeout "$WOLFMUX_HOOK_TIMEOUT" \
     --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" \
-    --argjson context "$(worker_context_settings "$kind" "$(policy_get worker-context)")" '
+    --argjson context "$(worker_context_settings "$kind" "$(policy_get worker-context)")" --arg compact "$compact" '
     (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
     * $context
+    * (if $compact != "" then {env: {CLAUDE_CODE_AUTO_COMPACT_WINDOW: $compact}} else {} end)
     * {env: {ECC_DISABLED_HOOKS: $silence}}
     * {hooks: ($events | split(" ") | map({key: ., value: [{hooks: [{type: "command", command: ($hook_command + " " + .), timeout: $hook_timeout}]}]}) | from_entries)}
     * (if $guard_command != ""

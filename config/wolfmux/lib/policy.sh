@@ -269,6 +269,25 @@ worker_context_plugins_off() {
     | if length == 0 then {} else {enabledPlugins: from_entries} end' "${files[@]}" 2>/dev/null || printf '{}\n'
 }
 
+# worker_compact_window <model-key> — the token count at which a worker's CLI compacts its own
+# conversation, or nothing. Claude Code serves the current Claude models a 1M window and compacts
+# near the end of it, so a worker counted as 200k (model_context_window, the number status shows
+# a share of) ran to 255k and further without a compaction, each request slower and dearer than
+# the last. With CLAUDE_CODE_AUTO_COMPACT_WINDOW the CLI compacts where status says 100%.
+# WOLFMUX_WORKER_COMPACT_WINDOW: a number (100000 to 1000000, what the CLI accepts) or off;
+# unset means the model's own window from the table, when that is in the accepted range.
+worker_compact_window() {
+  local want="${WOLFMUX_WORKER_COMPACT_WINDOW:-}" window
+  case "$want" in
+    off) return 0 ;;
+    "" | *[!0-9]*) window="$(model_context_window "$1" 2>/dev/null || true)" ;;
+    *) window="$want" ;;
+  esac
+  case "$window" in "" | *[!0-9]*) return 0 ;; esac
+  [ "${#window}" -le 7 ] && [ "$window" -ge 100000 ] && [ "$window" -le 1000000 ] || return 0
+  printf '%s\n' "$window"
+}
+
 # worker_context_settings <kind> <mode> — the fragment write_agent_settings merges in
 worker_context_settings() {
   if [ "$1" != "worker" ] || [ "$2" = "full" ]; then
