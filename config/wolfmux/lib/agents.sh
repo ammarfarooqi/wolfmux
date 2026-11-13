@@ -679,8 +679,12 @@ build_role_prompt() {
   fi
 }
 
-# kickoff_text <role> <beads-identity> [<provider>] — the inbox is addressed by identity (<team>.<role>
-# in a named team, the plain role in the first one); teamctl takes the plain role and knows the team.
+# kickoff_text <role> <beads-identity> <provider> <family> — a Claude Code family agent's
+# SessionStart hook already put its assignment, its inbox and its checkpoint into the
+# conversation before this prompt runs (lib/hooks.sh, v1.13): its kickoff only has to say to
+# act on what is already there, not to go fetch it with bd list + bd show. A Codex agent has
+# no hooks (family = codex): its kickoff still fetches its own inbox, in the one command that
+# carries bodies (`teamctl inbox`) instead of bd list + bd show per item.
 # A worker on a provider of the table (not a subscription model) also learns what a 401 means and who
 # checks it (issue #1): the key in its Keychain slot is rejected by that endpoint, and doctor --probe
 # says so. Only a request that got through can carry this, so it is for a key that fails later.
@@ -689,7 +693,11 @@ kickoff_text() {
   if [ -n "${3:-}" ] && wolfmux_provider_info "$3"; then
     hint=" If your requests fail with 401 or an authentication error, tell the lead: the key in '$PROVIDER_KEYCHAIN' is rejected by $PROVIDER_BASE_URL; the lead or the human runs \`teamctl doctor --probe\` to check the key."
   fi
-  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.%s' "$1" "${2:-$1}" "$1" "$hint"
+  if [ "${4:-}" = "codex" ]; then
+    printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `teamctl inbox`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
+    return 0
+  fi
+  printf 'You are the %s worker of a Wolfmux session. Your assignment and inbox are above this line (wolfmux put them there): start on it now, and claim it first (`bd update <id> --claim`). If a task of yours is already in_progress, you were restarted in the middle of it: read the checkpoint above, run `git status` and `teamctl diff %s --commits`, then continue it; do not start over. Nothing shown above: run `teamctl inbox`. Nothing assigned: answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
 }
 
 # handover_text — what the lead of a team founded by another lead is started with
@@ -822,7 +830,7 @@ $prompt
       if [ "$resume" -eq 1 ]; then
         args+=(resume --last)
       elif [ "$(reg_field "$role" kickoff)" = "1" ]; then
-        args+=("$(kickoff_text "$role" "$BEADS_ACTOR")")
+        args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "" "$family")")
       fi
       ;;
     *)
@@ -850,7 +858,7 @@ $prompt
           # ("No conversation found with session ID"): the same id, started as what it is, new.
           info "[wolfmux] nothing to continue yet: conversation $session_id of '$role' has no transcript. Starting it fresh under the same id."
           args+=(--session-id "$session_id")
-          if [ "$(reg_field "$role" kickoff)" = "1" ]; then args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider")"); fi
+          if [ "$(reg_field "$role" kickoff)" = "1" ]; then args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider" "$family")"); fi
         fi
       else
         # The CLI refuses an id that already has a transcript ("already in use"). teamctl mints a
@@ -864,7 +872,7 @@ $prompt
         fi
         if [ -n "$session_id" ]; then args+=(--session-id "$session_id"); fi
         if [ "$(reg_field "$role" kickoff)" = "1" ]; then
-          args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider")")
+          args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider" "$family")")
         fi
       fi
       ;;
