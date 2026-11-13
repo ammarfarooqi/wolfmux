@@ -280,7 +280,27 @@ cmd_start() {
   if [ "$founder" != "operator" ] && founder_may_act; then FOUNDER_ACTING="$founder"; fi
   wt_require_commit "$ROOT"
   ensure_state_dirs
-  beads_ensure "$beads"
+  # A fresh project (nothing established on disk yet) with --init-beads is the explicit,
+  # long-standing way to choose Beads for it; lock that choice in now, before the lead's own
+  # registry record exists, since store_kind's upgrade rule would otherwise read agents/*.json
+  # as "a pre-v1.13 project" and quietly (mis)read a genuinely native one as Beads later.
+  if [ "$beads" = "yes" ] && [ "$(store_kind)" = "native" ] && [ ! -f "$PROJECT_STATE/store" ]; then
+    store_set_kind beads
+  fi
+  case "$(store_kind)" in
+    native)
+      case "$beads" in
+        yes) info "[wolfmux] --init-beads is ignored: this project's store is already native (teamctl store beads switches it)." ;;
+        skip) info "[wolfmux] --skip-beads is ignored: this project's store is already native." ;;
+      esac
+      local store_was_new=1
+      [ -f "$(store_db)" ] && store_was_new=0
+      store_native_ensure || die "store: native store is not usable"
+      store_set_kind native # locked in now, for the same reason as above
+      [ "$store_was_new" -eq 0 ] || say "[wolfmux] tasks and messages: native store ($(short_path "$(store_db)")). teamctl store shows it."
+      ;;
+    beads) beads_ensure "$beads" ;;
+  esac
   lock_acquire
   # What the lead record says about the team's beginnings, before anything below rewrites it.
   if reg_exists "$WOLFMUX_LEAD_ROLE"; then
@@ -643,10 +663,10 @@ build_role_prompt() {
     fi
   fi
   printf -- '- Your team: %s\n' "$TEAM"
-  printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported). Your inbox: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$me" "$me"
-  printf -- '- The manager of this team is the agent with TEAM_ROLE=lead; in Beads it is called "%s". Nobody else manages, approves or assigns.\n' "$lead"
+  printf -- '- Your identity in the store: %s (BEADS_ACTOR=WOLFMUX_IDENTITY=%s, already exported). Your inbox: teamctl inbox\n' "$me" "$me"
+  printf -- '- The manager of this team is the agent with TEAM_ROLE=lead; in the store it is called "%s". Nobody else manages, approves or assigns.\n' "$lead"
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then
-    printf -- '- This project has more than one team and they share one Beads database. Everyone in YOUR team is called "%s.<role>" there: assign and message with -a %s.<role> (your lead: -a %s). A plain "lead" is the lead of ANOTHER team, and the tasks of other teams are not yours.\n' "$TEAM" "$TEAM" "$lead"
+    printf -- '- This project has more than one team and they share one store. Everyone in YOUR team is called "%s.<role>" there: message with teamctl send %s.<role> (your lead: teamctl send %s). A plain "lead" is the lead of ANOTHER team, and the tasks of other teams are not yours.\n' "$TEAM" "$TEAM" "$lead"
   fi
   if [ "$kind" = "worker" ]; then
     printf -- '- You were spawned by: %s. You report to the lead regardless.\n' "$(reg_field "$role" spawned_by)"
@@ -661,7 +681,7 @@ build_role_prompt() {
   else
     printf -- '- Team policy: %s. Change it with `teamctl policy`.\n' "$(policy_summary)"
   fi
-  printf -- '- Other teams of this project share this Beads database (list them: `teamctl teams`). Reach another team through its lead: -a <team>.lead (the first team'"'"'s lead is plain "lead"). Their tasks are theirs; hand work across with a message.\n'
+  printf -- '- Other teams of this project share this store (list them: `teamctl teams`). Reach another team through its lead: teamctl send <team>.lead (the first team'"'"'s lead is plain "lead"). Their tasks are theirs; hand work across with a message.\n'
   if [ "$kind" = "lead" ] && [ "$(policy_get lead-teams)" = "on" ]; then
     printf -- '- You may found a further team and hand work over to it: write the handover as a Beads message or task first, then `teamctl start <model> --team <new-name> --no-attach --handover <bead-id>`. The human is told. You do not manage that team afterwards; its lead does. If that lead is not running (teamctl teams says orphaned) you may restart it (teamctl restart lead --team <new-name> --continue), stop, remove or destroy the team (teamctl destroy --team <new-name> --purge); the human is told each time.\n'
   fi
@@ -697,7 +717,7 @@ kickoff_text() {
     printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `teamctl inbox`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
     return 0
   fi
-  printf 'You are the %s worker of a Wolfmux session. Your assignment and inbox are above this line (wolfmux put them there): start on it now, and claim it first (`bd update <id> --claim`). If a task of yours is already in_progress, you were restarted in the middle of it: read the checkpoint above, run `git status` and `teamctl diff %s --commits`, then continue it; do not start over. Nothing shown above: run `teamctl inbox`. Nothing assigned: answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
+  printf 'You are the %s worker of a Wolfmux session. Your assignment and inbox are above this line (wolfmux put them there): start on it now, and claim it first (`teamctl claim <id>`). If a task of yours is already in_progress, you were restarted in the middle of it: read the checkpoint above, run `git status` and `teamctl diff %s --commits`, then continue it; do not start over. Nothing shown above: run `teamctl inbox`. Nothing assigned: answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
 }
 
 # handover_text — what the lead of a team founded by another lead is started with
@@ -706,7 +726,7 @@ handover_text() {
   me="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   bead="$(reg_field "$WOLFMUX_LEAD_ROLE" handover)"
   founder="$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by)"
-  printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `bd show %s`. Then check your inbox: `bd list --assignee %s --status open,in_progress,blocked --include-infra`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s through Beads (-a %s) when the handover asks for it.' \
+  printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `teamctl show %s`. Then check your inbox: `teamctl inbox`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s with `teamctl send %s "<subject>" "<body>"` when the handover asks for it.' \
     "$TEAM" "$founder" "$bead" "$me" "$founder" "$founder"
 }
 
@@ -771,8 +791,10 @@ cmd_run_agent() {
   [ -d "$workdir" ] || die "working directory is gone: $workdir"
 
   WOLFMUX_TEAM="$TEAM"
-  BEADS_ACTOR="$(team_identity "$TEAM" "$role")" # all teams of a project share its Beads
-  export TEAM_ROLE="$role" BEADS_ACTOR WOLFMUX_TEAM
+  BEADS_ACTOR="$(team_identity "$TEAM" "$role")" # the agent's name in the store, either backend
+  WOLFMUX_IDENTITY="$BEADS_ACTOR"
+  WOLFMUX_STORE="$(store_kind)" # for the agent's own teamctl commands, no store_kind lookup needed
+  export TEAM_ROLE="$role" BEADS_ACTOR WOLFMUX_IDENTITY WOLFMUX_STORE WOLFMUX_TEAM
   if [ "$(reg_field "$role" kind)" = "worker" ]; then
     WOLFMUX_WORKTREE="$workdir" # what the worktree guard (lib/guard.sh) holds this agent to
     WOLFMUX_BRANCH="$(reg_field "$role" branch)"

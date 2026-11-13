@@ -662,7 +662,7 @@ check "teams: a named team has its own Beads identities (<team>.<role>); the fir
 check "teams: a teammate in a named team is started as <team>.<role> in the store, and its kickoff says the assignment is already in the conversation" 'teamctl spawn scribe flash --team review && sleep 2 && teamctl capture scribe --team review --all | grep -q "STUB role=scribe actor=review.scribe" && teamctl capture scribe --team review --all | grep -q "STUB kickoff_kind=briefed"'
 teamctl stop scribe --team review >/dev/null 2>&1
 teamctl remove scribe --team review --force --yes >/dev/null 2>&1
-check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "-a review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
+check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "teamctl send review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
 check "teams: a notification finds the right team by identity" 'teamctl nudge review.backend --id abc-9 && sleep 1 && teamctl capture backend --team review -n 12 | grep -q "Beads update for review.backend (abc-9)" && ! teamctl capture backend --team default -n 12 | grep -q "abc-9"'
 check "teams: a lead manages its own team only (exit 77 for another team)" 'TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend --team default; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"stopped\"" && teamctl status --json --team default | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"running\""'
 (TEAM_ROLE=backend WOLFMUX_TEAM=review "$REPO/bin/teamctl" _permission-hook <"$WORK/hook-in.json" >"$WORK/hook-review.out" 2>/dev/null) &
@@ -685,7 +685,7 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 3
   check "teams: teams talk to each other through Beads, in both directions" '[ "$(teamctl capture lead --team review --all | grep -c "Beads update for review.lead")" -ge 2 ] && teamctl capture lead --team default --all | grep -q "Beads update for lead "'
 fi
-check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "-a <team>.lead"'
+check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "teamctl send <team>.lead"'
 as_lead() { TEAM_ROLE=lead WOLFMUX_TEAM=default WOLFMUX_NOTIFY_TTY="$WORK/tty-newteam" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" "$@"; }
 check "teams: a lead can found a fresh team and hand work over to it" 'as_lead start fable --team fresh --no-attach --skip-beads --handover abc-77 && sleep 2 && teamctl status --json --team fresh | jq -e ".session_running and .agents[0].spawned_by == \"lead\"" && teamctl capture lead --team fresh --all | grep -q "STUB lastarg=.*abc-77"'
 check "teams: you are told when an agent founds a team" 'grep -q "started team .fresh." "$WORK/tty-newteam"'
