@@ -62,10 +62,10 @@ echo "STUB codexnotify=$codexnotify"
 if [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR/mail" ]; then echo "STUB rundir=yes"; else echo "STUB rundir=no"; fi
 last=""
 [ "$#" -eq 0 ] || last="${!#}" # the kickoff prompt, when there is one, is the last argument
-case "$last" in *open,in_progress,blocked*"do not start over"*) echo "STUB kickoff_in_progress=yes" ;; *) echo "STUB kickoff_in_progress=no" ;; esac
-assignee="none" # whose inbox the kickoff names: in a named team that is <team>.<role>
-case "$last" in *"--assignee "*) assignee="${last#*--assignee }" && assignee="${assignee%% *}" ;; esac
-echo "STUB kickoff_assignee=$assignee"
+case "$last" in *"do not start over"*) echo "STUB kickoff_in_progress=yes" ;; *) echo "STUB kickoff_in_progress=no" ;; esac
+# which kickoff it was given: a Claude Code agent is told its assignment is already above the prompt
+# (the SessionStart hook put it there), a Codex agent is told to fetch it with one command
+case "$last" in *"are above this line"*) echo "STUB kickoff_kind=briefed" ;; *"run \`teamctl inbox\`, then act"*) echo "STUB kickoff_kind=fetch" ;; *) echo "STUB kickoff_kind=none" ;; esac
 hint="no" # the 401 line a provider worker's kickoff carries: which Keychain slot, which endpoint, and the doctor command
 slot="none"
 endpoint="none"
