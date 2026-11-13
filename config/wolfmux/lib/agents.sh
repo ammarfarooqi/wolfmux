@@ -1550,32 +1550,22 @@ cmd_nudge() {
     esac
     shift
   done
-  # A Beads name says which team: "review.backend" is backend of team review.
-  case "$role" in
-    *.*)
-      identity_split "$role"
-      if ! valid_team_name "$ID_TEAM"; then
-        if [ "$quiet" -eq 1 ]; then return 0; fi
-        die_usage "invalid team in '$role'"
-      fi
-      WOLFMUX_TEAM_ARG="$ID_TEAM"
-      role="$ID_ROLE"
-      ;;
-  esac
   # Called from Beads hooks for every assignee, including humans and roles that
   # are not running: in quiet mode "nothing to notify" is success, not an error.
+  # A Beads name says which team: "review.backend" is backend of team review (lib/mail.sh's
+  # mail_quiet_route resolves that, exactly the same way cmd_deliver does).
   if [ "$quiet" -eq 1 ]; then
-    [ -n "$TMUX_BIN" ] && [ -n "$JQ_BIN" ] && [ -n "$GIT_BIN" ] || return 0
-    ROOT="$(resolve_root 2>/dev/null)" || return 0
-    PROJECT_KEY="$(project_key "$ROOT")"
-    PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
-    PROJECT_TREES="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
-    # The assignee's name decides the team; a plain name belongs to the first team.
-    team_paths "${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
-    [ -d "$STATE_DIR" ] || return 0
-    SESSION="$(session_name_for_project)"
-    tm_session_exists "$SESSION" || return 0
+    mail_quiet_route "$role" || return 0
+    role="$MAIL_ROLE"
   else
+    case "$role" in
+      *.*)
+        identity_split "$role"
+        valid_team_name "$ID_TEAM" || die_usage "invalid team in '$role'"
+        WOLFMUX_TEAM_ARG="$ID_TEAM"
+        role="$ID_ROLE"
+        ;;
+    esac
     require_tools
     load_project
     require_session
