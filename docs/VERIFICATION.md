@@ -6,7 +6,11 @@ their first screen; everything else used stub agents or a localhost mock.
 ## Re-run it
 
 ```bash
-tests/smoke.sh                 # 5 to 7 minutes, 327 checks, isolated from any running team
+tests/smoke.sh                 # 5 to 7 minutes, 337 checks, isolated from any running team
+tests/store.sh                 # under 60s, 73 checks: lib/store.sh, both backends
+tests/mail.sh                  # 30 checks: lib/mail.sh, delivery through the CLI's hooks
+tests/tasks.sh                 # 31 checks: teamctl task/done/blocked, the Stop reminder
+tests/memory.sh                # 31 checks: team memory, the context watch, checkpoints
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
@@ -20,7 +24,7 @@ teamctl doctor
 contains a space, and `tests/stub-agent` in place of every CLI. It was run while a
 real team was live on the same machine; the real team was unaffected.
 
-## smoke.sh: 327 of 327 pass (v1.12.0)
+## smoke.sh: 337 of 337 pass (v1.13.0)
 
 | Area | Checks |
 |------|--------|
@@ -37,7 +41,8 @@ real team was live on the same machine; the real team was unaffected.
 | branch names | the built-in template still produces the names it always did, and the record says teamctl created that branch · `--branch` gives exactly that name and the pane opens on it · `--branch` refuses a name git would not take (64) and one that exists (1), leaving no record, worktree or branch · a template with no `{ts}`, an unknown placeholder, an unclosed brace or nothing at all is refused (64) · a template with `{ticket}` and no ticket key is a usage error naming the flag, and creates nothing · an invalid ticket key is refused before anything is created · template plus `--ticket` gives a conforming name with the stamp kept · `teamctl start --ticket` is the team's default and a spawn's own `--ticket` wins · `teamctl policy` shows the template and `default` puts the built-in shape back · only a branch teamctl created is deleted, whatever it is called, a record from before the field keeps the old `ai/` rule, and a branch teamctl did not make is named and left alone · the guard holds a worker to its own branch whatever it is called |
 | a worker in another repository | branch and worktree are created in the sibling repository from a ref of that repository, and the pane opens there · the worktree lives under that repository's own key, and status names it (a `REPO` column only when some teammate has one, `repo` in `--json`) · `--repo` refuses a non-directory, a non-repository and a repository without a commit (64), creating nothing · isolation stays on: the worker's own worktree is writable, the lead's project and the sibling's own checkout are not, and it is told which repository it is in · the teammate still reads the team's own Beads workspace · diff, status and worktrees read that repository · remove without `--force` still refuses and names the commit and the file · `remove --force` takes the worktree and the branch there and leaves every other branch of both repositories · `destroy --purge` does the same |
 | clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error · a worker with thousands of unmerged commits and more changed files than a report shows: the report is cut and says how much it left out, `remove --force` and `destroy --purge --force` finish (never a silent exit 141) · a teamctl ended by a signal names the signal and the command; Ctrl-C and a closed terminal add nothing |
-| one manager | default policy is skip / skip / spawning off / isolation on · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |
+| one manager | default policy is skip / skip / spawning off / isolation on / worker-context trim · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |
+| worker-context | `trim` (default) switches off every enabled or installed plugin, by name, and still reads the rest of `~/.claude` · `lean` also starts the worker with `--setting-sources project,local`, and the per-agent hooks and guard still reach it · `full` leaves a worker everything · nonsense is refused (exit 64) naming the three choices · the policy shows in `status --json`, and a stored choice outranks the environment |
 | approvals | lead mode starts a worker without bypass and with the hook · a request is filed and the lead is told · status shows it pending · a worker cannot approve its own request · approve → the CLI receives `allow` · deny → the CLI receives `deny` with the reason · no answer → no decision, so the normal prompt appears · ask mode has neither flag nor hook |
 | notifications | fixed line typed into the pane · debounced inside the window · hostile bead id (`x;rm -rf ~`) dropped, never typed |
 | Beads | a message to a role notifies its pane · body stored intact (`"quotes"`, `$HOME`, backticks) and never typed into the pane · a worker reads the shared database from its external worktree |
@@ -51,6 +56,19 @@ real team was live on the same machine; the real team was unaffected.
 | desktop notifications | every Claude agent gets the `Stop` hook, the plugin notifier is silenced and the user's own disabled hook is kept · OSC 9 to the attached terminal with the first line, markdown dropped · the lead is marked · **an OSC 52 and a clear-screen sequence inside a message never reach the terminal** (exactly two control bytes come out: ours) · long messages are cut · no terminal attached → `osascript` with the text as an argument, never a failure · nobody attached → the message is handed to Wolfmux.app, not to `osascript`, and the project is remembered · the app fetches its message exactly once, so its next start is a click · a message it never fetched is not posted late · a click opens a terminal on the team (script with the project and `teamctl attach`) · `WOLFMUX_NOTIFY=lead` keeps workers quiet |
 | rename | an explicitly chosen socket is never redirected · teamctl follows a team on the old socket · new panes join it · destroy ends it · the next team starts on the new socket · a Beads hook written under the old name is replaced · a hook that is not ours is left alone |
 | lifecycle | stop keeps the record · restart reuses worktree and branch · destroy refuses without confirmation when non-interactive · destroy `--yes` works · dirty worktree with an unmerged commit is **kept** · clean worktree removed and merged branch deleted · session gone |
+
+## store.sh, mail.sh, tasks.sh, memory.sh: 165 checks, standalone (v1.13.0)
+
+The four v1.13 modules each got their own isolated suite (own tmux socket, state
+directory and throwaway repository; stub agents instead of real CLIs), run
+separately from `smoke.sh`.
+
+| File | Checks | Area |
+|------|--------|------|
+| `tests/store.sh` | 73 | `lib/store.sh`'s contract, the same checks run against both backends (the Beads half skipped and reported, not failed, when `bd` is not installed), then native-only hostile-input, concurrency and `store_kind` checks |
+| `tests/mail.sh` | 30 | `lib/mail.sh`: delivery to a Claude Code agent's hooks with the body, the typed-notice fallback for a role with no pane or a Codex-family agent, the watchdog for a busy turn, and `_deliver`'s refusal of garbage, an unknown identity or no session |
+| `tests/tasks.sh` | 31 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
+| `tests/memory.sh` | 31 | team memory at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), and that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports |
 
 ## Live checks with the real CLIs
 
@@ -169,14 +187,14 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | Wolfmux.app started with nothing pending (what macOS does on a click) | `open-team.command` written for the project; a new iTerm2 shell appeared in the project directory once the "control iTerm" prompt was answered |
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
-## docs.sh: 36 of 36 pass (v1.12.0)
+## docs.sh: 36 of 36 pass (v1.13.0)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.
 
 | Area | What is checked |
 |------|-----------------|
-| commands | every public command `bin/teamctl` dispatches (not the internal `_…` ones, the pointers to Beads, `version`, `help`), and every alias, is in `teamctl help`, README.md and docs/USAGE.md; every command is in the user manual |
+| commands | every public command `bin/teamctl` dispatches (not the internal `_…` ones, a retired command's handler such as `removed_command`, `version`, `help`), and every alias, is in `teamctl help`, README.md and docs/USAGE.md; every command is in the user manual |
 | options | every option a command's argument loop accepts stands next to that command in `teamctl help`, README.md and docs/USAGE.md (spellings on one `case` label count as one) |
 | policy keys, models | every key of `POLICY_KEYS` and of `model_info` is in all four, as a word of its own |
 | settings | every key of `WOLFMUX_CONFIG_KEYS` is in the config template, and explained in the user manual or under `docs/` |
@@ -193,6 +211,13 @@ commands, neither alias and no options; `teamctl help` lacked `lead-teams`,
 `--keep-transcripts`, `--quiet` and `--lines`; the user manual lacked two policy keys and
 ten settings; docs/SETUP.md still described two symlinks and knew nothing of `Wolfmux.app`,
 the `codex` wrapper or `--no-notifier-app`.
+
+v1.13 added sixteen commands (`store`, `send`, `inbox`, `checkpoint`, `task`, `done`,
+`blocked`, `claim`, `tasks`, `show`, `note`, `reopen`, `close`, `remember`, `memories`,
+`forget`), the `worker-context` policy key, and five settings, none of them documented
+anywhere yet: the check ran 21 of 36, 15 failed. `broadcast` and `message-history` were
+excluded again, the same way `moved_to_beads` commands always were, since `main()` now
+dispatches them to `removed_command` instead of a `cmd_*` handler.
 
 Does it notice drift? Thirteen mutations, each on a copy of the repository, each caught: a
 command dropped from the README · a new command nobody documented · a new option · an
