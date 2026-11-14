@@ -226,7 +226,7 @@ _mail_render_bead() {
   type="$(printf '%s' "$json" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
   from="$(printf '%s' "$json" | "$JQ_BIN" -r '.created_by // ""' 2>/dev/null)"
   [ -n "$from" ] || from="?"
-  title="$(printf '%s' "$json" | "$JQ_BIN" -r '.title // ""' 2>/dev/null)"
+  title="$(_hook_title "$(printf '%s' "$json" | "$JQ_BIN" -r '.title // ""' 2>/dev/null)")"
   prio="$(printf '%s' "$json" | "$JQ_BIN" -r '.priority // 3' 2>/dev/null)"
   status="$(printf '%s' "$json" | "$JQ_BIN" -r '.status // "open"' 2>/dev/null)"
   event="$(printf '%s' "$json" | "$JQ_BIN" -r '.event // ""' 2>/dev/null)"

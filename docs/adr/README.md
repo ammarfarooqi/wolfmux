@@ -35,3 +35,4 @@ build; superseded decisions will link to their replacement.
 | [0028](0028-mail-through-the-clis-hooks.md) | Mail reaches an agent through its CLI's hooks, with the body, in the middle of a turn | accepted | 2026-11-13 |
 | [0029](0029-team-memory-context-watch-and-checkpoints.md) | Team memory at session start, a context watch, and checkpoints | accepted | 2026-11-13 |
 | [0030](0030-what-a-worker-starts-with.md) | What a worker's conversation starts with is a policy (`worker-context`) | accepted | 2026-11-13 |
+| [0031](0031-a-store-of-our-own.md) | A store of our own — native SQLite by default, Beads kept as the second | accepted | 2026-11-13 |

@@ -113,7 +113,7 @@ _memory_session_checkpoint() {
   fi
   hook_context "[wolfmux memory] Where you left off (checkpoint of $(/bin/date -u -r "$mtime" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null), written by this role's previous or current conversation):
 
-$(/bin/cat "$file" 2>/dev/null)"
+$(/bin/cat "$file" 2>/dev/null | _hook_tail_cap "$WOLFMUX_CHECKPOINT_CHARS")"
 }
 
 # _memory_context_watch — PostToolUse: how full is this conversation, and has it crossed a
@@ -174,21 +174,40 @@ teamctl restart $HOOK_ROLE : a new conversation in the same worktree and branch;
   ) >/dev/null 2>&1
 }
 
-# _memory_precompact — the agent cannot be asked anything here: append what can be read from
-# the filesystem alone, and never take long doing it.
+_MEMORY_PRECOMPACT_MARKER="## state at compaction "
+
+# _memory_precompact — the agent cannot be asked anything here: add what can be read from the
+# filesystem alone, and never take long doing it. Appending without bound would let the file
+# grow forever across many compactions, so this keeps the agent's own text (everything before
+# the first automatic section) plus only the newest of the EXISTING automatic sections, which
+# together with the one just added makes two.
 _memory_precompact() {
   local file="$HOOK_RUN/memory/checkpoint.md" branch head status_lines log_lines
+  local marker_lines first_marker last_marker own_text="" keep=""
   branch="$("$GIT_BIN" branch --show-current 2>/dev/null)" || branch=""
   head="$("$GIT_BIN" rev-parse --short HEAD 2>/dev/null)" || head=""
   status_lines="$("$GIT_BIN" status --short 2>/dev/null | /usr/bin/head -n 20)" || status_lines=""
   log_lines="$("$GIT_BIN" log --oneline -5 2>/dev/null)" || log_lines=""
+  if [ -r "$file" ]; then
+    marker_lines="$(/usr/bin/grep -n "^$_MEMORY_PRECOMPACT_MARKER" "$file" 2>/dev/null | /usr/bin/cut -d: -f1)"
+    if [ -n "$marker_lines" ]; then
+      first_marker="$(printf '%s\n' "$marker_lines" | /usr/bin/head -1)"
+      last_marker="$(printf '%s\n' "$marker_lines" | /usr/bin/tail -1)"
+      own_text="$(/usr/bin/head -n "$((first_marker - 1))" "$file")"
+      keep="$(/usr/bin/tail -n "+$last_marker" "$file")"
+    else
+      own_text="$(/bin/cat "$file")"
+    fi
+  fi
   {
-    printf '\n## state at compaction %s\n' "$(now_iso)"
+    [ -z "$own_text" ] || printf '%s\n' "$own_text"
+    [ -z "$keep" ] || printf '%s\n' "$keep"
+    printf '%s%s\n' "$_MEMORY_PRECOMPACT_MARKER" "$(now_iso)"
     [ -z "$branch" ] || printf 'branch: %s\n' "$branch"
     [ -z "$head" ] || printf 'head: %s\n' "$head"
     printf 'git status --short (first 20 lines):\n%s\n' "$status_lines"
     printf 'git log --oneline -5:\n%s\n' "$log_lines"
-  } >>"$file" 2>/dev/null || true
+  } | _reg_write_atomic "$file" 2>/dev/null || true
 }
 
 # _checkpoint_header <role> <stamp> <task-id> <task-title>

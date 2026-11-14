@@ -71,6 +71,26 @@ _hook_cap() {
   fi
 }
 
+# _hook_tail_cap <max-chars> — the same, but keeps the END of the text rather than the
+# start: for a checkpoint shown back to an agent, the newest part is what matters.
+_hook_tail_cap() {
+  local max="$1" text
+  text="$(/bin/cat)"
+  if [ "${#text}" -gt "$max" ]; then
+    printf '%s' "${text: -$max}"
+  else
+    printf '%s' "$text"
+  fi
+}
+
+# _hook_title <text> — a task or message title is data: wherever it goes into a `[wolfmux]`
+# line (a hook's own context, a typed notice), it is never more than one line and never more
+# than 200 characters, so it cannot be mistaken for several lines of wolfmux's own text or
+# run the line on past what the pane shows.
+_hook_title() {
+  printf '%s' "$1" | LC_ALL=C tr '\n\r\t' ' ' | LC_ALL=C tr -d '\000-\010\013-\037\177' | _hook_cap 200
+}
+
 # run_dir <role> — the agent's run directory in the loaded team
 run_dir() { printf '%s/run/%s\n' "$STATE_DIR" "$1"; }
 

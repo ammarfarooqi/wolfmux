@@ -173,6 +173,14 @@ check "a 20k text is cut (to the 8000-char cap, plus header), escape sequences a
 
 check "PreCompact: creates the file when there was none, appends the automatic section" \
   '/bin/rm -f "$RUN_CK/memory/checkpoint.md"; printf "{}" | TEAM_ROLE=ck WOLFMUX_RUN_DIR="$RUN_CK" teamctl _hook PreCompact >/dev/null; grep -q "state at compaction" "$RUN_CK/memory/checkpoint.md"'
+check "PreCompact: three compactions keep the agent's own text and only the newest two automatic sections, not all three" \
+  'TEAM_ROLE=ck BEADS_ACTOR=ck WOLFMUX_RUN_DIR="$RUN_CK" teamctl checkpoint "OWNTEXT123" >/dev/null 2>&1
+   printf "{}" | TEAM_ROLE=ck WOLFMUX_RUN_DIR="$RUN_CK" teamctl _hook PreCompact >/dev/null
+   sleep 1
+   printf "{}" | TEAM_ROLE=ck WOLFMUX_RUN_DIR="$RUN_CK" teamctl _hook PreCompact >/dev/null
+   sleep 1
+   printf "{}" | TEAM_ROLE=ck WOLFMUX_RUN_DIR="$RUN_CK" teamctl _hook PreCompact >/dev/null
+   grep -q OWNTEXT123 "$RUN_CK/memory/checkpoint.md" && [ "$(grep -c "state at compaction" "$RUN_CK/memory/checkpoint.md")" = 2 ]'
 
 TEAM_ROLE=ck BEADS_ACTOR=ck WOLFMUX_RUN_DIR="$RUN_CK" teamctl checkpoint "after compaction" >/dev/null 2>&1
 check "SessionStart (resume) shows the checkpoint" \

@@ -545,7 +545,7 @@ tasks_hook() {
   if [ -n "$id" ] && valid_bead_id "$id"; then
     marker="$dir/reminded-$id"
     if [ ! -e "$marker" ]; then
-      title="$(printf '%s' "$json" | "$JQ_BIN" -r --arg id "$id" '[.[] | select(.id == $id)][0].title')"
+      title="$(_hook_title "$(printf '%s' "$json" | "$JQ_BIN" -r --arg id "$id" '[.[] | select(.id == $id)][0].title')")"
       : >"$marker" 2>/dev/null || true
       hook_context "[wolfmux] You are stopping while $id \"$title\" is in progress under your name. Finished: teamctl done \"<summary>\" --tests \"<command: result>\". Waiting or stuck: teamctl blocked \"<why>\". Already reported or deliberately waiting for an answer: ignore this and stop."
     fi
@@ -556,7 +556,7 @@ tasks_hook() {
   [ -n "$id" ] && valid_bead_id "$id" || return 0
   marker="$dir/reminded-$id"
   [ -e "$marker" ] && return 0
-  title="$(printf '%s' "$json" | "$JQ_BIN" -r --arg id "$id" '[.[] | select(.id == $id)][0].title')"
+  title="$(_hook_title "$(printf '%s' "$json" | "$JQ_BIN" -r --arg id "$id" '[.[] | select(.id == $id)][0].title')")"
   : >"$marker" 2>/dev/null || true
   hook_context "[wolfmux] $id \"$title\" is assigned to you and not started. Claim it and start: teamctl claim $id   (the body is in its inbox: teamctl inbox)"
 }

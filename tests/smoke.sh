@@ -350,6 +350,10 @@ teamctl policy worker-context trim >/dev/null 2>&1
 check "worker-context: the policy shows in status --json, and a stored choice outranks the environment" 'teamctl status --json | jq -e ".policy.worker_context == \"trim\"" && [ "$(WOLFMUX_WORKER_CONTEXT=lean teamctl status --json | jq -r .policy.worker_context)" = trim ]'
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -gu CLAUDE_CONFIG_DIR
 teamctl restart qa >/dev/null 2>&1
+# "summary" (a Claude-subscription model, unlike qa's GLM) was stopped and removed with the
+# other provider-test roles above; this check wants a second family alive to compare against,
+# so it is spawned fresh rather than restarted.
+teamctl spawn summary sonnet --no-kickoff >/dev/null 2>&1
 sleep 2
 check "compaction: a worker's CLI is told to compact at the window status counts with (200000)" 'teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "^STUB compact=200000$" && teamctl capture summary --all | grep -q "^STUB compact=200000$"'
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW off
@@ -468,7 +472,10 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 4
   BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Quote test" -t message -a backend -d 'body with "quotes" $HOME `ticks`' --silent >/dev/null 2>&1
   sleep 3
-  check "beads: message to a role notifies its pane" 'teamctl capture backend -n 12 | grep -q "Beads update for backend"'
+  # Mail now reaches an idle pane through its hooks (ADR-0028): the Beads hook spools it and
+  # types the wake line _mail_type uses ("New mail for …"), not the older typed Beads-update
+  # notice (still what a Codex-family or paneless target gets, unaffected here).
+  check "beads: message to a role notifies its pane" 'teamctl capture backend -n 12 | grep -q "New mail for backend"'
   check "beads: body is stored intact and never typed into the pane" 'bd list --assignee backend --status open --include-infra --json | jq -e ".[0].description | contains(\"\$HOME\")" && ! teamctl capture backend -n 20 | grep -q ticks'
   check "beads: a worker reaches the shared database from its worktree" '(cd "$(teamctl status --json | jq -r ".agents[] | select(.role == \"backend\") | .workdir")" && bd list --assignee backend --status open --include-infra --json | jq -e "length == 1")'
 else
@@ -676,13 +683,16 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 5
   BEADS_ACTOR=review.backend TEAM_ROLE=backend WOLFMUX_TEAM=review bd create "Review ready" -t message -a review.lead -d "see branch" --silent >/dev/null 2>&1
   sleep 3
-  check "teams: Beads messages reach the lead of the right team" 'teamctl capture lead --team review -n 12 | grep -q "Beads update for review.lead" && ! teamctl capture lead --team default -n 12 | grep -q "review.lead"'
+  check "teams: Beads messages reach the lead of the right team" 'teamctl capture lead --team review -n 12 | grep -q "New mail for review.lead" && ! teamctl capture lead --team default -n 12 | grep -q "review.lead"'
   sleep 4
   BEADS_ACTOR=lead TEAM_ROLE=lead WOLFMUX_TEAM=default bd create "Need a second opinion" -t message -a review.lead -d "from the first team" --silent >/dev/null 2>&1
   sleep 4
   BEADS_ACTOR=review.lead TEAM_ROLE=lead WOLFMUX_TEAM=review bd create "Opinion attached" -t message -a lead -d "from team review" --silent >/dev/null 2>&1
   sleep 3
-  check "teams: teams talk to each other through Beads, in both directions" '[ "$(teamctl capture lead --team review --all | grep -c "Beads update for review.lead")" -ge 2 ] && teamctl capture lead --team default --all | grep -q "Beads update for lead "'
+  # review's lead is Claude family (fable): the new hooks-based "New mail for …" line.
+  # default's lead is Codex family (astra, started at the top of this file): no hooks yet
+  # (ADR-0028 point 9), so it still gets the older typed "Beads update for …" notice.
+  check "teams: teams talk to each other through Beads, in both directions" '[ "$(teamctl capture lead --team review --all | grep -c "New mail for review.lead")" -ge 2 ] && teamctl capture lead --team default --all | grep -q "Beads update for lead "'
 fi
 check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "teamctl send <team>.lead"'
 as_lead() { TEAM_ROLE=lead WOLFMUX_TEAM=default WOLFMUX_NOTIFY_TTY="$WORK/tty-newteam" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/bin/teamctl" "$@"; }
