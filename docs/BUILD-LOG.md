@@ -496,7 +496,7 @@ interface underneath (`send`, `inbox`, `task`, `claim`, `done`, `blocked`, `task
 used to point at the `bd` equivalent, are retired the same way the `moved_to_beads`
 commands always were (`removed_command`, naming the real commands instead).
 
-`tests/smoke.sh`: 327 → 337. New: `tests/store.sh` (73), `tests/mail.sh` (30),
+`tests/smoke.sh`: 327 → 339. New: `tests/store.sh` (73), `tests/mail.sh` (30),
 `tests/tasks.sh` (31), `tests/memory.sh` (31). `tests/providers.sh`: 134 (unchanged).
 `tests/docs.sh`: 36 (unchanged in count; 21 → 36 passing, once `usage()`, the completion
 backend, the config template, README.md, docs/USAGE.md and the user manual caught up).
