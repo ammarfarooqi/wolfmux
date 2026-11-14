@@ -54,7 +54,7 @@ public_commands() {
     /case "\$command" in/ { inside = 1; next }
     inside && /^  esac/ { exit }
     inside && /^    [a-z_-]+( \| [a-z_-]+)*\) / {
-      if ($0 ~ /moved_to_beads|usage|WOLFMUX_VERSION/) next
+      if ($0 ~ /moved_to_beads|removed_command|usage|WOLFMUX_VERSION/) next
       names = $0; sub(/\).*/, "", names); gsub(/[ |]+/, " ", names); sub(/^ /, "", names)
       if (names ~ /^_/) next
       handler = $0; sub(/^[^)]*\) /, "", handler); sub(/ .*/, "", handler)

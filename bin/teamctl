@@ -77,7 +77,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
   Policy and permissions
     teamctl policy [<key> <value>]                    lead-permissions · worker-permissions · worker-spawn ·
-                                                      worker-isolation (the worktree guard) · lead-teams (may the lead found teams) ·
+                                                      worker-isolation (the worktree guard) · worker-context full|trim|lean
+                                                      (what of ~/.claude a worker's conversation starts with; default trim) ·
+                                                      lead-teams (may the lead found teams) ·
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
     teamctl approvals [--all]                         workers' permission requests (worker-permissions=lead)
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
@@ -109,11 +111,31 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       --force deletes it anyway. teamctl teams shows what a team takes on disk
     teamctl version | help
 
-  Tasks and messages are Beads, not teamctl:
-    bd create "Title" -t task -p 1 -a backend -d "what to do"      assign work
-    bd create "Subject" -t message -a frontend -d "body"            message an agent
-    bd list --assignee <role> --status open,in_progress,blocked --include-infra        an agent's inbox (tasks + messages)
-    bd show <id> · bd update <id> --claim · bd close <id> -r "..."  · bd ready
+  Mail  reaches a Claude Code agent through its CLI's hooks, with the body, at its next tool
+        call (a Codex agent still gets the typed notice). Backend: native sqlite (default
+        for a new project) or Beads, kept for a team already on it; teamctl store shows which.
+    teamctl send <role>|<team>.<role>|--all "<subject>" ["<body>"] [--body-file <file>|-] [--re <bead-id>]
+    teamctl inbox [<role>] [--peek] [--json]          unread mail + open tasks; marks messages
+                                                      read for you, unless --peek
+  Tasks
+    teamctl task <role> "<title>" [-d "<text>"|--body-file <file>|-] [-p <0-4>] [--after <bead-id>]... [--spawn <model>]
+    teamctl claim [<id>]                              the caller's only open task, if none is named
+    teamctl done [<id>] "<summary>" [--tests "<cmd: result>"] [--body-file <file>] [--allow-dirty]
+    teamctl blocked [<id>] "<why>"                    marks it blocked, tells the lead
+    teamctl tasks [<role>|--all] [--status <list>] [--json]      default status: open,in_progress,blocked
+    teamctl show <id> [--json]                        one task (body, notes, blockers), or a message with its thread
+    teamctl note <id> "<text>"                        a durable note on a task; notifies nobody
+    teamctl reopen <id> "<why>"      (lead)           send a closed task back, open, the assignee told
+    teamctl close <id> -r "<reason>" [--failed]   (lead)    close or reject any task of this team
+  Memory  team knowledge and where an agent left off (ADR-0029)
+    teamctl checkpoint "<text>"|--body-file <file>|-|--show [<role>]    save, or print a role's
+                                                      stored checkpoint
+    teamctl remember "<fact>" [--key <slug>]          team memory, any agent; default key: a slug of the text
+    teamctl memories [<query>] [--json]               search team memory
+    teamctl forget <key>
+  Store
+    teamctl store [native|beads [--migrate]]          which backend this project's tasks, mail
+                                                      and memory live in; no argument shows it
   Full protocol: ~/.config/wolfmux/TEAM_PROTOCOL.md      Docs: ~/.config/wolfmux/README.md
 EOF
 }
