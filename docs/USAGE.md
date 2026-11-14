@@ -4,6 +4,16 @@ The installed user manual is [`config/wolfmux/README.md`](../config/wolfmux/READ
 (`~/.config/wolfmux/README.md` on the machine). This page walks through one
 complete session and lists every command.
 
+Tasks, messages and team memory are `teamctl` commands (`send`, `task`, `checkpoint`, …),
+not Beads: agents no longer need `bd`. They live in a native sqlite store by default, or
+in Beads for a team already on it (`teamctl store`; [Beads cheat sheet](#beads-cheat-sheet)
+if yours is). A message or task reaches a Claude Code agent through its CLI's hooks, with
+the body, at its next tool call — a Codex agent still gets the typed notice. A worker's own
+conversation starts under the `worker-context` policy (default `trim`: your rules and
+settings, every plugin off) and is told, as it fills up, to commit and checkpoint, then to
+start nothing new (`WOLFMUX_CONTEXT_WARN` / `WOLFMUX_CONTEXT_ROTATE`); `teamctl restart
+<role>` picks the work back up from that checkpoint.
+
 ## A complete session
 
 ```bash
@@ -18,11 +28,9 @@ commands yourself at any time):
 
 ```bash
 # 1. plan: tasks with owners, acceptance criteria and dependencies
-bd create "Reset API: POST /reset, POST /reset/confirm" -t task -p 1 -a backend --body-file api-spec.md
-bd create "Reset screens" -t task -p 1 -a frontend -d "Two screens, contract in the API task"
-bd create "E2E: reset flow" -t task -p 2 -a qa -d "Happy path + expired token"
-bd dep add <qa-task> <api-task>
-bd dep add <qa-task> <ui-task>
+teamctl task backend "Reset API: POST /reset, POST /reset/confirm" -p 1 --body-file api-spec.md
+teamctl task frontend "Reset screens" -p 1 -d "Two screens, contract in the API task"
+teamctl task qa "E2E: reset flow" -p 2 -d "Happy path + expired token" --after <api-task> --after <ui-task>
 
 # 2. staff: one pane, branch and worktree each
 teamctl spawn backend glm53
@@ -35,16 +43,15 @@ directly:
 
 ```bash
 # in the frontend pane
-bd create "Need expires_at in the confirm response" -t message -a backend -d "ISO-8601, UTC"
-# backend's pane shows:  [wolfmux] Beads update for backend (shop-wisp-x1). Run: bd show shop-wisp-x1 ...
+teamctl send backend "Need expires_at in the confirm response" "ISO-8601, UTC"
+# backend's pane shows the message itself, at its next tool call — no extra command needed
 ```
 
 When a worker finishes it commits, reports and closes:
 
 ```bash
 git commit -am "feat: password reset API"
-bd create "Done: Reset API" -t message -a lead --body-file report.md   # summary, tests, commit, risks
-bd close <api-task> -r "commit 4f2a9c1; 38 tests pass"
+teamctl done <api-task> "Reset API" --tests "pytest: 38 passed"   # Done: message to the lead, then closes it
 ```
 
 The lead is notified, reviews and integrates:
@@ -53,7 +60,7 @@ The lead is notified, reviews and integrates:
 teamctl status                       # who is running, commits ahead, dirty files
 teamctl diff backend --stat          # then: teamctl diff backend
 git cherry-pick 4f2a9c1              # in the project root — only the lead does this
-bd create "Changes requested: rate-limit /reset" -t message -a backend -d "…"   # or this
+teamctl send backend "Changes requested: rate-limit /reset"   # or this
 ```
 
 End of day:
@@ -221,7 +228,7 @@ creation time in the lead's record, so the founder keeps its authority after one
 |---------|------|
 | `teamctl start <model> [--team <name>] [--no-attach] [--continue] [--resume <session-id>] [--ticket <KEY>] [--init-beads\|--skip-beads] [--lead-permissions …] [--worker-permissions …] [--worker-spawn …]` | create the session and the lead pane; attach. `--ticket` sets the team's default ticket key ([branch names](#branch-names-that-fit-your-repository)). Any model can lead (table below). `--team` names a further team; `--continue` resumes the lead's own conversation (the id stored with it), `--resume` reopens the one you name ([which conversation comes back](#finding-the-manager-and-being-told-when-someone-finishes)). With a team already there: see [closing and coming back](#finding-the-manager-and-being-told-when-someone-finishes) |
 | `teamctl start <model> --team <new> --handover <bead-id>` | found a fresh team whose lead starts by reading that bead ([teams working together](#teams-working-together)) |
-| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)) |
+| `teamctl policy [<key> <value>]` | show or change, per team: `lead-permissions` (skip\|ask), `worker-permissions` (skip\|lead\|ask), `worker-spawn` (on\|off), `worker-isolation` (on\|off: the worktree guard), `worker-context` (full\|trim\|lean: what of `~/.claude` a worker's conversation starts with, default `trim`), `lead-teams` (on\|off: may the lead found teams), `branch-template` (how workers' branches are named: [branch names](#branch-names-that-fit-your-repository)) |
 | `teamctl approvals [--all]`, `teamctl approve <id>…\|--all`, `teamctl deny <id> "<reason>"` | the lead decides workers' permission requests (`worker-permissions lead`) |
 | `teamctl spawn <role> <model> [--base <ref>] [--branch <name>] [--ticket <KEY>] [--repo <path> \| --from-worktree <role>] [--no-kickoff] [--resume <session-id>]` | new worker: branch + worktree + pane. Any model, whoever leads (table below). `--branch` / `--ticket`: [branch names](#branch-names-that-fit-your-repository) · `--repo`: [a worker in another repository](#a-worker-in-another-repository). `--from-worktree <role>` starts the fresh worker in a stopped worker's built worktree, on a new branch (the old branch and commits stay): node_modules and build output survive, so install and build are not repeated. Refuses a running worker, and a worktree with uncommitted changes (lists them) (`--repo` does not combine with it: the worktree stays in its own repository). Only the lead, or you, may hand a worktree over; a worker is refused (exit 77) even with worker-spawn on. `--resume <session-id>` puts it into an existing conversation instead of a new one (and sends no kickoff) |
 | `teamctl stop <role>` | close a pane; worktree, branch and commits stay |
@@ -246,7 +253,27 @@ Roles are lowercase letters, digits and `-` (max 32). `lead` is reserved.
 `start`, `stop`, `restart`, `remove`, `destroy`, `approve`, `deny` and changing the `policy`
 are reserved for the lead of that team and for you; `spawn` too unless `worker-spawn` is on.
 A worker gets exit 77. `--team <name>` goes with any command, before or after it.
-`teamctl send|inbox|broadcast|task` print the `bd` equivalents.
+
+### Mail, tasks and memory
+
+| Command | Does |
+|---------|------|
+| `teamctl send <role>\|<team>.<role>\|--all "<subject>" ["<body>"] [--body-file <file>\|-] [--re <bead-id>]` | message an agent, every agent of this team, or reply to a bead |
+| `teamctl inbox [<role>] [--peek] [--json]` | your (or that role's) unread mail and open tasks; `--peek` leaves it unread |
+| `teamctl task <role> "<title>" [-d "<text>"\|--body-file <file>\|-] [-p <0-4>] [--after <bead-id>]… [--spawn <model>]` | assign work; `--after` adds a dependency, `--spawn` starts the role if it is not already running |
+| `teamctl claim [<id>]` | claim your only open task, or the one you name; refuses one still waiting on an unclosed blocker |
+| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | report and close a task: a `Done:` message to the lead (summary, tests, branch, commit log), then closes it |
+| `teamctl blocked [<id>] "<why>"` | mark a task blocked and tell the lead why |
+| `teamctl tasks [<role>\|--all] [--status <list>] [--json]` | a list of tasks; default is your own team, not closed |
+| `teamctl show <id> [--json]` | one task (body, notes, blockers), or a message with its whole thread |
+| `teamctl note <id> "<text>"` | a durable note on a task; notifies nobody |
+| `teamctl reopen <id> "<why>"` (lead) | send a closed task back: open, the reason noted, the assignee told |
+| `teamctl close <id> -r "<reason>" [--failed]` (lead) | close or reject any task of this team |
+| `teamctl checkpoint "<text>"\|--body-file <file>\|-\|--show [<role>]` | save where you left off, or print a role's stored checkpoint; shown again at the next `SessionStart` |
+| `teamctl remember "<fact>" [--key <slug>]` | add to team memory, shown to every agent at session start |
+| `teamctl memories [<query>] [--json]` | search team memory |
+| `teamctl forget <key>` | remove one memory |
+| `teamctl store [native\|beads [--migrate]]` | show, or switch, which backend holds this project's tasks, mail and memory; `--migrate` moves a Beads project's open work into the native store |
 
 ### Models
 
@@ -288,6 +315,12 @@ environment, not in a file, not on screen, and no redirect is followed. Plain `t
 offline and never reads a key value.
 
 ## Beads cheat sheet
+
+For a project kept on the Beads backend (`teamctl store` says `beads`): the raw `bd`
+commands `teamctl send`, `teamctl task` and the rest call underneath, useful when you
+want Beads' own view (`bd ready`, dependency queries) or are scripting against it
+directly. On the default native store these are not available; use the `teamctl`
+verbs above instead, which work the same on either backend.
 
 ```bash
 bd list --assignee $BEADS_ACTOR --status open,in_progress,blocked --include-infra   # inbox: your tasks (new, claimed, blocked) + unread messages; $BEADS_ACTOR is your role, or <team>.<role> in a named team
