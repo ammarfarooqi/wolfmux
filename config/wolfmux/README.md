@@ -63,10 +63,13 @@ teamctl start astra
 ```
 
 Same session, same workers, same commands; only the lead's launcher differs.
-The first start in a repository offers to initialize Beads in stealth mode
-(`bd init --stealth --skip-hooks --skip-agents`): no commit, no tracked files, no
-git hooks, no AGENTS.md/CLAUDE.md changes. Use `--init-beads` to skip the question,
-or run your own `bd init` flavour first.
+The first start in a repository creates its store: a native sqlite file by default
+(nothing to answer), or, with `--init-beads`, a Beads workspace in stealth mode
+(`bd init --stealth --skip-hooks --skip-agents`: no commit, no tracked files, no git
+hooks, no AGENTS.md/CLAUDE.md changes). `--skip-beads` answers that question for a
+project that is already on the Beads backend but has no workspace yet; run your own
+`bd init` flavour first if you want to answer it yourself. `teamctl store` shows
+which backend a project ended up on.
 
 `Ctrl-b d` detaches; the team keeps running. `teamctl attach` comes back.
 
@@ -423,7 +426,7 @@ WOLFMUX_DRY_RUN=1 claude-kimi                   # any provider name works; shows
 | Worktrees | `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/`; a named team's under `…/<project>-<hash>/teams/<team>/` |
 | teamctl state (role ↔ model ↔ worktree, policy, approvals, event log) | `~/.wolfmux/state/<project>-<hash>/`; a named team's under `…/teams/<team>/` — nothing is written into your repository |
 | Agents' conversations | Claude Code's own `~/.claude/projects/<the worktree's path, every character that is not a letter or digit turned into ->/`; `teamctl destroy --purge` removes those of the teammates it deletes. A lead's conversations are in your checkout's folder there and stay; Codex keeps its own sessions |
-| Tasks + messages | the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode) |
+| Tasks, messages, memory | `~/.wolfmux/state/<project>/store.db` (native, the default) or the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode), per `teamctl store` |
 | tmux | dedicated server: `tmux -L wolfmux`; your default tmux and `~/.tmux.conf` are untouched. A team started before the rename from "ai-team" stays on `tmux -L ai-team` until it ends; `teamctl` follows it |
 | Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, `git status`, `git worktree list`; ask on `teamctl destroy`), `~/.codex/rules/wolfmux.rules` |
 
