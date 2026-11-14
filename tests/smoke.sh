@@ -342,6 +342,15 @@ teamctl policy worker-context lean >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
 sleep 2
 check "worker-context: lean also starts the worker with --setting-sources project,local; the per-agent settings (hooks, guard) still go to it" 'teamctl capture qa --all | grep "STUB context=" | tail -1 | grep -q "sources=project,local$" && teamctl capture qa --all | grep "STUB hooks=" | tail -1 | grep -q "Stop" && teamctl policy | grep -q "worker-context  *lean"'
+printf '%s\n' '{"enabledPlugins":{"alpha@market":true},"skipDangerousModePermissionPrompt":true}' >"$FAKE_CLAUDE/settings.json"
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+QA_SETTINGS="$(find "$WOLFMUX_DATA/state" -path "*settings/qa.json" | head -1)"
+check "worker-context: lean carries your own recorded acceptance of bypass-permissions mode into the worker (without it the CLI stops a lean worker at a dialog)" 'jq -e ".skipDangerousModePermissionPrompt == true" "$QA_SETTINGS"'
+printf '%s\n' '{"enabledPlugins":{"alpha@market":true,"beta@market":false},"env":{"ECC_DISABLED_HOOKS":"post:example"}}' >"$FAKE_CLAUDE/settings.json"
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "worker-context: lean never invents that acceptance: settings without it leave the worker without it" '! jq -e "has(\"skipDangerousModePermissionPrompt\")" "$QA_SETTINGS"'
 teamctl policy worker-context full >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
 sleep 2

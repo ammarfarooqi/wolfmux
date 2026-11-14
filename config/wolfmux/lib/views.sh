@@ -187,9 +187,19 @@ cmd_status() {
   say ""
   if [ "$(printf '%s\n' "$teams" | wc -w | tr -d ' ')" -gt 1 ]; then
     say "several teams: add --team <name> to a command · each team has its own session: teamctl attach --team <name>"
-    say "they share this project's Beads; a named team's agents are <team>.<role> there (bd list --assignee review.lead …)"
+    if [ "$(store_kind)" = "native" ]; then
+      say "they share this project's store; a named team's agents are <team>.<role> there (teamctl tasks review.lead …)"
+    else
+      say "they share this project's Beads; a named team's agents are <team>.<role> there (bd list --assignee review.lead …)"
+    fi
   fi
-  say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
+  # The footer names the store this project actually uses: pointing a native project at bd
+  # sends its reader to a database that is not there.
+  if [ "$(store_kind)" = "native" ]; then
+    say "tasks and messages live in the native store:  teamctl tasks · teamctl inbox <role> · teamctl show <id> · teamctl store"
+  else
+    say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
+  fi
 }
 
 # _teams_facts: for the loaded team: TEAMS_STATE, TEAMS_FOUNDER, TEAMS_LEAD, TEAMS_COUNT, TEAMS_KB

@@ -288,10 +288,28 @@ worker_compact_window() {
   printf '%s\n' "$window"
 }
 
+# worker_context_carried — what a lean worker loses together with your user settings and then
+# stops on: your own, already recorded, acceptance of bypass-permissions mode. Without it a
+# lean worker in skip mode sits at the CLI's "Yes, I accept" dialog and never reads its task
+# (seen against Claude Code 2.1.325). Carried only when your settings say so, never invented:
+# someone who has not accepted that mode is still asked.
+worker_context_carried() {
+  local f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+  if [ -r "$f" ] && "$JQ_BIN" -e '.skipDangerousModePermissionPrompt == true' "$f" >/dev/null 2>&1; then
+    printf '{"skipDangerousModePermissionPrompt":true}\n'
+  else
+    printf '{}\n'
+  fi
+}
+
 # worker_context_settings <kind> <mode> — the fragment write_agent_settings merges in
 worker_context_settings() {
   if [ "$1" != "worker" ] || [ "$2" = "full" ]; then
     printf '{}\n'
+    return 0
+  fi
+  if [ "$2" = "lean" ]; then
+    { worker_context_plugins_off; worker_context_carried; } | "$JQ_BIN" -cs 'add // {}' 2>/dev/null || printf '{}\n'
     return 0
   fi
   worker_context_plugins_off
