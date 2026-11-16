@@ -566,6 +566,26 @@ inbox_mark_typed() {
   return 0
 }
 
+# inbox_mark_item_delivered <role> <id> — the item <id> was handed over by another channel
+# (the mid-turn drain, lib/mail.sh): every undelivered line that names it, "(<id>)", is
+# marked delivered, so no hook hands it over again. awk only, under the role's lock, the same
+# chained rewrite as inbox_mark_typed: no jq, no bd, no sqlite3 on the PostToolUse path.
+inbox_mark_item_delivered() {
+  local role="$1" id="$2" file
+  [ -n "$role" ] && [ -n "$id" ] || return 0
+  case "$id" in *[!A-Za-z0-9._-]*) return 0 ;; esac
+  file="$(inbox_file "$role")"
+  [ -f "$file" ] || return 0
+  inbox_lock "$role" || return 0
+  WM_WANT="($id)" LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' '
+    BEGIN { want = ENVIRON["WM_WANT"] }
+    NF >= 4 && index($4, want) > 0 && substr($3, 2, 1) == "u" { $3 = substr($3, 1, 1) "d" }
+    { print }' "$file" >"$(inbox_tmp "$role" item)" 2>/dev/null && /bin/mv -f "$(inbox_tmp "$role" item)" "$file" 2>/dev/null
+  /bin/rm -f "$(inbox_tmp "$role" item)" 2>/dev/null || true
+  inbox_unlock "$role"
+  return 0
+}
+
 # inbox_take_undelivered <role> — print the text of every line the agent has not been
 # given, oldest first, AND mark exactly those lines delivered. One critical section, so
 # two hooks firing together cannot both hand over the same notice. The human's column is
@@ -936,11 +956,22 @@ inbox_not_you() {
 # third argument says how many notices this hand-over could not carry, so a capped batch
 # does not look like the whole of it.
 inbox_hook_body() {
+  local uncovered=1
   printf '%s\n%s\n' "[wolfmux] You have team notices:" "$2"
   if [ -n "${3:-}" ] && [ "$3" != "0" ]; then
     printf '%s more waiting; they come with your next turn, or see them all now: teamctl inbox\n' "$3"
   fi
-  printf 'Read it now: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1"
+  # v1.24.0: the body travels with the notice (ADR-0032). Counted before the bodies are moved.
+  if [ -n "${INBOX_ROLE:-}" ] && [ -n "${STATE_DIR:-}" ] && declare -F mail_bodies_for >/dev/null 2>&1; then
+    uncovered="$(mail_notices_uncovered "$INBOX_ROLE" "$2")"
+    mail_bodies_for "$INBOX_ROLE" "$1" "$2"
+  fi
+  [ "$uncovered" != "0" ] || return 0
+  if [ "$(store_kind 2>/dev/null || printf beads)" = "native" ]; then
+    printf 'Read it now: teamctl mail\n'
+  else
+    printf 'Read it now: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1"
+  fi
 }
 
 # cmd_inbox_stop — internal (`teamctl _inbox-stop`): a Claude Code Stop hook, added as a

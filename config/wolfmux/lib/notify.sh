@@ -190,10 +190,9 @@ cmd_open_team() {
   return 0
 }
 
-# cmd_notify — internal (`teamctl _notify`): the Stop hook's JSON on stdin. Kept for Codex, whose
-# `notify` program is the same thing under another name, and for a settings file written by an
-# earlier version; a Claude Code agent's Stop hook is `teamctl _hook Stop` (lib/hooks.sh), which
-# ends in notify_stop.
+# cmd_notify — internal (`teamctl _notify`): the Stop hook's JSON on stdin, and Codex's `notify`
+# program, the same thing under another name. A Claude agent gets it as its own Stop hook entry
+# when WOLFMUX_NOTIFY wants it (write_agent_settings); `teamctl _hook Stop` never notifies (v1.24.0).
 cmd_notify() {
   local input
   if [ "${1:-}" = "--codex" ]; then

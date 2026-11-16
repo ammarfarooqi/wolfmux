@@ -12,7 +12,7 @@
 # Delivery: the Beads backend has its own hook (hooks/beads-nudge) that calls `teamctl
 # _deliver` (cmd_deliver below) whenever a bead changes. The native backend has no hooks of
 # its own, so every command that writes it calls mail_announce itself, after the write.
-# Both end up in _mail_deliver_to, the one path to a recipient's spool/attention/wake.
+# Both end up in _mail_deliver_to, the one path to a recipient's spool, attention and notice.
 
 WOLFMUX_MAIL_BODY_MAX="${WOLFMUX_MAIL_BODY_MAX:-6000}"
 WOLFMUX_MAIL_HOOK_BUDGET=8000 # hooks.sh caps the whole answer at 9000; leave it room for the rest
@@ -46,47 +46,6 @@ mail_quiet_route() {
   MAIL_ROLE="$role"
 }
 
-# _mail_wake_after — WOLFMUX_MAIL_WAKE_AFTER, a plain number 1..3600; nonsense falls back to 90.
-_mail_wake_after() {
-  local v="${WOLFMUX_MAIL_WAKE_AFTER:-90}"
-  case "$v" in '' | *[!0-9]*) v=90 ;; esac
-  if [ "$v" -lt 1 ] || [ "$v" -gt 3600 ]; then v=90; fi
-  printf '%s\n' "$v"
-}
-
-# _mail_type <role> <pane> <text> — the only thing ever typed for mail: one fixed line, built
-# from a validated identity, never a bead's own text. Serialized and debounced exactly like
-# _nudge_one, so a burst of mail for the same agent still types one line.
-_mail_type() {
-  local role="$1" pane="$2" text="$3"
-  [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] || return 1
-  nudge_begin "$role" || return 1
-  if [ $(($(now_epoch) - $(nudge_last "$role"))) -lt "$WOLFMUX_NUDGE_DEBOUNCE" ]; then
-    nudge_end "$role"
-    return 1
-  fi
-  nudge_mark "$role"
-  tm_type_line "$pane" "$text"
-  nudge_end "$role"
-}
-
-# _mail_watchdog <role> <identity> <spool> <wake-after> — a busy state can be stale (an
-# interrupted turn fires no Stop hook). Sleeps first, so it must run detached in the background;
-# the caller forks it. If the mail was delivered in the meantime, or the agent is genuinely
-# still mid-turn, it says nothing.
-_mail_watchdog() {
-  local role="$1" identity="$2" spool="$3" wake="$4" pane quiet
-  /bin/sleep "$wake" 2>/dev/null
-  [ -f "$spool" ] || return 0
-  if [ "$(agent_turn_state "$role")" = "busy" ]; then
-    quiet="$(agent_quiet_seconds "$role")"
-    case "$quiet" in '' | *[!0-9]*) quiet=0 ;; esac
-    [ "$quiet" -ge "$wake" ] || return 0
-  fi
-  pane="$(tm_pane_for_role "$SESSION" "$role")"
-  _mail_type "$role" "$pane" "[wolfmux] New mail for $identity: it is shown with this line. If nothing is shown, run: teamctl mail"
-}
-
 # _mail_spool_write <role> <event> <payload-json> — the bead plus which Beads event delivered
 # it, written atomically (temp name, then mv). Prints the file's path.
 _mail_spool_write() {
@@ -105,27 +64,29 @@ _mail_spool_write() {
   printf '%s\n' "$file"
 }
 
-# _mail_deliver_to <role> <event> <payload-json> <identity> — the one path to a recipient:
-# spool it, flag attention, and wake the pane if it is idle (or watch for it to go idle if
-# busy); a role with no running pane, or a Codex family agent (no hooks yet), gets the old
-# typed nudge instead. Shared by cmd_deliver (the Beads hook) and mail_announce (the native
-# store's own delivery). Must never fail or delay whoever called it: every exit here is 0.
+# _mail_deliver_to <role> <event> <payload-json> <identity> — the one path to a recipient
+# (ADR-0032, v1.24.0: one delivery system). For a Claude-family agent whose pane runs, the item
+# is spooled first (mail/new), so whichever hook hands the notice over can carry its body, and
+# attention is flagged for the mid-turn channel (PostToolUse). Then, for every agent, exactly
+# one notice through v1.23.0's _nudge_one: one inbox_add line (badge, popup, desktop
+# notification, wake waiter) and, only where its gates allow, the typed line. Nothing in this
+# file types into a pane any more: the v1.13 wake line and its watchdog are gone, because the
+# Stop and prompt hooks, the lead's wake waiter and the gated typing already cover an idle and
+# a busy agent. A Codex-family agent gets exactly what v1.23.0 gave it: no spool, the notice.
+# Shared by cmd_deliver (the Beads hook) and mail_announce (the native store's own delivery).
+# Must never fail or delay whoever called it: every exit here is 0.
 _mail_deliver_to() {
-  local role="$1" event="$2" payload="$3" identity="$4" bead family pane spool
+  local role="$1" event="$2" payload="$3" identity="$4" bead pane
   known_role_name "$role" && reg_exists "$role" || return 0
   bead="$(printf '%s' "$payload" | "$JQ_BIN" -r '.id // empty' 2>/dev/null)"
-  family="$(reg_field "$role" family)"
-  pane="$(tm_pane_for_role "$SESSION" "$role")"
-  if [ "$family" = "codex" ] || [ -z "$pane" ] || [ "$(tm_pane_state "$pane")" != "running" ]; then
-    _nudge_one "$role" "$bead" >/dev/null 2>&1 || true
-  elif spool="$(_mail_spool_write "$role" "$event" "$payload")"; then
-    agent_attention "$role"
-    if [ "$(agent_turn_state "$role")" = "busy" ]; then
-      (_mail_watchdog "$role" "$identity" "$spool" "$(_mail_wake_after)") >/dev/null 2>&1 &
-    else
-      _mail_type "$role" "$pane" "[wolfmux] New mail for $identity: it is shown with this line. If nothing is shown, run: teamctl mail"
+  if [ "$(reg_field "$role" family)" != "codex" ]; then
+    pane="$(tm_pane_for_role "$SESSION" "$role")"
+    if [ -n "$pane" ] && [ "$(tm_pane_state "$pane")" = "running" ] &&
+      _mail_spool_write "$role" "$event" "$payload" >/dev/null; then
+      agent_attention "$role"
     fi
   fi
+  _nudge_one "$role" "$bead" >/dev/null 2>&1 || true
   event_log deliver "$role" "$bead"
   return 0
 }
@@ -305,6 +266,74 @@ inbox_read() {
 # _mail_hook_drain — PostToolUse, UserPromptSubmit, Stop: whatever is waiting in mail/new/,
 # oldest first. Nothing queued: return at once, no store call either way. More than fits in
 # about 8000 characters: show what fits, leave the rest in new/ for the next tool call.
+# --- one delivery system (v1.24.0, ADR-0032) -------------------------------------------
+# The inbox line (lib/inbox.sh) and the spooled body are one item. Whichever channel hands it
+# over marks it handed over for the other: the inbox hooks (Stop, UserPromptSubmit, the wake
+# waiter) attach the body and move it to mail/seen (mail_bodies_for); the mid-turn drain shows
+# the body and flips the inbox line to delivered (inbox_mark_item_delivered).
+
+# _mail_notice_ids <notices> — the item ids the notice lines name: "(<id>)", as _nudge_text writes them
+_mail_notice_ids() {
+  printf '%s\n' "$1" | LC_ALL=C /usr/bin/sed -n 's/^.*[(]\([A-Za-z0-9][A-Za-z0-9._-]*\)[)].*$/\1/p'
+}
+
+# _mail_spool_id <file-name> — the item id of a spool file "<epoch>-<pid>-<id>.json" (an id may hold "-")
+_mail_spool_id() {
+  local id="${1##*/}"
+  id="${id#*-}"
+  id="${id#*-}"
+  printf '%s\n' "${id%.json}"
+}
+
+# _mail_spooled <run-dir> <id> — the spool file of exactly that item, "" when there is none
+_mail_spooled() {
+  local f
+  for f in "$1"/mail/new/*-"$2".json; do
+    [ -f "$f" ] || continue
+    [ "$(_mail_spool_id "$f")" = "$2" ] || continue
+    printf '%s\n' "$f"
+    return 0
+  done
+  return 1
+}
+
+# mail_notices_uncovered <role> <notices> — how many of these notice lines have no spooled body
+# (a notice of another kind, an item spooled for nobody, a Codex agent): 0 means the bodies
+# answer every line and the agent needs no command at all.
+mail_notices_uncovered() {
+  local dir="$STATE_DIR/run/$1" n=0 line id
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    id="$(_mail_notice_ids "$line" | /usr/bin/head -1)"
+    if [ -z "$id" ] || ! _mail_spooled "$dir" "$id" >/dev/null; then n=$((n + 1)); fi
+  done <<EOF
+$2
+EOF
+  printf '%s\n' "$n"
+}
+
+# mail_bodies_for <role> <identity> <notices> — prints the body of every spooled item these
+# notices name, within WOLFMUX_MAIL_HOOK_BUDGET, and moves each one printed to mail/seen. One
+# that does not fit stays spooled, with attention flagged: the next tool call shows it.
+mail_bodies_for() {
+  local role="$1" identity="$2" dir="$STATE_DIR/run/$1" id file block budget=0 shown=0
+  [ -n "$JQ_BIN" ] && [ -d "$dir/mail/new" ] || return 0
+  for id in $(_mail_notice_ids "$3"); do
+    file="$(_mail_spooled "$dir" "$id")" || continue
+    block="$(_mail_render_bead "$(/bin/cat "$file" 2>/dev/null)" 2>/dev/null)" || continue
+    [ -n "$block" ] || continue
+    if [ "$shown" -gt 0 ] && [ $((budget + ${#block})) -gt "$WOLFMUX_MAIL_HOOK_BUDGET" ]; then
+      agent_attention "$role"
+      break
+    fi
+    printf '%s\n\n' "$block"
+    budget=$((budget + ${#block}))
+    shown=$((shown + 1))
+    _mail_mark_shown "$file" "$dir/mail/seen" "$identity"
+  done
+  return 0
+}
+
 _mail_hook_drain() {
   local dir="$HOOK_RUN/mail" identity="${BEADS_ACTOR:-$HOOK_ROLE}" base file json block budget=0 shown=0 more=0
   [ -d "$dir/new" ] || return 0
@@ -321,6 +350,9 @@ _mail_hook_drain() {
     budget=$((budget + ${#block}))
     shown=$((shown + 1))
     _mail_mark_shown "$file" "$dir/seen" "$identity"
+    # handed over here: the inbox line that announced it is delivered too, so the Stop and
+    # prompt hooks do not hand the same item over a second time
+    inbox_mark_item_delivered "$HOOK_ROLE" "$(_mail_spool_id "$base")"
   done
   [ "$more" -eq 0 ] || agent_attention "$HOOK_ROLE"
 }
@@ -361,8 +393,10 @@ _mail_hook_session_start() {
 mail_hook() {
   case "$1" in
     SessionStart) _mail_hook_session_start ;;
-    PostToolUse | UserPromptSubmit | Stop) _mail_hook_drain ;;
-    *) ;; # PreCompact: nothing
+    PostToolUse) _mail_hook_drain ;;
+    # Stop and UserPromptSubmit: lib/inbox.sh's own hooks hand mail over, body included
+    # (mail_bodies_for); a second hand-over here would show it twice. PreCompact: nothing.
+    *) ;;
   esac
 }
 

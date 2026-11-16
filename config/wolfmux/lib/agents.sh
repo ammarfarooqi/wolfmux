@@ -2284,6 +2284,15 @@ _inbox_approval_grace_wait() {
 # The ONLY thing ever typed into an agent's prompt: one short, fixed line. Task and
 # message bodies stay in Beads, so there is nothing to quote, escape or truncate.
 _nudge_text() { # <identity> [bead]
+  # v1.24.0: a native-store project has no bd; the body comes with the notice (lib/mail.sh)
+  if [ "$(store_kind 2>/dev/null || printf beads)" = "native" ]; then
+    if [ -n "${2:-}" ]; then
+      printf '[wolfmux] New mail for %s (%s). Its body comes with this notice; if not, run: teamctl show %s\n' "$1" "$2" "$2"
+    else
+      printf '[wolfmux] New mail for %s. Run: teamctl mail\n' "$1"
+    fi
+    return 0
+  fi
   if [ -n "${2:-}" ]; then
     printf '[wolfmux] Beads update for %s (%s). Run: bd show %s -- then: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1" "$2" "$2" "$1"
   else

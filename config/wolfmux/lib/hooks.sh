@@ -163,7 +163,8 @@ _hook_emit() {
       "$JQ_BIN" -cn --arg event "$HOOK_EVENT" --arg text "$text" \
         '{hookSpecificOutput: {hookEventName: $event, additionalContext: $text}}'
       ;;
-    Stop) "$JQ_BIN" -cn --arg text "$text" '{decision: "block", reason: $text}' ;;
+    # additionalContext, not a block: v1.22.1's reason (lib/inbox.sh cmd_inbox_stop)
+    Stop) "$JQ_BIN" -cn --arg text "$text" '{hookSpecificOutput: {hookEventName: "Stop", additionalContext: $text}}' ;;
     PreCompact) printf '%s\n' "$text" ;;
   esac
 }
@@ -180,9 +181,9 @@ cmd_hook() {
   HOOK_CONTEXT="" HOOK_PROJECT_LOADED=""
   HOOK_INPUT="$(/bin/cat 2>/dev/null || true)"
   printf '%s' "$HOOK_INPUT" | "$JQ_BIN" -e 'type == "object"' >/dev/null 2>&1 || HOOK_INPUT="{}"
-  # Not an agent of a team (a hook file reused by hand): nothing to do, and Stop still notifies.
+  # Not an agent of a team (a hook file reused by hand): nothing to do. The "finished"
+  # notification is lib/notify.sh's own Stop hook (_notify), not this one (v1.24.0).
   if ! known_role_name "$HOOK_ROLE" || [ -z "$HOOK_RUN" ] || ! /bin/mkdir -p "$HOOK_RUN/mail" "$HOOK_RUN/memory" 2>/dev/null; then
-    if [ "$HOOK_EVENT" = "Stop" ]; then notify_stop "$HOOK_INPUT"; fi
     return 0
   fi
   HOOK_SOURCE="$(hook_input .source)"
@@ -208,12 +209,14 @@ cmd_hook() {
     fi
   done
   if [ "$HOOK_EVENT" = "Stop" ]; then
-    if [ -n "$HOOK_CONTEXT" ]; then
-      _hook_state busy # it goes on: no "finished" notification for a turn that has not ended
-    else
-      _hook_state idle
-      notify_stop "$HOOK_INPUT"
+    # v1.20.0's rule, kept (D1): in a pane a human is watching, and in a Claude lead's pane
+    # while a client is attached, a Stop hook says NOTHING, because Claude Code prints its
+    # text in that pane (lib/inbox.sh _inbox_stop_watched). Asked only when there is
+    # something to say, so a quiet turn end reads no tmux state at all.
+    if [ -n "$HOOK_CONTEXT" ] && { ! _inbox_hook_ready || _inbox_stop_watched; }; then
+      HOOK_CONTEXT=""
     fi
+    if [ -n "$HOOK_CONTEXT" ]; then _hook_state busy; else _hook_state idle; fi
   fi
   _hook_emit
   return 0
