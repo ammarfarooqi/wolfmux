@@ -1,8 +1,8 @@
 # ADR-0038: One context number per agent, and a worker window that cannot thrash
 
 **Date**: 2026-11-16
-**Status**: accepted in part. Decided and built: the number, the window, the watch, the thrash message. Open: reporting a stalled agent (see "Not built").
-**Deciders**: the owner (the complaint), the memory-management team's lead (scope), its research worker (measurement, `tests/research/results/part-b-handover.md`), its ctx worker (code)
+**Status**: accepted. Built: the number, the window, the watch, the thrash message, and reporting a stalled agent (decision 7).
+**Deciders**: the owner (the complaint), the memory-management team's lead (scope), its research worker (measurement, `tests/research/results/part-b-handover.md`), its ctx and ctx2 workers (code, the real-CLI runs)
 
 ## Context
 
@@ -61,6 +61,27 @@ Measured on 2026-11-16 with Claude Code 2.1.325 (`tests/research/results/v1.25-r
    said "requests"; a hook can count tool calls for free and a request makes one or more. This
    comes before the CLI's own stop ("3 times in a row"), which fires no hook.
 
+7. **A stalled agent is reported, from outside it.** A turn that ends on an API error row
+   (`isApiErrorMessage: true`, which covers a 529, a usage limit and the CLI's own thrash stop)
+   leaves the agent idle with its task in progress, and no hook of that agent runs again. Three
+   lookers, all outside it, run `stall_scan` (`lib/stall.sh`):
+   - **the lead's wake waiter** (`cmd_inbox_wake`), while the lead is idle: once per
+     `WOLFMUX_STALL_LOOK` (60) seconds of its 15-second loop, counted down in the loop, no fork
+     between looks. A message it files is handed over by the same loop at once.
+   - **the lead's tenth tool call** (`recall_hook PostToolUse`), while the lead works and its
+     waiter does not run: at most once per 60 s (a stamp file's time), in the background, so the
+     lead's call never waits. Not in the hot path of `bin/teamctl`: no fork is added there.
+   - **`teamctl status`**, whoever runs it, which also prints a `stalled` line.
+   A look costs, per agent on the books: one jq over its record and one stat of its transcript.
+   Only a transcript quiet for `WOLFMUX_STALL_AFTER` (300) seconds is read (40 lines, one jq),
+   and only one that ends on an error row costs a store query. The lead is told ONCE per error
+   row (a `mkdir` of `state/stall/<role>.<timestamp>`, atomic between two lookers): the role,
+   the error's first line, since when, the task, and `teamctl restart <role> --continue`
+   followed by a message. Nothing is typed into a pane and nothing restarts an agent.
+   It cannot see: an agent stuck any other way (a hung tool, a dialog, a dead pane), a Codex
+   agent, a stalled LEAD (nobody outside it to tell), and anything while no lead runs and nobody
+   calls status.
+
 ## Consequences
 
 - A worker's default window moves from the model's (200k to 1M) to about 280-320k: compactions
@@ -76,10 +97,6 @@ Measured on 2026-11-16 with Claude Code 2.1.325 (`tests/research/results/v1.25-r
 
 ## Not built
 
-- **A stalled agent is not reported.** A turn that ends on an API error (`isApiErrorMessage: true`)
-  or on the CLI's thrash stop leaves the agent idle with its task in progress, and no hook fires.
-  It needs a look from outside the agent (the lead's wake waiter, a status call, another agent's
-  tenth-call housekeeping). Designed in the task (wolfmux-lpi, item 5), not built here.
 - No rotation: nothing gives a task a fresh conversation by itself.
 - Not confirmed against the real CLI: that the `compact_boundary` row is already in the transcript
   when SessionStart:compact fires (if it is not, K is the previous compaction's), and the three

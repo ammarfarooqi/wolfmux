@@ -208,7 +208,11 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Look
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
                                                       CONTEXT: used/limit and the share: what each agent's conversation holds against
-                                                      the limit its CLI compacts at (its window minus 33,000)
+                                                      the limit its CLI compacts at (its window minus 33,000); a worker's window is
+                                                      first request + kept + 33,000 + WOLFMUX_CONTEXT_ROOM (ADR-0038).
+                                                      A worker idle WOLFMUX_STALL_AFTER seconds (300) after a turn that ended on an
+                                                      API error, with a task in progress, is told to the lead once (also by the
+                                                      lead's own hooks); "stalled" lines under the table
     teamctl teams [--json]                            the short list: state (running or orphaned), lead, agents, disk and founder per team
     teamctl dashboard [--json] [--once] [--interval <seconds>] [--full] [--socket <path>]
                                                       EVERY team on this machine, across every project, in one read-only view:

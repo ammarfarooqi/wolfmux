@@ -628,6 +628,26 @@ The watch returns at once when the hook input carries `agent_id` (an in-process 
 lead gets no compact window; its limit is its model's window minus the reserve. Codex is counted
 against the window its rollout states.
 
+### A stalled agent (lib/stall.sh)
+
+A turn that ends on an API error row (`isApiErrorMessage`, model `<synthetic>`: a 529, a usage
+limit, or the CLI's own "Autocompact is thrashing" stop) is followed by `turn_duration` and
+nothing else. No hook of that agent runs again, so the look comes from outside it:
+
+```
+lead idle:   Stop/SessionStart -> _inbox-wake loop (every 15 s) --every 60 s--> stall_scan
+lead busy:   10th tool call -> _hook PostToolUse -> recall_hook -> _recall_stall_look --60 s stamp--> stall_scan &
+anyone:      teamctl status -> stall_scan (each team) -> "stalled" lines under the table
+stall_scan:  per agent on the books (not the lead), cheapest test first:
+             record (one jq): claude, running, a conversation id -> stat the transcript: quiet >= WOLFMUX_STALL_AFTER
+             -> tail 40 + jq: the last main-thread row is an error row -> store: a task of it in_progress
+             -> mkdir state/stall/<role>.<error timestamp> (once per error row) -> message to the lead
+```
+
+The message names the error's first line, since when, the task, and `teamctl restart <role>
+--continue` followed by a message. Nothing is typed into a pane and nothing restarts an agent.
+It cannot see an agent stuck any other way, a Codex agent, or the lead itself.
+
 ## Teams
 
 A project has one or more teams ([ADR-0018](adr/0018-several-teams-per-project.md)).

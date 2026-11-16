@@ -104,6 +104,10 @@
 # disables that one threshold.
 #WOLFMUX_CONTEXT_WARN=60
 #WOLFMUX_CONTEXT_ROTATE=80
+# A stalled agent: its last turn ended on an API error (or the CLI's "Autocompact is thrashing"
+# stop) and no hook runs in it after that. Idle this many seconds with a task in progress, the
+# lead is told once, by its own hooks or by teamctl status. Nothing is typed, nothing restarted.
+#WOLFMUX_STALL_AFTER=300
 # May a lead found further teams (teamctl start <model> --team <new> --handover <bead>)?
 # You are notified every time one does.
 #WOLFMUX_LEAD_TEAMS=on
