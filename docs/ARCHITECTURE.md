@@ -4,8 +4,8 @@
 
 | Plane | Tool | Owns | Never touches |
 |-------|------|------|---------------|
-| Control | `teamctl` | tmux panes, which model runs where, git worktrees and branches, start / stop / restart / destroy, diagnostics | tasks, messages |
-| Data | `bd` (Beads) | tasks, dependencies, messages, history, who-did-what | processes, panes, worktrees |
+| Control | `teamctl` | tmux panes, which model runs where, git worktrees and branches, start / stop / restart / destroy, diagnostics | — |
+| Data | `teamctl`'s store interface (`lib/store.sh`, `store_*`) | tasks, dependencies, messages, shared team notes, history, who-did-what | tmux, worktrees |
 
 The glue between them is a three-line Beads event hook that calls
 `teamctl nudge <role>`, and one question going the other way. Beads does not know tmux
@@ -13,6 +13,17 @@ exists; `teamctl` never writes a bead, and it reads Beads in exactly one place: 
 finished lane is taken off the books, `lib/reclaim.sh` asks which tasks are closed
 (`bd list`, once per run, read-only). Until v1.17.0 it read nothing at all; the question is
 the price of not deleting a lane whose task is still open.
+Tasks, messages and memory sit behind one interface with two backends: a native
+`sqlite3` file per project (the default for one with nothing on disk yet) or Beads
+(`bd`), kept for a project already on it (`teamctl store`, [ADR-0035](adr/0035-a-store-of-our-own.md)).
+Every module above the interface (`mail.sh`, `tasks.sh`, `memory.sh`) calls `store_*`
+only, so neither they nor an agent's commands differ by backend. On the native
+backend, a write that should notify someone calls `mail_announce` itself; on the
+Beads backend a three-line event hook calls `teamctl _deliver` instead. Delivery
+itself is one more seam below both: a Claude Code agent's CLI hooks carry the body
+straight into its conversation ([ADR-0032](adr/0032-mail-through-the-clis-hooks.md));
+a role with no running pane, or a Codex-family agent (no such hooks), still gets the
+one-line notice v1.23.0 gave it, typed only where the typing gates allow.
 
 ![Two tools, two planes: teamctl, the tmux server with lead and workers, Beads, and the hook between them](diagrams/architecture.svg)
 
@@ -49,8 +60,10 @@ from the tmux server, not from the shell that ran `teamctl spawn`.
 
 ### teamctl (`~/bin/teamctl` + `~/.config/wolfmux/lib/`)
 
-About 2,200 lines of bash in small modules, written for macOS `/bin/bash` 3.2
-under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
+About 8,600 lines of bash in small modules, written for macOS `/bin/bash` 3.2
+under `set -euo pipefail`, depending only on `tmux`, `git`, `jq` and, for the native
+store, `sqlite3` 3.38+ (Beads stays optional: needed only to keep a project on that
+backend, or to switch to it with `teamctl store beads`).
 
 | Module | Responsibility |
 |--------|----------------|
@@ -64,11 +77,19 @@ under `set -euo pipefail`, depending only on `tmux`, `git` and `jq`.
 | `reclaim.sh` | taking a finished lane off the books by itself: the eight gates (parked, not kept, nothing uncommitted, HEAD on its branch, content in main, no stash on its branch, task closed in Beads, no open PR), the removal, `reclaim`, what a kept lane is holding, and the ledger line every removed lane gets. The one module that asks Beads and GitHub a question, each with a time limit |
 | `beads.sh` | Beads bootstrap (stealth init) and hook installation |
 | `policy.sh` | who is calling (`caller_role`), manager-only commands, the policy keys |
+| `beads.sh` | Beads bootstrap (stealth init) and hook installation, for a project on that backend |
+| `policy.sh` | who is calling (`caller_role`), manager-only commands, the policy keys (`POLICY_KEYS`) |
 | `approvals.sh` | the lead decides workers' permission requests (`_permission-hook`, `approvals`, `approve`, `deny`) |
 | `agents.sh` | `start`, `spawn`, the pane process (`_run-agent`), `stop`, `restart`, `destroy`, `nudge` |
 | `views.sh` | `status`, `panes`, `capture`, `log`, `focus`, `attach` |
 | `doctor.sh` | `teamctl doctor` |
 | `models.sh` | what `fable`, `opus`, `sonnet`, `haiku` mean today (`WOLFMUX_MODEL_POLICY`): pins, the daily probe of Claude Code and its cache, labels derived from ids, the drift check, `teamctl models`, `_model-badge`. Also the one answer to "which model does this agent run" (`models_running`, fed by one pass over the transcript's tail, `models_transcript_tail`): `status`, `teams`, the dashboard, `models` and `doctor` all call it, so no two views can name different models for one agent. Sourced by `common.sh` and by `claude-fable` |
+| `completion.sh` | `teamctl _complete`, the one backend behind the zsh and bash tab-completion shims |
+| `hooks.sh` | `teamctl _hook <Event>`: reads the CLI's hook JSON, lets `mail_hook` / `tasks_hook` / `memory_hook` add text, answers in the shape the event expects. Never fails, never delays an agent |
+| `store.sh` | `store_*`: one interface over the two task/message/memory backends, plus `teamctl store` |
+| `mail.sh` | `send`, `inbox`, delivery (`mail_announce`, `_deliver`, the hook drain) |
+| `tasks.sh` | `task`, `claim`, `done`, `blocked`, `tasks`, `show`, `note`, `reopen`, `close`, and the Stop-hook reminder for work left open |
+| `memory.sh` | shared team notes and checkpoints at `SessionStart`, the context watch at `PostToolUse`, `PreCompact`'s own note, `checkpoint`, `remember`, `memories`, `forget` |
 
 The **model table** in `common.sh` is the single place that knows which launcher
 serves which model key (`fable`, `astra`, `glm53`, `flash`) and which CLI family it
@@ -145,16 +166,38 @@ the commands that change the lanes leave the number in `~/.wolfmux/state/<projec
 and status reads it.
 
 ### Beads
+### The store (`lib/store.sh`)
 
-Initialized per project in **stealth, embedded** mode:
-`bd init --stealth --skip-hooks --skip-agents --non-interactive --prefix <name>`.
-That makes no commit, adds no tracked file (it uses `.git/info/exclude`), installs
-no git hooks and edits no AGENTS.md. Embedded means Dolt runs inside each `bd`
-process; there is no server. Linked worktrees find the main checkout's `.beads/`
-through git's common directory, so every agent shares one database with no
-configuration.
+`store_kind` picks the backend: the file `$PROJECT_STATE/store` wins if one exists;
+else `WOLFMUX_STORE`; else `beads` for a project that already has agent state and no
+`store` file (a registry record, or `meta.json`: it was started before v1.24.0); else `native`. A public `store_*`
+function validates what both backends share the same way, then dispatches to
+`store_native_<name>` or `store_beads_<name>`.
 
-Conventions (the full set is in `TEAM_PROTOCOL.md`):
+**Native.** `$PROJECT_STATE/store.db`, `sqlite3` in WAL mode, created on first use:
+`task` and `msg` (one table each, a task's id printed as `t<n>`, a message's as
+`m<n>`), `task_dep`, `memory` (key, text, author), `event` (an append-only log) and
+`migrated` (old Beads id → new native id, for `--migrate`). A call's parameters
+travel as one JSON document, hex-encoded and fed to `sqlite3` on stdin rather than
+interpolated into the SQL text, bound in a `WITH` clause for a single statement
+(`_sq`) or a temp table for several under one `BEGIN IMMEDIATE … COMMIT` (`_sqx`); the
+SQL text itself is always a constant. WAL mode is what lets several agents write at
+once without the embedded-Dolt single-writer queue ([ADR-0035](adr/0035-a-store-of-our-own.md),
+with the measurements that motivated it).
+
+**Beads**, kept for a project already on it. Initialized per project in **stealth,
+embedded** mode: `bd init --stealth --skip-hooks --skip-agents --non-interactive
+--prefix <name>`. That makes no commit, adds no tracked file (it uses
+`.git/info/exclude`), installs no git hooks and edits no AGENTS.md. Embedded means
+Dolt runs inside each `bd` process; there is no server. Linked worktrees find the
+main checkout's `.beads/` through git's common directory, so every agent shares one
+database with no configuration. `store_beads_*` shells out to `bd`, bounded to 5
+seconds inside a hook (`_bd_bounded`, lib/store.sh): a hook may never hang an agent
+on a slow write queue (Beads issue #6039); the native backend is fast enough that
+nothing bounds it.
+
+Conventions on the Beads backend (the full set is in `TEAM_PROTOCOL.md`; an agent
+never runs these directly — `teamctl send` / `task` / … call them underneath):
 
 | Need | Beads primitive |
 |------|-----------------|
@@ -179,16 +222,31 @@ Conventions (the full set is in `TEAM_PROTOCOL.md`):
 
 ### A message from lead to worker
 
-![Sequence: a task goes out through Beads, a fixed line reaches the worker's pane, the result comes back the same way](diagrams/message-flow.svg)
+![Sequence: a task goes out through the store, the worker's hooks hand it over, the result comes back the same way](diagrams/message-flow.svg)
 
-1. lead: `bd create "Subject" -t message -a backend -d "…"` — durable, atomic, in Beads
-2. Beads fires `.beads/hooks/on_create` with the bead as JSON on stdin
-3. `beads-nudge` sees an assignee that is not the actor and calls
-   `teamctl nudge backend --quiet --id <bead-id>` in the background
-4. `teamctl` validates role and id, debounces bursts (3 s, under a per-role guard),
-   checks that nobody is typing in that pane, and types **one fixed line** into it:
-   `[wolfmux] Beads update for backend (<id>). Run: bd show <id> -- then: bd list …`
-5. the worker runs the command it was shown and reads the body from Beads
+1. lead: `teamctl send backend "Subject" "…"` — durable in the store, native or Beads
+2. on the native backend the write calls `mail_announce` itself; on Beads, Beads
+   fires `.beads/hooks/on_create` with the bead as JSON on stdin and the hook calls
+   `teamctl _deliver backend --event create` in the background. Either way the next
+   step is `_mail_deliver_to`, the one path to a recipient.
+3. for a Claude-family agent whose pane runs, the item is spooled to
+   `$STATE_DIR/run/backend/mail/new/` and flagged for attention. Then, for every agent,
+   exactly one notice through `_nudge_one` (v1.24.0, ADR-0032): one line in the inbox file
+   (`lib/inbox.sh`: the badge, the popup, the desktop notification, the lead's wake waiter)
+   and, only where v1.23.0's typing gates allow, the typed line. A Codex-family agent gets
+   just that, as in v1.23.0
+4. whichever channel comes first hands the item over with its body: the next `PostToolUse`
+   (mid-turn) drains the spool and marks the inbox line delivered; the `Stop` hook, the
+   `UserPromptSubmit` hook or the lead's wake waiter hand the notice over with the spooled
+   body attached and move it to `mail/seen`. Nothing is shown twice
+5. the worker reads the body in its own conversation and acts on it directly — no
+   round trip through `teamctl show` or `teamctl mail` just to see what arrived
+
+The message body never travels through tmux on the hook path, so there is nothing
+to quote, escape or truncate. The same path tells the lead when a worker closes a
+task or marks one blocked (`mail_announce` / the Beads hook, by the same rule:
+the assignee when someone else changed its task, the lead when a worker blocks or
+closes one, never the actor itself). Comments fire no hook, on either backend.
 
 ### Never into a half-typed line
 
@@ -723,8 +781,11 @@ One pixel drawing (`tools/wolf-art.py`) produces the terminal art in `lib/brand.
 ~/bin/                          teamctl + launchers
 ~/.config/wolfmux/              code, tmux.conf, TEAM_PROTOCOL.md, README.md, config, glm-worker-settings.json
 ~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/ (debounce stamps, <role>.lock, <role>.pending), disk-kb
+~/.wolfmux/state/<project>/     meta.json (incl. policy), agents/<role>.json, settings/<role>.json, approvals/, events.jsonl, nudge/
+                                store (which backend), store.db (native tasks, mail, memory)
+                                run/<role>/ (call counter, turn state, mail spool, memory/checkpoint.md)
 ~/.wolfmux/worktrees/<project>/ one directory per worker
-<project>/.beads/               tasks and messages (Beads)
+<project>/.beads/               tasks and messages, for a project kept on the Beads backend
 macOS Keychain                  one service per provider: "zai-coding-plan" (Z.ai),
                                 "wolfmux-kimi", "wolfmux-moonshot", "wolfmux-deepseek",
                                 "wolfmux-minimax", "wolfmux-qwen"

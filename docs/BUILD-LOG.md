@@ -2237,6 +2237,121 @@ outcome on a fake clock (no notices never exits 2 until the re-arm, two waiters,
 pane gone, agent gone, PID 1, a failed print, the typed waiter's skip), and an end-to-end pair of
 waiters whose `bin/teamctl` process exits 2. Checks that meant "a pane in use" now show the
 lead's pane to the client. Commits: S1 b08e900, S2 9a4ee6d, S3 the Stop rule, S4 this one.
+## 40. A store of our own (v1.24.0, the store line)
+
+Three complaints from the same day of real use: a worker inside one long turn did not
+read "commit now" for two hours because the typed nudge queues until the turn ends
+(2026-10-04); nothing an agent learned reached the next agent, so every worker
+rediscovered how the tests are run; and a worker reached 255k tokens of context without
+one commit, with no warning along the way. A four-worker team took one ADR each.
+
+- **Mail through the CLI's hooks** (ADR-0032). A message or task now reaches a Claude
+  Code agent's conversation directly — `additionalContext` on `SessionStart`,
+  `UserPromptSubmit` or `PostToolUse`, or a `Stop` hook that blocks with the text — at
+  the agent's next tool call, no `bd show` round trip needed to read it. The hot path
+  above the module loader in `bin/teamctl` keeps this cheap: an idle `PostToolUse` with
+  nothing queued costs about 3 ms, no module loaded. A role with no running pane, or a
+  Codex-family agent (no such hooks), still gets the notice line. (Amended in the merge,
+  section 41: the hooks and the notice are one delivery system.)
+- **Team memory, the context watch, and checkpoints** (ADR-0033). `teamctl remember` /
+  `memories` put what a team has learned in front of every new, resumed or compacted
+  conversation. Every tenth tool call the context watch checks how full the conversation
+  is; at `WOLFMUX_CONTEXT_WARN` (60%) the agent is told once to commit and write a
+  `teamctl checkpoint`, at `WOLFMUX_CONTEXT_ROTATE` (80%) to start nothing new, with the
+  lead messaged the command that gives the task a fresh conversation. `teamctl restart
+  <role>` is that rotation: same worktree and branch, a new conversation that starts
+  from the checkpoint.
+- **`worker-context`** (ADR-0034). A freshly spawned worker's first request was measured
+  at 111,365 tokens before it had read its task — over half of a 200k window, sent again
+  with every request. The policy's three settings (`full`, `trim` the default, `lean`)
+  trade how much of the owner's own `~/.claude` a worker's conversation starts with
+  against that cost; the lead is never trimmed.
+- **A store of our own** (ADR-0035). Every task, message and memory operation still went
+  through `bd` even after ADR-0032, and that was now the larger remaining cost: 0.3 to
+  0.7 s a call, a single writer (6 concurrent `bd create` calls took 3.7 s between them),
+  and Beads' own issue #6039 stalling a hook past 30 s under load. `lib/store.sh` moves
+  all three behind one interface with two backends: a native `sqlite3` file per project
+  (WAL mode, the default for one with nothing on disk yet) and Beads, kept for a project
+  already on it and reachable again with `teamctl store beads`. The same operation on
+  the native backend: 4-10 ms. `teamctl store native --migrate` moves a Beads project's
+  open tasks, unread messages and memories over without deleting anything from Beads.
+
+Every command an agent used to run as `bd` became a `teamctl` verb that calls the store
+interface underneath (`send`, `mail`, `task`, `claim`, `done`, `blocked`, `tasks`,
+`show`, `note`, `reopen`, `close`, `checkpoint`, `remember`, `memories`, `forget`), plus
+`teamctl store` to see or switch the backend. `broadcast` and `message-history`, which
+used to point at the `bd` equivalent, are retired the same way the `moved_to_beads`
+commands always were (`removed_command`, naming the real commands instead).
+
+On the store line's own branch, as it stood before the merge: `tests/smoke.sh` 327 → 339,
+new `tests/store.sh` (73), `tests/mail.sh` (30), `tests/tasks.sh` (31) and a shared-notes
+suite of 31 that the merge renamed `tests/recall.sh`. `tests/docs.sh` ran 21 of 36
+until `usage()`, the completion backend, the config template, README.md, docs/USAGE.md and
+the user manual caught up. The counts after the merge are in VERIFICATION.md.
+
+## 41. Two lines made one (v1.24.0, the merge)
+
+Two branches had grown from the same v1.12.0 base. v1.23.0, the released line, had answered
+the human's complaints: a notice typed into a pane they were using (the typing gates, ADR-0028
+and 0029), a lead that was quiet when it should have woken (the wake waiter, ADR-0031), a
+private memory for one lead (ADR-0030), the newest model behind each alias, `teamctl finish`,
+`restore` and the disk work. The store line, called v1.13 while it was in flight, had answered
+the agents' complaints: every task and message cost a `bd` round trip, nothing one agent
+learned reached the next, and a worker spent half its window before reading its task
+(section 40). Both were right and both had touched the same files, so the merge went in two
+steps: the store line was merged onto v1.23.0 as v1.24.0, then every place where two designs
+did one job was settled by a decision.
+
+- **D1, v1.23.0's rules for the human's pane stand.** A pane a human is watching, a Claude lead
+  attached to, the typing gates and the CONTEXT column's window (the model table, not a guess
+  per agent) are v1.23.0's. The store line's hooks plug into them and do not add their own.
+- **D2, `inbox` and `notices` keep their meaning.** They read the notices file, as in v1.23.0.
+  The command that reads an agent's mail and open tasks is `teamctl mail`. Kickoffs, the native
+  handover prompt and the status footer say so.
+- **D3, two kinds of memory, two names.** `teamctl memory` is the lead's private folder (ADR-0030).
+  What the store line called team memory is "shared team notes": `remember`, `memories`,
+  `forget` and `checkpoint`.
+- **D5, an existing project stays where it is.** A project that already has agent state and no
+  `store` file stays on Beads. A new project is native. `teamctl store native --migrate` moves one.
+- **D6, `send` is a real command.** `broadcast` and `message-history` keep their old answer
+  (`removed_command`, naming what to use).
+- **D7, one delivery system.** An item files one notice line through v1.23.0's inbox, whose
+  gates decide whether anything is typed, and a Claude agent gets the body with the hand-over.
+  Gone: the typed "New mail for" wake line of the hook design, the mail watchdog,
+  `WOLFMUX_MAIL_WAKE_AFTER`, and a hook that closed a bead with `bd`.
+- **D8, v1.23.0 code works on either store.** Every place that asked `bd` directly (status
+  bar, reclaim, restart, finish, the lead's handover) answers from the store on a native
+  project and never runs `bd` there. On Beads the handover prompt is v1.23.0's `bd` text.
+- **D10, an alias means the newest model.** `fable` is `claude-fable-5-2`, `opus` is
+  `claude-opus-5-5`, `sonnet` is `claude-sonnet-5-5`, `haiku` is `claude-haiku-5-5`.
+- **D4, the ADRs were renumbered.** The store line's four records were 0028 to 0031 on its own
+  branch; v1.23.0 had already used those numbers, so they are 0032 to 0035 here, with an
+  "Amended in v1.24.0" note where D7 changed what they said.
+- **D9, the docs are read as one release in a separate pass.** The merge itself resolved only
+  the conflicts in them; making them read as one release (this section among them) came after
+  the code.
+
+What the merge removed: the wake line typed to wake an idle agent, the watchdog that typed it
+after 90 s, `WOLFMUX_MAIL_WAKE_AFTER`, the hook's close of a bead through `bd`, and
+`notify_stop` (v1.23.0's `_notify` hook notifies at Stop). The suites that model Beads now pin
+`WOLFMUX_STORE=beads`, since a new project is native.
+
+The review before the release. The merged tree (`affd4de`) passed every suite and was still
+refused by the reviewer of record, with eleven findings, each reproduced by experiment. The
+four that blocked the release: `teamctl done` and `blocked` did not check whose task it was
+(and closed with `--force` on Beads); a task shown at SessionStart was handed over again at
+the first Stop; on Beads the SessionStart mail read waited on `bd` with no bound; and the human
+could not be messaged on a native store. Also fixed: a migration that lost task status and
+switched after a failed read, one oversized shared note hiding all the others, a store switch
+any agent could run, `bd` commands in refusals shown on a native store, a report sent before
+the close, an item printed before it was moved, and a Beads title starting with a dash. Each
+fix began with a check that failed. Two things the stub suites could not show were run against
+the real Claude Code CLI with Haiku agents on a native store: a message sent mid-turn reached
+the worker through the PostToolUse hook 17 s later, and a worker started with
+`worker-context lean` was refused both writes outside its worktree. Two low findings are left
+for v1.25.0: the lead exemption of `teamctl done` trusts the caller's role without the pane
+proof for a process outside any pane, and the SessionStart hook's two bounded `bd` reads can
+add up to 10 s of its 20 s. The counts at the release commit are in VERIFICATION.md.
 
 ## Footprint on the machine
 

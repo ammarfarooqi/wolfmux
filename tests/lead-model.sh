@@ -49,7 +49,7 @@ done
 marker="$FAKE/restore-${WOLFMUX_TEAM:-}"
 if [ -n "$resumed" ] && [ -f "$marker" ]; then
   jq -cn --args '$ARGS.positional' -- "$@" >>"$marker.argv"
-  if [ "$model" = claude-fable-5-1 ]; then
+  if [ "$model" = claude-fable-5-2 ]; then
     IFS= read -r transcript <"$marker"
     jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{timestamp:$ts,isApiErrorMessage:true,message:{content:[{type:"text",text:"You have reached your Fable limit"}]}}' >>"$transcript"
@@ -79,7 +79,7 @@ exec "$STUB_AGENT" "$@"
 EOF
 /bin/chmod 755 "$FAKE/bd" "$FAKE/memory_pressure" "$FAKE/codex"
 export PATH="$FAKE:$PATH"
-echo "claude-fable-5-1" >"$FAKE/answers/fable"
+echo "claude-fable-5-2" >"$FAKE/answers/fable"
 echo "claude-opus-5-5" >"$FAKE/answers/opus"
 echo "claude-sonnet-5-5" >"$FAKE/answers/sonnet"
 echo "claude-haiku-5-5" >"$FAKE/answers/haiku"
@@ -176,7 +176,7 @@ check "teamctl start with no model: the new lead runs Opus (policy lead-model, d
   '[ "$(record lead | jq -r .model)" = opus ] && [ "$(record lead | jq -r .model_id)" = claude-opus-5-5 ] && last_says lead "modelarg=claude-opus-5-5"'
 teamctl start fable --team fab --no-attach --skip-beads >/dev/null 2>&1
 check "teamctl start fable still gives a Fable lead" \
-  '[ "$(record lead fab | jq -r .model)" = fable ] && [ "$(record lead fab | jq -r .model_id)" = claude-fable-5-1 ]'
+  '[ "$(record lead fab | jq -r .model)" = fable ] && [ "$(record lead fab | jq -r .model_id)" = claude-fable-5-2 ]'
 check "an agent may not set lead-model (77): it is the human's, for every team of the project" \
   'as_agent default lead policy lead-model fable; [ $? -eq 77 ]'
 check "lead-model refuses a model teamctl does not know (64)" \
@@ -199,14 +199,25 @@ teamctl spawn w1 fable --no-kickoff >/dev/null 2>&1
 BEFORE="$(pane_pid w1)"
 OUT="$(teamctl model w1 opus 2>&1)"
 check "teamctl model w1 opus (running, no --now): recorded only; it says it switches at the next restart" \
-  '[ "$(record w1 | jq -r .model)" = opus ] && [ "$(record w1 | jq -r .model_id)" = claude-fable-5-1 ] &&
+  '[ "$(record w1 | jq -r .model)" = opus ] && [ "$(record w1 | jq -r .model_id)" = claude-fable-5-2 ] &&
    printf "%s" "$OUT" | grep -q "until its next restart" && [ "$(pane_pid w1)" = "$BEFORE" ]'
-check "status still names the model the pane runs (Fable 5.1) until it runs another" \
-  '[ "$(field w1 label)" = "Fable 5.1" ] && [ "$(field w1 model)" = opus ]'
+check "status still names the model the pane runs (Fable 5.2) until it runs another" \
+  '[ "$(field w1 label)" = "Fable 5.2" ] && [ "$(field w1 model)" = opus ]'
 teamctl restart w1 --continue >/dev/null 2>&1
 check "restart honours the record: w1 comes back on Opus, in its own conversation" \
   'restarted w1 "$BEFORE" && last_says w1 "modelarg=claude-opus-5-5" && last_says w1 "session_id=$(record w1 | jq -r .session_id)" &&
    [ "$(record w1 | jq -r .model_id)" = claude-opus-5-5 ] && [ "$(field w1 label)" = "Opus 5.5" ]'
+# v1.24.0 (D10, and what main's 7089fa4 fixed for the old launcher): an agent recorded when
+# opus still meant an older model comes back, after a restart, on what opus means today, and
+# status names the model its pane now runs, not the one written at spawn.
+teamctl spawn w3 opus --no-kickoff >/dev/null 2>&1
+W3_FILE="$(ls -d "$WOLFMUX_DATA"/state/*/agents/w3.json)"
+jq '.model_id = "claude-opus-5" | .model_context = 1000000' "$W3_FILE" >"$W3_FILE.new" && /bin/mv "$W3_FILE.new" "$W3_FILE"
+BEFORE="$(pane_pid w3)"
+teamctl restart w3 >/dev/null 2>&1
+check "an alias that moved on: restart launches the newest model and status names it (Opus 5.5)" \
+  'restarted w3 "$BEFORE" && last_says w3 "modelarg=claude-opus-5-5" && [ "$(record w3 | jq -r .model_id)" = claude-opus-5-5 ] && [ "$(field w3 label)" = "Opus 5.5" ]'
+teamctl stop w3 >/dev/null 2>&1
 teamctl spawn w2 fable --no-kickoff >/dev/null 2>&1
 teamctl stop w2 >/dev/null 2>&1
 OUT="$(teamctl model w2 sonnet 2>&1)"
@@ -309,15 +320,15 @@ answer claude-opus-5-5 "2400-02-29T00:00:00.123Z" >"$L3_T"
 check "a later answer on a valid leap day is adopted, including fractional seconds" \
   '[ "$(field l3 model)" = opus ] && [ "$(record l3 | jq -r .model_at)" = "2400-02-29T00:00:00.123Z" ]'
 /bin/cp "$WORK/l3-original.json" "$L3_FILE"
-answer claude-fable-5-1 "2020-01-01T00:00:00.000Z" >"$L3_T"
+answer claude-fable-5-2 "2020-01-01T00:00:00.000Z" >"$L3_T"
 LEAD_T="$(transcript_of lead)"
-answer claude-fable-5-1 "$(later)" >"$LEAD_T"
+answer claude-fable-5-2 "$(later)" >"$LEAD_T"
 check "teamctl teams adopts it for a lead: the lead's record now says fable, and a restart of the lead keeps Fable" \
   'teamctl teams --json >/dev/null 2>&1 && [ "$(record lead | jq -r .model)" = fable ] && grep -q "\"lead_model\": *\"fable\"" "$(ls -d "$WOLFMUX_DATA"/state/*/meta.json)"'
 
 echo "== teamctl restart --model (the restore lane's restore-on-limit)"
 teamctl spawn r1 fable --no-kickoff >/dev/null 2>&1
-answer claude-fable-5-1 "2020-01-01T00:00:00.000Z" >"$(transcript_of r1)"
+answer claude-fable-5-2 "2020-01-01T00:00:00.000Z" >"$(transcript_of r1)"
 R1_ID="$(record r1 | jq -r .session_id)"
 BEFORE="$(pane_pid r1)"
 OUT="$(teamctl restart r1 --model opus --resume "$R1_ID" 2>&1)"
@@ -375,7 +386,7 @@ restore_real_limit() (
   argv="$FAKE/restore-$team.argv"
   jq -se --arg sid "$sid" '
     all(.[]; index("--resume") as $i | $i != null and .[$i + 1] == $sid) and
-    .[0][(.[0] | index("--model")) + 1] == "claude-fable-5-1"' "$argv" || return 1
+    .[0][(.[0] | index("--model")) + 1] == "claude-fable-5-2"' "$argv" || return 1
   [ "$(record lead "$team" | jq -r .session_id)" = "$sid" ] || return 1
   [ ! -f "$FAKE/restore-$team.codex-argv" ] || return 1
   if [ "$target" = opus ]; then
@@ -387,7 +398,7 @@ restore_real_limit() (
   else
     jq -se 'length == 1' "$argv" &&
       [ "$(field lead model "$team")" = fable ] &&
-      [ "$(record lead "$team" | jq -r .model_id)" = claude-fable-5-1 ] &&
+      [ "$(record lead "$team" | jq -r .model_id)" = claude-fable-5-2 ] &&
       jq -se --arg team "$team" 'any(.[]; .team == $team and .what == "restart --model astra" and .result == "failed: exit 64")' "$WOLFMUX_DATA/state/restore.log" &&
       grep -q "$team: .*the move to astra failed: exit 64" "$WORK/restore-$team.out" &&
       ! grep -q "^  moved $team:" "$WORK/restore-$team.out"

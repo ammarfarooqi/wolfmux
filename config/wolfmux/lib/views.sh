@@ -218,14 +218,14 @@ _status_team_json() {
   if team_orphaned; then orphaned=1; fi
   _status_rows | "$JQ_BIN" -s --arg team "$TEAM" --arg root "$ROOT" --arg session "$SESSION" \
     --arg running "${SESSION_LIVE:-0}" --arg founder "$(team_founder)" --arg orphaned "$orphaned" --arg lp "$(policy_get lead-permissions)" \
-    --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg lt "$(policy_get lead-teams)" \
+    --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg wc "$(policy_get worker-context)" --arg lt "$(policy_get lead-teams)" \
     --arg pending "$(approvals_pending_count)" \
     --arg dg "$(policy_get disk-guard)" --arg dmin "$(policy_get disk-min-gb)" --arg lnm "$(policy_get link-node-modules)" \
     --arg ap "$(policy_get auto-prune)" --arg ar "$(policy_get auto-reclaim)" \
     --arg free "$(disk_free_kb)" --arg trees "$(disk_team_kb_cached)" --arg parked "$(disk_parked_kb "$STATE_DIR")" \
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
       founder: $founder, orphaned: ($orphaned == "1"),
-      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, lead_teams: $lt,
+      policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, worker_context: $wc, lead_teams: $lt,
                disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm, auto_prune: $ap, auto_reclaim: $ar},
       disk: {free_kb: (if $free == "" then null else ($free | tonumber) end),
              worktrees_kb: (if $trees == "" then null else ($trees | tonumber) end),
@@ -353,9 +353,19 @@ cmd_status() {
   say ""
   if [ "$(printf '%s\n' "$teams" | wc -w | tr -d ' ')" -gt 1 ]; then
     say "several teams: add --team <name> to a command · each team has its own session: teamctl attach --team <name>"
-    say "they share this project's Beads; a named team's agents are <team>.<role> there (bd list --assignee review.lead …)"
+    if [ "$(store_kind)" = "native" ]; then
+      say "they share this project's store; a named team's agents are <team>.<role> there (teamctl tasks review.lead …)"
+    else
+      say "they share this project's Beads; a named team's agents are <team>.<role> there (bd list --assignee review.lead …)"
+    fi
   fi
-  say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
+  # The footer names the store this project actually uses: pointing a native project at bd
+  # sends its reader to a database that is not there.
+  if [ "$(store_kind)" = "native" ]; then
+    say "tasks and messages live in the native store:  teamctl tasks · teamctl mail · teamctl show <id> · teamctl store"
+  else
+    say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
+  fi
 }
 
 # _teams_facts: for the loaded team: TEAMS_STATE, TEAMS_FOUNDER, TEAMS_LEAD, TEAMS_COUNT, TEAMS_KB

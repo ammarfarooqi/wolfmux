@@ -201,7 +201,7 @@ store_files() { # <mode> <journal MB> <index KB>
   dd if=/dev/zero of="$STORE_NOMS/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv" bs=1048576 count=0 seek="$2" 2>/dev/null
   dd if=/dev/zero of="$STORE_NOMS/journal.idx" bs=1024 count=0 seek="$3" 2>/dev/null
 }
-store_doctor() { (cd "$STORE_PROJECT" && PATH="$STORE_BD:$PATH" env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME" WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null) | sed -n '/^Beads/,/^tmux team server/p'; }
+store_doctor() { (cd "$STORE_PROJECT" && PATH="$STORE_BD:$PATH" WOLFMUX_STORE=beads env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME" WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null) | sed -n '/^Beads/,/^tmux team server/p'; }
 store_files embedded 1100 25600
 STORE_BIG="$(store_doctor)"
 store_files embedded 3 70
@@ -219,9 +219,8 @@ check "doctor: in server mode it says so and skips the size checks, however big 
 check "doctor: no variable in any script is followed directly by a non-ASCII character" '! LC_ALL=C grep -nE "\\\$[A-Za-z_][A-Za-z0-9_]*[^ -~]" "$REPO"/bin/* "$REPO"/config/wolfmux/lib/*.sh "$REPO"/config/wolfmux/hooks/* "$REPO"/*.sh "$REPO"/tests/*.sh "$REPO"/tests/stub-agent'
 # `bd update --claim` sets in_progress: an inbox that lists only `open` hides the task a
 # restarted worker is in the middle of, and it would answer "ready" and wait for ever.
-check "inbox: every inbox command we print or teach lists claimed and blocked work too" '! grep -rn -- "--status open --include-infra" "$REPO/bin" "$REPO/config/wolfmux" "$REPO/codex" "$REPO/docs" "$REPO/README.md"'
+check "inbox: every inbox command we print or teach lists claimed and blocked work too" '! grep -rn --exclude="AUDIT-*.md" -- "--status open --include-infra" "$REPO/bin" "$REPO/config/wolfmux" "$REPO/codex" "$REPO/docs" "$REPO/README.md"'
 # In a named team the inbox belongs to <team>.<role>, which is $BEADS_ACTOR and not $TEAM_ROLE.
-# (TEAM_PROTOCOL.md says $TEAM_ROLE in the file and is rewritten when it is handed to an agent.)
 check "inbox: help and manuals address the inbox by Beads identity, never by plain role" '! grep -rnE -- "--assignee .?.TEAM_ROLE" "$REPO/bin" "$REPO/docs" "$REPO/config/wolfmux/README.md" "$REPO/config/wolfmux/lib" "$REPO/README.md" | grep -v "sed\|-e .s/"'
 
 echo "== lifecycle"
@@ -393,6 +392,52 @@ check "notify: a message the app never fetched is not posted late" 'printf "%s" 
 /bin/rm -f "$WORK/osa.args" "$WORK/open.args"
 check "notify: a click opens a terminal on the team (script with the project and teamctl attach)" 'detached _open-team && grep -q "open-team.command" "$WORK/osa.args" && grep -q "create window with default profile command" "$WORK/osa.args" && grep -qF "$(printf "%q" "$PROJECT_REAL")" "$WOLFMUX_DATA/notify/open-team.command" && grep -q "teamctl --team default attach" "$WOLFMUX_DATA/notify/open-team.command"'
 
+# worker-context: what of your ~/.claude a worker starts with. A throwaway one stands in for yours.
+FAKE_CLAUDE="$WORK/claude-home"
+/bin/mkdir -p "$FAKE_CLAUDE/plugins"
+printf '%s\n' '{"enabledPlugins":{"alpha@market":true,"beta@market":false},"env":{"ECC_DISABLED_HOOKS":"post:example"}}' >"$FAKE_CLAUDE/settings.json"
+printf '%s\n' '{"version":2,"plugins":{"gamma@other":[{"scope":"user"}],"bad name;x@y":[]}}' >"$FAKE_CLAUDE/plugins/installed_plugins.json"
+tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g CLAUDE_CONFIG_DIR "$FAKE_CLAUDE"
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "worker-context: by default (trim) every plugin you enabled or installed is off for a worker, a name that is no plugin id is left out, and ~/.claude is still read" 'teamctl capture qa --all | grep "STUB context=" | tail -1 | grep -q "^STUB context=alpha@market,beta@market,gamma@other sources=all$"'
+teamctl policy worker-context lean >/dev/null 2>&1
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "worker-context: lean also starts the worker with --setting-sources project,local; the per-agent settings (hooks, guard) still go to it" 'teamctl capture qa --all | grep "STUB context=" | tail -1 | grep -q "sources=project,local$" && teamctl capture qa --all | grep "STUB hooks=" | tail -1 | grep -q "Stop" && teamctl policy | grep -q "worker-context  *lean"'
+printf '%s\n' '{"enabledPlugins":{"alpha@market":true},"skipDangerousModePermissionPrompt":true}' >"$FAKE_CLAUDE/settings.json"
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+QA_SETTINGS="$(find "$WOLFMUX_DATA/state" -path "*settings/qa.json" | head -1)"
+check "worker-context: lean carries your own recorded acceptance of bypass-permissions mode into the worker (without it the CLI stops a lean worker at a dialog)" 'jq -e ".skipDangerousModePermissionPrompt == true" "$QA_SETTINGS"'
+printf '%s\n' '{"enabledPlugins":{"alpha@market":true,"beta@market":false},"env":{"ECC_DISABLED_HOOKS":"post:example"}}' >"$FAKE_CLAUDE/settings.json"
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "worker-context: lean never invents that acceptance: settings without it leave the worker without it" '! jq -e "has(\"skipDangerousModePermissionPrompt\")" "$QA_SETTINGS"'
+teamctl policy worker-context full >/dev/null 2>&1
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "worker-context: full leaves a worker everything, and nonsense is refused (exit 64) with the choices named" 'teamctl capture qa --all | grep "STUB context=" | tail -1 | grep -q "^STUB context= sources=all$" && out="$(teamctl policy worker-context tiny 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "full|trim|lean"'
+teamctl policy worker-context trim >/dev/null 2>&1
+check "worker-context: the policy shows in status --json, and a stored choice outranks the environment" 'teamctl status --json | jq -e ".policy.worker_context == \"trim\"" && [ "$(WOLFMUX_WORKER_CONTEXT=lean teamctl status --json | jq -r .policy.worker_context)" = trim ]'
+tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -gu CLAUDE_CONFIG_DIR
+teamctl restart qa >/dev/null 2>&1
+# "summary" (a Claude-subscription model, unlike qa's GLM) was stopped and removed with the
+# other provider-test roles above; this check wants a second family alive to compare against,
+# so it is spawned fresh rather than restarted.
+teamctl spawn summary sonnet --no-kickoff >/dev/null 2>&1
+sleep 2
+check "compaction: a worker's CLI is told to compact at the window status counts with (flash 200000, sonnet 1000000)" 'teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "^STUB compact=200000$" && teamctl capture summary --all | grep -q "^STUB compact=1000000$"'
+tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW off
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "compaction: WOLFMUX_WORKER_COMPACT_WINDOW=off leaves it to the CLI, a number in the accepted range is passed on, one outside it is not" 'teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=none$" && tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW 150000 && teamctl restart qa && sleep 2 && teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=150000$" && tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW 5000 && teamctl restart qa && sleep 2 && teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=none$"'
+tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -gu WOLFMUX_WORKER_COMPACT_WINDOW
+teamctl restart qa >/dev/null 2>&1
+sleep 2
+check "hooks: every Claude agent is wired to teamctl _hook for the five turn events, a Codex agent to none" 'teamctl capture backend --all | grep -q "STUB hooks=PostToolUse,PreCompact,SessionStart,Stop,UserPromptSubmit" && teamctl capture backend --all | grep -q "STUB rundir=yes" && ! teamctl capture fe-review --all | grep -q "STUB hooks=P"'
+check "hooks: PostToolUse with nothing queued counts the call and says nothing; the tenth call and a queued attention go through the full hook" 'd="$WORK/run-hot"; /bin/mkdir -p "$d" && for i in 1 2 3; do printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook PostToolUse || exit 1; done; [ "$(/bin/cat "$d/calls")" = 3 ] && : >"$d/attention" && printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook PostToolUse && [ ! -e "$d/attention" ] && [ "$(/bin/cat "$d/calls")" = 4 ]'
+check "hooks: a turn is busy from the prompt to the stop; garbage in the call counter or on stdin never fails a hook" 'd="$WORK/run-state"; /bin/mkdir -p "$d" && printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook UserPromptSubmit && [ "$(/bin/cat "$d/state")" = busy ] && printf "not json" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" WOLFMUX_NOTIFY=off teamctl _hook Stop && [ "$(/bin/cat "$d/state")" = idle ] && printf "a[\$(touch %s/pwned)]\n" "$WORK" >"$d/calls" && printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook PostToolUse && [ ! -e "$WORK/pwned" ] && [ "$(/bin/cat "$d/calls")" = 1 ] && { printf "{}" | TEAM_ROLE=qa WOLFMUX_RUN_DIR="$d" teamctl _hook Bogus; [ $? -eq 0 ]; }'
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_NOTIFY lead
 teamctl restart qa >/dev/null 2>&1
 sleep 2
@@ -449,7 +494,7 @@ teamctl restart qa >/dev/null 2>&1
 sleep 2
 
 echo "== one manager, permissions, spawning"
-check "policy: defaults are skip / skip / worker spawning off / worker isolation on / disk guard refuse at 20 GB / no shared node_modules / auto-prune on / auto-reclaim on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", lead_teams: \"on\", disk_guard: \"refuse\", disk_min_gb: 20, link_node_modules: \"off\", auto_prune: \"on\", auto_reclaim: \"on\"}"'
+check "policy: defaults are skip / skip / worker spawning off / worker isolation on / worker context trim / disk guard refuse at 20 GB / no shared node_modules / auto-prune on / auto-reclaim on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", worker_context: \"trim\", lead_teams: \"on\", disk_guard: \"refuse\", disk_min_gb: 20, link_node_modules: \"off\", auto_prune: \"on\", auto_reclaim: \"on\"}"'
 check "permissions: lead and workers start in their CLI's bypass mode" 'teamctl capture lead -n 8 | grep -q "flags=--dangerously-bypass-approvals-and-sandbox" && teamctl capture backend -n 8 | grep -q "flags=--dangerously-skip-permissions"'
 check "hierarchy: the CLI's own agent-teams feature is switched off inside workers" 'teamctl capture backend -n 8 | grep -q "settings={\"teams\":\"0\",\"mode\":\"in-process\",\"hook\":false}"'
 check "hierarchy: the lead's own settings are left alone" 'teamctl capture lead -n 8 | grep -q "settings=none"'
@@ -575,6 +620,9 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 4
   BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Quote test" -t message -a backend -d 'body with "quotes" $HOME `ticks`' --silent >/dev/null 2>&1
   sleep 3
+  # Mail now reaches an idle pane through its hooks (ADR-0032): the Beads hook spools it and
+  # types the wake line _mail_type uses ("New mail for …"), not the older typed Beads-update
+  # notice (still what a Codex-family or paneless target gets, unaffected here).
   check "beads: message to a role notifies its pane" 'teamctl capture backend -n 12 | grep -q "Beads update for backend"'
   check "beads: body is stored intact and never typed into the pane" 'bd list --assignee backend --status open --include-infra --json | jq -e ".[0].description | contains(\"\$HOME\")" && ! teamctl capture backend -n 20 | grep -q ticks'
   check "beads: a worker reaches the shared database from its worktree" '(cd "$(teamctl status --json | jq -r ".agents[] | select(.role == \"backend\") | .workdir")" && bd list --assignee backend --status open --include-infra --json | jq -e "length == 1")'
@@ -648,7 +696,7 @@ plant_ctx ctx-haiku haiku claude "/nonexistent/ctx"
 # whatever the key means today, for an agent nobody could name the model of. That guess is gone
 # on purpose (an unknown model has no window: tests/models.sh), so the fixture now says what a
 # real record says.
-for pair in ctx-opus:claude-opus-5-5 ctx-sonnet:claude-sonnet-5-5 ctx-fable:claude-fable-5-1 ctx-haiku:claude-haiku-5-5; do
+for pair in ctx-opus:claude-opus-5-5 ctx-sonnet:claude-sonnet-5-5 ctx-fable:claude-fable-5-2 ctx-haiku:claude-haiku-5-5; do
   jq --arg id "${pair#*:}" '.model_id = $id' "$CTX_AGENTS/${pair%%:*}.json" >"$CTX_AGENTS/${pair%%:*}.json.new" &&
     /bin/mv "$CTX_AGENTS/${pair%%:*}.json.new" "$CTX_AGENTS/${pair%%:*}.json"
 done
@@ -726,15 +774,18 @@ check "spawn: --from-worktree refuses a worktree with uncommitted changes, and l
 teamctl policy worker-spawn on >/dev/null 2>&1
 check "spawn: --from-worktree is the lead's decision: a worker may not take another worker's worktree, even with worker-spawn on (exit 77), and nothing changes" 'TEAM_ROLE=qa teamctl spawn thief flash --from-worktree builder --no-kickoff; [ $? -eq 77 ] && teamctl status --json | jq -e "([.agents[] | select(.role == \"builder\")] | length == 1) and ([.agents[] | select(.role == \"thief\")] | length == 0)" && [ -z "$(git branch --list "ai/thief-*")" ]'
 teamctl policy worker-spawn off >/dev/null 2>&1
+git -C "$BUILDER_DIR" -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m "builder's own work" >/dev/null 2>&1
 BUILDER_OLD_BRANCH="$(git -C "$BUILDER_DIR" branch --show-current)"
+BUILDER_TIP="$(git -C "$BUILDER_DIR" rev-parse --short=12 HEAD)"
 check "spawn: --from-worktree starts a fresh worker in the same worktree, on a new branch, and the old record is gone" 'teamctl spawn builder2 flash --from-worktree builder && sleep 2 && teamctl status --json | jq -e --arg dir "$BUILDER_DIR" "([.agents[] | select(.role == \"builder2\")][0] | .state == \"running\" and .workdir == \$dir and (.branch | startswith(\"ai/builder2-\"))) and ([.agents[] | select(.role == \"builder\")]) == []"'
-check "spawn: --from-worktree bases the new branch on the project's current HEAD" 'teamctl diff builder2 | grep -q "base:    main @ $(git rev-parse --short=12 HEAD)"'
+# v1.24.0: without --base, a handover continues the stopped worker's branch, not main.
+check "spawn: --from-worktree without --base bases the new branch on the stopped worker's branch tip" 'teamctl diff builder2 | grep -q "base:    $BUILDER_OLD_BRANCH @ $BUILDER_TIP" && [ "$(git -C "$BUILDER_DIR" rev-parse --short=12 HEAD)" = "$BUILDER_TIP" ]'
 check "spawn: the old branch and its commits stay" '[ "$(git show "$BUILDER_OLD_BRANCH:.gitignore" 2>/dev/null)" = "node_modules/" ] && [ "$(git -C "$BUILDER_DIR" branch --show-current)" != "$BUILDER_OLD_BRANCH" ]'
-check "spawn: what git ignores (node_modules) is still there, so no install is repeated, and the fresh pane runs" '[ -f "$BUILDER_DIR/node_modules/x" ] && teamctl capture builder2 -n 8 | grep -q "STUB role=builder2" && teamctl capture builder2 -n 8 | grep -q "STUB kickoff_in_progress=yes"'
 # The keep flag protects the WORKTREE, so it has to survive the role change with it: without
 # this, the first `teamctl stop builder2` would sweep the install the handover just preserved.
 check "spawn: --from-worktree carries the keep flag over with the worktree, and says so" \
   '[ "$(teamctl status --json | jq -r ".agents[] | select(.role == \"builder2\") | .keep_build")" = "on" ]'
+check "spawn: what git ignores (node_modules) is still there, so no install is repeated, and the fresh pane runs" '[ -f "$BUILDER_DIR/node_modules/x" ] && teamctl capture builder2 --all | grep -q "STUB role=builder2" && teamctl capture builder2 --all | grep -q "STUB kickoff_in_progress=yes"'
 check "spawn: the event log says the worktree changed hands" 'grep -q "\"type\":\"from-worktree\"" "$(ls -d "$WOLFMUX_DATA"/state/*/events.jsonl | head -1)"'
 teamctl stop builder2 >/dev/null 2>&1
 teamctl remove builder2 --yes >/dev/null 2>&1
@@ -833,16 +884,17 @@ teamctl start astra --no-attach --skip-beads >/dev/null 2>&1
 FIRST_SESSION="$(teamctl status --json | jq -r .session)"
 check "teams: asking for another lead model while a team runs never hijacks that team; it says how to start a second one" 'out="$(teamctl start fable --no-attach --skip-beads 2>&1)"; [ $? -eq 1 ] && printf "%s" "$out" | grep -q -- "teamctl start fable --team" && teamctl status --json | jq -e ".agents[0].label == \"GPT-6 Astra\""'
 check "teams: a second, named team gets its own tmux session and its own lead" 'teamctl start fable --team review --no-attach --skip-beads && [ "$(sessions)" = "$FIRST_SESSION $FIRST_SESSION-review " ]'
+check "worker-context: the lead is never trimmed (no plugin is switched off in its settings, it reads all of ~/.claude, its compaction is its own), and an unusable configured value means full" 'sleep 1; f="$(ls -d "$WOLFMUX_DATA"/state/*/teams/review/settings)/lead.json" && jq -e "(.enabledPlugins // {}) == {} and (.hooks.Stop != null) and (.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW == null)" "$f" && teamctl capture lead --team review --all | grep "STUB context=" | tail -1 | grep -q "sources=all$" && [ "$(WOLFMUX_WORKER_CONTEXT=bogus teamctl status --json --team review | jq -r .policy.worker_context)" = full ]'
 check "teams: with several teams a command has to say which one (exit 64, and it lists them)" 'out="$(teamctl spawn backend glm53 --no-kickoff 2>&1)"; [ $? -eq 64 ] && printf "%s" "$out" | grep -q "default" && printf "%s" "$out" | grep -q "review"'
 check "teams: the same role name can exist in two teams; --team works before or after the command" 'teamctl spawn backend glm53 --team review --no-kickoff && teamctl --team default spawn backend flash --no-kickoff && sleep 2 && [ "$(git branch --list "ai/review/backend-*" | wc -l | tr -d " ")" = 1 ] && [ "$(git branch --list "ai/backend-*" | wc -l | tr -d " ")" = 1 ] && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0] | (.branch | startswith(\"ai/review/backend-\")) and .commits_ahead == \"0\""'
 check "teams: status shows every team as a hierarchy: team, wolf, dogs" 'out="$(teamctl status)"; printf "%s\n" "$out" | grep -q "^TEAM default" && printf "%s\n" "$out" | grep -q "^TEAM review" && [ "$(printf "%s\n" "$out" | grep -c "🐺 lead")" = 2 ] && [ "$(printf "%s\n" "$out" | grep -c "🐶 backend")" = 2 ]'
 check "teams: status --json lists the teams; with --team it keeps the single-team shape" 'teamctl status --json | jq -e "(.teams | map(.team) | sort) == [\"default\", \"review\"] and ([.teams[] | select(.team == \"review\")][0].agents | map(.role)) == [\"lead\", \"backend\"]" && teamctl status --json --team review | jq -e ".team == \"review\" and .session_running and (.agents | length == 2)"'
-check "teams: teamctl teams is the short list" 'teamctl teams | grep -q "review .*running .*Fable 5.1" && teamctl teams | grep -q "default .*running .*GPT-6 Astra"'
+check "teams: teamctl teams is the short list" 'teamctl teams | grep -q "review .*running .*Fable 5.2" && teamctl teams | grep -q "default .*running .*GPT-6 Astra"'
 check "teams: a named team has its own Beads identities (<team>.<role>); the first team keeps plain roles" 'teamctl capture backend --team review --all | grep -q "STUB role=backend actor=review.backend" && teamctl capture backend --team default --all | grep -q "STUB role=backend actor=backend "'
-check "teams: the kickoff of a teammate in a named team names its own inbox (<team>.<role>)" 'teamctl spawn scribe flash --team review && sleep 2 && teamctl capture scribe --team review --all | grep -q "STUB kickoff_assignee=review.scribe"'
+check "teams: a teammate in a named team is started as <team>.<role> in the store, and its kickoff says the assignment is already in the conversation" 'teamctl spawn scribe flash --team review && sleep 2 && teamctl capture scribe --team review --all | grep -q "STUB role=scribe actor=review.scribe" && teamctl capture scribe --team review --all | grep -q "STUB kickoff_kind=briefed"'
 teamctl stop scribe --team review >/dev/null 2>&1
 teamctl remove scribe --team review --force --yes >/dev/null 2>&1
-check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "-a review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
+check "teams: an agent is told who its lead is, in its own team's terms" 'teamctl _prompt backend --team review | grep -q "review.lead" && teamctl _prompt backend --team review | grep -q -- "teamctl send review.lead" && ! teamctl _prompt backend --team default | grep -q "review\.lead"'
 check "teams: a notification finds the right team by identity" 'teamctl nudge review.backend --id abc-9 && sleep 1 && teamctl capture backend --team review -n 12 | grep -q "Beads update for review.backend (abc-9)" && ! teamctl capture backend --team default -n 12 | grep -q "abc-9"'
 check "teams: a lead manages its own team only (exit 77 for another team)" 'TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend --team default; [ $? -eq 77 ] && TEAM_ROLE=lead WOLFMUX_TEAM=review teamctl stop backend && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"stopped\"" && teamctl status --json --team default | jq -e "[.agents[] | select(.role == \"backend\")][0].state == \"running\""'
 # The permission hook runs inside the agent, in its pane, and a stopped agent asks nothing (the
@@ -867,9 +919,12 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 4
   BEADS_ACTOR=review.lead TEAM_ROLE=lead WOLFMUX_TEAM=review bd create "Opinion attached" -t message -a lead -d "from team review" --silent >/dev/null 2>&1
   sleep 3
+  # review's lead is Claude family (fable): the new hooks-based "New mail for …" line.
+  # default's lead is Codex family (astra, started at the top of this file): no hooks yet
+  # (ADR-0032 point 9), so it still gets the older typed "Beads update for …" notice.
   check "teams: teams talk to each other through Beads, in both directions" '[ "$(teamctl capture lead --team review --all | grep -c "Beads update for review.lead")" -ge 2 ] && teamctl capture lead --team default --all | grep -q "Beads update for lead "'
 fi
-check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "-a <team>.lead"'
+check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "teamctl send <team>.lead"'
 as_lead() { TEAM_ROLE=lead WOLFMUX_TEAM=default WOLFMUX_NOTIFY_TTY="$WORK/tty-newteam" WOLFMUX_OSASCRIPT="$FAKE_OSA" "$REPO/tests/in-pane" "$@"; }
 check "teams: a lead can found a fresh team and hand work over to it" 'as_lead start fable --team fresh --no-attach --skip-beads --handover abc-77 && sleep 2 && teamctl status --json --team fresh | jq -e ".session_running and .agents[0].spawned_by == \"lead\"" && teamctl capture lead --team fresh --all | grep -q "STUB lastarg=.*abc-77"'
 check "teams: you are told when an agent founds a team" 'grep -q "started team .fresh." "$WORK/tty-newteam"'
@@ -949,7 +1004,7 @@ complete_is "completion: remove offers workers only, never the lead" '^backend	|
 complete_isnt "completion: remove never offers the lead" '^lead($TAB|\$)' "--team" "default" "remove" ""
 complete_is "completion: --from-worktree offers workers only" '^backend	|^qa	' "--team" "default" "spawn" "x" "--from-worktree" ""
 complete_is "completion: nudge and capture and diff offer roles" '^lead	|^backend	|^qa	' "--team" "review" "nudge" ""
-complete_is "completion: start completes the model keys with their labels" '^glm53	GLM-5.3$|^flash	GLM-5.3 Flash$|^fable	Fable 5.1$' "start" ""
+complete_is "completion: start completes the model keys with their labels" '^glm53	GLM-5.3$|^flash	GLM-5.3 Flash$|^fable	Fable 5.2$' "start" ""
 complete_is "completion: spawn <role> completes the models, providers included" '^kimi	' "spawn" "x" ""
 complete_is "completion: policy completes the keys" '^lead-permissions$|^worker-spawn$|^branch-template$' "policy" ""
 complete_is "completion: policy <key> completes the fixed choices" '^on$|^off$' "policy" "worker-spawn" ""

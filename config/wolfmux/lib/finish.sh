@@ -186,6 +186,16 @@ team_beads_load() {
     return 1
   fi
   team_beads_forget
+  if [ "$(store_kind)" = "native" ]; then
+    # v1.24.0: a native store is a local file; reclaim_native_tasks reads it in bd's shape.
+    out="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/wolfmux-finish.XXXXXX" 2>/dev/null || true)"
+    [ -n "$out" ] || { _team_beads_down "no scratch file could be made in ${TMPDIR:-/tmp}" || return 1; }
+    reclaim_scratch_done "$out"
+    reclaim_native_tasks "$out.beads" "open,in_progress,blocked" || { _team_beads_down "the native store could not be read" || return 1; }
+    TEAM_BEADS_FILE="$out.beads"
+    TEAM_BEADS_AT="$ROOT"
+    return 0
+  fi
   [ -n "$BD_BIN" ] || { _team_beads_down "bd is not installed" || return 1; }
   if [ ! -e "$ROOT/.beads" ] && [ -z "${BEADS_DIR:-}" ]; then
     _team_beads_down "no Beads workspace in $(short_path "$ROOT")" || return 1
@@ -364,7 +374,8 @@ team_finish_remove() {
   for role in $(reg_list); do reg_delete "$role"; done
   # As _purge_team, plus what it leaves: the notices (inbox/) and the lead's end. The first
   # team's directory is also the parent of the named teams: its files go, never teams/.
-  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/inbox"
+  # run/ (v1.24.0, lib/hooks.sh): reg_delete empties run/<role>; the empty run/ kept the rmdir below from working.
+  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/inbox" "$STATE_DIR/run"
   /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb" "$STATE_DIR/disk-parked-kb" "$(team_end_file)"
   lock_release
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then /bin/rmdir "$STATE_DIR" 2>/dev/null || true; fi # only when empty

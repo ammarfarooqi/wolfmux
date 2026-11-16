@@ -121,6 +121,47 @@ check "install.sh accepts --no-claude-commands and exits clean" "[ $rc -eq 0 ]"
 check "install.sh does not refuse or warn about the flag" '! /usr/bin/grep -qi "unknown option" "$WORK/install-5.log"'
 check "no ~/.claude/commands/ directory is created" '[ ! -d "$NOCMD/.claude/commands" ]'
 
+echo "== what an agent is told to run, on either store (v1.24.0, D8; review finding 8)"
+GR="$WORK/guard-repo"
+/bin/mkdir -p "$GR/tree"
+(cd "$GR" && git init -q -b main && echo x >f && git add f && git -c user.name=t -c user.email=t@example.invalid commit -qm init) >/dev/null 2>&1
+# guard_reason <store>: the worktree guard's reason for a write outside the worker's own worktree
+guard_reason() {
+  printf '{"hook_event_name":"PreToolUse","tool_name":"Write","tool_input":{"file_path":"%s/f"},"cwd":"%s/tree"}' "$GR" "$GR" |
+    env -u PROJECT_STATE -u TMUX -u TMUX_PANE TEAM_ROLE=w1 WOLFMUX_TEAM=default WOLFMUX_STORE="$1" WOLFMUX_ROOT="$GR" WOLFMUX_WORKTREE="$GR/tree" WOLFMUX_BRANCH=ai/w1 \
+      WOLFMUX_HOME="$REPO/config/wolfmux" "$REPO/bin/teamctl" _guard | jq -r '.hookSpecificOutput.permissionDecisionReason // empty'
+}
+GUARD_NATIVE="$(guard_reason native)"
+GUARD_BEADS="$(guard_reason beads)"
+check "guard: on a native store the refusal says ask your lead with teamctl send <lead>, and names no bd" \
+  'printf "%s" "$GUARD_NATIVE" | grep -qF "ask your lead: teamctl send lead \"<what and why>\"" && ! printf "%s" "$GUARD_NATIVE" | grep -qw bd'
+check "guard: on Beads it is v1.23.0's bd create to the lead" 'printf "%s" "$GUARD_BEADS" | grep -qF "ask your lead: bd create \"<what and why>\" -t message -a lead"'
+# manager_refusal <store>: require_manager's text for a worker, with the caller stubbed and the store file set
+manager_refusal() {
+  (
+    for m in provider-env common registry tmuxctl worktree beads policy approvals agents store; do . "$REPO/config/wolfmux/lib/$m.sh"; done
+    PROJECT_STATE="$WORK/ms-$1"
+    /bin/mkdir -p "$PROJECT_STATE"
+    printf '%s\n' "$1" >"$PROJECT_STATE/store"
+    TEAM=default
+    is_manager() { return 1; }
+    steward_command() { return 1; }
+    caller_role() { printf 'w1\n'; }
+    caller_team() { printf 'default\n'; }
+    require_manager stop w2
+  ) 2>&1
+}
+REFUSE_NATIVE="$(manager_refusal native)"
+REFUSE_BEADS="$(manager_refusal beads)"
+check "lead-only refusal: on a native store it says Ask that lead: teamctl send <lead>, and names no bd" \
+  'printf "%s" "$REFUSE_NATIVE" | grep -qF "Ask that lead: teamctl send lead \"<what you need>\"" && ! printf "%s" "$REFUSE_NATIVE" | grep -qw bd'
+check "lead-only refusal: on Beads it is v1.23.0's bd create" 'printf "%s" "$REFUSE_BEADS" | grep -qF "Ask that lead: bd create \"<what you need>\" -t message -a lead -d \"<why>\""'
+HELP="$(WOLFMUX_HOME="$REPO/config/wolfmux" "$REPO/bin/teamctl" help 2>&1)"
+check "help: messages for you name teamctl send human \"<subject>\" \"<body>\" first, bd as the Beads form" \
+  'printf "%s" "$HELP" | grep -qF "agents write to you with teamctl send human \"<subject>\" \"<body>\"" && printf "%s" "$HELP" | grep -qF "on a Beads"'
+check "help: the work itself is teamctl tasks and teamctl mail, bd list as the Beads form" \
+  'printf "%s" "$HELP" | grep -qF "the work itself is teamctl tasks <role> and teamctl mail <role>" && printf "%s" "$HELP" | grep -qF "(on a Beads project also bd list --assignee <role>)"'
+
 echo
 echo "result: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

@@ -43,6 +43,8 @@ export WOLFMUX_NOTIFIER_APP="$WORK/no-such.app"
 export WOLFMUX_OSASCRIPT="$WORK/no-such-osascript"
 : >"$WOLFMUX_NOTIFY_TTY"
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
+# v1.24.0 (D5): a new project gets the native store; this suite models Beads (a fake bd).
+export WOLFMUX_STORE=beads
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
 unset WOLFMUX_NUDGE_TYPE WOLFMUX_INBOX_CLIENTS WOLFMUX_INBOX_STALL_NOTIFY
 unset WOLFMUX_INBOX_APPROVAL_TYPE WOLFMUX_INBOX_STOP_COOLDOWN WOLFMUX_INBOX_MARK
@@ -191,6 +193,21 @@ if [ -s "$BD_LOG" ]; then
   echo "        bd was called (arguments | from):"
   tr '\037' '|' <"$BD_LOG" | sed 's/^/          /' | head -20
 fi
+
+echo "== a wedged bd never holds a hook (Beads issue #6039): SessionStart is bounded too"
+# A bd that never answers in time, first on the PATH for this one hook only. The bound every hook
+# uses is 5 s per bd read (_bd_bounded); the CLI gives up on a hook after 20 s and drops its answer.
+SLOW_BD="$WORK/slow-bd"
+/bin/mkdir -p "$SLOW_BD"
+printf '#!/bin/bash\nexec /bin/sleep 40\n' >"$SLOW_BD/bd"
+/bin/chmod 755 "$SLOW_BD/bd"
+QA_RUN="$STATE_DIR/run/qa"
+SS_START="$(date +%s)"
+SS_OUT="$(cd "$PROJECT" && printf '{"source":"startup"}' | PATH="$SLOW_BD:$PATH" TEAM_ROLE=qa BEADS_ACTOR=qa WOLFMUX_TEAM=default WOLFMUX_RUN_DIR="$QA_RUN" "$REPO/tests/in-pane" _hook SessionStart 2>/dev/null)"
+SS_SECS=$(($(date +%s) - SS_START))
+check "SessionStart with a hanging bd answers well inside the CLI's 20 s (took ${SS_SECS}s)" '[ "$SS_SECS" -lt 18 ]'
+check "  ... and its mail part tells the agent to read its mail itself, never that nothing is assigned" \
+  'ctx="$(printf "%s" "$SS_OUT" | jq -r .hookSpecificOutput.additionalContext)"; printf "%s" "$ctx" | grep -qF "teamctl mail" && ! printf "%s" "$ctx" | grep -qF "nothing is assigned"'
 
 echo
 echo "result: $passed passed, $failed failed, $skipped skipped"

@@ -15,7 +15,7 @@ project can have several teams.
           Claude subscription     ChatGPT/Codex subscription
                  └──────────┬──────────┘
         teamctl  = tmux panes · models · worktrees · lifecycle
-        bd       = tasks · dependencies · messages   (Beads)
+                   + tasks · dependencies · messages · memory  (native store, or Beads)
                             │
       ┌─────────────────────┼─────────────────────┐
   claude-glm           claude-glm           claude-glm-flash
@@ -23,9 +23,13 @@ project can have several teams.
       └──────────── Z.ai GLM Coding Plan ─────────┘
 ```
 
-`teamctl` never stores a task or a message, and Beads never touches tmux. The only
-glue is a three-line Beads hook that calls `teamctl nudge <role>` when a bead needs
-someone, which types one fixed line into that agent's pane. Bodies stay in Beads.
+`teamctl` owns tmux panes, models, worktrees and lifecycle. Tasks, messages and team
+memory live behind one store interface, `teamctl store`: a native sqlite file by
+default for a project with nothing on disk yet, or Beads, kept for a project already
+on it. Either way the commands are `teamctl`'s — `send`, `task`, `checkpoint`, and the
+rest below — never `bd` directly. A message or task reaches a Claude Code agent
+through its CLI's hooks, with the body, at its next tool call; a Codex agent still
+gets the one-line notice v1.23.0 gave it, typed only where the typing gates allow.
 
 ## One-time setup
 
@@ -58,10 +62,13 @@ teamctl start astra
 ```
 
 Same session, same workers, same commands; only the lead's launcher differs.
-The first start in a repository offers to initialize Beads in stealth mode
-(`bd init --stealth --skip-hooks --skip-agents`): no commit, no tracked files, no
-git hooks, no AGENTS.md/CLAUDE.md changes. Use `--init-beads` to skip the question,
-or run your own `bd init` flavour first.
+The first start in a repository creates its store: a native sqlite file by default
+(nothing to answer), or, with `--init-beads`, a Beads workspace in stealth mode
+(`bd init --stealth --skip-hooks --skip-agents`: no commit, no tracked files, no git
+hooks, no AGENTS.md/CLAUDE.md changes). `--skip-beads` answers that question for a
+project that is already on the Beads backend but has no workspace yet; run your own
+`bd init` flavour first if you want to answer it yourself. `teamctl store` shows
+which backend a project ended up on.
 
 `Ctrl-b d` detaches; the team keeps running. `teamctl attach` comes back.
 
@@ -128,7 +135,7 @@ new branch (its branch and commits stay; node_modules and build output survive, 
 lane was protected with `teamctl keep <role>` before it was parked — parking sweeps build
 output since v1.17.0, and the flag travels with the worktree). The lead
 reads each agent's CONTEXT in `teamctl status` (tokens, and the share of a known
-window — the window Claude Code declared for the model, 1,000,000 tokens for Fable 5.1,
+window — the window Claude Code declared for the model, 1,000,000 tokens for Fable 5.2,
 Opus 5.5, Sonnet 5.5 and Haiku 5.5; anything else shows tokens alone) to choose
 between `restart` (keep the conversation) and a fresh worker.
 
@@ -213,6 +220,7 @@ teamctl policy worker-permissions skip|lead|ask # default skip
 teamctl policy lead-permissions skip|ask        # default skip
 teamctl policy browser-writes ask|allow         # allow writes a Chrome-write ALLOW rule into every agent's settings  default ask
 teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
+teamctl policy worker-context full|trim|lean    # what of ~/.claude a worker starts with  default trim
 teamctl policy lead-teams on|off                # may the lead found further teams?  default on
 teamctl policy branch-template '<template>'     # how this team names workers' branches (above)
 teamctl policy branch-template default          # …back to ai/{role}-{ts} · ai/{team}/{role}-{ts}
@@ -249,6 +257,18 @@ pushing to main, driving tmux. The refusal tells the worker to ask its lead. Rea
 checkout stays allowed. It is a guard against mistakes, not a sandbox, and it exists for
 Claude Code teammates only: Codex has no such hook.
 
+**What a worker's conversation starts with** (`worker-context`, `WOLFMUX_WORKER_CONTEXT`).
+`full` is everything in your `~/.claude` (plugins, skills, agents, rules), as before.
+`trim` (the default) keeps your rules and settings but switches off every plugin
+enabled there. `lean` also starts the worker with `--setting-sources project,local`,
+so nothing from `~/.claude` is read at all — only the project's own `CLAUDE.md` /
+`.claude/` and the per-agent settings (hooks, guard) and login. The lead is never
+trimmed; a stored or configured value that cannot be read means `full`.
+`WOLFMUX_WORKER_COMPACT_WINDOW` sets where a worker's own CLI compacts its
+conversation, in tokens (default: the window `teamctl status` counts that model
+with; `off` leaves it to the CLI) — otherwise a current Claude model would run
+toward 1M before compacting on its own.
+
 Inside workers, Claude Code's own agent-teams feature is switched off. With it on, any
 subagent a worker names becomes a teammate that treats the *worker* as its team lead and
 asks *it* for permission — a second manager outside the team's view. Your own sessions
@@ -278,30 +298,81 @@ the leads' conversations by the worktree guard; a search of a whole tree that ho
 a Grep of `~/.claude`) is refused too (docs/SECURITY.md in the repository says where that guard ends).
 
 ## Messaging (Beads)
+## Messaging
 
 ```bash
-bd create "Subject" -t message -a backend -d "body"            # send; recipient's pane is notified
-bd create "Subject" -t message -a backend --body-file msg.md   # long / code-heavy body
-bd list --assignee $BEADS_ACTOR --status open,in_progress,blocked --include-infra   # inbox: your tasks (new, claimed, blocked) + unread messages; $BEADS_ACTOR is your role, or <team>.<role> in a named team
-bd show <id>                    # read            bd close <id> -r read       # mark read
-bd create "Re: ..." -t message -a frontend -d "..." --deps replies-to:<id>    # reply
-bd show <id> --thread           # conversation    bd list --type message --all    # history
+teamctl send backend "Subject" "body"                   # recipient's pane shows it at its next tool call
+teamctl send backend "Subject" --body-file msg.md        # long / code-heavy body (- for stdin)
+teamctl send --all "Subject" "body"                      # one message per role of this team
+teamctl send human "Subject" "body"                      # the human: status-bar number, prefix N (WOLFMUX_HUMAN)
+teamctl mail                                            # your unread mail + open tasks ($BEADS_ACTOR, or <team>.<role>)
+teamctl show <id>                                        # read one; teamctl mail --peek leaves it unread
+teamctl send frontend "Re: ..." "..." --re <id>           # reply, threaded
+teamctl show <id>                                        # the whole thread of a message
 ```
 
-Broadcast = one message per role. Lead and workers use exactly the same commands,
-and workers message each other directly.
+Lead and workers use exactly the same commands, and workers message each other
+directly. On a project kept on the Beads backend these call `bd` underneath; the
+raw commands are in the [Beads cheat sheet](../../docs/USAGE.md#beads-cheat-sheet).
 
-## Tasks (Beads)
+## Tasks
 
 ```bash
-bd create "Title" -t task -p 1 -a backend -d "what + acceptance criteria"
-bd dep add <task> <blocker>        bd ready        bd list --status in_progress,blocked
-bd update <id> --claim             bd update <id> --status blocked
-bd close <id> -r "commit <sha>; tests pass"
+teamctl task backend "Title" -p 1 -d "what + acceptance criteria"
+teamctl task qa "Title" --after <task> --after <other-task>   # waits on both
+teamctl tasks                      teamctl claim <id>      teamctl blocked <id> "why"
+teamctl done <id> "commit <sha>; tests pass" --tests "pytest: 38 passed"
+teamctl note <id> "a detail worth keeping, for whoever reads this task next"
+teamctl close <id> -r "..." --failed      # lead: reject instead of accepting
+teamctl reopen <id> "why it needs another pass"     # lead: send a closed task back
 ```
 
 Status map: pending = open/unassigned · assigned = open+assignee · in_progress ·
-blocked · completed = closed · failed = closed + label `failed`.
+blocked (shown as `waiting` while an unclosed blocker remains) · completed = closed
+· failed = closed + label `failed`.
+
+## Memory and checkpoints
+
+Two different things an agent is otherwise never told: what this project's team has
+already learned, and where **this role's own** last conversation left off.
+
+```bash
+teamctl remember "the test suite needs REDIS_URL set, or 40 tests hang"   # shared team notes, any agent
+teamctl memories redis                                   # search it
+teamctl forget redis-url                                 # a memory's key defaults to a slug of its text
+teamctl checkpoint "API done; next: wire the UI; watch out for the stale cache key"
+teamctl checkpoint --show backend                        # read a role's stored checkpoint
+```
+
+Shared team notes is shown to every new, resumed or compacted conversation (capped, 4,000
+characters). A checkpoint is appended as a note to the agent's own in-progress task
+and kept in its run directory with a generated header (time, branch, HEAD,
+uncommitted files); `SessionStart` shows it again after a compaction, a resume or a
+`teamctl restart <role>` — which is how a role picks up where it left off, same
+worktree and branch, fresh conversation.
+
+**The context watch.** Every tenth tool call, the PostToolUse hook checks how full
+the conversation is. At `WOLFMUX_CONTEXT_WARN` percent (default 60) the agent is told
+once to commit and write a checkpoint. At `WOLFMUX_CONTEXT_ROTATE` percent (default
+80) it is told once to start nothing new, and the lead is messaged with the exact
+command to give the task a fresh conversation. `WOLFMUX_WORKER_COMPACT_WINDOW` sets
+where a worker's own CLI compacts (default: the window `teamctl status` counts that
+model with; `off` leaves it to the CLI).
+
+## Choosing the store
+
+```bash
+teamctl store                           # which backend this project uses, and its counts
+teamctl store native                    # switch a Beads project to the native store (no migration)
+teamctl store native --migrate          # …and move its open tasks, unread messages and memories over
+teamctl store beads                     # switch back, if a Beads workspace exists here
+```
+
+A project with nothing on disk yet starts on the native store; a project that
+already has agent state and no `store` file (it was started before v1.24.0) stays on Beads
+until you migrate it.
+Nothing is deleted from Beads by `--migrate`. An agent started before a switch was
+taught the other store's commands and should be restarted (`teamctl restart <role>`).
 
 ## Monitoring
 
@@ -525,8 +596,8 @@ there by whoever needs it.
   (300 s), nothing half-typed on the input line, not in copy mode. Only you may change
   it, from your own terminal; an agent gets exit 77.
 
-`teamctl inbox` is the pane notices. An agent's own inbox — the work — is always
-`bd list --assignee <role> --status open,in_progress,blocked --include-infra`.
+`teamctl inbox` is the pane notices. An agent's own inbox — the work — is `teamctl mail`
+(unread mail and open tasks), on either backend.
 
 Two facts are kept per notice and they do not touch each other: whether **you** have
 expanded it (the status-bar count) and whether the **agent** has been given it. Reading
@@ -828,7 +899,7 @@ meanwhile, nothing is deleted). Wolfmux never runs it itself. A weekly habit: ru
 | Worktrees | `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/`; a named team's under `…/<project>-<hash>/teams/<team>/` |
 | teamctl state (role ↔ model ↔ worktree, policy, approvals, event log) | `~/.wolfmux/state/<project>-<hash>/`; a named team's under `…/teams/<team>/` — nothing is written into your repository |
 | Agents' conversations | Claude Code's own `~/.claude/projects/<the worktree's path, every character that is not a letter or digit turned into ->/`; `teamctl destroy --purge` removes those of the teammates it deletes. A lead's conversations are in your checkout's folder there and stay; Codex keeps its own sessions |
-| Tasks + messages | the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode) |
+| Tasks, messages, memory | `~/.wolfmux/state/<project>/store.db` (native, the default) or the project's `.beads/` (embedded Dolt; locally excluded from git in stealth mode), per `teamctl store` |
 | tmux | dedicated server: `tmux -L wolfmux`; your default tmux and `~/.tmux.conf` are untouched. A team started before the rename from "ai-team" stays on `tmux -L ai-team` until it ends; `teamctl` follows it |
 | Permissions | `~/.claude/settings.json` (allow `teamctl`, `bd`, `git status`, `git worktree list`; ask on `teamctl destroy`), `~/.codex/rules/wolfmux.rules` |
 
@@ -846,6 +917,10 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_BRANCH_TEMPLATE` | unset | how workers' branches are named in every team that has not set its own (`teamctl policy branch-template`); unset = `ai/{role}-{ts}` and `ai/{team}/{role}-{ts}` |
 | `WOLFMUX_WORKER_SPAWN` | `off` | may workers spawn teammates (same rule: a team's own policy wins) |
 | `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
+| `WOLFMUX_WORKER_CONTEXT` | `trim` | what of `~/.claude` a worker's conversation starts with: `full`, `trim`, `lean` ([above](#one-manager-permissions-spawning)) |
+| `WOLFMUX_WORKER_COMPACT_WINDOW` | the window `teamctl status` counts that model with | tokens, or `off`: where a worker's own CLI compacts its conversation |
+| `WOLFMUX_CONTEXT_WARN` | `60` | percent of its window at which an agent is told to commit and checkpoint ([Memory and checkpoints](#memory-and-checkpoints)); `0`/`off` disables it |
+| `WOLFMUX_CONTEXT_ROTATE` | `80` | percent at which an agent is told to start nothing new, and the lead is messaged; must be above `WOLFMUX_CONTEXT_WARN` or both fall back |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
 | `WOLFMUX_ORPHAN_STEWARD` | `off` | the default of the `orphan-steward` policy: the team whose lead may restart the lead of a team you founded, or stop its agents, while that lead is not running. A value that is no team name is read as `off`. `teamctl policy orphan-steward` sets it per project, and only you can |
 | `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
@@ -968,7 +1043,7 @@ at your terminal; an agent that offers to flip it for you should be refused.
 
 | Pane | Type | Expect |
 |------|------|--------|
-| Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.1 |
+| Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.2 |
 | Astra lead | `/status` | Signed in with ChatGPT · model `gpt-6-astra` |
 | GLM worker | `/status` | Base URL `https://api.z.ai/api/anthropic` · auth: apiKeyHelper (or ANTHROPIC_AUTH_TOKEN in env mode) · model `glm-5.3` / `glm-5.3-flash` |
 | provider worker | `/status` | that provider's base URL and model (Kimi auth may be `ANTHROPIC_API_KEY` in env mode); `WOLFMUX_DRY_RUN=1 claude-<provider>` prints the exact values |

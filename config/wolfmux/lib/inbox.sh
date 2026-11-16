@@ -566,6 +566,26 @@ inbox_mark_typed() {
   return 0
 }
 
+# inbox_mark_item_delivered <role> <id> — the item <id> was handed over by another channel
+# (the mid-turn drain, lib/mail.sh): every undelivered line that names it, "(<id>)", is
+# marked delivered, so no hook hands it over again. awk only, under the role's lock, the same
+# chained rewrite as inbox_mark_typed: no jq, no bd, no sqlite3 on the PostToolUse path.
+inbox_mark_item_delivered() {
+  local role="$1" id="$2" file
+  [ -n "$role" ] && [ -n "$id" ] || return 0
+  case "$id" in *[!A-Za-z0-9._-]*) return 0 ;; esac
+  file="$(inbox_file "$role")"
+  [ -f "$file" ] || return 0
+  inbox_lock "$role" || return 0
+  WM_WANT="($id)" LC_ALL=C /usr/bin/awk -F'\t' -v OFS='\t' '
+    BEGIN { want = ENVIRON["WM_WANT"] }
+    NF >= 4 && index($4, want) > 0 && substr($3, 2, 1) == "u" { $3 = substr($3, 1, 1) "d" }
+    { print }' "$file" >"$(inbox_tmp "$role" item)" 2>/dev/null && /bin/mv -f "$(inbox_tmp "$role" item)" "$file" 2>/dev/null
+  /bin/rm -f "$(inbox_tmp "$role" item)" 2>/dev/null || true
+  inbox_unlock "$role"
+  return 0
+}
+
 # inbox_take_undelivered <role> — print the text of every line the agent has not been
 # given, oldest first, AND mark exactly those lines delivered. One critical section, so
 # two hooks firing together cannot both hand over the same notice. The human's column is
@@ -936,11 +956,34 @@ inbox_not_you() {
 # third argument says how many notices this hand-over could not carry, so a capped batch
 # does not look like the whole of it.
 inbox_hook_body() {
-  printf '%s\n%s\n' "[wolfmux] You have team notices:" "$2"
-  if [ -n "${3:-}" ] && [ "$3" != "0" ]; then
-    printf '%s more waiting; they come with your next turn, or see them all now: teamctl inbox\n' "$3"
+  local uncovered=1 body bodies="" more="" tail=""
+  # v1.24.0: the body travels with the notice (ADR-0032). Counted before the bodies are moved.
+  if [ -n "${INBOX_ROLE:-}" ] && [ -n "${STATE_DIR:-}" ] && declare -F mail_bodies_for >/dev/null 2>&1; then
+    uncovered="$(mail_notices_uncovered "$INBOX_ROLE" "$2")"
+    bodies="$(mail_bodies_for "$INBOX_ROLE" "$1" "$2")"
   fi
-  printf 'Read it now: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1"
+  if [ -n "${3:-}" ] && [ "$3" != "0" ]; then
+    more="$3 more waiting; they come with your next turn, or see them all now: teamctl inbox"
+  fi
+  if [ "$uncovered" != "0" ]; then
+    if [ "$(store_kind 2>/dev/null || printf beads)" = "native" ]; then
+      tail="Read it now: teamctl mail"
+    else
+      tail="$(printf 'Read it now: bd list --assignee %s --status open,in_progress,blocked --include-infra' "$1")"
+    fi
+  fi
+  # Built first and written ONCE: a reader that stops after the first line it wanted must not
+  # make a later write fail, which would read as "not handed over" and put the notices back.
+  body="[wolfmux] You have team notices:
+$2"
+  [ -z "$more" ] || body="$body
+$more"
+  [ -z "$bodies" ] || body="$body
+
+$bodies"
+  [ -z "$tail" ] || body="$body
+$tail"
+  printf '%s\n' "$body"
 }
 
 # cmd_inbox_stop — internal (`teamctl _inbox-stop`): a Claude Code Stop hook, added as a
@@ -1301,7 +1344,14 @@ cmd_inbox() {
       done <"$(inbox_file "$role")"
       shown=1
     done
-    if [ "$shown" -eq 0 ]; then
+    if [ "$(store_kind 2>/dev/null || printf beads)" = "native" ]; then
+      if [ "$shown" -eq 0 ]; then
+        say "no notices for ${roles% *}. (Tasks and messages themselves: teamctl mail)"
+      else
+        say ""
+        say "Tasks and messages themselves: teamctl mail [<role>] · teamctl show <id>"
+      fi
+    elif [ "$shown" -eq 0 ]; then
       say "no notices for ${roles% *}. (Tasks and messages are Beads: bd list --assignee \$BEADS_ACTOR --status open,in_progress,blocked --include-infra)"
     else
       say ""
@@ -1388,10 +1438,17 @@ human_inbox_edit() {
 # human_inbox_reconcile — put the index right from Beads with ONE targeted call. 1 when bd
 # is missing, fails, or answers with something that is not a list; the index is then left
 # as it was, because an error must not read as "no messages".
+# On a native store the same list comes from store_inbox_json, messages only (v1.24.0).
 human_inbox_reconcile() {
   local json rows rc=0
-  [ -n "$BD_BIN" ] && [ -n "$JQ_BIN" ] || return 1
-  json="$(cd "$ROOT" && "$BD_BIN" list --assignee "$WOLFMUX_HUMAN" --type message --status open --limit 0 --json 2>/dev/null)" || return 1
+  [ -n "$JQ_BIN" ] || return 1
+  if [ "$(store_kind)" = "native" ]; then
+    json="$(store_inbox_json "$WOLFMUX_HUMAN" 2>/dev/null)" || return 1
+    json="$(printf '%s' "$json" | "$JQ_BIN" -c 'map(select(.issue_type == "message"))' 2>/dev/null)" || return 1
+  else
+    [ -n "$BD_BIN" ] || return 1
+    json="$(cd "$ROOT" && "$BD_BIN" list --assignee "$WOLFMUX_HUMAN" --type message --status open --limit 0 --json 2>/dev/null)" || return 1
+  fi
   rows="$(printf '%s' "$json" | "$JQ_BIN" -r "$_HUMAN_ROW_JQ"' if type == "array" then .[] | row else error("not a list") end' 2>/dev/null)" || return 1
   human_inbox_lock || return 1
   _human_inbox_write "$rows" || rc=1
@@ -1644,9 +1701,19 @@ _hi_draw() {
   [ -z "$HI_STATUS" ] || printf ' %s' "$HI_STATUS"
 }
 
-# _hi_close <id>... — mark read in Beads, as the human; bd's first line on failure
+# _hi_close <id>... — mark read in the store, as the human; bd's first line on failure.
+# A native store closes them with store_msg_read, which skips an id that is not the human's.
 _hi_close() {
   local out
+  if [ "$(store_kind)" = "native" ]; then
+    if store_msg_read "$WOLFMUX_HUMAN" "$@" 2>/dev/null; then
+      human_inbox_edit "" "$@" || true
+      _hi_load
+      return 0
+    fi
+    HI_STATUS="could not mark read in the native store"
+    return 1
+  fi
   if out="$(cd "$ROOT" && BEADS_ACTOR="$WOLFMUX_HUMAN" "$BD_BIN" close "$@" -r read 2>&1)"; then
     human_inbox_edit "" "$@" || true
     _hi_load
@@ -2121,8 +2188,24 @@ _hi_mark_all() {
   return 0
 }
 
+# _hi_native_show <id> — a native store's message as text, for less
+_hi_native_show() {
+  store_item_json "$1" 2>/dev/null | "$JQ_BIN" -r \
+    '"\(.id)  \(.title)\nFrom: \(.created_by)  To: \(.assignee)  \(.created_at)  [\(.status)]\n\n\(.description)"' 2>/dev/null ||
+    printf 'could not read %s from the native store\n' "$1"
+}
+
 _hi_open() {
   [ "$HI_N" -gt 0 ] || return 0
+  if [ "$(store_kind)" = "native" ]; then
+    HI_DID="opened ${HI_ID[HI_SEL]}"
+    [ -z "${HI_STTY:-}" ] || /bin/stty "$HI_STTY" 2>/dev/null
+    tput cnorm 2>/dev/null
+    _hi_native_show "${HI_ID[HI_SEL]}" | LC_ALL=C /usr/bin/tr -d '\000-\010\013-\037\177' | less -R
+    tput civis 2>/dev/null
+    [ -z "${HI_STTY:-}" ] || /bin/stty -icanon -echo -isig -ixon min 1 time 1 2>/dev/null
+    return 0
+  fi
   if [ -z "$BD_BIN" ]; then
     HI_STATUS="bd is not installed" HI_DID="bd is not installed"
     return 0

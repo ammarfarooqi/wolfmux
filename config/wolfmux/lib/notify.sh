@@ -190,15 +190,24 @@ cmd_open_team() {
   return 0
 }
 
-# cmd_notify — internal (`teamctl _notify`): Stop hook, JSON on stdin
+# cmd_notify — internal (`teamctl _notify`): the Stop hook's JSON on stdin, and Codex's `notify`
+# program, the same thing under another name. A Claude agent gets it as its own Stop hook entry
+# when WOLFMUX_NOTIFY wants it (write_agent_settings); `teamctl _hook Stop` never notifies (v1.24.0).
 cmd_notify() {
-  local input role who body
+  local input
   if [ "${1:-}" = "--codex" ]; then
     # Codex: `notify` program, JSON as the last argument, "last-assistant-message"
     input="$(printf '%s' "${2:-}" | "$JQ_BIN" -c '{last_assistant_message: (.["last-assistant-message"] // "")}' 2>/dev/null || true)"
   else
     input="$(/bin/cat 2>/dev/null || true)"
   fi
+  notify_send "$input"
+  return 0
+}
+
+# notify_send <hook-json>
+notify_send() {
+  local input="$1" role who body
   [ -n "$JQ_BIN" ] || return 0
   # The pane proof, the same as the inbox hooks' (lib/inbox.sh _inbox_hook_ready): a chat that
   # only inherited an agent's environment, such as a background chat of Claude's daemon, is not

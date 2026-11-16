@@ -51,6 +51,8 @@ export WOLFMUX_NUDGE_DEFER_MAX=60
 export WOLFMUX_NUDGE_DEBOUNCE=0 # the debounce has its own check in smoke.sh
 # Run from an agent's pane, the environment carries that agent's team and session.
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
+# v1.24.0 (D5): a new project gets the native store; this suite models Beads (a fake bd).
+export WOLFMUX_STORE=beads
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
 unset WOLFMUX_HUMAN_PANE_TYPING WOLFMUX_INBOX_WATCHED WOLFMUX_INBOX_CLIENTS WOLFMUX_NUDGE_TYPE
 teamctl() { "$REPO/bin/teamctl" "$@"; }

@@ -417,7 +417,27 @@ cmd_start() {
   fi
   wt_require_commit "$ROOT"
   ensure_state_dirs
-  beads_ensure "$beads"
+  # A fresh project (nothing established on disk yet) with --init-beads is the explicit,
+  # long-standing way to choose Beads for it; lock that choice in now, before the lead's own
+  # registry record exists, since store_kind's upgrade rule would otherwise read agents/*.json
+  # as "a project that already has agent state" and quietly (mis)read a genuinely native one as Beads later.
+  if [ "$beads" = "yes" ] && [ "$(store_kind)" = "native" ] && [ ! -f "$PROJECT_STATE/store" ]; then
+    store_set_kind beads
+  fi
+  case "$(store_kind)" in
+    native)
+      case "$beads" in
+        yes) info "[wolfmux] --init-beads is ignored: this project's store is already native (teamctl store beads switches it)." ;;
+        skip) info "[wolfmux] --skip-beads is ignored: this project's store is already native." ;;
+      esac
+      local store_was_new=1
+      [ -f "$(store_db)" ] && store_was_new=0
+      store_native_ensure || die "store: native store is not usable"
+      store_set_kind native # locked in now, for the same reason as above
+      [ "$store_was_new" -eq 0 ] || say "[wolfmux] tasks and messages: native store ($(short_path "$(store_db)")). teamctl store shows it."
+      ;;
+    beads) beads_ensure "$beads" ;;
+  esac
   models_refresh "$model" # as in spawn: at most one probe a day, outside the lock
   lock_acquire
   # What the lead record says about the team's beginnings, before anything below rewrites it.
@@ -574,13 +594,14 @@ cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
   local from_tree="" old_record="" old_branch="" old_keep="" old_pane dirty
   local want_branch="" ticket="" repo_arg="" repo="" spawn_repo trees repo_note=""
-  local pin="" link=0 linked=0
+  local pin="" link=0 linked=0 base_given=0
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --base)
         [ "$#" -ge 2 ] || die_usage "--base needs a git ref"
         base="$2"
+        base_given=1
         shift
         ;;
       --from-worktree)
@@ -631,7 +652,7 @@ cmd_spawn() {
   require_session
   spawner="$(caller_role)"
   if ! is_manager && [ "$(policy_get worker-spawn)" != "on" ]; then
-    die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: bd create \"Need a helper: <for what>\" -t message -a lead -d \"<why, which model>\"" 77
+    die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: teamctl send $WOLFMUX_LEAD_ROLE \"Need a helper: <for what>\" \"<why, which model>\"" 77
   fi
   # Handing a worktree over deletes another agent's record: that is the lead's call (or yours),
   # never a worker's, even with worker-spawn on (review of issues #4/#5).
@@ -687,6 +708,14 @@ cmd_spawn() {
   fi
   /bin/mkdir -p "$trees"
 
+  # A handover continues the stopped worker's work: with no --base, the new branch starts at
+  # the tip of that worker's branch (as checked out in its worktree), not at the project's HEAD.
+  if [ -n "$from_tree" ] && [ "$base_given" -eq 0 ]; then
+    base="$(reg_field "$from_tree" branch 2>/dev/null || true)"
+    if [ -z "$base" ] || ! git_in "$spawn_repo" rev-parse --verify -q "$base^{commit}" >/dev/null 2>&1; then
+      base="$("$GIT_BIN" -C "$path" rev-parse --verify -q HEAD 2>/dev/null)" || die "cannot find the tip of $from_tree's branch in $(short_path "$path")"
+    fi
+  fi
   base_commit="$(git_in "$spawn_repo" rev-parse --verify -q "$base^{commit}")" || die "cannot resolve base ref '$base' in $(short_path "$spawn_repo")"
   base_ref="$base"
   if [ "$base" = "HEAD" ]; then
@@ -814,11 +843,11 @@ build_role_prompt() {
     fi
   fi
   printf -- '- Your team: %s\n' "$TEAM"
-  printf -- '- Your Beads identity: BEADS_ACTOR=%s (already exported). Your inbox: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$me" "$me"
-  printf -- '- "Your inbox" always means that Beads command: the work itself lives there and nowhere else. `teamctl inbox` is a different thing — the short pane notices filed for a role, which the human reads with prefix N; you are given yours automatically and never need to run it.\n'
-  printf -- '- The manager of this team is the agent with TEAM_ROLE=lead; in Beads it is called "%s". Nobody else manages, approves or assigns.\n' "$lead"
+  printf -- '- Your identity in the store: %s (BEADS_ACTOR=WOLFMUX_IDENTITY=%s, already exported). Your mail: teamctl mail\n' "$me" "$me"
+  printf -- '- "Your mail" means that command: your tasks and messages, with their bodies. `teamctl inbox` is a different thing: the short pane notices filed for you, each of which points at an item in your mail.\n'
+  printf -- '- The manager of this team is the agent with TEAM_ROLE=lead; in the store it is called "%s". Nobody else manages, approves or assigns.\n' "$lead"
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then
-    printf -- '- This project has more than one team and they share one Beads database. Everyone in YOUR team is called "%s.<role>" there: assign and message with -a %s.<role> (your lead: -a %s). A plain "lead" is the lead of ANOTHER team, and the tasks of other teams are not yours.\n' "$TEAM" "$TEAM" "$lead"
+    printf -- '- This project has more than one team and they share one store. Everyone in YOUR team is called "%s.<role>" there: message with teamctl send %s.<role> (your lead: teamctl send %s). A plain "lead" is the lead of ANOTHER team, and the tasks of other teams are not yours.\n' "$TEAM" "$TEAM" "$lead"
   fi
   if [ "$kind" = "worker" ]; then
     printf -- '- You were spawned by: %s. You report to the lead regardless.\n' "$(reg_field "$role" spawned_by)"
@@ -833,19 +862,24 @@ build_role_prompt() {
   else
     printf -- '- Team policy: %s. Change it with `teamctl policy`.\n' "$(policy_summary)"
   fi
-  printf -- '- Other teams of this project share this Beads database (list them: `teamctl teams`). Reach another team through its lead: -a <team>.lead (the first team'"'"'s lead is plain "lead"). Their tasks are theirs; hand work across with a message.\n'
+  printf -- '- Other teams of this project share this store (list them: `teamctl teams`). Reach another team through its lead: teamctl send <team>.lead (the first team'"'"'s lead is plain "lead"). Their tasks are theirs; hand work across with a message.\n'
   if [ "$kind" = "lead" ] && [ "$(policy_get lead-teams)" = "on" ]; then
-    printf -- '- You may found a further team and hand work over to it: write the handover as a Beads message or task first, then `teamctl start <model> --team <new-name> --no-attach --handover <bead-id>`. The human is told. You do not manage that team afterwards; its lead does. If that lead is not running (teamctl teams says orphaned) you may restart it (teamctl restart lead --team <new-name> --continue), stop, remove or destroy the team (teamctl destroy --team <new-name> --purge); the human is told each time.\n'
+    printf -- '- You may found a further team and hand work over to it: write the handover as a message or task first, then `teamctl start <model> --team <new-name> --no-attach --handover <id>`. The human is told. You do not manage that team afterwards; its lead does. If that lead is not running (teamctl teams says orphaned) you may restart it (teamctl restart lead --team <new-name> --continue), stop, remove or destroy the team (teamctl destroy --team <new-name> --purge); the human is told each time.\n'
   fi
   printf -- '- Your permission mode: %s\n\n' "$(reg_field "$role" permissions)"
   printf 'The %s section of the protocol below is binding for you.\n\n---\n\n' "$(printf '%s' "$kind" | tr '[:lower:]' '[:upper:]')"
-  if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ] && [ "$TEAM" = "$WOLFMUX_DEFAULT_TEAM" ]; then
-    /bin/cat "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
-  elif [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then
-    # The protocol's examples address "lead" and plain roles; in a named team those are
-    # <team>.lead and <team>.<role>. Rewrite the examples rather than hope it is remembered.
-    sed -E -e "s/(-a|--assignee) (lead|backend|frontend|qa)([^${_WM_LOWER}${_WM_DIGITS}.-]|\$)/\\1 $TEAM.\\2\\3/g" \
-      -e 's/--assignee \$TEAM_ROLE/--assignee $BEADS_ACTOR/g' "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
+  if [ -r "$WOLFMUX_HOME/TEAM_PROTOCOL.md" ]; then
+    # Every teamctl verb in the protocol takes a bare role name within your own team, or
+    # <team>.<role> for another team's: no example needs rewriting for a named team. Only
+    # the half that is not yours (<!-- lead-only -->...<!-- /lead-only -->, or the worker
+    # equivalent) is dropped, by its markers; the other side's markers are stripped too.
+    if [ "$kind" = "worker" ]; then
+      sed -e '/<!-- lead-only -->/,/<!-- \/lead-only -->/d' \
+        -e '/<!-- worker-only -->/d' -e '/<!-- \/worker-only -->/d' "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
+    else
+      sed -e '/<!-- worker-only -->/,/<!-- \/worker-only -->/d' \
+        -e '/<!-- lead-only -->/d' -e '/<!-- \/lead-only -->/d' "$WOLFMUX_HOME/TEAM_PROTOCOL.md"
+    fi
   else
     printf 'Team protocol file is missing: %s/TEAM_PROTOCOL.md\n' "$WOLFMUX_HOME"
   fi
@@ -856,8 +890,12 @@ build_role_prompt() {
   fi
 }
 
-# kickoff_text <role> <beads-identity> [<provider>] — the inbox is addressed by identity (<team>.<role>
-# in a named team, the plain role in the first one); teamctl takes the plain role and knows the team.
+# kickoff_text <role> <beads-identity> <provider> <family> — a Claude Code family agent's
+# SessionStart hook already put its assignment, its inbox and its checkpoint into the
+# conversation before this prompt runs (lib/hooks.sh, v1.24.0): its kickoff only has to say to
+# act on what is already there, not to go fetch it with bd list + bd show. A Codex agent has
+# no hooks (family = codex): its kickoff still fetches its own inbox, in the one command that
+# carries bodies (`teamctl mail`, D2) instead of bd list + bd show per item.
 # A worker on a provider of the table (not a subscription model) also learns what a 401 means and who
 # checks it (issue #1): the key in its Keychain slot is rejected by that endpoint, and doctor --probe
 # says so. Only a request that got through can carry this, so it is for a key that fails later.
@@ -866,7 +904,11 @@ kickoff_text() {
   if [ -n "${3:-}" ] && wolfmux_provider_info "$3"; then
     hint=" If your requests fail with 401 or an authentication error, tell the lead: the key in '$PROVIDER_KEYCHAIN' is rejected by $PROVIDER_BASE_URL; the lead or the human runs \`teamctl doctor --probe\` to check the key."
   fi
-  printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `bd list --assignee %s --status open,in_progress,blocked --include-infra`, read every item with `bd show <id>`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.%s' "$1" "${2:-$1}" "$1" "$hint"
+  if [ "${4:-}" = "codex" ]; then
+    printf 'You are the %s worker of a Wolfmux session. Check your inbox now: run `teamctl mail`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
+    return 0
+  fi
+  printf 'You are the %s worker of a Wolfmux session. Your assignment and inbox are above this line (wolfmux put them there): start on it now, and claim it first (`teamctl claim <id>`). If a task of yours is already in_progress, you were restarted in the middle of it: read the checkpoint above, run `git status` and `teamctl diff %s --commits`, then continue it; do not start over. Nothing shown above: run `teamctl mail`. Nothing assigned: answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
 }
 
 # handover_text — what the lead of a team founded by another lead is started with
@@ -875,7 +917,13 @@ handover_text() {
   me="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   bead="$(reg_field "$WOLFMUX_LEAD_ROLE" handover)"
   founder="$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by)"
-  printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `bd show %s`. Then check your inbox: `bd list --assignee %s --status open,in_progress,blocked --include-infra`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s through Beads (-a %s) when the handover asks for it.' \
+  # A team on Beads is told what v1.23.0 told it (D8); a native one gets the teamctl verbs.
+  if [ "$(store_kind)" = "beads" ]; then
+    printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `bd show %s`. Then check your inbox: `bd list --assignee %s --status open,in_progress,blocked --include-infra`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s through Beads (-a %s) when the handover asks for it.' \
+      "$TEAM" "$founder" "$bead" "$me" "$founder" "$founder"
+    return 0
+  fi
+  printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `teamctl show %s`. Then read your mail: `teamctl mail`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s with `teamctl send %s "<subject>" "<body>"` when the handover asks for it.' \
     "$TEAM" "$founder" "$bead" "$me" "$founder" "$founder"
 }
 
@@ -891,7 +939,7 @@ cmd_prompt() {
 # write_agent_settings <role> — Claude Code settings for one Claude-based agent; prints
 # the file path. Workers never run Claude Code's own agent-teams feature: with it on,
 # any subagent a session names becomes a teammate whose "team lead" — and permission
-# approver — is that worker. The lead's file holds the notification hook and nothing
+# approver — is that worker. The lead's file holds the turn hooks and nothing
 # about teams or permissions: those stay exactly as you have them.
 #
 # Two of the hooks are how an agent learns about a bead without a keystroke anywhere
@@ -908,9 +956,10 @@ cmd_prompt() {
 # how it notices its agent has gone. The timeout is WOLFMUX_WAKE_TIMEOUT (a hook killed at its
 # timeout wakes nobody; the waiter ends itself 300 s earlier and re-arms).
 write_agent_settings() {
-  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command="" memdir=""
+  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command="" memdir="" compact=""
   /bin/mkdir -p "$STATE_DIR/settings"
   kind="$(reg_field "$role" kind)"
+  if [ "$kind" = "worker" ]; then compact="$(worker_compact_window "$(reg_field "$role" model)")"; fi
   if [ "$kind" = "lead" ]; then memdir="$(memory_lead_dir "$role" || true)"; fi
   if notify_wanted "$kind"; then notify_command="\"$TEAMCTL_SELF\" _notify"; fi
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
@@ -919,6 +968,12 @@ write_agent_settings() {
   #   runs shell text too, and a tool the guard does not know has its strings checked).
   # Everyone: notifications are teamctl's job inside a team (lib/notify.sh), and the
   #   notice inbox reaches the agent on Stop and on UserPromptSubmit (lib/inbox.sh).
+  # Workers, by the worker-context policy: your plugins off (trim, lean), see lib/policy.sh.
+  # Workers: the CLI compacts at the window status counts with (worker_compact_window).
+  # Everyone: the turn hooks (lib/hooks.sh), `teamctl _hook <Event>` once for each event of
+  #   WOLFMUX_HOOK_EVENTS: mail bodies mid-turn (PostToolUse) and at start (SessionStart), the
+  #   shared team notes, the task reminder at Stop. At Stop and UserPromptSubmit it hands no
+  #   mail over and sends no notification: _inbox-stop, _inbox-prompt and _notify do (ADR-0032).
   # Everyone: Claude Code's agent view is off (disableAgentView, and its environment switch
   #   CLAUDE_CODE_DISABLE_AGENT_VIEW). On 2026-10-19 the comms lead was sent to the background
   #   (/bg); its pane became the agent view, which started Claude's daemon from inside the pane,
@@ -935,18 +990,26 @@ write_agent_settings() {
     --arg notify_command "$notify_command" --arg silence "$(notify_silence_value)" --arg guard_command "$guard_command" \
     --arg inbox_stop "\"$TEAMCTL_SELF\" _inbox-stop" --arg inbox_prompt "\"$TEAMCTL_SELF\" _inbox-prompt" \
     --arg inbox_wake "exec \"$TEAMCTL_SELF\" _inbox-wake" --argjson wake_timeout "$WOLFMUX_WAKE_TIMEOUT" \
-    --arg browser_allow "$(policy_get browser-writes)" '
+    --arg browser_allow "$(policy_get browser-writes)" \
+    --arg hook_command "\"$TEAMCTL_SELF\" _hook" --argjson hook_timeout "$WOLFMUX_HOOK_TIMEOUT" \
+    --argjson context "$(worker_context_settings "$kind" "$(policy_get worker-context)")" --arg compact "$compact" '
     {type: "command", command: $inbox_wake, asyncRewake: true, timeout: $wake_timeout,
      rewakeSummary: "wolfmux: team notice"} as $wake
-    | (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
+    | def turn($ev): {hooks: [{type: "command", command: ($hook_command + " " + $ev), timeout: $hook_timeout}]};
+    (if $kind == "worker" then {env: {CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0"}, teammateMode: "in-process"} else {} end)
+    * $context
+    * (if $compact != "" then {env: {CLAUDE_CODE_AUTO_COMPACT_WINDOW: $compact}} else {} end)
     * {env: {ECC_DISABLED_HOOKS: $silence, CLAUDE_CODE_DISABLE_AGENT_VIEW: "1"}, disableAgentView: true}
-    * {hooks: ({
+    * {hooks: {
          Stop: (
            (if $notify_command != "" then [{hooks: [{type: "command", command: $notify_command, timeout: 10}]}] else [] end)
            + [{hooks: [{type: "command", command: $inbox_stop, timeout: 10}]}]
+           + [turn("Stop")]
            + (if $kind == "lead" then [{hooks: [$wake]}] else [] end)),
-         UserPromptSubmit: [{hooks: [{type: "command", command: $inbox_prompt, timeout: 10}]}]}
-         + (if $kind == "lead" then {SessionStart: [{hooks: [$wake]}]} else {} end))}
+         UserPromptSubmit: [{hooks: [{type: "command", command: $inbox_prompt, timeout: 10}]}, turn("UserPromptSubmit")],
+         SessionStart: ([turn("SessionStart")] + (if $kind == "lead" then [{hooks: [$wake]}] else [] end)),
+         PostToolUse: [turn("PostToolUse")],
+         PreCompact: [turn("PreCompact")]}}
     * (if $guard_command != ""
        then {hooks: {PreToolUse: [{matcher: ".*",
                                    hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
@@ -979,8 +1042,10 @@ cmd_run_agent() {
   [ -d "$workdir" ] || die "working directory is gone: $workdir"
 
   WOLFMUX_TEAM="$TEAM"
-  BEADS_ACTOR="$(team_identity "$TEAM" "$role")" # all teams of a project share its Beads
-  export TEAM_ROLE="$role" BEADS_ACTOR WOLFMUX_TEAM
+  BEADS_ACTOR="$(team_identity "$TEAM" "$role")" # the agent's name in the store, either backend
+  WOLFMUX_IDENTITY="$BEADS_ACTOR"
+  WOLFMUX_STORE="$(store_kind)" # for the agent's own teamctl commands, no store_kind lookup needed
+  export TEAM_ROLE="$role" BEADS_ACTOR WOLFMUX_IDENTITY WOLFMUX_STORE WOLFMUX_TEAM
   # No agent view, and so no Claude daemon started from this pane (write_agent_settings says why)
   export CLAUDE_CODE_DISABLE_AGENT_VIEW=1
   if [ "$(reg_field "$role" kind)" = "worker" ]; then
@@ -996,14 +1061,17 @@ cmd_run_agent() {
     # A teammate spawned with --repo sits in another repository, and bd resolves its workspace
     # through git: without this it would look for Beads in THAT repository and find none or the
     # wrong one. The team's tasks and messages live in the project's workspace, so name it.
-    if [ -n "$(reg_field "$role" repo)" ] && [ -z "${BEADS_DIR:-}" ]; then
+    if [ -n "$(reg_field "$role" repo)" ] && [ -z "${BEADS_DIR:-}" ] && [ "$(store_kind)" = "beads" ]; then
       beads_workspace="$(beads_dir 2>/dev/null || true)"
       if [ -n "$beads_workspace" ]; then export BEADS_DIR="$beads_workspace"; fi
     fi
   fi
   WOLFMUX_SESSION="$(meta_get session || true)"
   WOLFMUX_MODEL="$(reg_field "$role" model)"
-  export WOLFMUX_SESSION WOLFMUX_MODEL
+  # Where the turn hooks keep this agent's mail, memory and turn state (lib/hooks.sh). The hot
+  # path in bin/teamctl reads it from the environment: it loads nothing that could work it out.
+  WOLFMUX_RUN_DIR="$(run_dir_ensure "$role")"
+  export WOLFMUX_SESSION WOLFMUX_MODEL WOLFMUX_RUN_DIR
   path_prepend "$HOME/.local/bin"
   path_prepend "$WOLFMUX_BIN_DIR"
   export PATH
@@ -1043,13 +1111,18 @@ $prompt
       if [ "$resume" -eq 1 ]; then
         args+=(resume --last)
       elif [ "$(reg_field "$role" kickoff)" = "1" ]; then
-        args+=("$(kickoff_text "$role" "$BEADS_ACTOR")")
+        args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "" "$family")")
       fi
       ;;
     *)
       # The same marks as on the pane border, inside Claude Code's own frame: wolf = manager, dog = teammate.
       if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then name="$WOLFMUX_LEAD_MARK team/$role"; else name="$WOLFMUX_WORKER_MARK team/$role"; fi
       args=(--append-system-prompt "$prompt" --name "$name")
+      # lean: nothing from ~/.claude (settings, plugins, rules). The project's own instructions
+      # and the per-agent settings file above still load; so does the login.
+      if [ "$(reg_field "$role" kind)" = "worker" ] && [ "$(policy_get worker-context)" = "lean" ]; then
+        args+=(--setting-sources project,local)
+      fi
       if [ -n "$model_id" ]; then args+=(--model "$model_id"); fi
       if [ "$permissions" = "skip" ]; then args+=(--dangerously-skip-permissions); fi
       session_id="$(reg_field "$role" session_id)"
@@ -1070,7 +1143,7 @@ $prompt
           # ("No conversation found with session ID"): the same id, started as what it is, new.
           info "[wolfmux] nothing to continue yet: conversation $session_id of '$role' has no transcript. Starting it fresh under the same id."
           args+=(--session-id "$session_id")
-          if [ "$(reg_field "$role" kickoff)" = "1" ]; then args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider")"); fi
+          if [ "$(reg_field "$role" kickoff)" = "1" ]; then args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider" "$family")"); fi
         fi
       else
         # The CLI refuses an id that already has a transcript ("already in use"). teamctl mints a
@@ -1084,7 +1157,7 @@ $prompt
         fi
         if [ -n "$session_id" ]; then args+=(--session-id "$session_id"); fi
         if [ "$(reg_field "$role" kickoff)" = "1" ]; then
-          args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider")")
+          args+=("$(kickoff_text "$role" "$BEADS_ACTOR" "$provider" "$family")")
         fi
       fi
       ;;
@@ -1214,7 +1287,8 @@ restart_without_session() {
   elif [ "$resume" -eq 1 ]; then start_args+=(--continue); fi
   # A team that ran without Beads is not asked about Beads again: a project with no Beads workspace is started with
   # --skip-beads. A bd that is not installed is not that: start dies about it, as a manual start does.
-  if [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
+  # A native-store project never asks bd at all (v1.24.0): `bd where` alone can take seconds.
+  if [ "$(store_kind 2>/dev/null || printf beads)" = "beads" ] && [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
   WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
   LEAD_RESTART=1           # this start is `teamctl restart lead`, which the orphan steward may run (start_permitted)
   cmd_start "${start_args[@]}"
@@ -1706,6 +1780,18 @@ _ctx_of_claude() {
   return 0
 }
 
+# _ctx_of_transcript <file>: sets CTX_TOKENS ("" when nothing is readable) and CTX_REQUESTS from
+# ONE transcript file, through the same tail reader as _ctx_of_claude (lib/models.sh). The
+# context watch of the shared team notes (lib/recall.sh) reads the agent's own transcript with it.
+_ctx_of_transcript() {
+  CTX_TOKENS="" CTX_REQUESTS=""
+  [ -n "${1:-}" ] && [ -f "$1" ] || return 0
+  models_transcript_tail "$1"
+  [ -n "$MT_TOKENS" ] || return 0
+  CTX_TOKENS="$MT_TOKENS"
+  CTX_REQUESTS="$MT_REQUESTS"
+}
+
 # _ctx_of_codex <workdir> — sets CTX_TOKENS, CTX_REQUESTS and CTX_WINDOW from the newest
 # rollout under the codex sessions directory (WOLFMUX_CODEX_SESSIONS, else Codex's own
 # location) whose session was started with cwd = this worktree: the last token_count event
@@ -1815,7 +1901,7 @@ _purge_report() {
       report_files "$path" '          ' "$dirty" 15
     fi
   done
-  kb="$(disk_kb "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb")"
+  kb="$(disk_kb "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/run" "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb")"
   PURGE_KB=$((PURGE_KB + kb))
   printf '  %-21s %9s   records, approvals, event log\n' "teamctl's state" "$(human_size "$kb")"
   say ""
@@ -1864,12 +1950,12 @@ _purge_team() {
   done
   gitr worktree prune
   # The first team's directory is also the parent of the named teams: take its files, never teams/.
-  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge"
+  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/run"
   # disk-kb is the remembered size of lanes that no longer exist; leaving it behind also
   # left the team's state directory non-empty, so the rmdir of a named team did nothing.
   # disk-parked-kb is its v1.17.0 twin and arrived here the same way: it was written by
   # `teamctl teams`, not named here, and the purge stopped deleting the directory. Every
-  # per-team file the disk module writes belongs on this line — tests/disk.sh checks that.
+  # per-team file the disk module writes belongs on this line (tests/disk.sh checks that).
   /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb" \
     "$STATE_DIR/disk-parked-kb" "$STATE_DIR/lead-end.json"
   /bin/rmdir "$WORKTREES_DIR" 2>/dev/null || true
@@ -2214,6 +2300,15 @@ _inbox_approval_grace_wait() {
 # The ONLY thing ever typed into an agent's prompt: one short, fixed line. Task and
 # message bodies stay in Beads, so there is nothing to quote, escape or truncate.
 _nudge_text() { # <identity> [bead]
+  # v1.24.0: a native-store project has no bd; the body comes with the notice (lib/mail.sh)
+  if [ "$(store_kind 2>/dev/null || printf beads)" = "native" ]; then
+    if [ -n "${2:-}" ]; then
+      printf '[wolfmux] New mail for %s (%s). Its body comes with this notice; if not, run: teamctl show %s\n' "$1" "$2" "$2"
+    else
+      printf '[wolfmux] New mail for %s. Run: teamctl mail\n' "$1"
+    fi
+    return 0
+  fi
   if [ -n "${2:-}" ]; then
     printf '[wolfmux] Beads update for %s (%s). Run: bd show %s -- then: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1" "$2" "$2" "$1"
   else
@@ -2471,32 +2566,22 @@ cmd_nudge() {
     esac
     shift
   done
-  # A Beads name says which team: "review.backend" is backend of team review.
-  case "$role" in
-    *.*)
-      identity_split "$role"
-      if ! valid_team_name "$ID_TEAM"; then
-        if [ "$quiet" -eq 1 ]; then return 0; fi
-        die_usage "invalid team in '$role'"
-      fi
-      WOLFMUX_TEAM_ARG="$ID_TEAM"
-      role="$ID_ROLE"
-      ;;
-  esac
   # Called from Beads hooks for every assignee, including humans and roles that
   # are not running: in quiet mode "nothing to notify" is success, not an error.
+  # A Beads name says which team: "review.backend" is backend of team review (lib/mail.sh's
+  # mail_quiet_route resolves that, exactly the same way cmd_deliver does).
   if [ "$quiet" -eq 1 ]; then
-    [ -n "$TMUX_BIN" ] && [ -n "$JQ_BIN" ] && [ -n "$GIT_BIN" ] || return 0
-    ROOT="$(resolve_root 2>/dev/null)" || return 0
-    PROJECT_KEY="$(project_key "$ROOT")"
-    PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
-    PROJECT_TREES="$WOLFMUX_DATA/worktrees/$PROJECT_KEY"
-    # The assignee's name decides the team; a plain name belongs to the first team.
-    team_paths "${WOLFMUX_TEAM_ARG:-$WOLFMUX_DEFAULT_TEAM}"
-    [ -d "$STATE_DIR" ] || return 0
-    SESSION="$(session_name_for_project)"
-    tm_session_exists "$SESSION" || return 0
+    mail_quiet_route "$role" || return 0
+    role="$MAIL_ROLE"
   else
+    case "$role" in
+      *.*)
+        identity_split "$role"
+        valid_team_name "$ID_TEAM" || die_usage "invalid team in '$role'"
+        WOLFMUX_TEAM_ARG="$ID_TEAM"
+        role="$ID_ROLE"
+        ;;
+    esac
     require_tools
     load_project
     require_session
