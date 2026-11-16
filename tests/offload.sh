@@ -42,10 +42,16 @@ rewritten() {
 }
 
 # run_as_cli <dir> <command>: runs it as Claude Code does; leaves out, rc, cwd, env in <dir>
+# CLI_SH picks the shell: /bin/bash (a worker's) or /bin/zsh (the user's shell on a Mac, so a
+# lead's), started as the CLI starts it: zsh with the setopts the CLI puts in front of the eval.
+CLI_SH=/bin/bash
 run_as_cli() {
   local dir="$1"
   mkdir -p "$dir"
-  (cd "$WORK" && /bin/bash -c 'eval "$1" </dev/null; __rc=$?; pwd -P >"$2/cwd"; printf "%s" "${FOO-unset}" >"$2/env"; exit $__rc' _ "$2" "$dir" >"$dir/out" 2>&1)
+  case "$CLI_SH" in
+    *zsh) (cd "$WORK" && /bin/zsh -c '\builtin setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL NO_BRACE_CCL NO_MAGIC_EQUAL_SUBST NO_EQUALS 2>/dev/null || true && eval "$1" </dev/null; __rc=$?; pwd -P >|"$2/cwd"; printf "%s" "${FOO-unset}" >|"$2/env"; exit $__rc' _ "$2" "$dir" >"$dir/out" 2>&1) ;;
+    *) (cd "$WORK" && /bin/bash -c 'eval "$1" </dev/null; __rc=$?; pwd -P >"$2/cwd"; printf "%s" "${FOO-unset}" >"$2/env"; exit $__rc' _ "$2" "$dir" >"$dir/out" 2>&1) ;;
+  esac
   printf '%s' "$?" >"$dir/rc"
 }
 
@@ -55,6 +61,7 @@ same_file() { if [ -e "$1" ] || [ -e "$2" ]; then cmp -s "$1" "$2"; fi; }
 n=0
 # same <description> <command>: plain and wrapped agree on output, exit code, cwd and exports
 same() {
+  set -- "${CLI_SH##*/}: $1" "$2"
   n=$((n + 1))
   run_as_cli "$WORK/p$n" "$2"
   run_as_cli "$WORK/w$n" "$(rewritten "$2")"
@@ -78,7 +85,7 @@ check "WOLFMUX_OFFLOAD=off: no rewrite" "[ -z \"\$(hook_json 'echo hi' | WOLFMUX
 check "no run directory: no rewrite" "[ -z \"\$(hook_json 'echo hi' | WOLFMUX_RUN_DIR= $REPO/bin/teamctl _offload-pre)\" ]"
 check "bad JSON on stdin: no rewrite, exit 0" "out=\$(printf 'nope' | $REPO/bin/teamctl _offload-pre); [ \$? = 0 ] && [ -z \"\$out\" ]"
 
-echo "== equivalence corpus: plain and wrapped agree"
+corpus() {
 same "heredoc" 'cat <<EOF
 hello $((1 + 2))
 EOF'
@@ -105,8 +112,19 @@ echo after'
 same "an empty output" 'true'
 same "the command's own EXIT trap" 'trap "echo cleanup" EXIT; echo REAL-OUTPUT-LINE; false'
 same "the command resets the EXIT trap (trap - EXIT)" 'trap - EXIT; echo after-reset; cd /tmp; export FOO=r; exit 2'
+same "a glob that matches nothing" 'ls ./no-such-file-*.xyz; echo "rc=$?"'
+same "an error then more output (zsh: no set -e)" 'cd /no/such/dir; echo still-here'
+same "a long-ish loop with both streams" 'for i in 1 2 3; do echo "out $i"; echo "err $i" >&2; done'
 same "the command's own TERM trap" 'trap "echo term" TERM; echo with-term-trap; cd /tmp; export FOO=t'
-check "short output: no path line and no log left behind" "! grep -q 'wolfmux' $WORK/w1/out && [ -z \"\$(ls $WOLFMUX_RUN_DIR/out | grep '\\.log$')\" ]"
+}
+for CLI_SH in /bin/bash /bin/zsh; do
+  echo "== equivalence corpus under $CLI_SH: plain and wrapped agree"
+  /bin/rm -f "$WOLFMUX_RUN_DIR"/out/*.log
+  first=$((n + 1))
+  corpus
+  check "${CLI_SH##*/}: short output: no path line and no log left behind" "! grep -q 'wolfmux' $WORK/w$first/out && [ -z \"\$(ls $WOLFMUX_RUN_DIR/out | grep '\\.log$')\" ]"
+done
+CLI_SH=/bin/bash
 
 echo "== a long output"
 long_cmd='seq 1 300000; echo "not ok 17 - the middle failure"; seq 300001 750000; echo "FAIL tests/x.sh" >&2; exit 1'
@@ -123,6 +141,13 @@ check "5 MB log: the failing line in the cut middle is shown, with its line numb
 check "5 MB log: the first 40 lines" "[ \"\$(sed -n '3p' $WORK/wl/out)\" = 1 ] && grep -qx 40 $WORK/wl/out"
 check "5 MB log: the last 40 lines, ending with the FAIL line" "[ \"\$(tail -1 $WORK/wl/out)\" = 'FAIL tests/x.sh' ] && grep -qx 750000 $WORK/wl/out"
 check "5 MB log: under the limit is not cut, just over it is" "s=\$(printf '%04000d' 0); run_as_cli $WORK/edge \"\$(rewritten \"printf %s \$s\")\"; [ \"\$(cat $WORK/edge/out)\" = \"\$s\" ] && run_as_cli $WORK/edge2 \"\$(rewritten \"printf %s \${s}1\")\" && grep -q 'long output shortened' $WORK/edge2/out"
+CLI_SH=/bin/zsh
+run_as_cli "$WORK/zl" "$(rewritten "$long_cmd")"
+zlog="$(sed -n 's/^\[wolfmux\] full text: \(.*\) (search it with grep; do not cat it)$/\1/p' "$WORK/zl/out")"
+CLI_SH=/bin/bash
+check "zsh: the runner is zsh" "[ -n \"\$(CLI_SH=/bin/zsh; run_as_cli $WORK/zv 'echo \$ZSH_VERSION'; cat $WORK/zv/out)\" ]"
+check "zsh: 5 MB log shortened, exit code 1, the middle failure and the last line shown" "[ \"\$(cat $WORK/zl/rc)\" = 1 ] && [ \$(wc -c <$WORK/zl/out) -lt 12000 ] && grep -qx '300001: not ok 17 - the middle failure' $WORK/zl/out && [ \"\$(tail -1 $WORK/zl/out)\" = 'FAIL tests/x.sh' ]"
+check "zsh: the log holds the full text, byte for byte" "[ -n \"$zlog\" ] && cmp -s $WORK/pl/out \"$zlog\""
 WOLFMUX_OFFLOAD_MIN=10 run_as_cli "$WORK/min" "$(rewritten 'seq 1 100')"
 check "WOLFMUX_OFFLOAD_MIN changes the limit" "grep -q 'long output shortened: 100 lines' $WORK/min/out"
 many='for i in $(seq 1 200); do echo "Error $i"; done; seq 1 2000'
@@ -148,9 +173,11 @@ check "helper killed: the command ran once and its output is shown" "[ \$(wc -l 
 run_as_cli "$WORK/f4" "$(offload_wrap_command "$once; exit 4" "/nonexistent-dir/f4.log" "$WOLFMUX_HOME/lib/offload-show.sh")"
 check "log not writable: the command ran once, its output and exit code are kept" "[ \$(wc -l <$cnt) = 1 ] && grep -qx ran $WORK/f4/out && [ \"\$(cat $WORK/f4/rc)\" = 4 ]"
 
-echo "== a command the CLI ends at its timeout"
+for sh in /bin/bash /bin/zsh; do
+echo "== a command the CLI ends at its timeout ($sh)"
+/bin/rm -f "$WOLFMUX_RUN_DIR"/out/*.log
 killcmd="$(rewritten 'seq 1 20000; echo started; sleep 30; echo never')"
-/bin/bash -c 'eval "$1" </dev/null' _ "$killcmd" >"$WORK/kill.out" 2>&1 &
+"$sh" -c 'eval "$1" </dev/null' _ "$killcmd" >"$WORK/kill.out" 2>&1 &
 kpid=$!
 i=0
 while [ "$i" -lt 50 ] && ! grep -q started "$(ls -t "$WOLFMUX_RUN_DIR"/out/*.log 2>/dev/null | head -1)" 2>/dev/null; do sleep 0.1; i=$((i + 1)); done
@@ -159,9 +186,10 @@ kill -TERM "$kpid" 2>/dev/null
 pkill -TERM -P "$kpid" 2>/dev/null
 wait "$kpid"
 krc=$?
-check "TERM: the summary of what was logged so far is printed, with the path" "grep -q 'long output shortened: 2000[0-9] lines' $WORK/kill.out && grep -q 'search it with grep' $WORK/kill.out && grep -qx started $WORK/kill.out"
-check "TERM: exit code 143" "[ $krc = 143 ]"
-check "TERM: what came after is not there" "! grep -q never $WORK/kill.out"
+check "${sh##*/}: TERM: the summary of what was logged so far is printed, with the path" "grep -q 'long output shortened: 2000[0-9] lines' $WORK/kill.out && grep -q 'search it with grep' $WORK/kill.out && grep -qx started $WORK/kill.out"
+check "${sh##*/}: TERM: exit code 143" "[ $krc = 143 ]"
+check "${sh##*/}: TERM: what came after is not there" "! grep -q never $WORK/kill.out"
+done
 
 echo "== two Bash calls at the same time (the CLI runs independent calls in parallel)"
 # log_of <rewritten command>: the log path the prefix writes to

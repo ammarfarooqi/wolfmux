@@ -53,6 +53,10 @@ against the real CLI (`tests/research/results/offload-probes.md`) showed where t
 
 - A failing test's last lines and its failure lines in the middle now reach the model, where
   before they were cut away; the full log stays one `grep` away.
+- Proven under both shells the CLI uses: `tests/offload.sh` runs its plain-against-wrapped corpus
+  (output, exit code, cwd, exports) under `/bin/bash` (a worker's) and `/bin/zsh` started as the
+  CLI starts it (the user's shell on a Mac, so a lead's), plus the long-output and TERM checks.
+  No shape differed under zsh, so none is excluded for it.
 - stderr is merged into stdout in the order written (it was stdout first, then stderr).
 - Cost per Bash call, measured on the owner's Mac: PreToolUse 6 ms (3 ms with the feature off; jq
   alone 3 ms). PostToolUse for a short result unchanged (no fork); a long one 34 ms.
