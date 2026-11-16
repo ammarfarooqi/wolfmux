@@ -338,7 +338,8 @@ EOF
   fi
   now="$(now_epoch)"
   printf '%s %s %s %s\n' "$calls" "$now" "$pre" "$kept" >>"$file" 2>/dev/null || true
-  _memory_number "$prev_calls" && _memory_number "$prev_at" || return 0
+  _memory_number "$prev_calls" || return 0
+  case "$prev_at" in "" | *[!0-9]*) return 0 ;; esac # an epoch has ten digits
   max="$WOLFMUX_THRASH_CALLS"
   _memory_number "$max" || max=10
   gap=$((10#$calls - 10#$prev_calls))
@@ -351,8 +352,9 @@ EOF
 # _memory_tell_thrash <calls-between> <first-epoch> <second-epoch> <tokens-before> <kept>
 _memory_tell_thrash() {
   local lead sender body limit="" window="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" first="" room="unknown"
-  context_limit_for claude "" "$window"
-  limit="$CTX_LIMIT"
+  models_transcript_tail "$HOOK_TRANSCRIPT"
+  _memory_limit
+  limit="$MEM_LIMIT"
   if [ -r "$HOOK_RUN/memory/first" ]; then IFS= read -r first <"$HOOK_RUN/memory/first" || true; fi
   if _memory_number "$limit" && _memory_number "$first"; then room="$((limit - first - $5))"; fi
   body="compacted at $(/bin/date -u -r "$2" +%H:%M:%SZ 2>/dev/null) and again at $(/bin/date -u -r "$3" +%H:%M:%SZ 2>/dev/null), $1 tool calls apart

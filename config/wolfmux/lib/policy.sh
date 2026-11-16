@@ -766,8 +766,11 @@ context_limit_for() {
     CTX_LIMIT="$window"
     return 0
   fi
-  if [ -n "$compact" ] && { [ -z "$window" ] || [ "$compact" -lt "$window" ]; }; then window="$compact"; fi
-  [ -n "$window" ] && [ "$window" -gt "$WOLFMUX_COMPACT_RESERVE" ] || return 0
+  # A model whose window nobody declared has no limit, whatever its CLI was told: the CLI caps the
+  # compact window at the model's own, so the number on record is only an upper bound.
+  [ -n "$window" ] || return 0
+  if [ -n "$compact" ] && [ "$compact" -lt "$window" ]; then window="$compact"; fi
+  [ "$window" -gt "$WOLFMUX_COMPACT_RESERVE" ] || return 0
   CTX_LIMIT="$((window - WOLFMUX_COMPACT_RESERVE))"
 }
 
