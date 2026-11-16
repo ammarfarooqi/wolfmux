@@ -135,10 +135,12 @@ HOOK_ID="$(teamctl task hooker "Hook task" -d x | last_task_id)"
 BEADS_ACTOR=hooker TEAM_ROLE=hooker bd update "$HOOK_ID" --claim >/dev/null 2>&1
 HOOK_DIR="$WORK/run-hooker"
 /bin/mkdir -p "$HOOK_DIR/mail" "$HOOK_DIR/memory"
-OUT1="$(printf '{}' | TEAM_ROLE=hooker WOLFMUX_RUN_DIR="$HOOK_DIR" teamctl _hook Stop)"
+# v1.24.0: run from inside the agent's own pane (tests/in-pane), as the CLI runs it. A Stop hook
+# answers only a process that passes v1.23.0's pane proof (lib/inbox.sh _inbox_hook_ready).
+OUT1="$(printf '{}' | TEAM_ROLE=hooker WOLFMUX_RUN_DIR="$HOOK_DIR" "$REPO/tests/in-pane" _hook Stop)"
 check "stop hook: reminds once about the in_progress task" \
   'printf "%s" "$OUT1" | grep -q "$HOOK_ID" && printf "%s" "$OUT1" | grep -q "teamctl done"'
-OUT2="$(printf '{}' | TEAM_ROLE=hooker WOLFMUX_RUN_DIR="$HOOK_DIR" teamctl _hook Stop)"
+OUT2="$(printf '{}' | TEAM_ROLE=hooker WOLFMUX_RUN_DIR="$HOOK_DIR" "$REPO/tests/in-pane" _hook Stop)"
 check "stop hook: silent the second time (marker already written)" '[ -z "$OUT2" ]'
 
 teamctl spawn hooker2 glm53 --no-kickoff >/dev/null 2>&1
@@ -146,10 +148,10 @@ sleep 1
 HOOK_ID2="$(teamctl task hooker2 "Unclaimed task" -d x | last_task_id)"
 HOOK2_DIR="$WORK/run-hooker2"
 /bin/mkdir -p "$HOOK2_DIR/mail" "$HOOK2_DIR/memory"
-OUT3="$(printf '{}' | TEAM_ROLE=hooker2 WOLFMUX_RUN_DIR="$HOOK2_DIR" teamctl _hook Stop)"
+OUT3="$(printf '{}' | TEAM_ROLE=hooker2 WOLFMUX_RUN_DIR="$HOOK2_DIR" "$REPO/tests/in-pane" _hook Stop)"
 check "stop hook: an open, unclaimed task is pointed out once" \
   'printf "%s" "$OUT3" | grep -q "$HOOK_ID2" && printf "%s" "$OUT3" | grep -q "Claim it and start"'
-OUT4="$(printf '{}' | TEAM_ROLE=hooker2 WOLFMUX_RUN_DIR="$HOOK2_DIR" teamctl _hook Stop)"
+OUT4="$(printf '{}' | TEAM_ROLE=hooker2 WOLFMUX_RUN_DIR="$HOOK2_DIR" "$REPO/tests/in-pane" _hook Stop)"
 check "stop hook: silent the second time for the open task too" '[ -z "$OUT4" ]'
 
 HOOK3_DIR="$WORK/run-hooker3"
