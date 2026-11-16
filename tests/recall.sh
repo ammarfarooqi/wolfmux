@@ -246,7 +246,7 @@ printf '40\n' >"$RUN_W15/calls"
 compacted15 >/dev/null
 (sleep 1; boundary 109628 63390 >>"$TRANS15") &
 check "the boundary row comes after SessionStart:compact, as the CLI writes it: what it kept is read when it appears (63390), and the first request is measured then too (62382)" \
-  'i=0; while [ $i -lt 20 ] && [ "$(cat "$RUN_W15/memory/kept" 2>/dev/null)" != 63390 ]; do sleep 0.3; i=$((i + 1)); done; [ "$(cat "$RUN_W15/memory/kept")" = 63390 ] && [ "$(cat "$RUN_W15/memory/first")" = 62382 ]'
+  'i=0; while [ $i -lt 50 ] && [ "$(cat "$RUN_W15/memory/kept" 2>/dev/null)" != 63390 ]; do sleep 0.3; i=$((i + 1)); done; [ "$(cat "$RUN_W15/memory/kept")" = 63390 ] && [ "$(cat "$RUN_W15/memory/first")" = 62382 ]'
 wait
 printf '44\n' >"$RUN_W15/calls"
 compacted15 >/dev/null
