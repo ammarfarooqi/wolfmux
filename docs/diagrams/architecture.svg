@@ -53,7 +53,7 @@
 <rect class="inner" x="408" y="262" width="464" height="92" rx="12" stroke="#f5b942"/>
 <text class="sans amber" x="428" y="292" font-size="17" font-weight="700">🐺 lead</text>
 <text class="sans muted" x="512" y="292" font-size="13">the only manager · works in your checkout</text>
-<text class="mono text" x="428" y="318" font-size="12.5">claude-fable  <tspan class="faint">Fable 5.1</tspan>     or     codex-astra  <tspan class="faint">GPT-6 Astra</tspan></text>
+<text class="mono text" x="428" y="318" font-size="12.5">claude-fable  <tspan class="faint">Fable 5.2</tspan>     or     codex-astra  <tspan class="faint">GPT-6 Astra</tspan></text>
 <text class="sans muted" x="428" y="340" font-size="12.5">plans · delegates · reviews diffs · merges what it approves</text>
 
 <g>

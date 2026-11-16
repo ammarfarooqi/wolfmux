@@ -215,7 +215,7 @@
 
 <g class="mono">
   <!-- pane titles sit on the border, as tmux draws them -->
-  <rect x="470" y="95" width="156" height="18" fill="#0d1526"/><text class="amber" x="476" y="109" font-weight="700">🐺 lead · Fable 5.1</text>
+  <rect x="470" y="95" width="156" height="18" fill="#0d1526"/><text class="amber" x="476" y="109" font-weight="700">🐺 lead · Fable 5.2</text>
   <rect x="894" y="95" width="166" height="18" fill="#0d1526"/><text class="muted" x="900" y="109">🐶 backend · GLM-5.3</text>
   <rect x="894" y="247" width="174" height="18" fill="#0d1526"/><text class="muted" x="900" y="261">🐶 frontend · GLM-5.3</text>
   <rect x="894" y="399" width="172" height="18" fill="#0d1526"/><text class="muted" x="900" y="413">🐶 qa · GLM-5.3 Flash</text>

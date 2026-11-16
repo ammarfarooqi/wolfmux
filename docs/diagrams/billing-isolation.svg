@@ -38,7 +38,7 @@
   <text x="320" y="234">model and subagent overrides</text>
   <text x="320" y="256">child-session variables</text>
   <text class="faint" x="320" y="278">+ the GLM guard, if it leaked in</text>
-  <text x="652" y="212">--model claude-fable-5-1[1m]</text>
+  <text x="652" y="212">--model claude-fable-5-2[1m]</text>
   <text class="faint" x="652" y="234">no key · no endpoint · nothing else</text>
 </g>
 <text class="sans text" x="984" y="214" font-size="14">Anthropic, with your claude.ai login</text>

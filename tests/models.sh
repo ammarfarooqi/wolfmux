@@ -198,8 +198,8 @@ echo "FAIL" >"$FAKE/answers/fable"
 SPAWN_F1="$(teamctl spawn f1 fable --no-kickoff 2>&1)"
 SPAWN_F2="$(teamctl spawn f2 fable --no-kickoff 2>&1)"
 check "a failed probe falls back to the built-in id and WARNS at every spawn; it is not retried at every spawn" \
-  '[ "$(probes fable)" = 1 ] && [ "$(record f1 | jq -r .model_id)" = "claude-fable-5-1" ] && [ "$(record f2 | jq -r .model_id)" = "claude-fable-5-1" ] &&
-   printf "%s" "$SPAWN_F1" | grep -q "fable: could not confirm the newest model (fallback: asking Claude Code failed .*something went wrong). Using the built-in id claude-fable-5-1" &&
+  '[ "$(probes fable)" = 1 ] && [ "$(record f1 | jq -r .model_id)" = "claude-fable-5-2" ] && [ "$(record f2 | jq -r .model_id)" = "claude-fable-5-2" ] &&
+   printf "%s" "$SPAWN_F1" | grep -q "fable: could not confirm the newest model (fallback: asking Claude Code failed .*something went wrong). Using the built-in id claude-fable-5-2" &&
    printf "%s" "$SPAWN_F2" | grep -q "fable: could not confirm the newest model"'
 
 echo "== teamctl models"
@@ -207,7 +207,7 @@ MODELS_OUT="$(teamctl models 2>&1)"
 check "teamctl models: alias, resolved id, label and where it came from, and the agents running on each" \
   'printf "%s" "$MODELS_OUT" | grep -Eq "^  opus +claude-opus-5-5 +Opus 5.5 +Claude Code, asked today" &&
    printf "%s" "$MODELS_OUT" | grep -Eq "^  sonnet +claude-sonnet-6 +Sonnet 6 +Claude Code, asked today" &&
-   printf "%s" "$MODELS_OUT" | grep -Eq "^  fable +claude-fable-5-1 +Fable 5.1 +fallback: asking Claude Code failed" &&
+   printf "%s" "$MODELS_OUT" | grep -Eq "^  fable +claude-fable-5-2 +Fable 5.2 +fallback: asking Claude Code failed" &&
    printf "%s" "$MODELS_OUT" | grep -Eq "^  default +x +opus +claude-opus-5-5 +Opus 5.5 +record +no$" &&
    teamctl models --json | jq -e ".policy == \"latest\" and (.aliases | length == 4) and ([.agents[] | select(.role == \"x\")][0].running_id == \"claude-opus-5-5\")"'
 check "teamctl models refuses an option it does not know, by name" \

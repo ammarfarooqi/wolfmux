@@ -696,7 +696,7 @@ plant_ctx ctx-haiku haiku claude "/nonexistent/ctx"
 # whatever the key means today, for an agent nobody could name the model of. That guess is gone
 # on purpose (an unknown model has no window: tests/models.sh), so the fixture now says what a
 # real record says.
-for pair in ctx-opus:claude-opus-5-5 ctx-sonnet:claude-sonnet-5-5 ctx-fable:claude-fable-5-1 ctx-haiku:claude-haiku-5-5; do
+for pair in ctx-opus:claude-opus-5-5 ctx-sonnet:claude-sonnet-5-5 ctx-fable:claude-fable-5-2 ctx-haiku:claude-haiku-5-5; do
   jq --arg id "${pair#*:}" '.model_id = $id' "$CTX_AGENTS/${pair%%:*}.json" >"$CTX_AGENTS/${pair%%:*}.json.new" &&
     /bin/mv "$CTX_AGENTS/${pair%%:*}.json.new" "$CTX_AGENTS/${pair%%:*}.json"
 done
@@ -886,7 +886,7 @@ check "teams: with several teams a command has to say which one (exit 64, and it
 check "teams: the same role name can exist in two teams; --team works before or after the command" 'teamctl spawn backend glm53 --team review --no-kickoff && teamctl --team default spawn backend flash --no-kickoff && sleep 2 && [ "$(git branch --list "ai/review/backend-*" | wc -l | tr -d " ")" = 1 ] && [ "$(git branch --list "ai/backend-*" | wc -l | tr -d " ")" = 1 ] && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0] | (.branch | startswith(\"ai/review/backend-\")) and .commits_ahead == \"0\""'
 check "teams: status shows every team as a hierarchy: team, wolf, dogs" 'out="$(teamctl status)"; printf "%s\n" "$out" | grep -q "^TEAM default" && printf "%s\n" "$out" | grep -q "^TEAM review" && [ "$(printf "%s\n" "$out" | grep -c "🐺 lead")" = 2 ] && [ "$(printf "%s\n" "$out" | grep -c "🐶 backend")" = 2 ]'
 check "teams: status --json lists the teams; with --team it keeps the single-team shape" 'teamctl status --json | jq -e "(.teams | map(.team) | sort) == [\"default\", \"review\"] and ([.teams[] | select(.team == \"review\")][0].agents | map(.role)) == [\"lead\", \"backend\"]" && teamctl status --json --team review | jq -e ".team == \"review\" and .session_running and (.agents | length == 2)"'
-check "teams: teamctl teams is the short list" 'teamctl teams | grep -q "review .*running .*Fable 5.1" && teamctl teams | grep -q "default .*running .*GPT-6 Astra"'
+check "teams: teamctl teams is the short list" 'teamctl teams | grep -q "review .*running .*Fable 5.2" && teamctl teams | grep -q "default .*running .*GPT-6 Astra"'
 check "teams: a named team has its own Beads identities (<team>.<role>); the first team keeps plain roles" 'teamctl capture backend --team review --all | grep -q "STUB role=backend actor=review.backend" && teamctl capture backend --team default --all | grep -q "STUB role=backend actor=backend "'
 check "teams: a teammate in a named team is started as <team>.<role> in the store, and its kickoff says the assignment is already in the conversation" 'teamctl spawn scribe flash --team review && sleep 2 && teamctl capture scribe --team review --all | grep -q "STUB role=scribe actor=review.scribe" && teamctl capture scribe --team review --all | grep -q "STUB kickoff_kind=briefed"'
 teamctl stop scribe --team review >/dev/null 2>&1
@@ -1001,7 +1001,7 @@ complete_is "completion: remove offers workers only, never the lead" '^backend	|
 complete_isnt "completion: remove never offers the lead" '^lead($TAB|\$)' "--team" "default" "remove" ""
 complete_is "completion: --from-worktree offers workers only" '^backend	|^qa	' "--team" "default" "spawn" "x" "--from-worktree" ""
 complete_is "completion: nudge and capture and diff offer roles" '^lead	|^backend	|^qa	' "--team" "review" "nudge" ""
-complete_is "completion: start completes the model keys with their labels" '^glm53	GLM-5.3$|^flash	GLM-5.3 Flash$|^fable	Fable 5.1$' "start" ""
+complete_is "completion: start completes the model keys with their labels" '^glm53	GLM-5.3$|^flash	GLM-5.3 Flash$|^fable	Fable 5.2$' "start" ""
 complete_is "completion: spawn <role> completes the models, providers included" '^kimi	' "spawn" "x" ""
 complete_is "completion: policy completes the keys" '^lead-permissions$|^worker-spawn$|^branch-template$' "policy" ""
 complete_is "completion: policy <key> completes the fixed choices" '^on$|^off$' "policy" "worker-spawn" ""

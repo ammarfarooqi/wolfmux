@@ -547,7 +547,7 @@ agent of each team:
 PROJECT fanpro-studio-fe-099f81   ~/Documents/fpro/fanpro-studio-fe
   TEAM nudge-fix            running      lead Opus 5       agents 1    lanes 4.2 GB
       🐺 lead             Opus 5         running  cpu 2.4    mem 0.5G    ctx 490k 24%   wrote 2s     -
-  TEAM onboarding           running      lead Fable 5.1    agents 25   lanes not measured (teamctl teams measures it)
+  TEAM onboarding           running      lead Fable 5.2    agents 25   lanes not measured (teamctl teams measures it)
       🐶 walk2            Opus 5         running  cpu 0.0    mem 0.4G    ctx 192k 19%   wrote 14m    ai/onboarding/walk2-…
 
 MACHINE  load 2.9 · memory 8.1 GB free · disk 109.4 GB free

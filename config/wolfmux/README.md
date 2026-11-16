@@ -135,7 +135,7 @@ new branch (its branch and commits stay; node_modules and build output survive, 
 lane was protected with `teamctl keep <role>` before it was parked — parking sweeps build
 output since v1.17.0, and the flag travels with the worktree). The lead
 reads each agent's CONTEXT in `teamctl status` (tokens, and the share of a known
-window — the window Claude Code declared for the model, 1,000,000 tokens for Fable 5.1,
+window — the window Claude Code declared for the model, 1,000,000 tokens for Fable 5.2,
 Opus 5.5, Sonnet 5.5 and Haiku 5.5; anything else shows tokens alone) to choose
 between `restart` (keep the conversation) and a fresh worker.
 
@@ -1042,7 +1042,7 @@ at your terminal; an agent that offers to flip it for you should be refused.
 
 | Pane | Type | Expect |
 |------|------|--------|
-| Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.1 |
+| Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.2 |
 | Astra lead | `/status` | Signed in with ChatGPT · model `gpt-6-astra` |
 | GLM worker | `/status` | Base URL `https://api.z.ai/api/anthropic` · auth: apiKeyHelper (or ANTHROPIC_AUTH_TOKEN in env mode) · model `glm-5.3` / `glm-5.3-flash` |
 | provider worker | `/status` | that provider's base URL and model (Kimi auth may be `ANTHROPIC_API_KEY` in env mode); `WOLFMUX_DRY_RUN=1 claude-<provider>` prints the exact values |

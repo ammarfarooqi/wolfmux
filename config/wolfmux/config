@@ -242,7 +242,7 @@
 
 # Model pins. A pin wins under either policy, and is never probed: the key means exactly that
 # id until you delete the line. Leave them commented out to always get the newest model.
-#WOLFMUX_FABLE_MODEL=claude-fable-5-1
+#WOLFMUX_FABLE_MODEL=claude-fable-5-2
 #WOLFMUX_OPUS_MODEL=claude-opus-5-5
 #WOLFMUX_SONNET_MODEL=claude-sonnet-5-5
 #WOLFMUX_HAIKU_MODEL=claude-haiku-5-5

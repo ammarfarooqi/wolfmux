@@ -5,7 +5,7 @@
 Run a small AI development team locally, the way one would run a human one:
 
 - a **lead** that acts as architect, coordinator and reviewer — either
-  Claude Code + Fable 5.1 or Codex CLI + GPT-6 Astra, interchangeably;
+  Claude Code + Fable 5.2 or Codex CLI + GPT-6 Astra, interchangeably;
 - **workers** that implement — Claude Code driving GLM-5.3 (substantial work) or
   GLM-5.3 Flash (simple, repetitive, QA and integration work);
 - everything **visible at once** in tmux panes, similar to Claude's Agent Teams;
