@@ -2,7 +2,7 @@
 
 Claude Code 2.1.325, `claude -p --model haiku --settings <scratch> --allowedTools Bash --output-format stream-json`,
 run by `tests/research/offload-probe/probe.sh`; hook: `tests/research/offload-probe/hook.sh`. Each directory
-`offload-<n>-*` holds the settings, what the hook received (`input-*.json`), the stream and the answer.
+`offload-<n>-*` holds the settings, what the hook received (`input-*.json`), the tool result the model got (`tool_result.jsonl`, taken from the stream, which is not kept: it holds the owner's own setup) and the answer.
 "Model got" is the `tool_result` block in the stream, i.e. what went to the model.
 
 | # | Hook | Command | Event that fired | Model got |
