@@ -182,7 +182,19 @@ guard_glob_root() {
 }
 
 guard_deny() {
-  "$JQ_BIN" -cn --arg reason "Wolfmux: $1 You are '${TEAM_ROLE:-}' and work only in your own worktree ($GUARD_OWN) on your own branch. If something outside it has to change, ask your lead: bd create \"<what and why>\" -t message -a $(team_identity "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE")" \
+  local lead ask
+  lead="$(team_identity "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE")"
+  # The command that reaches the lead on this project's store (v1.24.0, D8): bd on Beads, as v1.23.0 said.
+  # The guard loads no project (PROJECT_STATE is unset here), so it reads the store every agent is
+  # started with (WOLFMUX_STORE, lib/agents.sh); asked only on this deny path, never on an allow.
+  local kind="${WOLFMUX_STORE:-beads}"
+  if [ -n "${PROJECT_STATE:-}" ]; then kind="$(store_kind 2>/dev/null || printf beads)"; fi
+  if [ "$kind" = "native" ]; then
+    ask="teamctl send $lead \"<what and why>\""
+  else
+    ask="bd create \"<what and why>\" -t message -a $lead"
+  fi
+  "$JQ_BIN" -cn --arg reason "Wolfmux: $1 You are '${TEAM_ROLE:-}' and work only in your own worktree ($GUARD_OWN) on your own branch. If something outside it has to change, ask your lead: $ask" \
     '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
   return 0
 }

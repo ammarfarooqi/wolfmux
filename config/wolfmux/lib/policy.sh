@@ -578,7 +578,14 @@ require_manager() { # <command name> [<role>]
     fi
     hint="; $STEWARD_HINT"
   fi
-  die "'teamctl $1' is reserved for the lead of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}'. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")'$hint. Ask that lead: bd create \"<what you need>\" -t message -a $(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE") -d \"<why>\"" 77
+  local lead ask
+  lead="$(team_identity "${TEAM:-$WOLFMUX_DEFAULT_TEAM}" "$WOLFMUX_LEAD_ROLE")"
+  if [ "$(store_kind 2>/dev/null || printf beads)" = "native" ]; then
+    ask="teamctl send $lead \"<what you need>\" \"<why>\""
+  else
+    ask="bd create \"<what you need>\" -t message -a $lead -d \"<why>\""
+  fi
+  die "'teamctl $1' is reserved for the lead of team '${TEAM:-$WOLFMUX_DEFAULT_TEAM}'. You are '$(team_identity "$(caller_team | sed "s/^\$/$WOLFMUX_DEFAULT_TEAM/")" "$(caller_role)")'$hint. Ask that lead: $ask" 77
 }
 
 # team_orphaned_note: who may act on the loaded team while its lead is not running. "you" is said to you only:
