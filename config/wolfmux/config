@@ -76,8 +76,16 @@
 #   full  all of it: plugins with their skills, agents and session hooks, and your rules
 #   trim  your rules and settings; every plugin off for workers (the default)
 #   lean  only the project's own instructions (CLAUDE.md, .claude/) and wolfmux's
-# The lead always starts with everything. Per team: teamctl policy worker-context <full|trim|lean>
+# From v1.25.0 trim and lean also leave out the tools a pane agent cannot use and the claude.ai
+# connectors. Per team: teamctl policy worker-context <full|trim|lean>
 #WOLFMUX_WORKER_CONTEXT=trim
+# The lead starts with everything (full) unless you give it the same reductions (trim: it keeps
+# AskUserQuestion and your plugins). Per team: teamctl policy lead-context <full|trim>
+#WOLFMUX_LEAD_CONTEXT=full
+# Instruction files (CLAUDE.md, rules) that a trimmed agent does not load: globs, separated by
+# spaces. Empty: nothing of yours is left out. teamctl doctor names a rules folder that repeats
+# another one in a second language. Per team: teamctl policy context-exclude '<glob>'...
+#WOLFMUX_CONTEXT_EXCLUDE=**/rules/ecc/zh/**
 # Where a worker's CLI compacts its own conversation, in tokens. Unset: the window teamctl counts
 # that model with (200000 for most; teamctl status shows a share of it). Claude Code would
 # otherwise let a current Claude model run toward 1M before it compacts. A number from 100000 to

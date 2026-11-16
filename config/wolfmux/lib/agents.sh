@@ -962,7 +962,8 @@ write_agent_settings() {
   #   runs shell text too, and a tool the guard does not know has its strings checked).
   # Everyone: notifications are teamctl's job inside a team (lib/notify.sh), and the
   #   notice inbox reaches the agent on Stop and on UserPromptSubmit (lib/inbox.sh).
-  # Workers, by the worker-context policy: your plugins off (trim, lean), see lib/policy.sh.
+  # Workers, by the worker-context policy: your plugins off, and the reductions (trim, lean), see
+  #   lib/policy.sh. The lead gets the reductions only under lead-context trim.
   # Workers: the CLI compacts at the window status counts with (worker_compact_window).
   # Everyone: the turn hooks (lib/hooks.sh), `teamctl _hook <Event>` once for each event of
   #   WOLFMUX_HOOK_EVENTS: mail bodies mid-turn (PostToolUse) and at start (SessionStart), the
@@ -986,7 +987,7 @@ write_agent_settings() {
     --arg inbox_wake "exec \"$TEAMCTL_SELF\" _inbox-wake" --argjson wake_timeout "$WOLFMUX_WAKE_TIMEOUT" \
     --arg browser_allow "$(policy_get browser-writes)" \
     --arg hook_command "\"$TEAMCTL_SELF\" _hook" --argjson hook_timeout "$WOLFMUX_HOOK_TIMEOUT" \
-    --argjson context "$(worker_context_settings "$kind" "$(policy_get worker-context)")" --arg compact "$compact" '
+    --argjson context "$(agent_context_settings "$kind")" --arg compact "$compact" '
     {type: "command", command: $inbox_wake, asyncRewake: true, timeout: $wake_timeout,
      rewakeSummary: "wolfmux: team notice"} as $wake
     | def turn($ev): {hooks: [{type: "command", command: ($hook_command + " " + $ev), timeout: $hook_timeout}]};

@@ -221,6 +221,8 @@ teamctl policy lead-permissions skip|ask        # default skip
 teamctl policy browser-writes ask|allow         # allow writes a Chrome-write ALLOW rule into every agent's settings  default ask
 teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
 teamctl policy worker-context full|trim|lean    # what of ~/.claude a worker starts with  default trim
+teamctl policy lead-context full|trim           # the same reductions for the lead   default full
+teamctl policy context-exclude '<glob>'...      # instruction files a trimmed agent does not load  default none
 teamctl policy lead-teams on|off                # may the lead found further teams?  default on
 teamctl policy branch-template '<template>'     # how this team names workers' branches (above)
 teamctl policy branch-template default          # …back to ai/{role}-{ts} · ai/{team}/{role}-{ts}
@@ -262,8 +264,12 @@ Claude Code teammates only: Codex has no such hook.
 `trim` (the default) keeps your rules and settings but switches off every plugin
 enabled there. `lean` also starts the worker with `--setting-sources project,local`,
 so nothing from `~/.claude` is read at all — only the project's own `CLAUDE.md` /
-`.claude/` and the per-agent settings (hooks, guard) and login. The lead is never
-trimmed; a stored or configured value that cannot be read means `full`.
+`.claude/` and the per-agent settings (hooks, guard) and login. From v1.25.0 `trim` and
+`lean` also leave out the tools a pane agent cannot use, the claude.ai connectors and the
+files of `context-exclude` (`WOLFMUX_CONTEXT_EXCLUDE`); `lead-context trim`
+(`WOLFMUX_LEAD_CONTEXT`) does the same for the lead, which is otherwise never trimmed
+(docs/USAGE.md, "What an agent starts with"). A stored or configured value that cannot be
+read means `full`.
 `WOLFMUX_WORKER_COMPACT_WINDOW` sets where a worker's own CLI compacts its
 conversation, in tokens (default: the window `teamctl status` counts that model
 with; `off` leaves it to the CLI) — otherwise a current Claude model would run
