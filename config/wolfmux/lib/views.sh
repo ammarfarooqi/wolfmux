@@ -185,7 +185,7 @@ _hold_age() {
   fi
 }
 
-# ctx_display <used> <limit> — "142k/167k 85%": what the CONTEXT column shows, in status, in
+# ctx_display <used> <limit> - "142k/167k 85%": what the CONTEXT column shows, in status, in
 # the dashboard, in the watch's notices and in a checkpoint: what the conversation holds, the
 # limit its CLI compacts at (context_limit_for, lib/policy.sh), and the share of THAT. When the
 # limit is unknown (empty or 0: nobody declared the window) there is no limit and no share:

@@ -27,7 +27,7 @@ WOLFMUX_STALL_LOOK="${WOLFMUX_STALL_LOOK:-60}"
 
 _stall_number() { case "$1" in "" | *[!0-9]*) printf '%s\n' "$2" ;; *) printf '%s\n' "$1" ;; esac; }
 
-# stall_of <role> — 0 when the agent's conversation ended on an error row and has been quiet for
+# stall_of <role> - 0 when the agent's conversation ended on an error row and has been quiet for
 # WOLFMUX_STALL_AFTER seconds. Sets STALL_TEXT (the error's first line), STALL_AT (its timestamp,
 # as the CLI wrote it) and STALL_IDLE (seconds since the transcript was last written).
 stall_of() {
@@ -64,12 +64,12 @@ EOF
   return 0
 }
 
-# _stall_task <identity> — the id of a task of it in progress, or nothing
+# _stall_task <identity> - the id of a task of it in progress, or nothing
 _stall_task() {
   store_tasks_json "$1" in_progress 2>/dev/null | "$JQ_BIN" -r '[.[] | select(.status == "in_progress")][0].id // empty' 2>/dev/null
 }
 
-# stall_tell <role> — after stall_of: ONE message to the lead per error row. The stamp directory
+# stall_tell <role> - after stall_of: ONE message to the lead per error row. The stamp directory
 # is made with mkdir, the atomic test-and-set: two lookers at the same moment send one message.
 stall_tell() {
   local role="$1" team identity lead task dir key since mins body
@@ -98,7 +98,7 @@ then:     teamctl send $role \"go on with $task\""
   return 0
 }
 
-# stall_scan — one look over the loaded team's agents (not the lead). Prints the roles it told
+# stall_scan - one look over the loaded team's agents (not the lead). Prints the roles it told
 # the lead about, one per line. Never fails.
 stall_scan() {
   local role
@@ -111,7 +111,7 @@ stall_scan() {
   return 0
 }
 
-# stall_scan_due — 0 at most once per WOLFMUX_STALL_LOOK seconds per team (a stamp file's time),
+# stall_scan_due - 0 at most once per WOLFMUX_STALL_LOOK seconds per team (a stamp file's time),
 # for the lookers that run often: the lead's tenth tool call.
 stall_scan_due() {
   local stamp="$STATE_DIR/stall/.looked" look last

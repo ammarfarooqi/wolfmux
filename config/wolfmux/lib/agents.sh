@@ -44,7 +44,7 @@ session_name_for_project() {
   printf '%s\n' "$candidate"
 }
 
-# agent_compact_override <role> — the compact window somebody asked for, for this worker: what the
+# agent_compact_override <role> - the compact window somebody asked for, for this worker: what the
 # command that spawned or restarted it had in ITS environment (recorded then, agent_compact_asked),
 # else what this process has. write_agent_settings runs inside the pane, and a pane has the tmux
 # server's environment, never the spawning command's: read only here, a window given to
@@ -55,7 +55,7 @@ agent_compact_override() {
   printf '%s\n' "${recorded:-${WOLFMUX_WORKER_COMPACT_WINDOW:-}}"
 }
 
-# agent_compact_asked <role> — spawn and restart: this command's own WOLFMUX_WORKER_COMPACT_WINDOW,
+# agent_compact_asked <role> - spawn and restart: this command's own WOLFMUX_WORKER_COMPACT_WINDOW,
 # when it has one, goes on the worker's record. Without one the record keeps what it had.
 agent_compact_asked() {
   [ -n "${WOLFMUX_WORKER_COMPACT_WINDOW:-}" ] || return 0
@@ -63,7 +63,7 @@ agent_compact_asked() {
   reg_set "$1" compact_override "$WOLFMUX_WORKER_COMPACT_WINDOW"
 }
 
-# agent_compact_resolve <role> — sets WCP_WINDOW and WCP_NOTE for this worker (worker_compact_plan),
+# agent_compact_resolve <role> - sets WCP_WINDOW and WCP_NOTE for this worker (worker_compact_plan),
 # and writes the window on its record (compact_window: the number, or "off"), with what it was made
 # from: status, the dashboard and the watch all count against that one number. A window that is
 # not the one asked for is said once per start, in the pane and in the team's event log.

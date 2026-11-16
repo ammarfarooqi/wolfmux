@@ -736,13 +736,13 @@ WOLFMUX_CONTEXT_ROOM="${WOLFMUX_CONTEXT_ROOM:-150000}"  # room to work in betwee
 # 4-5k of room, 10 compactions in 5 minutes, then the CLI stops). One file read is up to 25k.
 WOLFMUX_CONTEXT_MIN_ROOM="${WOLFMUX_CONTEXT_MIN_ROOM:-30000}"
 
-# _ctx_number <value> <default> — <value> when it is a plain number of at most 9 digits, else <default>
+# _ctx_number <value> <default> - <value> when it is a plain number of at most 9 digits, else <default>
 _ctx_number() {
   case "$1" in "" | *[!0-9]*) printf '%s\n' "$2"; return 0 ;; esac
   if [ "${#1}" -le 9 ]; then printf '%s\n' "$((10#$1))"; else printf '%s\n' "$2"; fi
 }
 
-# context_limit <window> — where a CLI with that window compacts: the window minus the reserve.
+# context_limit <window> - where a CLI with that window compacts: the window minus the reserve.
 # Nothing for a window that is not a number above the reserve.
 context_limit() {
   case "${1:-}" in "" | *[!0-9]*) return 0 ;; esac
@@ -750,7 +750,7 @@ context_limit() {
   printf '%s\n' "$(($1 - WOLFMUX_COMPACT_RESERVE))"
 }
 
-# context_limit_for <family> <model-window> <compact-window> — sets CTX_LIMIT, the ONE number every
+# context_limit_for <family> <model-window> <compact-window> - sets CTX_LIMIT, the ONE number every
 # view and the watch divide by ("" = unknown, and then nothing is divided). Claude Code: the
 # smaller of the window its CLI was told to compact at and its model's window, minus the reserve.
 # Codex states its own window in its rollout and nothing here measured where it compacts: its
@@ -774,7 +774,7 @@ context_limit_for() {
   CTX_LIMIT="$((window - WOLFMUX_COMPACT_RESERVE))"
 }
 
-# context_measured <state-dir> <kind> — sets CM_FIRST and CM_KEPT ("" = never measured) from what
+# context_measured <state-dir> <kind> - sets CM_FIRST and CM_KEPT ("" = never measured) from what
 # the watch last recorded for an agent of that kind in this team: one line "first kept epoch role".
 # It outlives the agent that measured it, so a NEW worker starts from a measured F.
 context_measured() {
@@ -787,7 +787,7 @@ context_measured() {
   return 0
 }
 
-# worker_compact_plan <model-key> <override> — sets WCP_WINDOW: the token count a worker's CLI is
+# worker_compact_plan <model-key> <override> - sets WCP_WINDOW: the token count a worker's CLI is
 # told to compact its conversation at (CLAUDE_CODE_AUTO_COMPACT_WINDOW; "" = left to the CLI), and
 # WCP_NOTE: one sentence when the window is not the one asked for ("" otherwise).
 #   <override>  off: left to the CLI. A number from 100000 to 1000000 (what the CLI accepts): that
@@ -840,7 +840,7 @@ worker_compact_plan() {
   WCP_WINDOW="$window"
 }
 
-# worker_compact_window <model-key> [<override>] — prints worker_compact_plan's window, or nothing.
+# worker_compact_window <model-key> [<override>] - prints worker_compact_plan's window, or nothing.
 # The override defaults to WOLFMUX_WORKER_COMPACT_WINDOW of this process.
 worker_compact_window() {
   worker_compact_plan "$1" "${2-${WOLFMUX_WORKER_COMPACT_WINDOW:-}}"

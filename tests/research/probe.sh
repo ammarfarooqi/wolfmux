@@ -1,5 +1,5 @@
 #!/bin/bash
-# probe.sh <name> [claude flags...] — one print-mode Haiku request ("Reply with the single word ok")
+# probe.sh <name> [claude flags...] - one print-mode Haiku request ("Reply with the single word ok")
 # from the scratch project, with the flags under test, to MEASURE what a first request weighs.
 # Appends one JSON line to tests/research/results/${PROBE_OUT:-probes.jsonl}: the name, the exact command line,
 # and the usage block the CLI reports. Needs tests/research/.scratch-path (the scratch directory).

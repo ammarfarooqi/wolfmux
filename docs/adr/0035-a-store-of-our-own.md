@@ -22,12 +22,12 @@ Embedded Dolt is single-writer: six concurrent `bd create` calls (a lead and fiv
 starting at once) took 3.7 s between them, each one waiting its turn. Beads' own issue #6039
 shows embedded Dolt stalling a hook past 30 s under load; `_bd_bounded` (ADR-0032) already has
 to assume a Beads read may never return and cuts it off at 5 s, which is a workaround, not a
-fix. None of this is Beads' fault — it is a full issue tracker with history, dependencies and
+fix. None of this is Beads' fault - it is a full issue tracker with history, dependencies and
 sync, built for a human running one command at a time, not for a hook on every tool call.
 
 Precedent, found while surveying this: Overstory, a different multi-agent harness, keeps mail
 in a SQLite WAL database "independent of beads (which is too slow for high-frequency
-polling)" and delivers it through a UserPromptSubmit hook — the same shape ADR-0032 already
+polling)" and delivers it through a UserPromptSubmit hook - the same shape ADR-0032 already
 builds, for the same reason.
 
 ## Decision
@@ -52,7 +52,7 @@ when nothing here needs it.
 
 ### Alternative 2: Beads server mode
 - **Pros**: no single-writer queue; a call no longer opens an embedded database each time.
-- **Cons**: needs the `dolt` binary and a `sql-server` process running continuously — a
+- **Cons**: needs the `dolt` binary and a `sql-server` process running continuously - a
   daemon, which GOALS.md rules out.
 - **Why not**: ADR-0032 already declined this for the same reason; it stays what ROADMAP.md
   says, opt-in, if lock waits ever show on the Beads path that remains.
@@ -72,7 +72,7 @@ when nothing here needs it.
 - **Why not**: sqlite3 already is that locking, tested for decades, and it is one `BEGIN
   IMMEDIATE` away rather than a hand-rolled file protocol.
 
-### Alternative 5: hybrid — messages native, tasks on Beads
+### Alternative 5: hybrid - messages native, tasks on Beads
 - **Pros**: messages (the hot, frequent path) get fast; tasks keep Beads' dependency graph
   without reimplementing it.
 - **Cons**: two stores to keep consistent, two things to explain, and the slow path (task
@@ -93,7 +93,7 @@ when nothing here needs it.
 - A second backend exists, and the native schema does not have everything Beads does (no
   dependency type beyond a task's own blockers; a message can reply to another message, not
   to a task, so a report that is "about" a task carries that only in its text, not a thread
-  link — found and worked around in `store_native_msg_create` while wiring this up).
+  link - found and worked around in `store_native_msg_create` while wiring this up).
 - `_bd_bounded`'s 5 s cut-off is still needed for the Beads half; it does not get faster.
 
 ### Risks

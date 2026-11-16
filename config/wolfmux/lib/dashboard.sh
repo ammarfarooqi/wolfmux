@@ -206,7 +206,7 @@ dash_age_span() {
   }'
 }
 
-# dash_context_label <used> <limit> — what the CONTEXT column shows. THREE cases, not
+# dash_context_label <used> <limit> - what the CONTEXT column shows. THREE cases, not
 # two:
 #
 #   a known share          "142k 71%"   the window is known

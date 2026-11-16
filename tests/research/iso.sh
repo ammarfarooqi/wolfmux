@@ -1,5 +1,5 @@
 #!/bin/bash
-# iso.sh <scratch-dir> <command...> — run one command in the isolated measurement environment:
+# iso.sh <scratch-dir> <command...> - run one command in the isolated measurement environment:
 # this worktree's teamctl and config, a scratch data directory, its own tmux server, and nothing
 # of the calling agent's session (TEAM_ROLE, WOLFMUX_*, CLAUDE*, TMUX are dropped).
 # The scratch directory holds bin/ (symlinks to this worktree's bin/teamctl and launcher) and proj/.

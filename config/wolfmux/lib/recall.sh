@@ -96,7 +96,7 @@ recall_hook() {
   return 0
 }
 
-# _recall_stall_look — the lead's tenth tool call is one of the three lookers of lib/stall.sh:
+# _recall_stall_look - the lead's tenth tool call is one of the three lookers of lib/stall.sh:
 # while the lead works its wake waiter does not run. At most once per WOLFMUX_STALL_LOOK
 # seconds, in the background, so the lead's tool call never waits on another agent's transcript.
 _recall_stall_look() {
@@ -157,17 +157,17 @@ $(/bin/cat "$file" 2>/dev/null | _hook_tail_cap "$WOLFMUX_CHECKPOINT_CHARS")"
 WOLFMUX_CONTEXT_NEAR="${WOLFMUX_CONTEXT_NEAR:-10}"   # points under a threshold from which EVERY tool call is looked at
 WOLFMUX_THRASH_CALLS="${WOLFMUX_THRASH_CALLS:-10}"   # two compactions within this many tool calls are told to the lead
 
-# _memory_number <value> — 0 when it is a plain number of 1 to 9 digits
+# _memory_number <value> - 0 when it is a plain number of 1 to 9 digits
 _memory_number() {
   case "${1:-}" in "" | *[!0-9]*) return 1 ;; esac
   [ "${#1}" -le 9 ]
 }
 
-# _memory_state_dir — the team's state directory, from the run directory ($STATE_DIR/run/<role>):
+# _memory_state_dir - the team's state directory, from the run directory ($STATE_DIR/run/<role>):
 # no tmux call, which load_project would cost.
 _memory_state_dir() { printf '%s\n' "${HOOK_RUN%/run/*}"; }
 
-# _memory_limit — sets MEM_LIMIT ("" = unknown) and MEM_WINDOW (the window it was taken from).
+# _memory_limit - sets MEM_LIMIT ("" = unknown) and MEM_WINDOW (the window it was taken from).
 # Needs models_transcript_tail to have run on this conversation (MT_MODEL: what it really runs).
 _memory_limit() {
   local compact="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" record window="" rec_id="" rec_window="" rec_at="" row=""
@@ -190,7 +190,7 @@ EOF
   [ -z "$MEM_LIMIT" ] || MEM_WINDOW="$((MEM_LIMIT + WOLFMUX_COMPACT_RESERVE))"
 }
 
-# _memory_first — sets MEM_FIRST: this conversation's first request, the part that is sent again
+# _memory_first - sets MEM_FIRST: this conversation's first request, the part that is sent again
 # with every request and after every compaction. Read once, from the HEAD of the transcript.
 _memory_first() {
   local file="$HOOK_RUN/memory/first" value=""
@@ -208,14 +208,14 @@ _memory_first() {
   MEM_FIRST="$value"
 }
 
-# _memory_kept — sets MEM_KEPT: what this conversation's last compaction kept ("" = none yet)
+# _memory_kept - sets MEM_KEPT: what this conversation's last compaction kept ("" = none yet)
 _memory_kept() {
   MEM_KEPT=""
   if [ -r "$HOOK_RUN/memory/kept" ]; then IFS= read -r MEM_KEPT <"$HOOK_RUN/memory/kept" || true; fi
   _memory_number "$MEM_KEPT" || MEM_KEPT=""
 }
 
-# _memory_measured_put <first> <kept> — the copy that outlives this agent (context_measured,
+# _memory_measured_put <first> <kept> - the copy that outlives this agent (context_measured,
 # lib/policy.sh): the LAST first request and the LARGEST kept part measured for an agent of this
 # kind in this team. An empty argument keeps what is there.
 _memory_measured_put() {
@@ -229,7 +229,7 @@ _memory_measured_put() {
   printf '%s %s %s %s\n' "$first" "$kept" "$(now_epoch)" "$HOOK_ROLE" | _reg_write_atomic "$dir/context/$kind" 2>/dev/null || true
 }
 
-# _memory_figure <used> <limit> — "142k/167k 85%", exactly as status prints it (ctx_display)
+# _memory_figure <used> <limit> - "142k/167k 85%", exactly as status prints it (ctx_display)
 _memory_figure() { ctx_display "$1" "${2:-}"; }
 
 # _memory_context_watch — PostToolUse: how full is this conversation, and has it crossed a
@@ -251,7 +251,7 @@ _memory_context_watch() {
   _memory_check_thresholds "$percent" "$CTX_TOKENS" "$MEM_LIMIT"
 }
 
-# _memory_write_ctx <used> <limit> <window> <first> <kept> <percent> — one JSON line, atomically.
+# _memory_write_ctx <used> <limit> <window> <first> <kept> <percent> - one JSON line, atomically.
 # An empty argument is null: unknown, never a guess.
 _memory_write_ctx() {
   "$JQ_BIN" -cn --arg used "$1" --arg limit "$2" --arg window "$3" --arg first "$4" --arg kept "$5" --arg percent "$6" \
@@ -263,7 +263,7 @@ _memory_write_ctx() {
 _memory_warned() { grep -qx "$1" "$HOOK_RUN/memory/warned" 2>/dev/null; }
 _memory_mark_warned() { printf '%s\n' "$1" >>"$HOOK_RUN/memory/warned" 2>/dev/null || true; }
 
-# _memory_check_thresholds <percent> <used> <limit> — warn and rotate each fire once per
+# _memory_check_thresholds <percent> <used> <limit> - warn and rotate each fire once per
 # conversation (recall_hook SessionStart resets memory/warned). Then the near file: the hot path
 # (bin/teamctl) looks only every tenth tool call, and ten calls can add more than is left under a
 # threshold. Within WOLFMUX_CONTEXT_NEAR points of the next threshold not yet announced, the file
@@ -302,13 +302,13 @@ teamctl checkpoint \"<done so far / what is next / what to watch out for>\""
   fi
 }
 
-# _memory_numbers — "window W, first request F, kept by the last compaction K", what is known of it
+# _memory_numbers - "window W, first request F, kept by the last compaction K", what is known of it
 _memory_numbers() {
   printf 'window %s (limit = window - %s), first request %s, kept by its last compaction %s' \
     "${MEM_WINDOW:-unknown}" "$WOLFMUX_COMPACT_RESERVE" "${MEM_FIRST:-not measured}" "${MEM_KEPT:-none yet}"
 }
 
-# _memory_tell_lead <percent> <figure> — a message to this team's lead, detached: a
+# _memory_tell_lead <percent> <figure> - a message to this team's lead, detached: a
 # store write is slow enough (Beads) that a hook may never wait on it.
 _memory_tell_lead() {
   local lead sender body
@@ -323,7 +323,7 @@ teamctl restart $HOOK_ROLE : a new conversation in the same worktree and branch;
   ) >/dev/null 2>&1
 }
 
-# _memory_compacted — SessionStart with source "compact": the CLI has just compacted this
+# _memory_compacted - SessionStart with source "compact": the CLI has just compacted this
 # conversation (the hook fires after every compaction; the CLI's own "Autocompact is thrashing"
 # stop fires no hook at all). Records what it kept, K, and counts it: the tool-call counter
 # (run/<role>/calls, which goes on across a compaction) and the time, one line per compaction.
@@ -370,7 +370,7 @@ EOF
   return 0
 }
 
-# _memory_boundary_count — how many compact_boundary rows the transcript holds
+# _memory_boundary_count - how many compact_boundary rows the transcript holds
 _memory_boundary_count() {
   local n
   n="$(/usr/bin/grep -c '"subtype":"compact_boundary"' "$HOOK_TRANSCRIPT" 2>/dev/null)" || true
@@ -378,7 +378,7 @@ _memory_boundary_count() {
   printf '%s\n' "$n"
 }
 
-# _memory_await_boundary <seen> <thrash> <gap> <first-epoch> <second-epoch> — in the background, after
+# _memory_await_boundary <seen> <thrash> <gap> <first-epoch> <second-epoch> - in the background, after
 # the hook has returned: waits up to WOLFMUX_COMPACT_WAIT (30) seconds for the row, then records it.
 # Without a row the thrash message still goes, with the numbers it could not read marked as such.
 _memory_await_boundary() {
@@ -398,7 +398,7 @@ _memory_await_boundary() {
   return 0
 }
 
-# _memory_compaction_numbers <boundaries> <thrash> <gap> <first-epoch> <second-epoch> — the last
+# _memory_compaction_numbers <boundaries> <thrash> <gap> <first-epoch> <second-epoch> - the last
 # compact_boundary row: K is its postTokens, kept for this conversation and for the team; the first
 # request is measured now if no look of the watch did it before; then the thrash message, if due.
 _memory_compaction_numbers() {
@@ -485,7 +485,7 @@ _memory_precompact() {
   } | _reg_write_atomic "$file" 2>/dev/null || true
 }
 
-# _memory_ctx_line <run-dir> — "context: 142k/167k 85%", the watch's last reading of that agent
+# _memory_ctx_line <run-dir> - "context: 142k/167k 85%", the watch's last reading of that agent
 # (memory/ctx), in status's own words; nothing when there is none.
 _memory_ctx_line() {
   local used="" limit="" row=""
