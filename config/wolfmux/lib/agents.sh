@@ -651,7 +651,7 @@ cmd_spawn() {
   require_session
   spawner="$(caller_role)"
   if ! is_manager && [ "$(policy_get worker-spawn)" != "on" ]; then
-    die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: bd create \"Need a helper: <for what>\" -t message -a lead -d \"<why, which model>\"" 77
+    die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: teamctl send $WOLFMUX_LEAD_ROLE \"Need a helper: <for what>\" \"<why, which model>\"" 77
   fi
   # Handing a worktree over deletes another agent's record: that is the lead's call (or yours),
   # never a worker's, even with worker-spawn on (review of issues #4/#5).
@@ -1046,7 +1046,7 @@ cmd_run_agent() {
     # A teammate spawned with --repo sits in another repository, and bd resolves its workspace
     # through git: without this it would look for Beads in THAT repository and find none or the
     # wrong one. The team's tasks and messages live in the project's workspace, so name it.
-    if [ -n "$(reg_field "$role" repo)" ] && [ -z "${BEADS_DIR:-}" ]; then
+    if [ -n "$(reg_field "$role" repo)" ] && [ -z "${BEADS_DIR:-}" ] && [ "$(store_kind)" = "beads" ]; then
       beads_workspace="$(beads_dir 2>/dev/null || true)"
       if [ -n "$beads_workspace" ]; then export BEADS_DIR="$beads_workspace"; fi
     fi
@@ -1272,7 +1272,8 @@ restart_without_session() {
   elif [ "$resume" -eq 1 ]; then start_args+=(--continue); fi
   # A team that ran without Beads is not asked about Beads again: a project with no Beads workspace is started with
   # --skip-beads. A bd that is not installed is not that: start dies about it, as a manual start does.
-  if [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
+  # A native-store project never asks bd at all (v1.24.0): `bd where` alone can take seconds.
+  if [ "$(store_kind)" = "beads" ] && [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
   WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
   LEAD_RESTART=1           # this start is `teamctl restart lead`, which the orphan steward may run (start_permitted)
   cmd_start "${start_args[@]}"

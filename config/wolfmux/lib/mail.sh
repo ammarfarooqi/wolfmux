@@ -126,6 +126,14 @@ mail_announce() {
   assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.assignee // ""' 2>/dev/null)"
   type="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
   status="$(printf '%s' "$item" | "$JQ_BIN" -r '.status // ""' 2>/dev/null)"
+  # The human's unread-message index (badge, popup): on Beads, hooks/beads-nudge feeds it
+  # every message bead; here, every message this store writes. Never fails the caller.
+  if [ "$type" = "message" ]; then
+    (
+      set +e
+      _human_inbox_hook "$item"
+    ) >/dev/null 2>&1 || true
+  fi
   case "$actor" in
     *.*) lead="${actor%%.*}.$WOLFMUX_LEAD_ROLE" ;;
     *) lead="$WOLFMUX_LEAD_ROLE" ;;
