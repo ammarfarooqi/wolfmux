@@ -10,7 +10,8 @@ set -euo pipefail
 # The hot path. An agent's CLI runs `teamctl _hook PostToolUse` after every tool call, so the usual
 # case, nothing to say, has to cost one bash start: no module, no fork. It counts the call (the
 # file's age is the agent's last sign of life) and ends, unless something is queued for the agent
-# (the attention file) or this is the tenth call since the last full look (WOLFMUX_HOOK_EVERY in
+# (the attention file), the context watch asked to see every call (the near file), or this is
+# the tenth call since the last full look (WOLFMUX_HOOK_EVERY in
 # lib/hooks.sh, which this cannot read without loading it).
 if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR" ]; then
   _calls=0
@@ -22,7 +23,9 @@ if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN
   # Mail first: with something queued, or on the tenth call, the full hook below runs with the
   # whole of stdin and the offload safety net stays out of this call (the backstop still caps
   # the result).
-  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ $((_calls % 10)) -ne 0 ]; then
+  # The near file (lib/recall.sh): the conversation is within a few points of a context threshold
+  # it has not been told about, so every call is looked at until it has been.
+  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ ! -e "$WOLFMUX_RUN_DIR/near" ] && [ $((_calls % 10)) -ne 0 ]; then
     # The offload safety net (lib/offload.sh offload_post), only when the agent's settings
     # switched it on. The read builtin takes at most WOLFMUX_OFFLOAD_MIN characters, so a short
     # result costs no fork. A long one is looked at only when it is a Bash result: the CLI writes

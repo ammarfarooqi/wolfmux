@@ -44,6 +44,42 @@ session_name_for_project() {
   printf '%s\n' "$candidate"
 }
 
+# agent_compact_override <role> — the compact window somebody asked for, for this worker: what the
+# command that spawned or restarted it had in ITS environment (recorded then, agent_compact_asked),
+# else what this process has. write_agent_settings runs inside the pane, and a pane has the tmux
+# server's environment, never the spawning command's: read only here, a window given to
+# `teamctl spawn` or `teamctl task --spawn` never arrived (v1.24.0).
+agent_compact_override() {
+  local recorded
+  recorded="$(reg_field "$1" compact_override 2>/dev/null || true)"
+  printf '%s\n' "${recorded:-${WOLFMUX_WORKER_COMPACT_WINDOW:-}}"
+}
+
+# agent_compact_asked <role> — spawn and restart: this command's own WOLFMUX_WORKER_COMPACT_WINDOW,
+# when it has one, goes on the worker's record. Without one the record keeps what it had.
+agent_compact_asked() {
+  [ -n "${WOLFMUX_WORKER_COMPACT_WINDOW:-}" ] || return 0
+  [ "$(reg_field "$1" kind 2>/dev/null || true)" = "worker" ] || return 0
+  reg_set "$1" compact_override "$WOLFMUX_WORKER_COMPACT_WINDOW"
+}
+
+# agent_compact_resolve <role> — sets WCP_WINDOW and WCP_NOTE for this worker (worker_compact_plan),
+# and writes the window on its record (compact_window: the number, or "off"), with what it was made
+# from: status, the dashboard and the watch all count against that one number. A window that is
+# not the one asked for is said once per start, in the pane and in the team's event log.
+agent_compact_resolve() {
+  local role="$1" was
+  worker_compact_plan "$(reg_field "$role" model)" "$(agent_compact_override "$role")"
+  was="$(reg_field "$role" compact_window 2>/dev/null || true)"
+  if [ "$was" != "${WCP_WINDOW:-off}" ] || [ "$(reg_field "$role" compact_note 2>/dev/null || true)" != "$WCP_NOTE" ]; then
+    reg_set "$role" compact_window "${WCP_WINDOW:-off}" compact_first "$WCP_FIRST" compact_kept "$WCP_KEPT" compact_note "$WCP_NOTE" 2>/dev/null || true
+  fi
+  if [ -n "$WCP_NOTE" ]; then
+    printf '[wolfmux] %s: %s\n' "$role" "$WCP_NOTE" >&2
+    event_log compact-window "$role" "$WCP_NOTE" 2>/dev/null || true
+  fi
+}
+
 # agent_command <role> [--continue] — fills AGENT_CMD: what a pane of this team runs
 agent_command() {
   AGENT_CMD=("$TEAMCTL_SELF")
@@ -758,6 +794,7 @@ cmd_spawn() {
   new_record "$role" worker "$model" "$path" "$branch" "$base_ref" "$base_commit" "$kickoff" "${spawner:-operator}" "$repo" 1
   if [ -n "$pin" ]; then reg_set "$role" session_id "$pin"; fi
   if [ "$old_keep" = "on" ]; then reg_set "$role" keep_build on; fi
+  agent_compact_asked "$role"
 
   target="$(tm_split_target "$SESSION")" || target=""
   pane=""
@@ -959,7 +996,10 @@ write_agent_settings() {
   local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command="" memdir="" compact="" offload_command=""
   /bin/mkdir -p "$STATE_DIR/settings"
   kind="$(reg_field "$role" kind)"
-  if [ "$kind" = "worker" ]; then compact="$(worker_compact_window "$(reg_field "$role" model)")"; fi
+  if [ "$kind" = "worker" ]; then
+    agent_compact_resolve "$role"
+    compact="$WCP_WINDOW"
+  fi
   if [ "$kind" = "lead" ]; then memdir="$(memory_lead_dir "$role" || true)"; fi
   if notify_wanted "$kind"; then notify_command="\"$TEAMCTL_SELF\" _notify"; fi
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
@@ -971,7 +1011,8 @@ write_agent_settings() {
   #   notice inbox reaches the agent on Stop and on UserPromptSubmit (lib/inbox.sh).
   # Workers, by the worker-context policy: your plugins off, and the reductions (trim, lean), see
   #   lib/policy.sh. The lead gets the reductions only under lead-context trim.
-  # Workers: the CLI compacts at the window status counts with (worker_compact_window).
+  # Workers: the CLI compacts at a window made from what was measured (worker_compact_plan,
+  #   lib/policy.sh; ADR-0038), and the record says which, so every view counts against it.
   # Everyone: the turn hooks (lib/hooks.sh), `teamctl _hook <Event>` once for each event of
   #   WOLFMUX_HOOK_EVENTS: mail bodies mid-turn (PostToolUse) and at start (SessionStart), the
   #   shared team notes, the task reminder at Stop. At Stop and UserPromptSubmit it hands no
@@ -1386,7 +1427,8 @@ cmd_restart() {
     agent_set_model "$role" "$new_model"
     on=" on $new_model"
   fi
-  # A restart picks up the current policy.
+  # A restart picks up the current policy, and a compact window this command was given.
+  agent_compact_asked "$role"
   reg_set "$role" permissions "$(effective_permissions "$(reg_field "$role" kind)" "$(reg_field "$role" family)")"
   # ... and what its model means today, which is what this pane is started with (run_agent passes
   # model_id as --model). A record from before ids were recorded gets one here. Every key, not only the four
@@ -1842,7 +1884,10 @@ EOF
   return 0
 }
 
-# agent_context <workdir> <model-key> <family> [<session-id>] [<recorded-window>] [<recorded-id>] [<recorded-at>]
+# agent_context <workdir> <model-key> <family> [<session-id>] [<recorded-window>] [<recorded-id>] [<recorded-at>] [<compact-window>]
+# Also CTX_LIMIT: where this agent's CLI compacts (context_limit_for, lib/policy.sh), from its
+# model's window and the compact window on its record. It is the one number a view shows a share
+# of; "" = unknown, and then tokens are shown alone.
 # Everything a view shows about one agent's context AND its model, from one read of its
 # transcript. Sets CTX_TOKENS ("" = unknown), CTX_REQUESTS and CTX_WINDOW ("" = unknown). The
 # window is declared by the model's provider row, by the model table (model_context_window), or
@@ -1856,7 +1901,7 @@ EOF
 # alone, never a share of what the key happens to mean today.
 agent_context() {
   local computed
-  CTX_TOKENS="" CTX_WINDOW="" CTX_REQUESTS="0" CTX_FILE="" CTX_MODEL="" CTX_MODEL_AT=""
+  CTX_TOKENS="" CTX_WINDOW="" CTX_LIMIT="" CTX_REQUESTS="0" CTX_FILE="" CTX_MODEL="" CTX_MODEL_AT=""
   # MR_*: which model it runs, by the one resolver (lib/models.sh). Args 6 and 7 are the id and
   # the time of it on its record. An agent that is not on an alias keeps its recorded id.
   MR_ID="${6:-}" MR_HOW="" MR_LABEL="" MR_MARK="" MR_WINDOW=""
@@ -1872,6 +1917,7 @@ agent_context() {
     computed="$(model_context_window "$2" 2>/dev/null)" || computed=""
   fi
   [ -n "$CTX_WINDOW" ] || CTX_WINDOW="$computed"
+  context_limit_for "$3" "$CTX_WINDOW" "${8:-}"
   return 0
 }
 

@@ -720,23 +720,128 @@ worker_context_plugins_off() {
     | if length == 0 then {} else {enabledPlugins: from_entries} end' "${files[@]}" 2>/dev/null || printf '{}\n'
 }
 
-# worker_compact_window <model-key> — the token count at which a worker's CLI compacts its own
-# conversation, or nothing. Claude Code serves the current Claude models a 1M window and compacts
-# near the end of it, so a worker counted as 200k (model_context_window, the number status shows
-# a share of) ran to 255k and further without a compaction, each request slower and dearer than
-# the last. With CLAUDE_CODE_AUTO_COMPACT_WINDOW the CLI compacts where status says 100%.
-# WOLFMUX_WORKER_COMPACT_WINDOW: a number (100000 to 1000000, what the CLI accepts) or off;
-# unset means the model's own window from the table, when that is in the accepted range.
-worker_compact_window() {
-  local want="${WOLFMUX_WORKER_COMPACT_WINDOW:-}" window
+# --- one context number, and a window that cannot thrash (ADR-0038) ---------------------------
+# The reserve: Claude Code compacts a conversation at about its window MINUS this many tokens.
+# Observed on two windows of Claude Code 2.1.325 (165-171k of 200k, 66-89k of 100k), in line with
+# the vendor's "about 967k of 1M", and stated by the vendor nowhere. Environment only, for a test.
+WOLFMUX_COMPACT_RESERVE="${WOLFMUX_COMPACT_RESERVE:-33000}"
+# What a worker's window is made of: its first request F (the part re-sent with every request),
+# what a compaction keeps K, the reserve, and room to work in. F and K are measured by the watch
+# (lib/recall.sh) and kept per team in $STATE_DIR/context/worker; until then these stand in. Both
+# err high: a window too large costs one later compaction, a window too small thrashes.
+WOLFMUX_CONTEXT_FIRST="${WOLFMUX_CONTEXT_FIRST:-90000}" # F with nothing measured (measured: 54k trimmed, 81k full)
+WOLFMUX_CONTEXT_KEPT="${WOLFMUX_CONTEXT_KEPT:-45000}"   # K, and its floor: one agent's compactions kept 19k to 47k
+WOLFMUX_CONTEXT_ROOM="${WOLFMUX_CONTEXT_ROOM:-150000}"  # room to work in between two compactions (config file)
+# Under this much room after a compaction the CLI compacts again within a few requests (measured:
+# 4-5k of room, 10 compactions in 5 minutes, then the CLI stops). One file read is up to 25k.
+WOLFMUX_CONTEXT_MIN_ROOM="${WOLFMUX_CONTEXT_MIN_ROOM:-30000}"
+
+# _ctx_number <value> <default> — <value> when it is a plain number of at most 9 digits, else <default>
+_ctx_number() {
+  case "$1" in "" | *[!0-9]*) printf '%s\n' "$2"; return 0 ;; esac
+  if [ "${#1}" -le 9 ]; then printf '%s\n' "$((10#$1))"; else printf '%s\n' "$2"; fi
+}
+
+# context_limit <window> — where a CLI with that window compacts: the window minus the reserve.
+# Nothing for a window that is not a number above the reserve.
+context_limit() {
+  case "${1:-}" in "" | *[!0-9]*) return 0 ;; esac
+  [ "${#1}" -le 9 ] && [ "$1" -gt "$WOLFMUX_COMPACT_RESERVE" ] || return 0
+  printf '%s\n' "$(($1 - WOLFMUX_COMPACT_RESERVE))"
+}
+
+# context_limit_for <family> <model-window> <compact-window> — sets CTX_LIMIT, the ONE number every
+# view and the watch divide by ("" = unknown, and then nothing is divided). Claude Code: the
+# smaller of the window its CLI was told to compact at and its model's window, minus the reserve.
+# Codex states its own window in its rollout and nothing here measured where it compacts: its
+# limit is that window, unreduced. No fork: status calls this once per agent.
+context_limit_for() {
+  local window="${2:-}" compact="${3:-}"
+  CTX_LIMIT=""
+  case "$window" in "" | 0 | *[!0-9]*) window="" ;; esac
+  case "$compact" in "" | 0 | *[!0-9]*) compact="" ;; esac
+  [ "${#window}" -le 9 ] || window=""
+  [ "${#compact}" -le 9 ] || compact=""
+  if [ "$1" = "codex" ]; then
+    CTX_LIMIT="$window"
+    return 0
+  fi
+  if [ -n "$compact" ] && { [ -z "$window" ] || [ "$compact" -lt "$window" ]; }; then window="$compact"; fi
+  [ -n "$window" ] && [ "$window" -gt "$WOLFMUX_COMPACT_RESERVE" ] || return 0
+  CTX_LIMIT="$((window - WOLFMUX_COMPACT_RESERVE))"
+}
+
+# context_measured <state-dir> <kind> — sets CM_FIRST and CM_KEPT ("" = never measured) from what
+# the watch last recorded for an agent of that kind in this team: one line "first kept epoch role".
+# It outlives the agent that measured it, so a NEW worker starts from a measured F.
+context_measured() {
+  local first="" kept="" rest=""
+  CM_FIRST="" CM_KEPT=""
+  [ -r "$1/context/$2" ] || return 0
+  IFS=' ' read -r first kept rest <"$1/context/$2" || true
+  case "$first" in "" | 0 | *[!0-9]*) ;; *) [ "${#first}" -gt 9 ] || CM_FIRST="$first" ;; esac
+  case "$kept" in "" | 0 | *[!0-9]*) ;; *) [ "${#kept}" -gt 9 ] || CM_KEPT="$kept" ;; esac
+  return 0
+}
+
+# worker_compact_plan <model-key> <override> — sets WCP_WINDOW: the token count a worker's CLI is
+# told to compact its conversation at (CLAUDE_CODE_AUTO_COMPACT_WINDOW; "" = left to the CLI), and
+# WCP_NOTE: one sentence when the window is not the one asked for ("" otherwise).
+#   <override>  off: left to the CLI. A number from 100000 to 1000000 (what the CLI accepts): that
+#               window. Anything else: none.
+#   no override F + K + reserve + WOLFMUX_CONTEXT_ROOM, from what was measured (context_measured).
+# Either way the window is at least F + K + reserve + WOLFMUX_CONTEXT_MIN_ROOM, so that a
+# compaction leaves room to work in, and at most the model's own window (the CLI caps it there
+# anyway). A model whose window nobody declared gets a window only when one was asked for.
+# Needs STATE_DIR. The CLI reads the window when it starts: it is computed at spawn and restart.
+worker_compact_plan() {
+  local model="$1" want="${2:-}" cap first kept floor window="" asked=""
+  WCP_WINDOW="" WCP_NOTE="" WCP_FIRST="" WCP_KEPT=""
+  [ "$want" != "off" ] || return 0
+  cap="$(model_context_window "$model" 2>/dev/null || true)"
+  cap="$(_ctx_number "$cap" "")"
+  if [ -n "$cap" ] && [ "$cap" -gt 1000000 ]; then cap=1000000; fi
+  if [ -n "$cap" ] && [ "$cap" -lt 100000 ]; then return 0; fi
   case "$want" in
-    off) return 0 ;;
-    "" | *[!0-9]*) window="$(model_context_window "$1" 2>/dev/null || true)" ;;
-    *) window="$want" ;;
+    "") ;;
+    *[!0-9]*) WCP_NOTE="WOLFMUX_WORKER_COMPACT_WINDOW=$want is neither off nor a number: ignored." ;;
+    *)
+      if [ "${#want}" -le 7 ] && [ "$want" -ge 100000 ] && [ "$want" -le 1000000 ]; then
+        asked="$want"
+      else
+        WCP_NOTE="WOLFMUX_WORKER_COMPACT_WINDOW=$want is outside 100000 to 1000000, what the CLI accepts: ignored."
+      fi
+      ;;
   esac
-  case "$window" in "" | *[!0-9]*) return 0 ;; esac
-  [ "${#window}" -le 7 ] && [ "$window" -ge 100000 ] && [ "$window" -le 1000000 ] || return 0
-  printf '%s\n' "$window"
+  [ -n "$cap" ] || [ -n "$asked" ] || return 0
+  context_measured "${STATE_DIR:-}" worker
+  first="$(_ctx_number "${CM_FIRST:-}" "$(_ctx_number "$WOLFMUX_CONTEXT_FIRST" 90000)")"
+  kept="$(_ctx_number "$WOLFMUX_CONTEXT_KEPT" 45000)"
+  if [ -n "$CM_KEPT" ] && [ "$CM_KEPT" -gt "$kept" ]; then kept="$CM_KEPT"; fi
+  WCP_FIRST="$first" WCP_KEPT="$kept"
+  floor=$((first + kept + WOLFMUX_COMPACT_RESERVE + $(_ctx_number "$WOLFMUX_CONTEXT_MIN_ROOM" 30000)))
+  window="${asked:-$((first + kept + WOLFMUX_COMPACT_RESERVE + $(_ctx_number "$WOLFMUX_CONTEXT_ROOM" 150000)))}"
+  if [ "$window" -lt "$floor" ]; then
+    WCP_NOTE="compact window $floor, not ${asked:-$window}: a limit of $((${asked:-$window} - WOLFMUX_COMPACT_RESERVE)) tokens leaves under $(_ctx_number "$WOLFMUX_CONTEXT_MIN_ROOM" 30000) after a compaction (first request $first + kept $kept), and the CLI would compact over and over."
+    window="$floor"
+  fi
+  window=$((((window + 999) / 1000) * 1000))
+  [ "$window" -ge 100000 ] || window=100000
+  [ "$window" -le 1000000 ] || window=1000000
+  if [ -n "$cap" ] && [ "$window" -gt "$cap" ]; then
+    window="$cap"
+    if [ "$cap" -lt "$floor" ]; then
+      WCP_NOTE="compact window $cap, the model's own: after a compaction only about $((cap - WOLFMUX_COMPACT_RESERVE - first - kept)) tokens are left to work in (first request $first + kept $kept). Expect compactions close together; a smaller start helps (teamctl policy worker-context, context-exclude)."
+    fi
+  fi
+  WCP_WINDOW="$window"
+}
+
+# worker_compact_window <model-key> [<override>] — prints worker_compact_plan's window, or nothing.
+# The override defaults to WOLFMUX_WORKER_COMPACT_WINDOW of this process.
+worker_compact_window() {
+  worker_compact_plan "$1" "${2-${WOLFMUX_WORKER_COMPACT_WINDOW:-}}"
+  [ -z "$WCP_WINDOW" ] || printf '%s\n' "$WCP_WINDOW"
 }
 
 # worker_context_carried — what a lean worker loses together with your user settings and then
