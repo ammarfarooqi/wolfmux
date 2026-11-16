@@ -374,7 +374,8 @@ team_finish_remove() {
   for role in $(reg_list); do reg_delete "$role"; done
   # As _purge_team, plus what it leaves: the notices (inbox/) and the lead's end. The first
   # team's directory is also the parent of the named teams: its files go, never teams/.
-  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/inbox"
+  # run/ (v1.24.0, lib/hooks.sh): reg_delete empties run/<role>; the empty run/ kept the rmdir below from working.
+  /bin/rm -rf "$STATE_DIR/agents" "$STATE_DIR/approvals" "$STATE_DIR/settings" "$STATE_DIR/nudge" "$STATE_DIR/inbox" "$STATE_DIR/run"
   /bin/rm -f "$STATE_DIR/events.jsonl" "$STATE_DIR/meta.json" "$STATE_DIR/disk-kb" "$STATE_DIR/disk-parked-kb" "$(team_end_file)"
   lock_release
   if [ "$TEAM" != "$WOLFMUX_DEFAULT_TEAM" ]; then /bin/rmdir "$STATE_DIR" 2>/dev/null || true; fi # only when empty
