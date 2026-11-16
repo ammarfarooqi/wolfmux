@@ -80,7 +80,7 @@ offload_summary() {
     END {
       n = NR
       printf "[wolfmux] long output shortened: %d lines, %s characters%s.\n", n, chars, (rc != "" ? ", exit code " rc : "")
-      printf "[wolfmux] full text: %s (search it with grep; do not cat it)\n", log
+      printf "[wolfmux] full text: %s (search it with grep; do not cat it)\n", logpath
       for (i = 1; i <= n && i <= head; i++) print show(first[i])
       from = head + 1; to = n - tail
       if (to >= from) {
