@@ -118,7 +118,8 @@ check "5 MB log: the failing line in the cut middle is shown, with its line numb
 check "5 MB log: the first 40 lines" "[ \"\$(sed -n '3p' $WORK/wl/out)\" = 1 ] && grep -qx 40 $WORK/wl/out"
 check "5 MB log: the last 40 lines, ending with the FAIL line" "[ \"\$(tail -1 $WORK/wl/out)\" = 'FAIL tests/x.sh' ] && grep -qx 750000 $WORK/wl/out"
 check "5 MB log: under the limit is not cut, just over it is" "s=\$(printf '%04000d' 0); run_as_cli $WORK/edge \"\$(rewritten \"printf %s \$s\")\"; [ \"\$(cat $WORK/edge/out)\" = \"\$s\" ] && run_as_cli $WORK/edge2 \"\$(rewritten \"printf %s \${s}1\")\" && grep -q 'long output shortened' $WORK/edge2/out"
-check "WOLFMUX_OFFLOAD_MIN changes the limit" "run_as_cli $WORK/min \"\$(WOLFMUX_OFFLOAD_MIN=10 rewritten 'seq 1 100')\"; WOLFMUX_OFFLOAD_MIN=10 true; grep -q 'long output shortened' $WORK/min/out || true"
+WOLFMUX_OFFLOAD_MIN=10 run_as_cli "$WORK/min" "$(rewritten 'seq 1 100')"
+check "WOLFMUX_OFFLOAD_MIN changes the limit" "grep -q 'long output shortened: 100 lines' $WORK/min/out"
 many='for i in $(seq 1 200); do echo "Error $i"; done; seq 1 2000'
 run_as_cli "$WORK/wm" "$(rewritten "$many")"
 check "matching lines are capped at $WOLFMUX_OFFLOAD_MATCHES and say so" "grep -q 'the first $WOLFMUX_OFFLOAD_MATCHES follow' $WORK/wm/out && [ \$(grep -c '^[0-9]*: Error' $WORK/wm/out) = $WOLFMUX_OFFLOAD_MATCHES ]"
@@ -166,6 +167,27 @@ printf '219\n' >"$WORK/prune/out/next"
 for i in $(seq 1 30); do : >"$WORK/prune/out/x$i.log"; done
 offload_next_log "$WORK/prune" >/dev/null
 check "every 20th log prunes on its own" "[ \$(ls $WORK/prune/out | grep -c '^[0-9]*\\.log$') -le $WOLFMUX_OFFLOAD_KEEP ] && [ \"\$(cat $WORK/prune/out/next)\" = 220 ]"
+
+echo "== the agent's settings (write_agent_settings)"
+cat >"$WORK/settings.sh" <<'HARNESS'
+# settings_for <kind> <isolation> <offload-policy> — prints write_agent_settings' JSON, modules loaded as teamctl does
+set +eu
+REPO="$1"; T_KIND="$2"; T_ISO="$3"; T_OFF="$4"
+export WOLFMUX_HOME="$REPO/config/wolfmux"
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall tasks offload; do . "$WOLFMUX_HOME/lib/$module.sh"; done
+JQ_BIN="$(command -v jq)"; TEAMCTL_SELF=/x/teamctl; STATE_DIR="$(mktemp -d)"
+reg_field() { case "$2" in kind) echo "$T_KIND" ;; model) echo sonnet ;; permissions) echo skip ;; *) echo "" ;; esac; }
+policy_get() { case "$1" in worker-isolation) echo "$T_ISO" ;; output-offload) echo "$T_OFF" ;; worker-context) echo full ;; *) policy_default "$1" ;; esac; }
+worker_compact_window() { :; }; notify_wanted() { return 1; }
+cat "$(write_agent_settings w1)"
+HARNESS
+settings() { bash "$WORK/settings.sh" "$REPO" "$@" 2>/dev/null; }
+check "worker: the guard AND the offload hook, each its own PreToolUse entry" "settings worker on on | jq -e '[.hooks.PreToolUse[] | .matcher + \" \" + .hooks[0].command] == [\".* \\\"/x/teamctl\\\" _guard\", \"Bash \\\"/x/teamctl\\\" _offload-pre\"]'"
+check "lead (no guard): the offload hook alone" "settings lead off on | jq -e '[.hooks.PreToolUse[].matcher] == [\"Bash\"]'"
+check "the backstop: bashOutputMaxChars and BASH_MAX_OUTPUT_LENGTH above the offload limit" "settings worker on on | jq -e '.bashOutputMaxChars == 16000 and .env.BASH_MAX_OUTPUT_LENGTH == \"16000\" and .bashOutputMaxChars > $WOLFMUX_OFFLOAD_MIN'"
+check "policy output-offload off: not one entry of it, the guard kept" "settings worker on off | jq -e '([.hooks.PreToolUse[].matcher] == [\".*\"]) and .bashOutputMaxChars == null and .env.BASH_MAX_OUTPUT_LENGTH == null'"
+check "WOLFMUX_OFFLOAD=off: not one entry of it" "WOLFMUX_OFFLOAD=off settings lead off on | jq -e '.hooks.PreToolUse == null and .bashOutputMaxChars == null'"
+check "policy: output-offload is a key, on by default, on|off" "bash -c '. $WOLFMUX_HOME/lib/common.sh 2>/dev/null; . $WOLFMUX_HOME/lib/policy.sh; [ \"\$(policy_default output-offload)\" = on ] && policy_valid output-offload off && ! policy_valid output-offload maybe'"
 
 echo
 echo "result: $passed passed, $failed failed"

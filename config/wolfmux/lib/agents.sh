@@ -950,13 +950,14 @@ cmd_prompt() {
 # how it notices its agent has gone. The timeout is WOLFMUX_WAKE_TIMEOUT (a hook killed at its
 # timeout wakes nobody; the waiter ends itself 300 s earlier and re-arms).
 write_agent_settings() {
-  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command="" memdir="" compact=""
+  local role="$1" path="$STATE_DIR/settings/$1.json" kind notify_command="" guard_command="" memdir="" compact="" offload_command=""
   /bin/mkdir -p "$STATE_DIR/settings"
   kind="$(reg_field "$role" kind)"
   if [ "$kind" = "worker" ]; then compact="$(worker_compact_window "$(reg_field "$role" model)")"; fi
   if [ "$kind" = "lead" ]; then memdir="$(memory_lead_dir "$role" || true)"; fi
   if notify_wanted "$kind"; then notify_command="\"$TEAMCTL_SELF\" _notify"; fi
   if [ "$kind" = "worker" ] && [ "$(policy_get worker-isolation)" = "on" ]; then guard_command="\"$TEAMCTL_SELF\" _guard"; fi
+  if offload_wanted; then offload_command="\"$TEAMCTL_SELF\" _offload-pre"; fi
   # Workers only: agent teams off, so a worker can never become a second manager.
   # Workers, unless the policy says otherwise: the worktree guard (lib/guard.sh), for every tool (Monitor
   #   runs shell text too, and a tool the guard does not know has its strings checked).
@@ -973,6 +974,10 @@ write_agent_settings() {
   #   (/bg); its pane became the agent view, which started Claude's daemon from inside the pane,
   #   and every background chat of that daemon inherited the lead's identity. cmd_run_agent
   #   exports the switch as well, for a CLI that reads only the environment.
+  # Everyone, unless the output-offload policy or WOLFMUX_OFFLOAD says off (lib/offload.sh): a
+  #   PreToolUse hook on Bash that keeps a long output in a log, as its OWN entry next to the guard
+  #   (it never decides permission), and the CLI's own cap on a Bash result lowered to
+  #   WOLFMUX_OFFLOAD_BACKSTOP as a backstop for a call that was not rewritten.
   # Lead mode only: permission requests go to the lead.
   # Everyone, when the team's browser-writes policy says so (lib/policy.sh): an explicit
   # ALLOW rule for Chrome writes, so the permission check resolves before Claude Code's
@@ -986,6 +991,7 @@ write_agent_settings() {
     --arg inbox_wake "exec \"$TEAMCTL_SELF\" _inbox-wake" --argjson wake_timeout "$WOLFMUX_WAKE_TIMEOUT" \
     --arg browser_allow "$(policy_get browser-writes)" \
     --arg hook_command "\"$TEAMCTL_SELF\" _hook" --argjson hook_timeout "$WOLFMUX_HOOK_TIMEOUT" \
+    --arg offload_command "$offload_command" --arg backstop "$WOLFMUX_OFFLOAD_BACKSTOP" \
     --argjson context "$(worker_context_settings "$kind" "$(policy_get worker-context)")" --arg compact "$compact" '
     {type: "command", command: $inbox_wake, asyncRewake: true, timeout: $wake_timeout,
      rewakeSummary: "wolfmux: team notice"} as $wake
@@ -1004,12 +1010,17 @@ write_agent_settings() {
          SessionStart: ([turn("SessionStart")] + (if $kind == "lead" then [{hooks: [$wake]}] else [] end)),
          PostToolUse: [turn("PostToolUse")],
          PreCompact: [turn("PreCompact")]}}
-    * (if $guard_command != ""
-       then {hooks: {PreToolUse: [{matcher: ".*",
-                                   hooks: [{type: "command", command: $guard_command, timeout: 10}]}]}} else {} end)
+    # PreToolUse is ONE array built here: `*` replaces an array, it would not add to it.
+    * ((if $guard_command != ""
+        then [{matcher: ".*", hooks: [{type: "command", command: $guard_command, timeout: 10}]}] else [] end)
+       + (if $offload_command != ""
+          then [{matcher: "Bash", hooks: [{type: "command", command: $offload_command, timeout: 10}]}] else [] end)
+       | if length > 0 then {hooks: {PreToolUse: .}} else {} end)
     * (if $kind == "worker" and $mode == "lead"
        then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $permission_command, timeout: $timeout}]}]}}
        else {} end)
+    * (if $offload_command != ""
+       then {env: {BASH_MAX_OUTPUT_LENGTH: $backstop}, bashOutputMaxChars: ($backstop | tonumber)} else {} end)
     # $browser_allow is the TEAM-level browser-write grant (policy browser-writes, lib/policy.sh).
     # It is NOT the role-level PermissionRequest hook above — different gate, different purpose,
     # kept as its own arm on purpose so a later edit cannot merge or drop one for the other.

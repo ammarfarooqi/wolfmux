@@ -39,6 +39,10 @@
 #                                           plugins. lean = the project's own instructions and
 #                                           wolfmux's, nothing from ~/.claude. See worker_context_*
 #                                           below for what that costs and saves.
+#   output-offload      on | off            DEFAULT on. A Bash call's long output goes to a log and
+#                                           the agent sees a shortened form with the path
+#                                           (lib/offload.sh, ADR-0036), lead and workers alike. Off:
+#                                           not one hook entry of it is registered.
 #   branch-template     <template>          how this team names its workers' branches, with the
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
@@ -89,7 +93,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation worker-context lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation worker-context lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit output-offload"
 
 policy_default() {
   case "$1" in
@@ -112,6 +116,7 @@ policy_default() {
     lead-model) printf '%s\n' "${WOLFMUX_LEAD_MODEL:-opus}" ;;
     team-memory) printf 'off\n' ;; # no setting: only `teamctl memory enable` turns it on
     restore-on-limit) printf '%s\n' "${WOLFMUX_RESTORE_ON_LIMIT:-report}" ;;
+    output-offload) printf '%s\n' "${WOLFMUX_OUTPUT_OFFLOAD:-on}" ;;
     *) return 1 ;;
   esac
 }
@@ -164,6 +169,7 @@ policy_valid() { # <key> <value>
     link-node-modules:on | link-node-modules:off) return 0 ;;
     auto-prune:on | auto-prune:off) return 0 ;;
     auto-reclaim:on | auto-reclaim:off) return 0 ;;
+    output-offload:on | output-offload:off) return 0 ;;
     human-pane-typing:off | human-pane-typing:idle) return 0 ;;
     lead-wake:unwatched | lead-wake:off) return 0 ;;
     # A number, not a word: whole gigabytes, 0 switches the limit off, and the ceiling is
@@ -185,7 +191,7 @@ policy_choices() {
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
     browser-writes) printf 'ask|allow\n' ;;
-    worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim) printf 'on|off\n' ;;
+    worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim | output-offload) printf 'on|off\n' ;;
     worker-context) printf 'full|trim|lean\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
     human-pane-typing) printf 'off|idle\n' ;;
@@ -695,6 +701,7 @@ cmd_policy() {
     say "  link-node-modules   $(policy_get link-node-modules)     (on|off)          link a new lane's node_modules to its repository's copy"
     say "  auto-prune          $(policy_get auto-prune)      (on|off)          sweep a lane's build output as soon as it is parked (protect one: teamctl keep <role>)"
     say "  auto-reclaim        $(policy_get auto-reclaim)      (on|off)          take a parked lane off the books once its task is closed and its work is all in main (protect one: teamctl keep <role>)"
+    say "  output-offload      $(policy_get output-offload)      (on|off)          a long Bash output goes to a log; the agent sees head, tail, failure lines and the path"
     template="$(policy_get branch-template)"
     if [ -n "$template" ]; then
       say "  branch-template     $template     how this team names its workers' branches"

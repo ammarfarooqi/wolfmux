@@ -26,6 +26,17 @@ WOLFMUX_OFFLOAD_MATCHES=60  # lines of the cut middle that match the pattern, at
 WOLFMUX_OFFLOAD_LINE_MAX=400 # characters of one shown line, at most (a minified file is one line)
 WOLFMUX_OFFLOAD_KEEP=200    # logs kept per role
 WOLFMUX_OFFLOAD_PATTERN='FAIL|[Ee]rror|panic|not ok'
+# The CLI's own cap on a Bash result (bashOutputMaxChars / BASH_MAX_OUTPUT_LENGTH, default 30000),
+# lowered for every agent with this feature on: a backstop for a call that was not rewritten
+# (run_in_background, exec). Above it the CLI keeps the whole output in a file and shows 2 KB.
+WOLFMUX_OFFLOAD_BACKSTOP="${WOLFMUX_OFFLOAD_BACKSTOP:-16000}"
+
+# offload_wanted — 0 when this team's agents get the feature: the output-offload policy (needs
+# lib/policy.sh, loaded by teamctl) and WOLFMUX_OFFLOAD both say on
+offload_wanted() {
+  offload_enabled || return 1
+  [ "$(policy_get output-offload 2>/dev/null || printf on)" != "off" ]
+}
 
 # offload_enabled — 0 when outputs are to be shortened
 offload_enabled() {
