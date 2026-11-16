@@ -52,14 +52,22 @@ store_set_kind() {
 # the background job to end rather than blocking on `wait "$pid"`: under this script's
 # `set -e`, that blocking form was measured to hang past its own bound once a second
 # background job exists to track, so a poll is the only shape that reliably comes back on time.
+# Inside a hook run, HOOK_DEADLINE (a $SECONDS value cmd_hook sets once, lib/hooks.sh) caps every
+# such read to what is left of the run's one budget, so several reads cannot add up past it; with
+# nothing left the read is not started and answers 1 at once, like one that ran out of time.
 _bd_bounded() {
-  local secs="$1" tmp rc=1 waited=0 pid
+  local secs="$1" tmp rc=1 waited=0 pid left
   shift
+  if [ -n "${HOOK_DEADLINE:-}" ]; then
+    left=$((HOOK_DEADLINE - SECONDS))
+    [ "$left" -gt 0 ] || return 1
+    [ "$left" -ge "$secs" ] || secs="$left"
+  fi
   tmp="$(mktemp 2>/dev/null)" || return 1
   "$@" >"$tmp" 2>/dev/null &
   pid=$!
   while kill -0 "$pid" 2>/dev/null; do
-    if [ "$waited" -ge "$((secs * 10))" ]; then
+    if [ "$waited" -ge "$((secs * 10))" ] || { [ -n "${HOOK_DEADLINE:-}" ] && [ "$SECONDS" -ge "$HOOK_DEADLINE" ]; }; then
       kill -9 "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       /bin/rm -f "$tmp" 2>/dev/null
