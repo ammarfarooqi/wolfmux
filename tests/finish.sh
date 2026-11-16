@@ -30,6 +30,8 @@ export WOLFMUX_CLAUDE_PROJECTS="$WORK/claude-projects"
 # Run from an agent's pane, the environment carries that agent's team and worktree: all of
 # it is dropped, or every command here would act as that agent.
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR WOLFMUX_NOTIFY WOLFMUX_SPLASH TMUX TMUX_PANE
+# v1.24.0 (D5): a new project gets the native store; this suite models Beads (a fake bd).
+export WOLFMUX_STORE=beads
 unset WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_SESSION WOLFMUX_WORKTREE WOLFMUX_BRANCH WOLFMUX_MODEL
 unset WOLFMUX_DISK_GUARD WOLFMUX_DISK_MIN_GB WOLFMUX_LINK_NODE_MODULES WOLFMUX_AUTO_PRUNE WOLFMUX_HEAVY_LOCK
 unset WOLFMUX_AUTO_RECLAIM BEADS_DIR

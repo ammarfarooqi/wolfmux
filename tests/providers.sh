@@ -19,6 +19,8 @@ export HOME="$WORK/home" # no login keychain here, so every provider's key is mi
 export WOLFMUX_HOME="$REPO/config/wolfmux"
 export WOLFMUX_CLAUDE_BIN="/usr/bin/true" # what "would exec" names; never started
 unset WOLFMUX_EXTRA_SETTINGS WOLFMUX_DRY_RUN WOLFMUX_METERED CLAUDE_CONFIG_DIR
+# v1.24.0 (D5): a new project gets the native store; this suite models Beads (a fake bd).
+export WOLFMUX_STORE=beads
 
 # shellcheck source=/dev/null
 . "$REPO/config/wolfmux/lib/provider-env.sh" # sources lib/providers.sh: the table
