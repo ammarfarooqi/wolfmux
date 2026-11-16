@@ -62,6 +62,7 @@ tests/native-callsites.sh      # 22 checks: v1.23.0 bd call sites on a native st
 tests/mail.sh                  # 30 checks: lib/mail.sh, delivery through the CLI's hooks
 tests/tasks.sh                 # 31 checks: teamctl task/done/blocked, the Stop reminder
 tests/memory.sh                # 31 checks: shared team notes, the context watch, checkpoints
+tests/offload.sh               # ~40 seconds, 109 checks: lib/offload.sh, a long Bash output kept in a log
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment
@@ -282,6 +283,7 @@ separately from `smoke.sh`.
 | `tests/mail.sh` | 30 | `lib/mail.sh`: delivery to a Claude Code agent's hooks with the body, the typed-notice fallback for a role with no pane or a Codex-family agent, the watchdog for a busy turn, and `_deliver`'s refusal of garbage, an unknown identity or no session |
 | `tests/tasks.sh` | 31 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
 | `tests/memory.sh` | 31 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), and that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports |
+| `tests/offload.sh` | 109 | `lib/offload.sh` (ADR-0036): the PreToolUse rewrite, an equivalence corpus run plain and wrapped under real bash (exit code, output, cwd and exports agree: heredoc, `exit 3`, `set -e`, pipelines, `&` and `wait`, `exec`, a syntax error, stdin, binary output), a 5 MB log with a failure in the cut middle, fail open, a timeout kill, pruning, the settings entries and the policy switch, `teamctl run --`, the PostToolUse safety net, and the measured hook times |
 
 ## Live checks with the real CLIs
 
