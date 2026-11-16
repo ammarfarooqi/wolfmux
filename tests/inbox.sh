@@ -1757,7 +1757,8 @@ check "settings delta (worker): the same both ways round" '[ "$DEFAULT_QA_PERMKE
 check "settings drift (lead): the key set is exactly disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook, the wake waiter (Stop and SessionStart), the inbox UserPromptSubmit hook and the turn hooks" '[ "$DEFAULT_LEAD_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
 # v1.24.0: plus enabledPlugins, and only that, which the worker-context policy (default trim)
 # writes when the machine has plugins to switch off (lib/policy.sh worker_context_settings).
-check "settings drift (worker): exactly disableAgentView, env, hooks and teammateMode (and enabledPlugins under worker-context trim), and exactly the guard, the notification hook, the two inbox hooks and the turn hooks" '[ "$(printf "%s" "$DEFAULT_QA_KEYS" | jq -c "map(select(. != \"enabledPlugins\"))")" = "[\"disableAgentView\",\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
+# v1.25.0: plus permissions, the deny list of the tools a pane agent cannot use (the same policy).
+check "settings drift (worker): exactly disableAgentView, env, hooks and teammateMode (and enabledPlugins and permissions under worker-context trim), and exactly the guard, the notification hook, the two inbox hooks and the turn hooks" '[ "$(printf "%s" "$DEFAULT_QA_KEYS" | jq -c "map(select(. != \"enabledPlugins\" and . != \"permissions\"))")" = "[\"disableAgentView\",\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
 # rgi60 F5: Claude Code's agent view is off for every agent, by the setting AND by its
 # environment switch. With it on, /bg turned the comms lead's pane into the agent view, which
 # started Claude's daemon from inside the pane (2026-10-19).

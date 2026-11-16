@@ -661,7 +661,7 @@ policy_summary() {
 WOLFMUX_PANE_UNUSED_TOOLS="Artifact AskUserQuestion SendFeedback ScheduleWakeup Workflow ReportFindings ListAgents"
 CONTEXT_EXCLUDE_MAX=16 # globs in one context-exclude list
 
-# context_exclude_valid <list> — one to CONTEXT_EXCLUDE_MAX globs, separated by spaces, each made
+# context_exclude_valid <list>: one to CONTEXT_EXCLUDE_MAX globs, separated by spaces, each made
 # of the characters a path and a glob need and nothing a shell or JSON would read otherwise.
 context_exclude_valid() {
   local glob count=0
@@ -678,7 +678,7 @@ context_exclude_valid() {
   [ "$count" -ge 1 ] && [ "$count" -le "$CONTEXT_EXCLUDE_MAX" ]
 }
 
-# context_reductions <kind> — the settings fragment of the three reductions above, for a trimmed
+# context_reductions <kind>: the settings fragment of the three reductions above, for a trimmed
 # worker or a trimmed lead ({} when jq fails: a reduction that cannot be written is not made)
 context_reductions() {
   local tools="$WOLFMUX_PANE_UNUSED_TOOLS" exclude
@@ -740,7 +740,7 @@ worker_context_carried() {
   fi
 }
 
-# worker_context_settings <kind> <mode> — the fragment write_agent_settings merges in for a
+# worker_context_settings <kind> <mode>: the fragment write_agent_settings merges in for a
 # worker. full: nothing. trim: your plugins off and the reductions. lean: that, and what a
 # worker without your user settings needs carried over.
 worker_context_settings() {
@@ -755,7 +755,7 @@ worker_context_settings() {
   } | "$JQ_BIN" -cs 'reduce .[] as $part ({}; . * $part)' 2>/dev/null || printf '{}\n'
 }
 
-# agent_context_settings <kind> — what write_agent_settings merges in for any agent: a worker by
+# agent_context_settings <kind>: what write_agent_settings merges in for any agent: a worker by
 # worker-context, the lead by lead-context (full: nothing; trim: the reductions, plugins untouched).
 agent_context_settings() {
   if [ "$1" = "worker" ]; then

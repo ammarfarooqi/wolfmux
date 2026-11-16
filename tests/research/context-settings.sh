@@ -1,5 +1,5 @@
 #!/bin/bash
-# context-settings.sh <worker|lead> <mode> [<context-exclude globs>] — print the settings fragment
+# context-settings.sh <worker|lead> <mode> [<context-exclude globs>]: print the settings fragment
 # that lib/policy.sh gives an agent of that kind under that worker-context / lead-context value,
 # built from YOUR ~/.claude, without a team: the same functions write_agent_settings calls.
 # Used by the probes that prove what the fragment saves (tests/research/probe.sh).

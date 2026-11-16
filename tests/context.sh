@@ -1,5 +1,5 @@
 #!/bin/bash
-# context.sh — tests for what an agent's conversation starts with (v1.25.0, ADR-0036):
+# context.sh: tests for what an agent's conversation starts with (v1.25.0, ADR-0036):
 # the reductions of worker-context trim and lean, the lead-context and context-exclude policies
 # (lib/policy.sh), and the rules-folder hint of teamctl doctor (lib/doctor.sh).
 #
@@ -71,7 +71,7 @@ git -c user.name=test -c user.email=test@example.invalid commit -qm "initial com
 SEVEN='["Artifact","AskUserQuestion","SendFeedback","ScheduleWakeup","Workflow","ReportFindings","ListAgents"]'
 SIX='["Artifact","SendFeedback","ScheduleWakeup","Workflow","ReportFindings","ListAgents"]'
 settings_of() { find "$WOLFMUX_DATA/state" -path "*settings/$1.json" -not -path "*/teams/*" | head -1; }
-# restarted <role> — restart it and wait until its pane has written a new settings file
+# restarted <role>: restart it and wait until its pane has written a new settings file
 restarted() {
   local file marker="$WORK/marker" tries=0
   : >"$marker"

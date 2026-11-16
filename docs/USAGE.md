@@ -923,11 +923,15 @@ offline and never reads a key value.
 Everything in an agent's first request is sent again with every later request, and it decides
 how much room a compaction leaves. Measured on Claude Code 2.1.325 (2026-11-16, ADR-0036):
 
-| | Worker, first request | Lead, first request |
+| First request | Worker | Lead |
 |---|---|---|
-| v1.24.0 (`worker-context trim`, lead untouched) | 81,024 tokens | 115,652 |
-| v1.25.0 `trim`, and `lead-context trim` | 61,874 | see ADR-0036 |
-| the same with a second-language rules folder left out | 54,289 | 70,017 |
+| v1.24.0 (`worker-context trim`, lead untouched) | 74,171 tokens | 90,006 |
+| v1.25.0 `trim`, and `lead-context trim` | 51,884 | 67,793 |
+| the same with a second-language rules folder left out | 44,099 | 60,008 |
+
+These are print-mode probes (`claude -p`, Haiku 5.5) with the settings wolfmux generates. A pane
+offers more tools, so both the request and the saving are larger there: 81,024 to 54,289 for a
+worker and 115,652 to 70,017 for a lead in real team runs.
 
 `teamctl policy worker-context full|trim|lean` (default `trim`, `WOLFMUX_WORKER_CONTEXT`):
 

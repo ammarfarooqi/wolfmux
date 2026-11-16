@@ -1,14 +1,14 @@
 #!/bin/bash
 # probe.sh <name> [claude flags...] — one print-mode Haiku request ("Reply with the single word ok")
 # from the scratch project, with the flags under test, to MEASURE what a first request weighs.
-# Appends one JSON line to tests/research/results/probes.jsonl: the name, the exact command line,
+# Appends one JSON line to tests/research/results/${PROBE_OUT:-probes.jsonl}: the name, the exact command line,
 # and the usage block the CLI reports. Needs tests/research/.scratch-path (the scratch directory).
 set -u
 here="$(cd "$(dirname "$0")" && pwd -P)"
 scratch="$(cat "$here/.scratch-path")"
 name="$1"
 shift
-out="$here/results/probes.jsonl"
+out="$here/results/${PROBE_OUT:-probes.jsonl}"
 mkdir -p "$here/results"
 raw="$("$here/iso.sh" "$scratch/r1" claude -p "Reply with the single word ok" --model haiku --output-format json "$@" </dev/null 2>/dev/null)"
 printf '%s' "$raw" | jq -c --arg name "$name" --arg cmd "claude -p \"Reply with the single word ok\" --model haiku --output-format json $*" \

@@ -571,7 +571,7 @@ _doc_policy() {
   fi
 }
 
-# _doc_nonascii_share <dir> — how much of that folder's *.md is not ASCII, in percent of its bytes
+# _doc_nonascii_share <dir>: how much of that folder's *.md is not ASCII, in percent of its bytes
 _doc_nonascii_share() {
   local total high
   total="$(/bin/cat "$1"/*.md 2>/dev/null | /usr/bin/wc -c | /usr/bin/tr -d ' ')"
@@ -580,7 +580,7 @@ _doc_nonascii_share() {
   printf '%s\n' $((${high:-0} * 100 / total))
 }
 
-# _doc_rules_twin <dir> — the sibling folder this one repeats: at least three *.md files, four
+# _doc_rules_twin <dir>: the sibling folder this one repeats: at least three *.md files, four
 # out of five of them with a namesake there, and that sibling written in ASCII. Prints nothing
 # when there is none.
 _doc_rules_twin() {
@@ -601,7 +601,7 @@ _doc_rules_twin() {
   done
 }
 
-# _doc_context — a rules folder of yours that repeats another one in a second language is read
+# _doc_context: a rules folder of yours that repeats another one in a second language is read
 # by every agent with every request. Named with the policy line that leaves it out and with what
 # that saves: 0.85 tokens per character, measured on a Chinese copy (9,142 characters, 7,785
 # tokens, Claude Code 2.1.325). A note, never a warning: both copies are yours to keep.
