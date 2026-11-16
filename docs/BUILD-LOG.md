@@ -2237,7 +2237,7 @@ outcome on a fake clock (no notices never exits 2 until the re-arm, two waiters,
 pane gone, agent gone, PID 1, a failed print, the typed waiter's skip), and an end-to-end pair of
 waiters whose `bin/teamctl` process exits 2. Checks that meant "a pane in use" now show the
 lead's pane to the client. Commits: S1 b08e900, S2 9a4ee6d, S3 the Stop rule, S4 this one.
-## 26. A store of our own (v1.13)
+## 26. A store of our own (v1.24.0)
 
 Three complaints from the same day of real use: a worker inside one long turn did not
 read "commit now" for two hours because the typed nudge queues until the turn ends
@@ -2245,14 +2245,14 @@ read "commit now" for two hours because the typed nudge queues until the turn en
 rediscovered how the tests are run; and a worker reached 255k tokens of context without
 one commit, with no warning along the way. A four-worker team took one ADR each.
 
-- **Mail through the CLI's hooks** (ADR-0028). A message or task now reaches a Claude
+- **Mail through the CLI's hooks** (ADR-0032). A message or task now reaches a Claude
   Code agent's conversation directly — `additionalContext` on `SessionStart`,
   `UserPromptSubmit` or `PostToolUse`, or a `Stop` hook that blocks with the text — at
   the agent's next tool call, no `bd show` round trip needed to read it. The hot path
   above the module loader in `bin/teamctl` keeps this cheap: an idle `PostToolUse` with
   nothing queued costs about 3 ms, no module loaded. A role with no running pane, or a
   Codex-family agent (no such hooks), still gets the typed nudge.
-- **Team memory, the context watch, and checkpoints** (ADR-0029). `teamctl remember` /
+- **Team memory, the context watch, and checkpoints** (ADR-0033). `teamctl remember` /
   `memories` put what a team has learned in front of every new, resumed or compacted
   conversation. Every tenth tool call the context watch checks how full the conversation
   is; at `WOLFMUX_CONTEXT_WARN` (60%) the agent is told once to commit and write a
@@ -2260,13 +2260,13 @@ one commit, with no warning along the way. A four-worker team took one ADR each.
   lead messaged the command that gives the task a fresh conversation. `teamctl restart
   <role>` is that rotation: same worktree and branch, a new conversation that starts
   from the checkpoint.
-- **`worker-context`** (ADR-0030). A freshly spawned worker's first request was measured
+- **`worker-context`** (ADR-0034). A freshly spawned worker's first request was measured
   at 111,365 tokens before it had read its task — over half of a 200k window, sent again
   with every request. The policy's three settings (`full`, `trim` the default, `lean`)
   trade how much of the owner's own `~/.claude` a worker's conversation starts with
   against that cost; the lead is never trimmed.
-- **A store of our own** (ADR-0031). Every task, message and memory operation still went
-  through `bd` even after ADR-0028, and that was now the larger remaining cost: 0.3 to
+- **A store of our own** (ADR-0035). Every task, message and memory operation still went
+  through `bd` even after ADR-0032, and that was now the larger remaining cost: 0.3 to
   0.7 s a call, a single writer (6 concurrent `bd create` calls took 3.7 s between them),
   and Beads' own issue #6039 stalling a hook past 30 s under load. `lib/store.sh` moves
   all three behind one interface with two backends: a native `sqlite3` file per project
@@ -2286,7 +2286,7 @@ commands always were (`removed_command`, naming the real commands instead).
 `tests/tasks.sh` (31), `tests/memory.sh` (31). `tests/providers.sh`: 134 (unchanged).
 `tests/docs.sh`: 36 (unchanged in count; 21 → 36 passing, once `usage()`, the completion
 backend, the config template, README.md, docs/USAGE.md and the user manual caught up).
-`tests/migration.sh`: 36 (unchanged). v1.13.0.
+`tests/migration.sh`: 36 (unchanged). v1.24.0.
 
 ## Footprint on the machine
 

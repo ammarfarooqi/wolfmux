@@ -883,7 +883,7 @@ build_role_prompt() {
 
 # kickoff_text <role> <beads-identity> <provider> <family> — a Claude Code family agent's
 # SessionStart hook already put its assignment, its inbox and its checkpoint into the
-# conversation before this prompt runs (lib/hooks.sh, v1.13): its kickoff only has to say to
+# conversation before this prompt runs (lib/hooks.sh, v1.24.0): its kickoff only has to say to
 # act on what is already there, not to go fetch it with bd list + bd show. A Codex agent has
 # no hooks (family = codex): its kickoff still fetches its own inbox, in the one command that
 # carries bodies (`teamctl inbox`) instead of bd list + bd show per item.

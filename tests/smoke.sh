@@ -620,7 +620,7 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 4
   BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Quote test" -t message -a backend -d 'body with "quotes" $HOME `ticks`' --silent >/dev/null 2>&1
   sleep 3
-  # Mail now reaches an idle pane through its hooks (ADR-0028): the Beads hook spools it and
+  # Mail now reaches an idle pane through its hooks (ADR-0032): the Beads hook spools it and
   # types the wake line _mail_type uses ("New mail for …"), not the older typed Beads-update
   # notice (still what a Codex-family or paneless target gets, unaffected here).
   check "beads: message to a role notifies its pane" 'teamctl capture backend -n 12 | grep -q "New mail for backend"'
@@ -918,7 +918,7 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 3
   # review's lead is Claude family (fable): the new hooks-based "New mail for …" line.
   # default's lead is Codex family (astra, started at the top of this file): no hooks yet
-  # (ADR-0028 point 9), so it still gets the older typed "Beads update for …" notice.
+  # (ADR-0032 point 9), so it still gets the older typed "Beads update for …" notice.
   check "teams: teams talk to each other through Beads, in both directions" '[ "$(teamctl capture lead --team review --all | grep -c "New mail for review.lead")" -ge 2 ] && teamctl capture lead --team default --all | grep -q "Beads update for lead "'
 fi
 check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "teamctl send <team>.lead"'

@@ -1,4 +1,4 @@
-# ADR-0028: Mail reaches an agent through its CLI's hooks, with the body, in the middle of a turn
+# ADR-0032: Mail reaches an agent through its CLI's hooks, with the body, in the middle of a turn
 
 **Date**: 2026-11-13
 **Status**: accepted
@@ -48,12 +48,16 @@ Qwen, Moonshot, DeepSeek) has the same hooks.
    line after `WOLFMUX_MAIL_WAKE_AFTER` seconds (90) if the mail is still unread and the agent
    has been quiet that long. A line typed into a busy CLI is only queued, so a wrong guess costs
    one short turn and never a message.
+   **Amended in v1.24.0** (the merge onto v1.23.0): this point is replaced. Nothing here types
+   any more. An item files one notice through v1.23.0's inbox (ADR-0028), whose gates decide
+   whether a line is typed (ADR-0029) and whose wake waiter wakes an idle lead (ADR-0031); the
+   inbox hooks attach the spooled body, and the watchdog and `WOLFMUX_MAIL_WAKE_AFTER` are gone.
 7. Short verbs for what the protocol asked for in three to five `bd` calls: `teamctl send`,
-   `teamctl inbox`, `teamctl task`, `teamctl done`, `teamctl blocked`. Plain `bd` keeps working.
+   `teamctl mail`, `teamctl task`, `teamctl done`, `teamctl blocked`. Plain `bd` keeps working.
 8. A Stop hook looks once at Beads and tells an agent, once per task, that it is stopping with a
    task in progress or with an assigned task it never started.
 9. Codex agents have no such hooks in this version: they keep the typed notice with its `bd`
-   commands, and their kickoff names `teamctl inbox`.
+   commands, and their kickoff names `teamctl mail`.
 
 ## Alternatives Considered
 

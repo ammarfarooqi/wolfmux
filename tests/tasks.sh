@@ -177,11 +177,11 @@ KICKOFF_CLAUDE="$(kickoff_of backend review.backend "" claude)"
 check "kickoff (Claude family): no longer tells the worker to run bd list" '! printf "%s" "$KICKOFF_CLAUDE" | grep -q "bd list --assignee"'
 check "kickoff (Claude family): says to claim first, and not to start over if restarted mid-task" \
   'printf "%s" "$KICKOFF_CLAUDE" | grep -q "teamctl claim <id>" && printf "%s" "$KICKOFF_CLAUDE" | grep -q "do not start over" && printf "%s" "$KICKOFF_CLAUDE" | grep -q "teamctl diff backend --commits"'
-check "kickoff (Claude family): falls back to teamctl inbox when nothing was shown above" 'printf "%s" "$KICKOFF_CLAUDE" | grep -q "teamctl inbox"'
+check "kickoff (Claude family): falls back to teamctl mail when nothing was shown above" 'printf "%s" "$KICKOFF_CLAUDE" | grep -q "teamctl mail"'
 
 KICKOFF_CODEX="$(kickoff_of backend review.backend "" codex)"
-check "kickoff (Codex): names teamctl inbox instead of bd list + bd show" \
-  'printf "%s" "$KICKOFF_CODEX" | grep -q "run \`teamctl inbox\`" && ! printf "%s" "$KICKOFF_CODEX" | grep -q "bd list --assignee" && ! printf "%s" "$KICKOFF_CODEX" | grep -q "bd show"'
+check "kickoff (Codex): names teamctl mail instead of bd list + bd show" \
+  'printf "%s" "$KICKOFF_CODEX" | grep -q "run \`teamctl mail\`" && ! printf "%s" "$KICKOFF_CODEX" | grep -q "bd list --assignee" && ! printf "%s" "$KICKOFF_CODEX" | grep -q "bd show"'
 check "kickoff (Codex): still says not to start over if restarted mid-task" 'printf "%s" "$KICKOFF_CODEX" | grep -q "do not start over"'
 
 echo "== named team"

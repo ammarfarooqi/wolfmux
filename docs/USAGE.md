@@ -4,7 +4,7 @@ The installed user manual is [`config/wolfmux/README.md`](../config/wolfmux/READ
 (`~/.config/wolfmux/README.md` on the machine). This page walks through one
 complete session and lists every command.
 
-Tasks, messages and team memory are `teamctl` commands (`send`, `task`, `checkpoint`, …),
+Tasks, messages and shared team notes are `teamctl` commands (`send`, `task`, `checkpoint`, …),
 not Beads: agents no longer need `bd`. They live in a native sqlite store by default, or
 in Beads for a team already on it (`teamctl store`; [Beads cheat sheet](#beads-cheat-sheet)
 if yours is). A message or task reaches a Claude Code agent through its CLI's hooks, with
@@ -844,7 +844,7 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | Command | Does |
 |---------|------|
 | `teamctl send <role>\|<team>.<role>\|--all "<subject>" ["<body>"] [--body-file <file>\|-] [--re <bead-id>]` | message an agent, every agent of this team, or reply to a bead |
-| `teamctl inbox [<role>] [--peek] [--json]` | your (or that role's) unread mail and open tasks; `--peek` leaves it unread |
+| `teamctl mail [<role>] [--peek] [--json]` | your (or that role's) unread mail and open tasks; `--peek` leaves it unread |
 | `teamctl task <role> "<title>" [-d "<text>"\|--body-file <file>\|-] [-p <0-4>] [--after <bead-id>]… [--spawn <model>]` | assign work; `--after` adds a dependency, `--spawn` starts the role if it is not already running |
 | `teamctl claim [<id>]` | claim your only open task, or the one you name; refuses one still waiting on an unclosed blocker |
 | `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | report and close a task: a `Done:` message to the lead (summary, tests, branch, commit log), then closes it |
@@ -855,8 +855,8 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | `teamctl reopen <id> "<why>"` (lead) | send a closed task back: open, the reason noted, the assignee told |
 | `teamctl close <id> -r "<reason>" [--failed]` (lead) | close or reject any task of this team |
 | `teamctl checkpoint "<text>"\|--body-file <file>\|-\|--show [<role>]` | save where you left off, or print a role's stored checkpoint; shown again at the next `SessionStart` |
-| `teamctl remember "<fact>" [--key <slug>]` | add to team memory, shown to every agent at session start |
-| `teamctl memories [<query>] [--json]` | search team memory |
+| `teamctl remember "<fact>" [--key <slug>]` | add to shared team notes, shown to every agent at session start |
+| `teamctl memories [<query>] [--json]` | search shared team notes |
 | `teamctl forget <key>` | remove one memory |
 | `teamctl store [native\|beads [--migrate]]` | show, or switch, which backend holds this project's tasks, mail and memory; `--migrate` moves a Beads project's open work into the native store |
 

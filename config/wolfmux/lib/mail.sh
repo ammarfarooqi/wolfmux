@@ -70,7 +70,7 @@ _mail_spool_write() {
 # attention is flagged for the mid-turn channel (PostToolUse). Then, for every agent, exactly
 # one notice through v1.23.0's _nudge_one: one inbox_add line (badge, popup, desktop
 # notification, wake waiter) and, only where its gates allow, the typed line. Nothing in this
-# file types into a pane any more: the v1.13 wake line and its watchdog are gone, because the
+# file types into a pane any more: the wake line of the first hook-mail design and its watchdog are gone, because the
 # Stop and prompt hooks, the lead's wake waiter and the gated typing already cover an idle and
 # a busy agent. A Codex-family agent gets exactly what v1.23.0 gave it: no spool, the notice.
 # Shared by cmd_deliver (the Beads hook) and mail_announce (the native store's own delivery).

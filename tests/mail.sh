@@ -144,7 +144,7 @@ check "D7: one event files exactly one notice line, naming the item" '[ "$(inbox
 check "D7: and its body waits in mail/new/ for whichever hook hands it over" 'ls "$BACKEND_RUN/mail/new" | grep -q -- "-$MSG_ID.json$"'
 check "mail: the body is never typed into the pane" \
   '! teamctl capture backend --all | grep -q "the secret body"'
-check "D7: no v1.13 wake line is typed (\"New mail for\" is not a v1.23.0 notice)" \
+check "D7: no wake line of the first hook-mail design is typed (\"New mail for\" is not a v1.23.0 notice)" \
   '! teamctl capture backend --all | grep -q "New mail for backend: it is shown with this line"'
 
 echo "== PostToolUse first: the Stop hook does not hand it over again"

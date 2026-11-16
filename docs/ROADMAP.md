@@ -7,8 +7,8 @@
 | Notifications are keystrokes | A notice is typed into a pane, because the recipient is the agent in it and that is the only channel an agent reads. A CLI that is mid-turn queues it; a CLI showing a modal dialog may swallow it. A pane a human is typing in is left alone and the notice waits (up to 10 minutes, 60 s for an approval), so it can be late or, after a long wait, not arrive at all. The 300 ms between the text and the Enter cannot be closed with what tmux reports, so a human who starts typing inside it can still have a keystroke land after a notice. Nothing is lost — the bead stays open in the recipient's inbox — but the agent has to look. |
 | Embedded Beads is single-writer | Writers queue on a file lock. Fine for a handful of agents making occasional `bd` calls; a large swarm should use Beads server mode. |
 | Comments are silent | Beads fires no hook for `bd comment`. When someone must act, send a message. |
-| Notifications are still keystrokes for a Codex agent | A Claude Code agent gets the full message through its CLI's hooks (ADR-0028); Codex has no such hook, so a notice there is still typed into a pane, which a mid-turn CLI queues and a modal dialog may swallow. Nothing is lost — the task or message stays open in the recipient's inbox — but the agent has to look. |
-| Embedded Beads is single-writer | Only on a project kept on the Beads backend: writers queue on a file lock. A new project is on the native sqlite store by default (ADR-0031), which does not have this limit; a large swarm still on Beads should migrate (`teamctl store native --migrate`) or use Beads server mode. |
+| Notifications are still keystrokes for a Codex agent | A Claude Code agent gets the full message through its CLI's hooks (ADR-0032); Codex has no such hook, so a notice there is still typed into a pane, which a mid-turn CLI queues and a modal dialog may swallow. Nothing is lost — the task or message stays open in the recipient's inbox — but the agent has to look. |
+| Embedded Beads is single-writer | Only on a project kept on the Beads backend: writers queue on a file lock. A new project is on the native sqlite store by default (ADR-0035), which does not have this limit; a large swarm still on Beads should migrate (`teamctl store native --migrate`) or use Beads server mode. |
 | Comments are silent | On either backend, a comment notifies nobody. When someone must act, send a message. |
 | Same-user trust | Agents are not sandboxed from each other or from the account ([SECURITY.md](SECURITY.md#trust-model)). |
 | Workers share the rest of `~/.claude` under `trim` | `worker-context` (default `trim`) already switches off every plugin; `lean` drops the rest of `~/.claude` too (rules, settings), at the cost of nothing from your own setup reaching the worker. `full` restores the pre-1.13 behaviour: every plugin's hooks run on every tool call of every worker, which is what `claude-mem` being switched off in GLM workers was working around. |
@@ -45,8 +45,8 @@
 
 ## What a V2 could be
 
-The original plan was "V1 on files, V2 on SQLite". v1.13 did exactly that for tasks,
-messages and memory (`lib/store.sh`, ADR-0031): a native sqlite file is now the
+The original plan was "V1 on files, V2 on SQLite". v1.24.0 did exactly that for tasks,
+messages and memory (`lib/store.sh`, ADR-0035): a native sqlite file is now the
 default, and Beads is kept as the second backend rather than the only one.
 `teamctl`'s own registry is still a few small JSON files behind one module.
 Candidates that would solve real problems, in the order they are likely to matter:
