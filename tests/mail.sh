@@ -285,6 +285,16 @@ REVIEW_RUN="$(run_dir_of backend review)"
 check "mail: a task for review.backend lands in that team's run directory, not the default team's" \
   'BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Cross team" -t task -a review.backend -d "crossbody" --silent >/dev/null; sleep 1; ls "$REVIEW_RUN/mail/new" 2>/dev/null | grep -q .'
 
+echo "== teamctl done: the close it already reported files no second notice for the lead"
+QC1="$(BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Loud close" -t task -p 2 -a backend -d x --silent)"
+QC2="$(BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Quiet close" -t task -p 2 -a backend -d x --silent)"
+BEADS_ACTOR=backend TEAM_ROLE=backend bd close "$QC1" -r done >/dev/null 2>&1
+WOLFMUX_MAIL_CLOSE_REPORTED=1 BEADS_ACTOR=backend TEAM_ROLE=backend bd close "$QC2" -r done >/dev/null 2>&1
+wait_for 10 "[ \"\$(inbox_lines lead $QC1)\" -ge 1 ]" >/dev/null 2>&1 || true
+sleep 2
+check "CONTROL: a worker's bd close files a notice for the lead" '[ "$(inbox_lines lead "$QC1")" -ge 1 ]'
+check "with WOLFMUX_MAIL_CLOSE_REPORTED (teamctl done) the same close files none" '[ "$(inbox_lines lead "$QC2")" = 0 ]'
+
 echo "== _deliver: never fails bd, never writes on bad input"
 check "_deliver: garbage on stdin exits 0 and writes nothing" \
   'before=$(ls "$BACKEND_RUN/mail/new" 2>/dev/null | wc -l); printf "not json" | TEAM_ROLE=lead BEADS_ACTOR=lead teamctl _deliver backend --event create; rc=$?; after=$(ls "$BACKEND_RUN/mail/new" 2>/dev/null | wc -l); [ "$rc" -eq 0 ] && [ "$after" -eq "$before" ]'

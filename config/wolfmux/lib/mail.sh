@@ -109,6 +109,12 @@ cmd_deliver() {
   case " create update close " in *" $event "*) ;; *) return 0 ;; esac
   payload="$(/bin/cat 2>/dev/null || true)"
   printf '%s' "$payload" | "$JQ_BIN" -e 'type == "object"' >/dev/null 2>&1 || return 0
+  # the close of a task `teamctl done` already reported (mail_announce says why); bd hands its
+  # hook the environment of the command that wrote, so the flag reaches here as well
+  if [ "$event" = "close" ] && [ -n "${WOLFMUX_MAIL_CLOSE_REPORTED:-}" ] &&
+    [ "$(printf '%s' "$payload" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)" != "message" ]; then
+    return 0
+  fi
   mail_quiet_route "$identity" || return 0
   _mail_deliver_to "$MAIL_ROLE" "$event" "$payload" "$identity"
 }
@@ -148,7 +154,9 @@ mail_announce() {
       fi
       ;;
     close)
-      if [ "$type" != "message" ] && [ -n "$actor" ] && [ "$actor" != "$lead" ]; then
+      # WOLFMUX_MAIL_CLOSE_REPORTED: `teamctl done` already sent the lead its "Done:" report for
+      # this close; a second notice for the same event would be a second hand-over (D7).
+      if [ "$type" != "message" ] && [ -n "$actor" ] && [ "$actor" != "$lead" ] && [ -z "${WOLFMUX_MAIL_CLOSE_REPORTED:-}" ]; then
         target="$lead"
       fi
       ;;

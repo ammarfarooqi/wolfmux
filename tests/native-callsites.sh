@@ -129,6 +129,16 @@ check "a message with no sender recorded never renders \"from ?\" or \"teamctl s
   'out="$(_mail_render_bead "{\"id\":\"m9\",\"issue_type\":\"message\",\"title\":\"T\",\"created_by\":\"\"}")"; [ -n "$out" ] && ! printf "%s" "$out" | grep -qF "from ?" && ! printf "%s" "$out" | grep -qF "send ?"'
 check "the protocol names the command that writes to the human" 'grep -qF "teamctl send human" "$WOLFMUX_HOME/TEAM_PROTOCOL.md"'
 
+echo "== teamctl done: one notice for the lead, not two"
+TARGETS="$WORK/announce-targets"
+ct="$(store_task_create lead w1 2 "Close me" "x")"
+store_task_close "$ct" "finished" >/dev/null 2>&1 || true
+check "a worker's close is announced to the lead" \
+  '( mail_quiet_route() { printf "%s\n" "$1" >>"$TARGETS"; return 1; }; mail_announce close "$(store_item_json "$ct")" w1 ); grep -qx "$WOLFMUX_LEAD_ROLE" "$TARGETS"'
+: >"$TARGETS"
+check "  ... but not when teamctl done already sent the lead its Done report (WOLFMUX_MAIL_CLOSE_REPORTED)" \
+  '( mail_quiet_route() { printf "%s\n" "$1" >>"$TARGETS"; return 1; }; WOLFMUX_MAIL_CLOSE_REPORTED=1 mail_announce close "$(store_item_json "$ct")" w1 ); [ ! -s "$TARGETS" ]'
+
 check "no bd call was made on the native project" 'no_bd'
 [ -e "$BD_MARK" ] && sed 's/^/    bd: /' "$BD_MARK"
 # Last: doctor reports bd's version when it is installed, and only that, on a native project.
