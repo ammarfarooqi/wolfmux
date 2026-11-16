@@ -1736,8 +1736,9 @@ DEFAULT_LEAD_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of lead)" 2>/dev/
 DEFAULT_QA_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of qa)" 2>/dev/null)"
 # v1.23.0: the lead's wake waiter on SessionStart and as the third Stop entry (exec'd)
 # v1.24.0 (D7): and `teamctl _hook <Event>` exactly once for each of the five turn events (lib/hooks.sh)
-EXPECT_LEAD_HOOKS='{"PostToolUse":["\"<TEAMCTL>\" _hook PostToolUse"],"PreCompact":["\"<TEAMCTL>\" _hook PreCompact"],"SessionStart":["\"<TEAMCTL>\" _hook SessionStart","exec \"<TEAMCTL>\" _inbox-wake"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","\"<TEAMCTL>\" _hook Stop","exec \"<TEAMCTL>\" _inbox-wake"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt","\"<TEAMCTL>\" _hook UserPromptSubmit"]}'
-EXPECT_QA_HOOKS='{"PostToolUse":["\"<TEAMCTL>\" _hook PostToolUse"],"PreCompact":["\"<TEAMCTL>\" _hook PreCompact"],"PreToolUse":["\"<TEAMCTL>\" _guard"],"SessionStart":["\"<TEAMCTL>\" _hook SessionStart"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","\"<TEAMCTL>\" _hook Stop"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt","\"<TEAMCTL>\" _hook UserPromptSubmit"]}'
+# v1.25.0 (ADR-0036): and the offload rewrite on Bash, its own PreToolUse entry after the guard
+EXPECT_LEAD_HOOKS='{"PostToolUse":["\"<TEAMCTL>\" _hook PostToolUse"],"PreCompact":["\"<TEAMCTL>\" _hook PreCompact"],"PreToolUse":["\"<TEAMCTL>\" _offload-pre"],"SessionStart":["\"<TEAMCTL>\" _hook SessionStart","exec \"<TEAMCTL>\" _inbox-wake"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","\"<TEAMCTL>\" _hook Stop","exec \"<TEAMCTL>\" _inbox-wake"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt","\"<TEAMCTL>\" _hook UserPromptSubmit"]}'
+EXPECT_QA_HOOKS='{"PostToolUse":["\"<TEAMCTL>\" _hook PostToolUse"],"PreCompact":["\"<TEAMCTL>\" _hook PreCompact"],"PreToolUse":["\"<TEAMCTL>\" _guard","\"<TEAMCTL>\" _offload-pre"],"SessionStart":["\"<TEAMCTL>\" _hook SessionStart"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","\"<TEAMCTL>\" _hook Stop"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt","\"<TEAMCTL>\" _hook UserPromptSubmit"]}'
 teamctl policy browser-writes allow >/dev/null 2>&1
 teamctl restart lead >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
@@ -1754,10 +1755,10 @@ check "settings delta (lead): at the default there is no permissions key at all,
 check "settings delta (worker): the same both ways round" '[ "$DEFAULT_QA_PERMKEY" = "false" ] && [ "$DEFAULT_QA_DOC" = "$(settings_doc_noperm qa)" ]'
 # The DRIFT, which the delta cannot see: if something else in that jq chain quietly changes
 # shape, BOTH documents change together and the delta still passes.
-check "settings drift (lead): the key set is exactly disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook, the wake waiter (Stop and SessionStart), the inbox UserPromptSubmit hook and the turn hooks" '[ "$DEFAULT_LEAD_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
+check "settings drift (lead): the key set is exactly bashOutputMaxChars, disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook, the wake waiter (Stop and SessionStart), the inbox UserPromptSubmit hook, the turn hooks and the offload rewrite" '[ "$DEFAULT_LEAD_KEYS" = "[\"bashOutputMaxChars\",\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
 # v1.24.0: plus enabledPlugins, and only that, which the worker-context policy (default trim)
 # writes when the machine has plugins to switch off (lib/policy.sh worker_context_settings).
-check "settings drift (worker): exactly disableAgentView, env, hooks and teammateMode (and enabledPlugins under worker-context trim), and exactly the guard, the notification hook, the two inbox hooks and the turn hooks" '[ "$(printf "%s" "$DEFAULT_QA_KEYS" | jq -c "map(select(. != \"enabledPlugins\"))")" = "[\"disableAgentView\",\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
+check "settings drift (worker): exactly bashOutputMaxChars, disableAgentView, env, hooks and teammateMode (and enabledPlugins under worker-context trim), and exactly the guard, the offload rewrite, the notification hook, the two inbox hooks and the turn hooks" '[ "$(printf "%s" "$DEFAULT_QA_KEYS" | jq -c "map(select(. != \"enabledPlugins\"))")" = "[\"bashOutputMaxChars\",\"disableAgentView\",\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
 # rgi60 F5: Claude Code's agent view is off for every agent, by the setting AND by its
 # environment switch. With it on, /bg turned the comms lead's pane into the agent view, which
 # started Claude's daemon from inside the pane (2026-10-19).
