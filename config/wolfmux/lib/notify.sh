@@ -205,16 +205,6 @@ cmd_notify() {
   return 0
 }
 
-# notify_stop <hook-json> — "this agent finished a turn", when WOLFMUX_NOTIFY wants it from an
-# agent of this kind. The lead is the role named lead; everyone else is a worker.
-notify_stop() {
-  local kind="worker"
-  if [ "${TEAM_ROLE:-}" = "$WOLFMUX_LEAD_ROLE" ]; then kind="lead"; fi
-  notify_wanted "$kind" || return 0
-  notify_send "$1"
-  return 0
-}
-
 # notify_send <hook-json>
 notify_send() {
   local input="$1" role who body
