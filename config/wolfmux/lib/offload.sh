@@ -7,9 +7,9 @@
 # model a shortened form: the first and last lines, every line in between that looks like a
 # failure, the counts, and the path.
 #
-#   $STATE_DIR/run/<role>/out/<n>.log   the full text of one long output; the newest
+#   $STATE_DIR/run/<role>/out/<n>-<pid>.log  the full text of one long output; the newest
 #                                       WOLFMUX_OFFLOAD_KEEP per role are kept
-#   $STATE_DIR/run/<role>/out/next      the next <n>
+#   $STATE_DIR/run/<role>/out/next      the last <n> handed out (an order for people, not a key)
 #
 # Settings (environment or ~/.config/wolfmux/config):
 #   WOLFMUX_OFFLOAD       on | off      off: every output reaches the model as it is
@@ -49,24 +49,10 @@ offload_min() {
   case "$WOLFMUX_OFFLOAD_MIN" in "" | *[!0-9]*) printf '4000\n' ;; *) printf '%s\n' "$WOLFMUX_OFFLOAD_MIN" ;; esac
 }
 
-# offload_new_log <run-dir>: prints the path of a new, empty log file; fails when it cannot
-offload_new_log() {
-  local dir="$1/out" n=0
-  /bin/mkdir -p "$dir" 2>/dev/null || return 1
-  if [ -r "$dir/next" ]; then IFS= read -r n <"$dir/next" || true; fi
-  case "$n" in "" | *[!0-9]*) n=0 ;; esac
-  n=$((10#$n + 1))
-  printf '%s\n' "$n" >"$dir/next" 2>/dev/null || return 1
-  : >"$dir/$n.log" 2>/dev/null || return 1
-  # Pruning lists the directory: once every 20 logs is enough to hold it near the limit.
-  if [ $((n % 20)) -eq 0 ]; then offload_prune "$dir"; fi
-  printf '%s\n' "$dir/$n.log"
-}
-
 # offload_prune <out-dir>: keeps the newest WOLFMUX_OFFLOAD_KEEP logs
 offload_prune() {
   local dir="$1"
-  (cd "$dir" 2>/dev/null && /bin/ls -t | /usr/bin/grep -E '^[0-9]+\.log$' | /usr/bin/tail -n "+$((WOLFMUX_OFFLOAD_KEEP + 1))" |
+  (cd "$dir" 2>/dev/null && /bin/ls -t | /usr/bin/grep -E '^[0-9]+(-[0-9]+)?\.log$' | /usr/bin/tail -n "+$((WOLFMUX_OFFLOAD_KEEP + 1))" |
     while IFS= read -r f; do /bin/rm -f "./$f"; done) 2>/dev/null || true
 }
 
@@ -137,7 +123,12 @@ offload_next_log() {
   printf '%s\n' "$OFFLOAD_LOG"
 }
 
-# offload_alloc_log <run-dir>: the same into OFFLOAD_LOG, without a fork (the PreToolUse path)
+# offload_alloc_log <run-dir>: the same into OFFLOAD_LOG, without a fork (the PreToolUse path).
+# The CLI runs independent tool calls in parallel, so two hooks can read the same <n> before
+# either writes it back. The name carries the process id ($$) of the one that asks: two processes
+# alive at the same moment never share one, so two calls in flight never share a log. No lock and
+# no fork; <n> keeps the names in order for a person, and makes a recycled pid meeting its old
+# log (same <n> as well) as good as impossible.
 offload_alloc_log() {
   local dir="$1/out" n=0
   [ -d "$dir" ] || /bin/mkdir -p "$dir" 2>/dev/null || return 1
@@ -146,7 +137,7 @@ offload_alloc_log() {
   n=$((10#$n + 1))
   printf '%s\n' "$n" >"$dir/next" 2>/dev/null || return 1
   if [ $((n % 20)) -eq 0 ]; then offload_prune "$dir"; fi
-  OFFLOAD_LOG="$dir/$n.log"
+  OFFLOAD_LOG="$dir/$n-$$.log"
 }
 
 # offload_wrap_line <log> <show-script>: the line put in front of a command. Plain sh, so a

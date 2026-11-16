@@ -158,15 +158,40 @@ check "TERM: the summary of what was logged so far is printed, with the path" "g
 check "TERM: exit code 143" "[ $krc = 143 ]"
 check "TERM: what came after is not there" "! grep -q never $WORK/kill.out"
 
+echo "== two Bash calls at the same time (the CLI runs independent calls in parallel)"
+# log_of <rewritten command>: the log path the prefix writes to
+log_of() { printf '%s' "$1" | sed -n "s/.* 8>&2 >'\([^']*\)' 2>&1; then.*/\1/p"; }
+: >"$WORK/par.paths"
+for round in 1 2 3 4 5; do
+  for i in 1 2 3 4 5 6 7 8; do
+    (hook_json "echo r$round-$i" | "$REPO/bin/teamctl" _offload-pre >"$WORK/par.$round.$i") &
+  done
+  wait
+  for i in 1 2 3 4 5 6 7 8; do log_of "$(jq -j '.hookSpecificOutput.updatedInput.command' "$WORK/par.$round.$i")" >>"$WORK/par.paths"; echo >>"$WORK/par.paths"; done
+done
+check "5 rounds of 8 hooks started together: 40 distinct log paths" "[ \"\$(grep -c . $WORK/par.paths)\" = 40 ] && [ \"\$(sort -u $WORK/par.paths | grep -c .)\" = 40 ]"
+# the race made certain: the second hook reads the counter before the first one wrote it back
+next_before="$(cat "$WOLFMUX_RUN_DIR/out/next")"
+cmd_a="$(rewritten 'seq 1 3000 | sed s/^/A/; echo A-end; exit 3')"
+printf '%s\n' "$next_before" >"$WOLFMUX_RUN_DIR/out/next"
+cmd_b="$(rewritten 'echo B-only; exit 4')"
+check "two hooks that read the same counter still get different logs" "[ -n \"\$(log_of \"\$cmd_a\")\" ] && [ \"\$(log_of \"\$cmd_a\")\" != \"\$(log_of \"\$cmd_b\")\" ]"
+run_as_cli "$WORK/para" "$cmd_a" &
+run_as_cli "$WORK/parb" "$cmd_b" &
+wait
+check "two wrapped commands at the same moment: each shows only its own output" "grep -q 'long output shortened: 3001 lines' $WORK/para/out && [ \"\$(tail -1 $WORK/para/out)\" = A-end ] && ! grep -q B-only $WORK/para/out && [ \"\$(cat $WORK/parb/out)\" = B-only ]"
+check "two wrapped commands at the same moment: each its own exit code (3 and 4)" "[ \"\$(cat $WORK/para/rc)\" = 3 ] && [ \"\$(cat $WORK/parb/rc)\" = 4 ]"
+
 echo "== pruning"
 mkdir -p "$WORK/prune/out"
-for i in $(seq 1 230); do : >"$WORK/prune/out/$i.log"; done
+for i in $(seq 1 115); do : >"$WORK/prune/out/$i.log"; done
+for i in $(seq 116 230); do : >"$WORK/prune/out/$i-4242.log"; done
 offload_prune "$WORK/prune/out"
-check "old logs are pruned to the newest $WOLFMUX_OFFLOAD_KEEP" "[ \$(ls $WORK/prune/out | grep -c '\\.log$') = $WOLFMUX_OFFLOAD_KEEP ]"
+check "old logs are pruned to the newest $WOLFMUX_OFFLOAD_KEEP (<n>.log and <n>-<pid>.log alike)" "[ \$(ls $WORK/prune/out | grep -c '\\.log$') = $WOLFMUX_OFFLOAD_KEEP ] && [ -e $WORK/prune/out/230-4242.log ]"
 printf '219\n' >"$WORK/prune/out/next"
 for i in $(seq 1 30); do : >"$WORK/prune/out/x$i.log"; done
 offload_next_log "$WORK/prune" >/dev/null
-check "every 20th log prunes on its own" "[ \$(ls $WORK/prune/out | grep -c '^[0-9]*\\.log$') -le $WOLFMUX_OFFLOAD_KEEP ] && [ \"\$(cat $WORK/prune/out/next)\" = 220 ]"
+check "every 20th log prunes on its own" "[ \$(ls $WORK/prune/out | grep -cE '^[0-9]+(-[0-9]+)?\\.log$') -le $WOLFMUX_OFFLOAD_KEEP ] && [ \"\$(cat $WORK/prune/out/next)\" = 220 ]"
 
 echo "== the agent's settings (write_agent_settings)"
 cat >"$WORK/settings.sh" <<'HARNESS'
