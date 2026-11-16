@@ -736,24 +736,46 @@ _store_cmd_status() {
   say "  open tasks: $(store_tasks_json "" "open,in_progress,blocked" 2>/dev/null | "$JQ_BIN" 'length' 2>/dev/null || printf 0)   unread messages: $("store_${kind}_unread_count" 2>/dev/null || printf 0)   memories: $(store_memory_list_json 2>/dev/null | "$JQ_BIN" 'length' 2>/dev/null || printf 0)"
 }
 
+# _store_left_behind <new-kind> — before a switch without --migrate: one line naming the
+# open tasks and unread messages the current store still holds, which the agents stop seeing
+# once the switch is made. Silent when the current store is <new-kind> or holds nothing.
+_store_left_behind() {
+  local new="$1" old tasks msgs hint=""
+  old="$(store_kind)"
+  [ "$old" != "$new" ] || return 0
+  "store_${old}_ensure" >/dev/null 2>&1 || true
+  tasks="$(store_tasks_json "" "open,in_progress,blocked" 2>/dev/null | "$JQ_BIN" 'length' 2>/dev/null)"
+  msgs="$("store_${old}_unread_count" 2>/dev/null)"
+  case "$tasks" in '' | *[!0-9]*) tasks=0 ;; esac
+  case "$msgs" in '' | *[!0-9]*) msgs=0 ;; esac
+  [ "$((tasks + msgs))" -gt 0 ] || return 0
+  [ "$old" = beads ] && hint="; to bring them along: teamctl store native --migrate"
+  say "store: $tasks open task(s) and $msgs unread message(s) stay behind in the $old store and are not moved$hint"
+}
+
 # cmd_store [native|beads [--migrate]] — teamctl store (lib/beads.sh owns the workspace
-# bootstrap itself; this only switches which backend wolfmux reads and writes)
+# bootstrap itself; this only switches which backend wolfmux reads and writes). Reading the
+# status is open to everyone; switching is the lead's or the human's (Riley 7).
 cmd_store() {
   load_project
   case "${1:-}" in
     "") _store_cmd_status ;;
     native)
+      require_manager store
       if [ "${2:-}" = "--migrate" ]; then
         _store_cmd_migrate
       else
         store_native_ensure || die "store: native store is not usable"
+        _store_left_behind native
         store_set_kind native
         say "store: switched to native ($(store_db)). Agents started before the switch were taught the other store's commands and should be restarted."
       fi
       ;;
     beads)
+      require_manager store
       [ -n "$BD_BIN" ] || die "store: cannot switch to beads: bd is not installed"
       beads_dir >/dev/null 2>&1 || die "store: cannot switch to beads: no Beads workspace in $(short_path "$ROOT") (teamctl start --init-beads)"
+      _store_left_behind beads
       store_set_kind beads
       say "store: switched to beads. Agents started before the switch were taught the other store's commands and should be restarted."
       ;;

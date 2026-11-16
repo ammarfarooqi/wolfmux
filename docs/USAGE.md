@@ -29,6 +29,9 @@ Installing v1.24.0 changes nothing in a project that is already running.
   their dependencies, unread messages and notes into the native file and switches, and deletes
   nothing from Beads. `teamctl store native` alone switches without copying;
   `teamctl store beads` switches back (it needs `bd` and a Beads workspace in the project).
+  Switching is the lead's, or yours from a plain shell: any other agent is refused (exit 77),
+  while `teamctl store` with no argument stays open to everyone. A switch without `--migrate`
+  says how many open tasks and unread messages stay behind in the store it leaves.
   After either switch, restart the agents (`teamctl restart <role> --continue`): one that
   started before it was taught the other store's commands.
 - **What an agent's `bd` commands become** on a native store, where `bd` does not see the work:

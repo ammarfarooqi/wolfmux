@@ -237,6 +237,33 @@ check "store_kind: an old agent record on disk means beads" '[ "$(store_kind)" =
 store_set_kind native
 check "store_kind: the file wins over the old-record rule" '[ "$(store_kind)" = native ]'
 
+echo "== teamctl store: switching is the lead's (Riley 7)"
+new_repo switch-gate
+store_set_kind beads
+gate_out="$( (TEAM_ROLE=backend BEADS_ACTOR=backend cmd_store native) 2>&1)"
+gate_rc=$?
+check "store native from a worker is refused (77), the store stays beads" \
+  '[ "$gate_rc" -eq 77 ] && [ "$(store_kind)" = beads ]'
+check "store beads from a worker is refused (77) before any workspace check" \
+  'out="$( (TEAM_ROLE=backend BEADS_ACTOR=backend cmd_store beads) 2>&1)"; [ $? -eq 77 ] && ! printf "%s" "$out" | grep -q "no Beads workspace"'
+store_set_kind native
+store_native_ensure
+store_task_create lead bob 2 "Left behind" "x" >/dev/null
+check "store status from a worker still reads" \
+  '(TEAM_ROLE=backend BEADS_ACTOR=backend cmd_store) | grep -q "^store: native"'
+if [ "$HAVE_BD" -eq 1 ]; then
+  beads_ensure yes >/dev/null 2>&1
+  behind_out="$( (cmd_store beads) 2>&1)"
+  check "switching away from a store that holds work says how much stays behind" \
+    'printf "%s" "$behind_out" | grep -q "1 open task.* stay behind in the native store"'
+  store_task_create lead bob 2 "Beads work" "x" >/dev/null
+  behind_out2="$( (cmd_store native) 2>&1)"
+  check "store native without --migrate names --migrate for the Beads work left behind" \
+    'printf "%s" "$behind_out2" | grep -q "stay behind in the beads store" && printf "%s" "$behind_out2" | grep -q -- "--migrate"'
+else
+  skip "store switch: stay-behind counts (bd is not installed)"
+fi
+
 new_repo kind-migrate
 if [ "$HAVE_BD" -eq 1 ]; then
   beads_ensure yes >/dev/null 2>&1
