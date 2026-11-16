@@ -2353,6 +2353,47 @@ for v1.25.0: the lead exemption of `teamctl done` trusts the caller's role witho
 proof for a process outside any pane, and the SessionStart hook's two bounded `bd` reads can
 add up to 10 s of its 20 s. The counts at the release commit are in VERIFICATION.md.
 
+## 42. Mail handed to a subagent (v1.24.1)
+
+Claude Code runs an agent's hooks for the tool calls of its in-process subagents too (the
+Agent tool). Their input carries `agent_id` and `agent_type`, with the main conversation's
+`session_id` and `transcript_path`; a call of the main conversation has neither key. `cmd_hook`
+did not look. So when mail was queued for an agent while one of its subagents was working, the
+subagent's next tool call took the PostToolUse hook's full path, the mail went into the
+subagent's context, the notice line was marked delivered, a native store marked the message
+read, and the attention file was gone. The agent never saw it and no later hook handed it over
+again. The context watch had the same fault: a threshold said to a subagent was recorded as
+said. Leads use subagents all the time, so this lost a lead's mail. It was new in v1.24.0:
+v1.23.0 had no PostToolUse hook.
+
+The fix is one test in `cmd_hook`. The jq call that already checked the input now also reads
+`agent_id`, and a non-empty one returns before anything is cleared or any module runs. Nothing
+is said, nothing is moved out of `mail/new`, nothing is marked, and the attention file stays,
+so the agent's own next call takes the full path and gets the mail. The hot path at the top of
+`bin/teamctl` is unchanged: a call with nothing queued still costs one bash start and no fork.
+A subagent's call while something is queued pays the full path and gives up, about 75 ms a call
+on this machine (4.7 ms on the hot path), until the main conversation's next call takes it.
+
+Every other hook wolfmux registers was looked at against a real run. Only PreToolUse and
+PostToolUse fire inside a subagent (`SubagentStart` and `SubagentStop` are their own events,
+and wolfmux registers neither). `Stop`, `UserPromptSubmit` and `SessionStart` fire for the main
+conversation only, so `_inbox-stop`, `_inbox-prompt`, `_inbox-wake` and `_notify` are not
+reached from a subagent. The worktree guard (`_guard`, PreToolUse) does fire there and still
+refuses: a subagent of a worker was refused a read of another teammate's worktree with the
+guard's own text. A background subagent's result reaches the main conversation as a
+`UserPromptSubmit` without `agent_id`, which is the agent's own turn, and is treated as such.
+
+Proof, each check failing on v1.24.0 first: `tests/mail.sh` (a subagent's PostToolUse says
+nothing and the mail, its notice and the attention file stay; no turn event with `agent_id`
+says anything; the agent's own next call hands it over once) and `tests/recall.sh` (a
+subagent's call neither says nor uses up the 65% warning). Then the real CLI, print mode, Haiku,
+no pane: a scratch team with a spooled message holding a marker word, the hook run through
+`tests/in-pane` so the pane proof stands, and a prompt that runs one Bash command through a
+foreground subagent and then one itself. On v1.24.0 the marker was in the subagent's
+transcript as a PostToolUse `hook_additional_context` and nowhere in the main one except as
+the subagent's own retelling. On v1.24.1 the subagent's transcript holds no marker and the
+main conversation's has it as `hook_additional_context`, at the Agent tool's own PostToolUse.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
