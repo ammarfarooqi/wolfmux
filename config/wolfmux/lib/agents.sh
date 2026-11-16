@@ -895,7 +895,7 @@ build_role_prompt() {
 # conversation before this prompt runs (lib/hooks.sh, v1.24.0): its kickoff only has to say to
 # act on what is already there, not to go fetch it with bd list + bd show. A Codex agent has
 # no hooks (family = codex): its kickoff still fetches its own inbox, in the one command that
-# carries bodies (`teamctl inbox`) instead of bd list + bd show per item.
+# carries bodies (`teamctl mail`, D2) instead of bd list + bd show per item.
 # A worker on a provider of the table (not a subscription model) also learns what a 401 means and who
 # checks it (issue #1): the key in its Keychain slot is rejected by that endpoint, and doctor --probe
 # says so. Only a request that got through can carry this, so it is for a key that fails later.
@@ -905,10 +905,10 @@ kickoff_text() {
     hint=" If your requests fail with 401 or an authentication error, tell the lead: the key in '$PROVIDER_KEYCHAIN' is rejected by $PROVIDER_BASE_URL; the lead or the human runs \`teamctl doctor --probe\` to check the key."
   fi
   if [ "${4:-}" = "codex" ]; then
-    printf 'You are the %s worker of a Wolfmux session. Check your Beads inbox now: run `teamctl inbox`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
+    printf 'You are the %s worker of a Wolfmux session. Check your inbox now: run `teamctl mail`, then act as the team protocol in your system prompt says. If a task of yours is already in_progress, you were restarted in the middle of it: run `git status` and `teamctl diff %s --commits` to see what you already did, then continue it; do not start over. If nothing is assigned to you yet, answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
     return 0
   fi
-  printf 'You are the %s worker of a Wolfmux session. Your assignment and inbox are above this line (wolfmux put them there): start on it now, and claim it first (`teamctl claim <id>`). If a task of yours is already in_progress, you were restarted in the middle of it: read the checkpoint above, run `git status` and `teamctl diff %s --commits`, then continue it; do not start over. Nothing shown above: run `teamctl inbox`. Nothing assigned: answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
+  printf 'You are the %s worker of a Wolfmux session. Your assignment and inbox are above this line (wolfmux put them there): start on it now, and claim it first (`teamctl claim <id>`). If a task of yours is already in_progress, you were restarted in the middle of it: read the checkpoint above, run `git status` and `teamctl diff %s --commits`, then continue it; do not start over. Nothing shown above: run `teamctl mail`. Nothing assigned: answer with one line saying you are ready, and wait.%s' "$1" "$1" "$hint"
 }
 
 # handover_text — what the lead of a team founded by another lead is started with
@@ -923,7 +923,7 @@ handover_text() {
       "$TEAM" "$founder" "$bead" "$me" "$founder" "$founder"
     return 0
   fi
-  printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `teamctl show %s`. Then check your inbox: `teamctl inbox`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s with `teamctl send %s "<subject>" "<body>"` when the handover asks for it.' \
+  printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `teamctl show %s`. Then read your mail: `teamctl mail`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s with `teamctl send %s "<subject>" "<body>"` when the handover asks for it.' \
     "$TEAM" "$founder" "$bead" "$me" "$founder" "$founder"
 }
 

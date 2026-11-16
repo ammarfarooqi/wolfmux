@@ -110,6 +110,7 @@ printf '{"role":"%s","kind":"lead","handover":"demo-abc1","spawned_by":"lead"}\n
 HANDOVER="$(handover_text)"
 check "a native lead's handover prompt says teamctl show <id>" 'printf "%s" "$HANDOVER" | grep -qF "teamctl show demo-abc1"'
 check "  ... and never names bd" '! printf "%s" "$HANDOVER" | grep -qw bd'
+check "  ... and points at teamctl mail for the rest (D2), not teamctl inbox" 'printf "%s" "$HANDOVER" | grep -qF "teamctl mail" && ! printf "%s" "$HANDOVER" | grep -qF "teamctl inbox"'
 
 check "no bd call was made on the native project" 'no_bd'
 [ -e "$BD_MARK" ] && sed 's/^/    bd: /' "$BD_MARK"
