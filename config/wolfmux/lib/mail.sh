@@ -266,13 +266,19 @@ _mail_mark_shown() {
   _mail_prune_seen "$seen"
 }
 
-# inbox_read <identity> — this agent's open work as JSON: tasks first by priority, then unread
-# messages by time. 1 when the store is unreachable or answers something that is not JSON;
-# the caller decides what that means (a hook says nothing, `teamctl mail` reports it).
+# inbox_read <identity> [<seconds>] — this agent's open work as JSON: tasks first by priority,
+# then unread messages by time. 1 when the store is unreachable, answers something that is not
+# JSON, or (with <seconds>, on Beads) does not answer within that bound: a hook passes the bound
+# every hook uses (_bd_bounded 5, lib/store.sh), because a wedged bd (Beads issue #6039) must
+# never hold an agent's hook past the CLI's own timeout. The native store answers at once.
 inbox_read() {
-  local identity="$1" json
+  local identity="$1" bound="${2:-}" json
   [ -n "$JQ_BIN" ] || return 1
-  json="$(store_inbox_json "$identity" 2>/dev/null)" || return 1
+  if [ -n "$bound" ] && [ "$(store_kind 2>/dev/null)" = "beads" ]; then
+    json="$(_bd_bounded "$bound" store_inbox_json "$identity")" || return 1
+  else
+    json="$(store_inbox_json "$identity" 2>/dev/null)" || return 1
+  fi
   printf '%s' "$json" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || return 1
   printf '%s' "$json"
 }
@@ -421,17 +427,22 @@ _mail_hook_drain() {
 # spooled body moves to seen/, so the first Stop does not hand it over again. A spooled item
 # the briefing did not show (cut by the budget, or not an inbox row, such as a closed task the
 # lead is told about) stays queued for the next tool call.
-# The store unreachable or failing: say nothing, leave the spool alone.
+# The store unreachable, failing or slower than the bound: one line that sends the agent to
+# `teamctl mail` (never "nothing is assigned", which the kickoff turns into "wait"), and the
+# spool is left alone.
 _mail_hook_session_start() {
   local identity="${BEADS_ACTOR:-$HOOK_ROLE}" rows count heading json block budget=0 shown=0 id ids=""
   _mail_hook_state_dir
-  rows="$(inbox_read "$identity")" || return 0
-  count="$(printf '%s' "$rows" | "$JQ_BIN" -r 'length' 2>/dev/null)"
-  case "$count" in '' | *[!0-9]*) count=0 ;; esac
   case "$HOOK_SOURCE" in
     compact | resume) heading="[wolfmux mail] your inbox as it stands now, $identity:" ;;
     *) heading="[wolfmux mail] your assignment, $identity:" ;;
   esac
+  if ! rows="$(inbox_read "$identity" 5)"; then
+    hook_context "$heading the store did not answer in time, so it is not shown here. Read it now: teamctl mail"
+    return 0
+  fi
+  count="$(printf '%s' "$rows" | "$JQ_BIN" -r 'length' 2>/dev/null)"
+  case "$count" in '' | *[!0-9]*) count=0 ;; esac
   if [ "$count" -eq 0 ]; then
     hook_context "$heading nothing is assigned yet. Wait for mail, or run: teamctl mail"
   else
