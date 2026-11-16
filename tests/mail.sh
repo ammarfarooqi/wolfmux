@@ -147,6 +147,31 @@ check "mail: the body is never typed into the pane" \
 check "D7: no wake line of the first hook-mail design is typed (\"New mail for\" is not a v1.23.0 notice)" \
   '! teamctl capture backend --all | grep -q "New mail for backend: it is shown with this line"'
 
+echo "== the pane proof (v1.21.1): PostToolUse hands mail only to the agent in its own pane"
+hook_outside() { # <role> <run-dir> <event>: the same hook from a process that only inherited the environment
+  env -u TMUX -u TMUX_PANE TEAM_ROLE="$1" BEADS_ACTOR="$1" WOLFMUX_RUN_DIR="$2" WOLFMUX_TEAM=default "$REPO/bin/teamctl" _hook "${@:3}"
+}
+check "outside the pane: PostToolUse says nothing, even with attention set" \
+  ': >"$BACKEND_RUN/attention"; [ -z "$(printf "{}" | hook_outside backend "$BACKEND_RUN" PostToolUse)" ]'
+check "  ... the mail stays spooled in mail/new/" 'ls "$BACKEND_RUN/mail/new" | grep -q -- "-$MSG_ID.json$"'
+check "  ... and its inbox line is not marked delivered" '[ "$(inbox_state backend "$MSG_ID" | cut -c2)" != d ]'
+check "  ... and attention stays set, so the agent's own next tool call takes it" '[ -e "$BACKEND_RUN/attention" ]'
+# The hot path: a tool call with nothing queued runs no jq, bd or sqlite3 (bin/teamctl's first lines).
+HOT_TOOLS="$WORK/hot-tools"
+/bin/mkdir -p "$HOT_TOOLS"
+for t in jq bd sqlite3; do
+  real="$(command -v "$t" 2>/dev/null || printf /usr/bin/false)"
+  printf '#!/bin/bash\nprintf "%%s\\n" "%s $*" >>"%s/calls.log"\nexec "%s" "$@"\n' "$t" "$HOT_TOOLS" "$real" >"$HOT_TOOLS/$t"
+  /bin/chmod +x "$HOT_TOOLS/$t"
+done
+HOT_RUN="$WORK/run-hot-mail"
+/bin/mkdir -p "$HOT_RUN/mail/new"
+hot_call() { printf "{}" | env PATH="$HOT_TOOLS:$PATH" WOLFMUX_SQLITE_BIN="$HOT_TOOLS/sqlite3" TEAM_ROLE=backend BEADS_ACTOR=backend WOLFMUX_RUN_DIR="$HOT_RUN" WOLFMUX_TEAM=default "$REPO/tests/in-pane" _hook PostToolUse; }
+check "nothing new: PostToolUse runs no jq, bd or sqlite3" \
+  'printf "0\n" >"$HOT_RUN/calls"; [ -z "$(hot_call)" ] && [ ! -s "$HOT_TOOLS/calls.log" ]'
+check "  CONTROL: with attention set the full hook runs, and the stand-ins see it" \
+  ': >"$HOT_RUN/attention"; hot_call >/dev/null; grep -q "^jq " "$HOT_TOOLS/calls.log"'
+
 echo "== PostToolUse first: the Stop hook does not hand it over again"
 check "hook: PostToolUse renders heading, sender and body in additionalContext, moves the file" \
   'out="$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)"; printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"MESSAGE\") and contains(\"lead\") and contains(\"the secret body\")" && [ -z "$(ls "$BACKEND_RUN/mail/new" 2>/dev/null)" ]'

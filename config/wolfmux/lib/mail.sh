@@ -352,8 +352,20 @@ _mail_hook_drain() {
     STATE_DIR="${STATE_DIR%/*}"
     STATE_DIR="${STATE_DIR%/*}"
   fi
-  local dir="$HOOK_RUN/mail" identity="${BEADS_ACTOR:-$HOOK_ROLE}" base file json block budget=0 shown=0 more=0
+  local dir="$HOOK_RUN/mail" identity="${BEADS_ACTOR:-$HOOK_ROLE}" base file json block budget=0 shown=0 more=0 queued
   [ -d "$dir/new" ] || return 0
+  # v1.21.1's pane proof, as the Stop and prompt hooks ask it (_inbox_hook_ready): only the agent
+  # in its own pane is handed its mail. A chat that merely inherited this environment gets nothing,
+  # and the mail stays spooled with its inbox line undelivered. Asked only when there is mail: the
+  # proof costs tmux calls, and a tool call with nothing queued never gets this far (bin/teamctl).
+  queued="$(/bin/ls -1 "$dir/new" 2>/dev/null | /usr/bin/head -1)"
+  [ -n "$queued" ] || return 0
+  if ! _inbox_hook_ready; then
+    # Not handed over, so still queued: the attention that cmd_hook cleared is set again, or the
+    # agent's own next tool call would take the hot path and leave its mail waiting.
+    : >"$HOOK_RUN/attention" 2>/dev/null || true
+    return 0
+  fi
   for base in $(/bin/ls -1 "$dir/new" 2>/dev/null | /usr/bin/sort); do
     file="$dir/new/$base"
     [ -f "$file" ] || continue
