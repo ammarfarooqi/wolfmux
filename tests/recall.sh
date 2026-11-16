@@ -110,9 +110,8 @@ run_of() { /bin/mkdir -p "$STATE_OF_RUN/run/$1" && printf '%s\n' "$STATE_OF_RUN/
 RUN_W2="$(run_of w2)"
 usage_line 50000 >"$TRANS"
 force_through "" "$RUN_W2"
-check "29% of the limit: nothing said" '[ -z "$(hook_json transcript_path="$TRANS" | TEAM_ROLE=w2 WOLFMUX_RUN_DIR="$RUN_W2" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse)" ]'
-check "memory/ctx holds used, limit (window - 33000), window, first and percent: 50000 of 167000 is 29%, never a share of the 200000 window" \
-  'jq -e ".used == 50000 and .limit == 167000 and .window == 200000 and .percent == 29 and .first == 50000 and .kept == null and (has(\"tokens\") | not)" "$RUN_W2/memory/ctx"'
+check "29% of the limit: nothing said, and memory/ctx holds used, limit (window - 33000), window, first and percent: 50000 of 167000 is 29%, never a share of the 200000 window" \
+  '[ -z "$(hook_json transcript_path="$TRANS" | TEAM_ROLE=w2 WOLFMUX_RUN_DIR="$RUN_W2" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse)" ] && jq -e ".used == 50000 and .limit == 167000 and .window == 200000 and .percent == 29 and .first == 50000 and .kept == null and (has(\"tokens\") | not)" "$RUN_W2/memory/ctx"'
 check "the first request is kept for the next worker of this team: context/worker in the state directory" \
   '[ "$(cut -d" " -f1 "$STATE_OF_RUN/context/worker")" = 50000 ] && [ "$(cut -d" " -f4 "$STATE_OF_RUN/context/worker")" = w2 ]'
 
@@ -148,8 +147,8 @@ check "a half-written last line breaks nothing: the complete one still counts" \
 RUN_W4="$(run_of w4)"
 usage_line 50000 >"$TRANS" # 29%
 force_through "" "$RUN_W4"
-check "thresholds from the environment: warn=20 fires at 29%" \
-  'hook_json transcript_path="$TRANS" | TEAM_ROLE=w4 WOLFMUX_RUN_DIR="$RUN_W4" WOLFMUX_MODEL=glm53 WOLFMUX_CONTEXT_WARN=20 WOLFMUX_CONTEXT_ROTATE=40 teamctl _hook PostToolUse | grep -q "Commit what works now"'
+check "thresholds from the environment: warn=27 fires at 29% of the limit (it would be 25% of the window)" \
+  'hook_json transcript_path="$TRANS" | TEAM_ROLE=w4 WOLFMUX_RUN_DIR="$RUN_W4" WOLFMUX_MODEL=glm53 WOLFMUX_CONTEXT_WARN=27 WOLFMUX_CONTEXT_ROTATE=40 teamctl _hook PostToolUse | grep -q "Commit what works now"'
 RUN_W5="$(run_of w5)"
 usage_line 117000 >"$TRANS" # 70%
 force_through "" "$RUN_W5"
@@ -198,8 +197,7 @@ printf '19\n' >"$RUN_W11/calls"
 post >/dev/null
 check "52% (within 10 points of the warning): the near file exists" '[ -e "$RUN_W11/near" ] && [ "$(cat "$RUN_W11/calls")" = 20 ]'
 usage_line 104000 >"$TRANS" # 62%
-check "the very next call (the 21st, not a tenth) crosses 60% and is told at once" 'post | grep -q "104k/167k 62%" && [ "$(cat "$RUN_W11/calls")" = 21 ]'
-check "62% is 18 points under the rotate threshold: the near file is gone again" '[ ! -e "$RUN_W11/near" ]'
+check "the very next call (the 21st, not a tenth) crosses 60% and is told at once; 62% is 18 points under the rotate threshold, so the near file is gone again" 'post | grep -q "104k/167k 62%" && [ "$(cat "$RUN_W11/calls")" = 21 ] && [ ! -e "$RUN_W11/near" ]'
 usage_line 125000 >"$TRANS" # 74%
 printf '29\n' >"$RUN_W11/calls"
 post >/dev/null
@@ -218,9 +216,8 @@ thrash_beads() { bd list --assignee lead --status open --include-infra --json 2>
 printf '54000\n' >"$RUN_W12/memory/first" 2>/dev/null || { /bin/mkdir -p "$RUN_W12/memory"; printf '54000\n' >"$RUN_W12/memory/first"; }
 printf '40\n' >"$RUN_W12/calls"
 compacted >/dev/null
-check "SessionStart after a compaction records what it kept (postTokens of the last compact_boundary), for this conversation and for the team" \
-  '[ "$(cat "$RUN_W12/memory/kept")" = 19000 ] && [ "$(cut -d" " -f2 "$STATE_OF_RUN/context/worker")" = 19000 ] && [ "$(wc -l <"$RUN_W12/memory/compactions" | tr -d " ")" = 1 ]'
-check "one compaction: the lead is not told" 'sleep 1; [ "$(thrash_beads)" = 0 ]'
+check "SessionStart after a compaction records what it kept (postTokens of the last compact_boundary), for this conversation and for the team; one compaction tells the lead nothing" \
+  '[ "$(cat "$RUN_W12/memory/kept")" = 19000 ] && [ "$(cut -d" " -f2 "$STATE_OF_RUN/context/worker")" = 19000 ] && [ "$(wc -l <"$RUN_W12/memory/compactions" | tr -d " ")" = 1 ] && sleep 1 && [ "$(thrash_beads)" = 0 ]'
 { usage_line 54000; boundary 66000 19000; boundary 67000 37000; } >"$TRANS"
 printf '46\n' >"$RUN_W12/calls"
 compacted >/dev/null
@@ -258,7 +255,7 @@ check "off leaves it to the CLI; a number the CLI does not accept is ignored wit
   '[ "$(plan "$EMPTY_STATE" sonnet off)" = "|" ] && out="$(plan "$EMPTY_STATE" sonnet 5000)" && [ "${out%%|*}" = 318000 ] && printf "%s" "$out" | grep -q "outside 100000 to 1000000"'
 check "never above the model's own window: glm53 (200000) gets 200000; when even that leaves too little room, it says so" \
   '[ "$(plan "$EMPTY_STATE" glm53 "")" = "200000|" ] && out="$(plan "$EMPTY_STATE" glm53 "" WOLFMUX_CONTEXT_FIRST=120000)" && [ "${out%%|*}" = 200000 ] && printf "%s" "$out" | grep -q "only about 2000 tokens are left"'
-check "a model with no declared window gets a window only when one was asked for" '[ "$(plan "$EMPTY_STATE" astra "")" = "|" ]'
+check "a model with no declared window gets a window only when one was asked for" '[ "$(plan "$EMPTY_STATE" astra "")" = "|" ] && [ "$(plan "$EMPTY_STATE" astra 400000)" = "400000|" ]'
 check "context_limit: the window minus the reserve, nothing for nonsense" \
   '[ "$(bash -c ". \"\$WOLFMUX_HOME/lib/provider-env.sh\"; . \"\$WOLFMUX_HOME/lib/common.sh\"; . \"\$WOLFMUX_HOME/lib/policy.sh\"; context_limit 200000; context_limit x; context_limit 20000")" = 167000 ]'
 
