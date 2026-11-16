@@ -956,22 +956,34 @@ inbox_not_you() {
 # third argument says how many notices this hand-over could not carry, so a capped batch
 # does not look like the whole of it.
 inbox_hook_body() {
-  local uncovered=1
-  printf '%s\n%s\n' "[wolfmux] You have team notices:" "$2"
-  if [ -n "${3:-}" ] && [ "$3" != "0" ]; then
-    printf '%s more waiting; they come with your next turn, or see them all now: teamctl inbox\n' "$3"
-  fi
+  local uncovered=1 body bodies="" more="" tail=""
   # v1.24.0: the body travels with the notice (ADR-0032). Counted before the bodies are moved.
   if [ -n "${INBOX_ROLE:-}" ] && [ -n "${STATE_DIR:-}" ] && declare -F mail_bodies_for >/dev/null 2>&1; then
     uncovered="$(mail_notices_uncovered "$INBOX_ROLE" "$2")"
-    mail_bodies_for "$INBOX_ROLE" "$1" "$2"
+    bodies="$(mail_bodies_for "$INBOX_ROLE" "$1" "$2")"
   fi
-  [ "$uncovered" != "0" ] || return 0
-  if [ "$(store_kind 2>/dev/null || printf beads)" = "native" ]; then
-    printf 'Read it now: teamctl mail\n'
-  else
-    printf 'Read it now: bd list --assignee %s --status open,in_progress,blocked --include-infra\n' "$1"
+  if [ -n "${3:-}" ] && [ "$3" != "0" ]; then
+    more="$3 more waiting; they come with your next turn, or see them all now: teamctl inbox"
   fi
+  if [ "$uncovered" != "0" ]; then
+    if [ "$(store_kind 2>/dev/null || printf beads)" = "native" ]; then
+      tail="Read it now: teamctl mail"
+    else
+      tail="$(printf 'Read it now: bd list --assignee %s --status open,in_progress,blocked --include-infra' "$1")"
+    fi
+  fi
+  # Built first and written ONCE: a reader that stops after the first line it wanted must not
+  # make a later write fail, which would read as "not handed over" and put the notices back.
+  body="[wolfmux] You have team notices:
+$2"
+  [ -z "$more" ] || body="$body
+$more"
+  [ -z "$bodies" ] || body="$body
+
+$bodies"
+  [ -z "$tail" ] || body="$body
+$tail"
+  printf '%s\n' "$body"
 }
 
 # cmd_inbox_stop — internal (`teamctl _inbox-stop`): a Claude Code Stop hook, added as a

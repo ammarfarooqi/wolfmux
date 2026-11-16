@@ -41,6 +41,9 @@ set -u
 REPO="$(cd "$(dirname "$0")/.." && pwd -P)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/wolfmux-inbox.XXXXXX")"
 export WOLFMUX_HOME="$REPO/config/wolfmux"
+# v1.24.0: a new project gets the native store (lib/store.sh). This suite models a Beads project
+# (bd is a fake on PATH), which is what it was written for, so it says so.
+export WOLFMUX_STORE=beads
 export WOLFMUX_BIN_DIR="$REPO/bin"
 export WOLFMUX_DATA="$WORK/data"
 export WOLFMUX_TMUX_SOCKET="wolfmux-test-inbox-$$"
@@ -181,12 +184,12 @@ detach_client() {
 
 echo "== the agent's settings file carries both hooks, and keeps the notification one"
 SETTINGS="$STATE_DIR/settings/lead.json"
-check "settings: the lead's Stop array has THREE entries, the notification hook, the inbox hook and the wake waiter" '[ "$(jq ".hooks.Stop | length" "$SETTINGS")" = "3" ] && jq -e ".hooks.Stop[].hooks[].command | select(test(\"_notify$\"))" "$SETTINGS" && jq -e ".hooks.Stop[].hooks[].command | select(test(\"_inbox-stop\"))" "$SETTINGS"'
+check "settings: the lead's Stop array has FOUR entries, the notification hook, the inbox hook, the turn hook (v1.24.0) and the wake waiter" '[ "$(jq ".hooks.Stop | length" "$SETTINGS")" = "4" ] && jq -e ".hooks.Stop[].hooks[].command | select(test(\"_notify$\"))" "$SETTINGS" && jq -e ".hooks.Stop[].hooks[].command | select(test(\"_inbox-stop\"))" "$SETTINGS"'
 # v1.23.0: the wake waiter, the lead's only, on Stop and SessionStart: asyncRewake, the 7-day
 # timeout, its own summary line, and the command EXECs teamctl so no shell sits in between
 WAKE_HOOK_JQ='[.hooks.Stop[].hooks[], .hooks.SessionStart[].hooks[]] | map(select(.command | test("_inbox-wake$"))) | length == 2 and all(.asyncRewake == true and .timeout == 604800 and .rewakeSummary == "wolfmux: team notice" and (.command | startswith("exec \"")))'
 check "settings: the lead's wake waiter is on Stop and SessionStart, asyncRewake, timeout 604800, its summary, exec'd" 'jq -e "$WAKE_HOOK_JQ" "$SETTINGS"'
-check "settings: a worker's file has no wake waiter, and its Stop array keeps two entries" '! grep -q "_inbox-wake" "$STATE_DIR/settings/qa.json" && [ "$(jq ".hooks.Stop | length" "$STATE_DIR/settings/qa.json")" = "2" ] && [ "$(jq ".hooks.SessionStart // [] | length" "$STATE_DIR/settings/qa.json")" = "0" ]'
+check "settings: a worker's file has no wake waiter, and its Stop array keeps three entries (v1.24.0: the turn hook)" '! grep -q "_inbox-wake" "$STATE_DIR/settings/qa.json" && [ "$(jq ".hooks.Stop | length" "$STATE_DIR/settings/qa.json")" = "3" ] && [ "$(jq ".hooks.SessionStart // [] | length" "$STATE_DIR/settings/qa.json")" = "1" ]'
 check "settings: UserPromptSubmit runs the inbox hook" 'jq -e ".hooks.UserPromptSubmit[0].hooks[0].command | test(\"_inbox-prompt\")" "$SETTINGS"'
 check "settings: nothing of this went into your own ~/.claude/settings.json" '[ ! -e "$WORK/.claude" ]'
 
@@ -588,7 +591,8 @@ check "independence the other way: the agent having it does NOT mark it read for
 check "teamctl notices: the alias is the same command" 'teamctl notices lead --keep | grep -q "both-1"'
 check "teamctl inbox --all: every role of the team, the worker included" 'teamctl inbox --all --keep | grep -q "^qa" && teamctl inbox --all --keep | grep -q "^lead"'
 check "teamctl inbox: it is no longer the pointer-to-Beads message it used to print" '! teamctl inbox lead --keep 2>&1 | grep -q "is not a teamctl command"'
-check "moved_to_beads still covers every other word it covered" 'teamctl send 2>&1 | grep -q "is not a teamctl command" && teamctl broadcast 2>&1 | grep -q "is not a teamctl command"'
+# v1.24.0 (D6): send is a real command now; broadcast and message-history keep the old answer
+check "moved_to_beads still covers every other word it covered" '! teamctl send 2>&1 | grep -q "is not a teamctl command" && teamctl broadcast 2>&1 | grep -q "is not a teamctl command" && teamctl message-history 2>&1 | grep -q "is not a teamctl command"'
 
 echo "== an approval: the louder mark, and typed after the grace period if still unread"
 teamctl inbox --all >/dev/null 2>&1
@@ -1731,8 +1735,9 @@ DEFAULT_QA_HOOKS="$(settings_hooks qa)"
 DEFAULT_LEAD_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of lead)" 2>/dev/null)"
 DEFAULT_QA_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of qa)" 2>/dev/null)"
 # v1.23.0: the lead's wake waiter on SessionStart and as the third Stop entry (exec'd)
-EXPECT_LEAD_HOOKS='{"SessionStart":["exec \"<TEAMCTL>\" _inbox-wake"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","exec \"<TEAMCTL>\" _inbox-wake"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt"]}'
-EXPECT_QA_HOOKS='{"PreToolUse":["\"<TEAMCTL>\" _guard"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt"]}'
+# v1.24.0 (D7): and `teamctl _hook <Event>` exactly once for each of the five turn events (lib/hooks.sh)
+EXPECT_LEAD_HOOKS='{"PostToolUse":["\"<TEAMCTL>\" _hook PostToolUse"],"PreCompact":["\"<TEAMCTL>\" _hook PreCompact"],"SessionStart":["\"<TEAMCTL>\" _hook SessionStart","exec \"<TEAMCTL>\" _inbox-wake"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","\"<TEAMCTL>\" _hook Stop","exec \"<TEAMCTL>\" _inbox-wake"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt","\"<TEAMCTL>\" _hook UserPromptSubmit"]}'
+EXPECT_QA_HOOKS='{"PostToolUse":["\"<TEAMCTL>\" _hook PostToolUse"],"PreCompact":["\"<TEAMCTL>\" _hook PreCompact"],"PreToolUse":["\"<TEAMCTL>\" _guard"],"SessionStart":["\"<TEAMCTL>\" _hook SessionStart"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","\"<TEAMCTL>\" _hook Stop"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt","\"<TEAMCTL>\" _hook UserPromptSubmit"]}'
 teamctl policy browser-writes allow >/dev/null 2>&1
 teamctl restart lead >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
@@ -1749,8 +1754,10 @@ check "settings delta (lead): at the default there is no permissions key at all,
 check "settings delta (worker): the same both ways round" '[ "$DEFAULT_QA_PERMKEY" = "false" ] && [ "$DEFAULT_QA_DOC" = "$(settings_doc_noperm qa)" ]'
 # The DRIFT, which the delta cannot see: if something else in that jq chain quietly changes
 # shape, BOTH documents change together and the delta still passes.
-check "settings drift (lead): the key set is exactly disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook, the wake waiter (Stop and SessionStart) and the inbox UserPromptSubmit hook" '[ "$DEFAULT_LEAD_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
-check "settings drift (worker): exactly disableAgentView, env, hooks and teammateMode, and exactly the guard, the notification hook and the two inbox hooks" '[ "$DEFAULT_QA_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
+check "settings drift (lead): the key set is exactly disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook, the wake waiter (Stop and SessionStart), the inbox UserPromptSubmit hook and the turn hooks" '[ "$DEFAULT_LEAD_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'
+# v1.24.0: plus enabledPlugins, and only that, which the worker-context policy (default trim)
+# writes when the machine has plugins to switch off (lib/policy.sh worker_context_settings).
+check "settings drift (worker): exactly disableAgentView, env, hooks and teammateMode (and enabledPlugins under worker-context trim), and exactly the guard, the notification hook, the two inbox hooks and the turn hooks" '[ "$(printf "%s" "$DEFAULT_QA_KEYS" | jq -c "map(select(. != \"enabledPlugins\"))")" = "[\"disableAgentView\",\"env\",\"hooks\",\"teammateMode\"]" ] && [ "$DEFAULT_QA_HOOKS" = "$EXPECT_QA_HOOKS" ]'
 # rgi60 F5: Claude Code's agent view is off for every agent, by the setting AND by its
 # environment switch. With it on, /bg turned the comms lead's pane into the agent view, which
 # started Claude's daemon from inside the pane (2026-10-19).
