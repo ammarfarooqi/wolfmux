@@ -22,3 +22,17 @@ Conclusions:
 - Above 30,000 characters a successful result is already persisted by the CLI, preview = first 2 KB.
 - A `PreToolUse` `updatedInput` rewrite of the command is honoured and keeps the exit code: the only hook
   route that also covers failing commands.
+
+## Proof of the feature (probes 7 to 10, `tests/research/offload-probe/probe2.sh`)
+
+The real hooks of this checkout (`teamctl _offload-pre`, `teamctl _hook PostToolUse` with the safety net, the
+backstop settings), same CLI and model. The run logs themselves are not kept here.
+
+| # | Command | Model got | Answer |
+|---|---|---|---|
+| 7 | `seq 1 30000; echo "not ok 9 - PROBE-MIDDLE-FAIL"; seq 30001 60000; echo "PROBE-FAIL-MARKER at the end" >&2; exit 1` | "Exit code 1", the shortened form (60002 lines, 348952 characters, exit code 1, the log path), `30001: not ok 9 - PROBE-MIDDLE-FAIL`, the last 40 lines ending in the marker | exit code 1, last line the marker, both FAIL lines |
+| 8 | `echo PROBE-OUT-1; echo PROBE-ERR-2 >&2; exit 3` | "Exit code 3\nPROBE-OUT-1\nPROBE-ERR-2", identical to probe 3 without the feature; no log left | exit code 3 |
+| 9 | `touch <marker>; echo touched`, with a second PreToolUse entry that denies (as the guard does) | "PreToolUse:Bash hook error: probe guard: refused" | never ran: the marker file does not exist |
+| 10 | `exec seq 1 5000` (not rewritten: exec) | the safety net's shortened form, as the Bash result object (5000 lines, 23893 characters, path) | |
+
+No settings warning from the CLI for `bashOutputMaxChars` or the env entries (stderr.txt).

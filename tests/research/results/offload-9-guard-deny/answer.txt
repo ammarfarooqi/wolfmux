@@ -1,0 +1,3 @@
+Exit code: none. The command never ran because a PreToolUse hook refused it.
+Last line of the tool result: `PreToolUse:Bash hook error: probe guard: refused`
+Lines containing FAIL: none.
