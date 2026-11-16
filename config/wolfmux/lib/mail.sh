@@ -335,6 +335,13 @@ mail_bodies_for() {
 }
 
 _mail_hook_drain() {
+  # The inbox file is $STATE_DIR/inbox/<role>, and the run directory is $STATE_DIR/run/<role>:
+  # the team's state directory without a tmux call (hook_load_project would make one).
+  if [ -z "${STATE_DIR:-}" ]; then
+    STATE_DIR="${HOOK_RUN%/}"
+    STATE_DIR="${STATE_DIR%/*}"
+    STATE_DIR="${STATE_DIR%/*}"
+  fi
   local dir="$HOOK_RUN/mail" identity="${BEADS_ACTOR:-$HOOK_ROLE}" base file json block budget=0 shown=0 more=0
   [ -d "$dir/new" ] || return 0
   for base in $(/bin/ls -1 "$dir/new" 2>/dev/null | /usr/bin/sort); do
