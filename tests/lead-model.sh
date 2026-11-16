@@ -207,6 +207,17 @@ teamctl restart w1 --continue >/dev/null 2>&1
 check "restart honours the record: w1 comes back on Opus, in its own conversation" \
   'restarted w1 "$BEFORE" && last_says w1 "modelarg=claude-opus-5-5" && last_says w1 "session_id=$(record w1 | jq -r .session_id)" &&
    [ "$(record w1 | jq -r .model_id)" = claude-opus-5-5 ] && [ "$(field w1 label)" = "Opus 5.5" ]'
+# v1.24.0 (D10, and what main's 7089fa4 fixed for the old launcher): an agent recorded when
+# opus still meant an older model comes back, after a restart, on what opus means today, and
+# status names the model its pane now runs, not the one written at spawn.
+teamctl spawn w3 opus --no-kickoff >/dev/null 2>&1
+W3_FILE="$(ls -d "$WOLFMUX_DATA"/state/*/agents/w3.json)"
+jq '.model_id = "claude-opus-5" | .model_context = 1000000' "$W3_FILE" >"$W3_FILE.new" && /bin/mv "$W3_FILE.new" "$W3_FILE"
+BEFORE="$(pane_pid w3)"
+teamctl restart w3 >/dev/null 2>&1
+check "an alias that moved on: restart launches the newest model and status names it (Opus 5.5)" \
+  'restarted w3 "$BEFORE" && last_says w3 "modelarg=claude-opus-5-5" && [ "$(record w3 | jq -r .model_id)" = claude-opus-5-5 ] && [ "$(field w3 label)" = "Opus 5.5" ]'
+teamctl stop w3 >/dev/null 2>&1
 teamctl spawn w2 fable --no-kickoff >/dev/null 2>&1
 teamctl stop w2 >/dev/null 2>&1
 OUT="$(teamctl model w2 sonnet 2>&1)"
