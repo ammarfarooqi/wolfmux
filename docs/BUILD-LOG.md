@@ -2394,6 +2394,125 @@ transcript as a PostToolUse `hook_additional_context` and nowhere in the main on
 the subagent's own retelling. On v1.24.1 the subagent's transcript holds no marker and the
 main conversation's has it as `hook_additional_context`, at the Agent tool's own PostToolUse.
 
+## 43. A long output stays out of the context (v1.25.0, ADR-0036)
+
+Bash output was a third of what a worker added to its context after its first answer (33.4% for
+the port worker, 40.4% for the lead; 10% of the steps made 36% of the growth). Claude Code 2.1.325
+sends no `clear_tool_uses` edit, so a test log read once is sent again with every later request
+until a compaction.
+
+Six probes against the real CLI (`tests/research/results/offload-probes.md`) showed where a hook
+can and cannot help. A `PostToolUse` `updatedToolOutput` must be the Bash result object (a string
+is refused, the original kept). A command that exits non-zero fires `PostToolUseFailure` only, whose
+answer replaces nothing, and the CLI cuts that result to its first ~10,000 characters: the FAIL lines
+at the end of a failing suite never reached the model and were saved nowhere. Above 30,000 characters
+a successful result is saved by the CLI with a 2 KB head. A `PreToolUse` `updatedInput` rewrite of
+the command is honoured and the exit code still arrives.
+
+So the work is done before the command, not after it. `teamctl _offload-pre` (its own PreToolUse
+entry, next to the worktree guard) puts one prefix on a Bash command: stdout and stderr go to
+`run/<role>/out/<n>-<pid>.log`, and an EXIT trap prints the result whole when it is at most 4000
+characters, else the first and last 40 lines, the lines between that match
+`FAIL|[Ee]rror|panic|not ok` (at most 60), the counts, the exit code and the path with "search it
+with grep; do not cat it". The command runs once, in the same shell: cd, exports and the exit status
+stay. A PostToolUse safety net shortens a long exit-0 result the rewrite did not cover, and
+`bashOutputMaxChars` and `BASH_MAX_OUTPUT_LENGTH` are lowered to 16000 as a backstop. Codex cannot
+rewrite a result, so `teamctl run -- <command>` does the same with the same code. The policy
+`output-offload` (on) and `WOLFMUX_OFFLOAD=off` switch it; off writes not one hook entry of it.
+
+Cost per Bash call on the owner's Mac: PreToolUse 6 ms (3 ms off), a short PostToolUse result no
+fork, a long Bash result 34 ms. Review found three faults, all fixed with a check that failed first:
+two Bash calls at once shared one log (the pid is in the name now); a command with its own `trap`
+lost its output to a log nobody was told about (never wrapped, as `exec` and background calls are);
+the safety net could keep queued mail back (mail comes first, as in D7).
+
+Proof: `tests/offload.sh` runs a plain-against-wrapped corpus (output, exit code, cwd, exports)
+under bash and under zsh started as the CLI starts it. On the real CLI (probes 7 to 10): a 60,002-line
+failing command arrived as the shortened form with the middle FAIL line and the last 40 lines; a
+short failure came back identical to the one without the feature and left no log; a command another
+hook denies stayed denied; an `exec` command got the safety net's form.
+
+Not built: a failure hidden in the cut middle is only as visible as the pattern (an agent can still
+`cat` the log); a command with `exec`, `trap` or in the background is covered by the net and the
+backstop alone; Codex has no hook, so its agents must call `teamctl run --` themselves.
+
+## 44. A trimmed agent starts smaller (v1.25.0, ADR-0037)
+
+ADR-0034 took the plugins out of a worker. Measured again, a trimmed worker's first request was
+still 81,024 tokens and the lead's 115,652, and that part is sent with every request and decides how
+much room a compaction leaves. Three things in it were never used by a pane agent: seven tools
+(a pane has 15 on the wire, 72,593 characters, `Artifact` alone 37,384), the claude.ai connectors
+(36,879 characters of tool names and instructions that arrived during a two-line task), and a
+Chinese copy of the owner's rules (9,142 characters, 7,785 tokens). Each has a per-process switch
+that needs nothing changed in `~/.claude`.
+
+Under `worker-context trim` and `lean`, a worker's generated settings deny Artifact, AskUserQuestion,
+SendFeedback, ScheduleWakeup, Workflow, ReportFindings and ListAgents by bare name and set
+`ENABLE_CLAUDEAI_MCP_SERVERS=false`. The policy `context-exclude` takes globs that become
+`claudeMdExcludes`; empty by default, because wolfmux does not decide which of the owner's files
+matter. `teamctl doctor` names a rules folder that repeats a sibling in a second language and prints
+the exact line. The policy `lead-context` (`full` default, `trim`) gives the lead the same three
+reductions except that AskUserQuestion stays; its plugins are not touched.
+
+| First request (print mode, Haiku 5.5) | Worker | Lead |
+|---|---|---|
+| v1.24.0 (`trim`; lead untouched) | 74,171 | 90,006 |
+| v1.25.0 `trim` / `lead-context trim` | 51,884 (30% less) | 67,793 |
+| plus `context-exclude '**/rules/ecc/zh/**'` | 44,099 (41% less) | 60,008 (33% less) |
+
+In real pane runs with the same settings: worker 81,024 to 54,289, its summed input for the same
+task 589,753 to 339,615 (42% less), lead 115,652 to 70,017. The "before" row moves with the
+connectors (56,744 in a probe where they had not connected yet); the "after" rows do not.
+
+Not built: the 123 of 209 listed skills that come from account-synced plugins
+(`~/.claude/plugins/synced/`) are still listed, no per-process switch was found. `--tools` with a
+short allow list would be smaller (23,746) but fails closed on a later CLI's new tool and takes
+Agent and Skill from a worker; the deny list fails open. A worker under `trim` cannot use a
+connector; `worker-context full` gives them back.
+
+## 45. One context number, a window that cannot thrash, a stalled agent reported (v1.25.0, ADR-0038)
+
+The CLI compacts at about its window minus 33,000 tokens and starts again at the conversation's
+first request plus what the compaction kept (19k to 47k). With a worker's window and first request
+that left little room: the port worker (200k) compacted 4 times in 11 minutes and stood still 514 s;
+a Haiku worker with a 100k window compacted 10 times in 5 minutes (4-5k of room each time), and the
+CLI then stopped with "Autocompact is thrashing". The worker sat idle with its task in progress
+and nobody was told. Meanwhile `teamctl status` and the watch divided by the model table's window
+(or 200,000): a worker told to compact at 100,000 was shown 6%, one at 186k of 400k was told 93%.
+A window handed to `spawn` or `task --spawn` never arrived, because the settings file is written in
+the pane, which has the tmux server's environment. The watch also fired inside in-process
+subagents (their hook input carries the main conversation's transcript).
+
+`context_limit_for` (`lib/policy.sh`) is now the only place a limit is worked out, and every view
+prints `142k/167k 85%`: status, dashboard, the watch's notices, the checkpoint. The window of a
+worker is `F + K + 33000 + room` (room 150000), never above the model's, never below the same sum
+with 30000, and a raised or capped window says why in the pane and the event log. A window asked for
+on `spawn`, `task --spawn` or `restart` is written on the record and reaches the pane. The watch
+leaves a `near` file within 10 points of the next threshold so the hot path looks every call
+(one file test, no fork), and does nothing inside a subagent. Two compactions within 10 tool calls
+send the lead one message with the numbers and the restart command.
+
+A stall of over 3 hours after an API 529 went unreported before. `lib/stall.sh` looks, from outside
+the agent, for a transcript quiet for `WOLFMUX_STALL_AFTER` (300) seconds that ends on an error row,
+and tells the lead once per row: from the lead's idle wake waiter (every 60 s), from its tenth tool
+call, and from `teamctl status` (a `stalled` line). Nothing is typed and nothing restarts.
+
+Four pane runs on the real CLI (`tests/research/results/part-b-real-cli.md`): the compact window is
+in a hook's environment; status counted the same tokens as the CLI's statusLine (79,923 both); two
+compactions 4 tool calls apart gave the lead exactly one message and it acted; the 80% warning
+reached the lead before a compaction at 147k; a staged stall (the rows of a real 529) was reported
+87 s later and not twice. The runs found a real fault: SessionStart:compact fires before the
+`compact_boundary` row is written, so K, F and the thrash message's figures were the previous
+compaction's. A background job now reads them when the row appears (fixed, with a check that failed
+first).
+
+Not built: no rotation, nothing gives a task a fresh conversation by itself; a tool result that
+jumps the conversation over the limit within one request (two parallel 23k reads at 59%) compacts
+with no warning, the PreCompact checkpoint is what is left; a stalled lead, an agent stuck any other
+way (a hung tool, a dialog), a Codex agent and a team with no lead and nobody calling status are not
+seen; Codex keeps the window its rollout states, unreduced. The lead's tenth-call and status
+lookers of a stall are covered by stub checks only.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
