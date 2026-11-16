@@ -8,7 +8,7 @@ Tasks, messages and shared team notes are `teamctl` commands (`send`, `task`, `c
 not Beads: agents no longer need `bd`. They live in a native sqlite store by default, or
 in Beads for a team already on it (`teamctl store`; [Beads cheat sheet](#beads-cheat-sheet)
 if yours is). A message or task reaches a Claude Code agent through its CLI's hooks, with
-the body, at its next tool call — a Codex agent still gets the typed notice. A worker's own
+the body, at its next tool call — a Codex agent gets the one-line notice, typed only where the typing gates allow. A worker's own
 conversation starts under the `worker-context` policy (default `trim`: your rules and
 settings, every plugin off) and is told, as it fills up, to commit and checkpoint, then to
 start nothing new (`WOLFMUX_CONTEXT_WARN` / `WOLFMUX_CONTEXT_ROTATE`); `teamctl restart
@@ -545,10 +545,10 @@ agent of each team:
  2 projects · 20 teams (13 orphaned) · 75 agents: 12 running · 63 stopped · 0 exited
 
 PROJECT fanpro-studio-fe-099f81   ~/Documents/fpro/fanpro-studio-fe
-  TEAM nudge-fix            running      lead Opus 5       agents 1    lanes 4.2 GB
-      🐺 lead             Opus 5         running  cpu 2.4    mem 0.5G    ctx 490k 24%   wrote 2s     -
+  TEAM nudge-fix            running      lead Opus 5.5     agents 1    lanes 4.2 GB
+      🐺 lead             Opus 5.5       running  cpu 2.4    mem 0.5G    ctx 490k 24%   wrote 2s     -
   TEAM onboarding           running      lead Fable 5.2    agents 25   lanes not measured (teamctl teams measures it)
-      🐶 walk2            Opus 5         running  cpu 0.0    mem 0.4G    ctx 192k 19%   wrote 14m    ai/onboarding/walk2-…
+      🐶 walk2            Opus 5.5       running  cpu 0.0    mem 0.4G    ctx 192k 19%   wrote 14m    ai/onboarding/walk2-…
 
 MACHINE  load 2.9 · memory 8.1 GB free · disk 109.4 GB free
 ```

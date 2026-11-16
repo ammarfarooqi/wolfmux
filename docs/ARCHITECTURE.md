@@ -23,7 +23,7 @@ Beads backend a three-line event hook calls `teamctl _deliver` instead. Delivery
 itself is one more seam below both: a Claude Code agent's CLI hooks carry the body
 straight into its conversation ([ADR-0032](adr/0032-mail-through-the-clis-hooks.md));
 a role with no running pane, or a Codex-family agent (no such hooks), still gets the
-one-line typed notice this always worked by.
+one-line notice v1.23.0 gave it, typed only where the typing gates allow.
 
 ![Two tools, two planes: teamctl, the tmux server with lead and workers, Beads, and the hook between them](diagrams/architecture.svg)
 
@@ -222,16 +222,31 @@ never runs these directly — `teamctl send` / `task` / … call them underneath
 
 ### A message from lead to worker
 
-![Sequence: a task goes out through Beads, a fixed line reaches the worker's pane, the result comes back the same way](diagrams/message-flow.svg)
+![Sequence: a task goes out through the store, the worker's hooks hand it over, the result comes back the same way](diagrams/message-flow.svg)
 
-1. lead: `bd create "Subject" -t message -a backend -d "…"` — durable, atomic, in Beads
-2. Beads fires `.beads/hooks/on_create` with the bead as JSON on stdin
-3. `beads-nudge` sees an assignee that is not the actor and calls
-   `teamctl nudge backend --quiet --id <bead-id>` in the background
-4. `teamctl` validates role and id, debounces bursts (3 s, under a per-role guard),
-   checks that nobody is typing in that pane, and types **one fixed line** into it:
-   `[wolfmux] Beads update for backend (<id>). Run: bd show <id> -- then: bd list …`
-5. the worker runs the command it was shown and reads the body from Beads
+1. lead: `teamctl send backend "Subject" "…"` — durable in the store, native or Beads
+2. on the native backend the write calls `mail_announce` itself; on Beads, Beads
+   fires `.beads/hooks/on_create` with the bead as JSON on stdin and the hook calls
+   `teamctl _deliver backend --event create` in the background. Either way the next
+   step is `_mail_deliver_to`, the one path to a recipient.
+3. for a Claude-family agent whose pane runs, the item is spooled to
+   `$STATE_DIR/run/backend/mail/new/` and flagged for attention. Then, for every agent,
+   exactly one notice through `_nudge_one` (v1.24.0, ADR-0032): one line in the inbox file
+   (`lib/inbox.sh`: the badge, the popup, the desktop notification, the lead's wake waiter)
+   and, only where v1.23.0's typing gates allow, the typed line. A Codex-family agent gets
+   just that, as in v1.23.0
+4. whichever channel comes first hands the item over with its body: the next `PostToolUse`
+   (mid-turn) drains the spool and marks the inbox line delivered; the `Stop` hook, the
+   `UserPromptSubmit` hook or the lead's wake waiter hand the notice over with the spooled
+   body attached and move it to `mail/seen`. Nothing is shown twice
+5. the worker reads the body in its own conversation and acts on it directly — no
+   round trip through `teamctl show` or `teamctl mail` just to see what arrived
+
+The message body never travels through tmux on the hook path, so there is nothing
+to quote, escape or truncate. The same path tells the lead when a worker closes a
+task or marks one blocked (`mail_announce` / the Beads hook, by the same rule:
+the assignee when someone else changed its task, the lead when a worker blocks or
+closes one, never the actor itself). Comments fire no hook, on either backend.
 
 ### Never into a half-typed line
 
@@ -333,29 +348,6 @@ and none was lost.
 The message body never travels through tmux, so there is nothing to quote, escape
 or truncate. The same hook tells the lead when a worker closes a task or marks
 one blocked. Comments fire no hook, by Beads' design.
-1. lead: `teamctl send backend "Subject" "…"` — durable in the store, native or Beads
-2. on the native backend the write calls `mail_announce` itself; on Beads, Beads
-   fires `.beads/hooks/on_create` with the bead as JSON on stdin and the hook calls
-   `teamctl _deliver backend --event create` in the background. Either way the next
-   step is `_mail_deliver_to`, the one path to a recipient.
-3. for a Claude-family agent whose pane runs, the item is spooled to
-   `$STATE_DIR/run/backend/mail/new/` and flagged for attention. Then, for every agent,
-   exactly one notice through `_nudge_one` (v1.24.0, ADR-0032): one line in the inbox file
-   (`lib/inbox.sh`: the badge, the popup, the desktop notification, the lead's wake waiter)
-   and, only where v1.23.0's typing gates allow, the typed line. A Codex-family agent gets
-   just that, as in v1.23.0
-4. whichever channel comes first hands the item over with its body: the next `PostToolUse`
-   (mid-turn) drains the spool and marks the inbox line delivered; the `Stop` hook, the
-   `UserPromptSubmit` hook or the lead's wake waiter hand the notice over with the spooled
-   body attached and move it to `mail/seen`. Nothing is shown twice
-5. the worker reads the body in its own conversation and acts on it directly — no
-   round trip through `teamctl show` or `teamctl mail` just to see what arrived
-
-The message body never travels through tmux on the hook path, so there is nothing
-to quote, escape or truncate. The same path tells the lead when a worker closes a
-task or marks one blocked (`mail_announce` / the Beads hook, by the same rule:
-the assignee when someone else changed its task, the lead when a worker blocks or
-closes one, never the actor itself). Comments fire no hook, on either backend.
 
 ### The notice inbox (v1.15.0)
 

@@ -29,7 +29,7 @@ default for a project with nothing on disk yet, or Beads, kept for a project alr
 on it. Either way the commands are `teamctl`'s — `send`, `task`, `checkpoint`, and the
 rest below — never `bd` directly. A message or task reaches a Claude Code agent
 through its CLI's hooks, with the body, at its next tool call; a Codex agent still
-gets the one-line typed notice this always worked by.
+gets the one-line notice v1.23.0 gave it, typed only where the typing gates allow.
 
 ## One-time setup
 
@@ -595,8 +595,8 @@ there by whoever needs it.
   (300 s), nothing half-typed on the input line, not in copy mode. Only you may change
   it, from your own terminal; an agent gets exit 77.
 
-`teamctl inbox` is the pane notices. An agent's own inbox — the work — is always
-`bd list --assignee <role> --status open,in_progress,blocked --include-infra`.
+`teamctl inbox` is the pane notices. An agent's own inbox — the work — is `teamctl mail`
+(unread mail and open tasks), on either backend.
 
 Two facts are kept per notice and they do not touch each other: whether **you** have
 expanded it (the status-bar count) and whether the **agent** has been given it. Reading

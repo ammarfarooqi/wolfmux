@@ -58,7 +58,7 @@ and the rest below, kept in a native sqlite store by default, or in Beads for a 
 on it ([Mail, tasks and memory](#mail-tasks-and-memory); `bd` cheat sheet for a Beads-backed
 team: [docs/USAGE.md](docs/USAGE.md#beads-cheat-sheet)). A message or task reaches a Claude
 Code agent through its CLI's hooks, with the body, at the agent's next tool call; a Codex
-agent still gets the typed notice.
+agent has no such hook and gets the one-line notice, typed only where the typing gates allow.
 
 **Teams**
 
@@ -467,7 +467,7 @@ store's commands and should be restarted.
 Delivery differs by CLI, not by backend: a message or task reaches a Claude Code agent
 through its CLI's hooks, with the body, at the agent's next tool call — no round trip
 through `teamctl show` or `teamctl mail` just to read it. A Codex agent has no such
-hook, so it still gets the one-line typed notice this always worked by
+hook, so it gets the one-line notice v1.23.0 gave it, typed only where the typing gates allow
 ([ADR-0032](docs/adr/0032-mail-through-the-clis-hooks.md)).
 
 ```bash
