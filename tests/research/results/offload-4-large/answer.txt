@@ -1,6 +1,6 @@
 ```
 <persisted-output>
-Output too large (340.7KB). Full output saved to: /Users/ammar/.claude/projects/-private-var-folders-mq-rzzzc27d25s1c05h9fglz1pr0000gn-T/b802d0af-ac38-40b9-ad95-3e366ce3649c/tool-results/b27b46s6j.txt
+Output too large (340.7KB). Full output saved to: /Users/x/.claude/projects/-private-var-folders-mq-rzzzc27d25s1c05h9fglz1pr0000gn-T/b802d0af-ac38-40b9-ad95-3e366ce3649c/tool-results/b27b46s6j.txt
 
 Preview (first 2KB):
 1

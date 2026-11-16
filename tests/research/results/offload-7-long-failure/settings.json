@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/bin/teamctl\" _offload-pre",
+            "command": "\"/Users/x/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/bin/teamctl\" _offload-pre",
             "timeout": 10
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/bin/teamctl\" _hook PostToolUse",
+            "command": "\"/Users/x/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/bin/teamctl\" _hook PostToolUse",
             "timeout": 20
           }
         ]

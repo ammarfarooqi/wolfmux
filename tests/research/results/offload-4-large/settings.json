@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PROBE_EVENT=PostToolUse PROBE_MODE=none PROBE_OUT='/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/../results/offload-4-large' '/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/hook.sh'"
+            "command": "PROBE_EVENT=PostToolUse PROBE_MODE=none PROBE_OUT='/Users/x/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/../results/offload-4-large' '/Users/x/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/hook.sh'"
           }
         ]
       }
