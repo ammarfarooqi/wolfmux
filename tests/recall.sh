@@ -114,6 +114,10 @@ check "30%: memory/ctx holds the numbers" '[ "$(jq -r .tokens "$RUN_W2/memory/ct
 
 usage_line 130000 >"$TRANS"
 force_through "" "$RUN_W2"
+# v1.24.1: a tool call of an in-process subagent (agent_id in the input) runs the agent's hooks
+# too. The warning is the agent's, not the subagent's: nothing said, nothing recorded as said.
+check "65% in a subagent's call (agent_id): nothing said, attention left for the agent" \
+  '[ -z "$(hook_json transcript_path="$TRANS" agent_id=sub1 agent_type=general-purpose | TEAM_ROLE=w2 WOLFMUX_RUN_DIR="$RUN_W2" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse)" ] && [ -e "$RUN_W2/attention" ]'
 check "65%: the warn text, once" 'hook_json transcript_path="$TRANS" | TEAM_ROLE=w2 WOLFMUX_RUN_DIR="$RUN_W2" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse | grep -q "Commit what works now"'
 force_through "" "$RUN_W2"
 check "65% again: not repeated" '[ -z "$(hook_json transcript_path="$TRANS" | TEAM_ROLE=w2 WOLFMUX_RUN_DIR="$RUN_W2" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse)" ]'

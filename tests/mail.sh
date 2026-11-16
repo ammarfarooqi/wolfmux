@@ -199,6 +199,25 @@ check "D7: PostToolUse then shows nothing (attention may still be set)" \
 check "Stop (turn hook): with nothing queued, answers nothing" \
   '[ -z "$(printf "{}" | hook_env backend "$BACKEND_RUN" Stop)" ]'
 
+echo "== a subagent's tool call (v1.24.1): the agent's mail is not handed to its subagent"
+# Claude Code runs an agent's hooks for its in-process subagents' tool calls too; their input
+# carries agent_id (and the MAIN conversation's session_id and transcript_path).
+SUB_ID="$(new_mail backend "Sub test" "subbody")"
+sub_json() { printf '{"session_id":"s1","transcript_path":"/nonexistent/t.jsonl","hook_event_name":"PostToolUse","tool_name":"Bash"%s}' "$1"; }
+check "subagent: PostToolUse with agent_id says nothing, even with attention set" \
+  ': >"$BACKEND_RUN/attention"; [ -z "$(sub_json ",\"agent_id\":\"a1b2c3\",\"agent_type\":\"general-purpose\"" | hook_env backend "$BACKEND_RUN" PostToolUse)" ]'
+check "  ... the mail stays spooled in mail/new/" 'ls "$BACKEND_RUN/mail/new" | grep -q -- "-$SUB_ID.json$"'
+check "  ... its inbox line is not marked delivered" '[ "$(inbox_state backend "$SUB_ID" | cut -c2)" != d ]'
+check "  ... and attention is still set" '[ -e "$BACKEND_RUN/attention" ]'
+check "subagent: every turn event with agent_id says nothing" \
+  '( for ev in SessionStart UserPromptSubmit PreCompact Stop; do [ -z "$(sub_json ",\"agent_id\":\"a1b2c3\"" | hook_env backend "$BACKEND_RUN" "$ev")" ] || exit 1; done ) && ls "$BACKEND_RUN/mail/new" | grep -q -- "-$SUB_ID.json$"'
+check "the agent's own next call (no agent_id) hands it over" \
+  'out="$(sub_json "" | hook_env backend "$BACKEND_RUN" PostToolUse)"; printf "%s" "$out" | grep -q subbody && [ "$(inbox_state backend "$SUB_ID" | cut -c2)" = d ]'
+check "  ... once: the call after it says nothing" \
+  ': >"$BACKEND_RUN/attention"; [ -z "$(sub_json "" | hook_env backend "$BACKEND_RUN" PostToolUse)" ]'
+check "  an empty agent_id is the agent's own call" \
+  'E_ID="$(new_mail backend "Empty id" "emptyidbody")"; sub_json ",\"agent_id\":\"\"" | hook_env backend "$BACKEND_RUN" PostToolUse | grep -q emptyidbody'
+
 echo "== the prompt hook hands it over the same way"
 PROMPT_ID="$(new_mail backend "Prompt test" "promptbody")"
 check "D7: UserPromptSubmit carries the body and marks it delivered" \
