@@ -594,13 +594,14 @@ cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
   local from_tree="" old_record="" old_branch="" old_keep="" old_pane dirty
   local want_branch="" ticket="" repo_arg="" repo="" spawn_repo trees repo_note=""
-  local pin="" link=0 linked=0
+  local pin="" link=0 linked=0 base_given=0
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --base)
         [ "$#" -ge 2 ] || die_usage "--base needs a git ref"
         base="$2"
+        base_given=1
         shift
         ;;
       --from-worktree)
@@ -707,6 +708,14 @@ cmd_spawn() {
   fi
   /bin/mkdir -p "$trees"
 
+  # A handover continues the stopped worker's work: with no --base, the new branch starts at
+  # the tip of that worker's branch (as checked out in its worktree), not at the project's HEAD.
+  if [ -n "$from_tree" ] && [ "$base_given" -eq 0 ]; then
+    base="$(reg_field "$from_tree" branch 2>/dev/null || true)"
+    if [ -z "$base" ] || ! git_in "$spawn_repo" rev-parse --verify -q "$base^{commit}" >/dev/null 2>&1; then
+      base="$("$GIT_BIN" -C "$path" rev-parse --verify -q HEAD 2>/dev/null)" || die "cannot find the tip of $from_tree's branch in $(short_path "$path")"
+    fi
+  fi
   base_commit="$(git_in "$spawn_repo" rev-parse --verify -q "$base^{commit}")" || die "cannot resolve base ref '$base' in $(short_path "$spawn_repo")"
   base_ref="$base"
   if [ "$base" = "HEAD" ]; then

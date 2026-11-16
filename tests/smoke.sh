@@ -774,9 +774,12 @@ check "spawn: --from-worktree refuses a worktree with uncommitted changes, and l
 teamctl policy worker-spawn on >/dev/null 2>&1
 check "spawn: --from-worktree is the lead's decision: a worker may not take another worker's worktree, even with worker-spawn on (exit 77), and nothing changes" 'TEAM_ROLE=qa teamctl spawn thief flash --from-worktree builder --no-kickoff; [ $? -eq 77 ] && teamctl status --json | jq -e "([.agents[] | select(.role == \"builder\")] | length == 1) and ([.agents[] | select(.role == \"thief\")] | length == 0)" && [ -z "$(git branch --list "ai/thief-*")" ]'
 teamctl policy worker-spawn off >/dev/null 2>&1
+git -C "$BUILDER_DIR" -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m "builder's own work" >/dev/null 2>&1
 BUILDER_OLD_BRANCH="$(git -C "$BUILDER_DIR" branch --show-current)"
+BUILDER_TIP="$(git -C "$BUILDER_DIR" rev-parse --short=12 HEAD)"
 check "spawn: --from-worktree starts a fresh worker in the same worktree, on a new branch, and the old record is gone" 'teamctl spawn builder2 flash --from-worktree builder && sleep 2 && teamctl status --json | jq -e --arg dir "$BUILDER_DIR" "([.agents[] | select(.role == \"builder2\")][0] | .state == \"running\" and .workdir == \$dir and (.branch | startswith(\"ai/builder2-\"))) and ([.agents[] | select(.role == \"builder\")]) == []"'
-check "spawn: --from-worktree bases the new branch on the project's current HEAD" 'teamctl diff builder2 | grep -q "base:    main @ $(git rev-parse --short=12 HEAD)"'
+# v1.24.0: without --base, a handover continues the stopped worker's branch, not main.
+check "spawn: --from-worktree without --base bases the new branch on the stopped worker's branch tip" 'teamctl diff builder2 | grep -q "base:    $BUILDER_OLD_BRANCH @ $BUILDER_TIP" && [ "$(git -C "$BUILDER_DIR" rev-parse --short=12 HEAD)" = "$BUILDER_TIP" ]'
 check "spawn: the old branch and its commits stay" '[ "$(git show "$BUILDER_OLD_BRANCH:.gitignore" 2>/dev/null)" = "node_modules/" ] && [ "$(git -C "$BUILDER_DIR" branch --show-current)" != "$BUILDER_OLD_BRANCH" ]'
 # The keep flag protects the WORKTREE, so it has to survive the role change with it: without
 # this, the first `teamctl stop builder2` would sweep the install the handover just preserved.
