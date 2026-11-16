@@ -1020,7 +1020,7 @@ write_agent_settings() {
        then {hooks: {PermissionRequest: [{hooks: [{type: "command", command: $permission_command, timeout: $timeout}]}]}}
        else {} end)
     * (if $offload_command != ""
-       then {env: {BASH_MAX_OUTPUT_LENGTH: $backstop}, bashOutputMaxChars: ($backstop | tonumber)} else {} end)
+       then {env: {BASH_MAX_OUTPUT_LENGTH: $backstop, WOLFMUX_OFFLOAD_SAFETY: "on"}, bashOutputMaxChars: ($backstop | tonumber)} else {} end)
     # $browser_allow is the TEAM-level browser-write grant (policy browser-writes, lib/policy.sh).
     # It is NOT the role-level PermissionRequest hook above — different gate, different purpose,
     # kept as its own arm on purpose so a later edit cannot merge or drop one for the other.

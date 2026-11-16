@@ -19,6 +19,20 @@ if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN
   [ "${#_calls}" -le 9 ] || _calls=0
   _calls=$((10#$_calls + 1))
   printf '%s\n' "$_calls" >"$WOLFMUX_RUN_DIR/calls" 2>/dev/null || true
+  # The offload safety net (lib/offload.sh offload_post), only when the agent's settings switched
+  # it on: the CLI's JSON is read with the read builtin, at most WOLFMUX_OFFLOAD_MIN characters, so
+  # a short result costs no fork. Only a longer one loads the module. What was read is handed on to
+  # the full hook in WOLFMUX_HOOK_STDIN, since stdin cannot be read twice.
+  if [ "${WOLFMUX_OFFLOAD_SAFETY:-}" = on ]; then
+    _wm_in=""
+    if IFS= read -r -d '' -n "${WOLFMUX_OFFLOAD_MIN:-4000}" _wm_in; then
+      WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
+      # shellcheck source=/dev/null
+      . "$WOLFMUX_HOME/lib/offload.sh" 2>/dev/null && offload_post "$_wm_in$(/bin/cat)" || true
+      exit 0
+    fi
+    export WOLFMUX_HOOK_STDIN="$_wm_in"
+  fi
   if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ $((_calls % 10)) -ne 0 ]; then exit 0; fi
 fi
 
@@ -300,6 +314,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl note <id> "<text>"                        a durable note on a task; notifies nobody
     teamctl reopen <id> "<why>"      (lead)           send a closed task back, open, the assignee told
     teamctl close <id> -r "<reason>" [--failed]   (lead)    close or reject any task of this team
+  Long output  (ADR-0036)
+    teamctl run -- <command> [args...]                runs it; a long output goes to a log and you get its head, tail,
+                                                      failure lines and the path (Codex agents; Claude agents get this by hook)
   Shared team notes  team knowledge and where an agent left off (ADR-0033)
     teamctl checkpoint "<text>"|--body-file <file>|-|--show [<role>]    save, or print a role's
                                                       stored checkpoint
@@ -415,6 +432,7 @@ main() {
     send) cmd_send "$@" ;;
     mail) cmd_mail "$@" ;;
     checkpoint) cmd_checkpoint "$@" ;;
+    run) cmd_run "$@" ;;
     task) cmd_task "$@" ;;
     done) cmd_done "$@" ;;
     blocked) cmd_blocked "$@" ;;

@@ -179,7 +179,9 @@ cmd_hook() {
   HOOK_ROLE="${TEAM_ROLE:-}"
   HOOK_RUN="${WOLFMUX_RUN_DIR:-}"
   HOOK_CONTEXT="" HOOK_PROJECT_LOADED=""
-  HOOK_INPUT="$(/bin/cat 2>/dev/null || true)"
+  # WOLFMUX_HOOK_STDIN: the part of stdin the hot path in bin/teamctl already read (offload)
+  HOOK_INPUT="${WOLFMUX_HOOK_STDIN:-}$(/bin/cat 2>/dev/null || true)"
+  unset WOLFMUX_HOOK_STDIN
   printf '%s' "$HOOK_INPUT" | "$JQ_BIN" -e 'type == "object"' >/dev/null 2>&1 || HOOK_INPUT="{}"
   # Not an agent of a team (a hook file reused by hand): nothing to do. The "finished"
   # notification is lib/notify.sh's own Stop hook (_notify), not this one (v1.24.0).

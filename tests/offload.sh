@@ -189,6 +189,46 @@ check "policy output-offload off: not one entry of it, the guard kept" "settings
 check "WOLFMUX_OFFLOAD=off: not one entry of it" "WOLFMUX_OFFLOAD=off settings lead off on | jq -e '.hooks.PreToolUse == null and .bashOutputMaxChars == null'"
 check "policy: output-offload is a key, on by default, on|off" "bash -c '. $WOLFMUX_HOME/lib/common.sh 2>/dev/null; . $WOLFMUX_HOME/lib/policy.sh; [ \"\$(policy_default output-offload)\" = on ] && policy_valid output-offload off && ! policy_valid output-offload maybe'"
 
+echo "== teamctl run -- (Codex family)"
+"$REPO/bin/teamctl" run -- sh -c 'echo a; echo b >&2; echo c; exit 5' >"$WORK/r1.out" 2>"$WORK/r1.err"
+r1=$?
+check "run: the command's exit code (5)" "[ $r1 = 5 ]"
+check "run: short output whole, stderr in the order written, no path line" "[ \"\$(cat $WORK/r1.out)\" = \"\$(printf 'a\nb\nc')\" ]"
+check "run: stdin reaches the command" "[ \"\$(printf 'in\n' | $REPO/bin/teamctl run -- bash -c 'read l; echo \"[\$l]\"')\" = '[in]' ]"
+"$REPO/bin/teamctl" run -- sh -c 'seq 1 3000; echo "panic: middle"; seq 3001 6000; echo "FAIL end" >&2; exit 1' >"$WORK/r2.out"
+r2=$?
+check "run: long output shortened, exit code kept (1)" "[ $r2 = 1 ] && grep -q '^\[wolfmux\] long output shortened: 6002 lines' $WORK/r2.out"
+check "run: the middle failure and the last line are shown" "grep -qx '3001: panic: middle' $WORK/r2.out && [ \"\$(tail -1 $WORK/r2.out)\" = 'FAIL end' ]"
+check "run: WOLFMUX_OFFLOAD=off runs it plainly" "[ \"\$(WOLFMUX_OFFLOAD=off $REPO/bin/teamctl run -- seq 1 5000 | wc -l | tr -d ' ')\" = 5000 ]"
+check "run: without a command, a usage error" "! $REPO/bin/teamctl run -- 2>/dev/null"
+
+echo "== the safety net: PostToolUse on a result the rewrite did not cover"
+post() { WOLFMUX_OFFLOAD_SAFETY=on "$REPO/bin/teamctl" _hook PostToolUse; }
+post_json() { jq -cn --arg c "$1" --arg out "$2" --arg p "${3:-}" '{hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {command: $c},
+  tool_response: ({stdout: $out, stderr: "", interrupted: false, isImage: false, noOutputExpected: false} + (if $p != "" then {persistedOutputPath: $p, persistedOutputSize: 1} else {} end))}'; }
+seq 1 3000 >"$WORK/big.txt"
+check "short result: no answer" "[ -z \"\$(post_json 'echo hi' hi | post)\" ]"
+check "long result: replaced by the Bash result OBJECT with the shortened form" "post_json 'cat x' \"\$(cat $WORK/big.txt)\" | post | jq -e '.hookSpecificOutput.updatedToolOutput | (.stdout | startswith(\"[wolfmux] long output shortened: 3000 lines\")) and .stderr == \"\" and .interrupted == false'"
+check "above 30k the CLI's persisted file is the full text" "seq 1 60000 >$WORK/persisted.txt; post_json 'seq' \"\$(head -c 30000 $WORK/persisted.txt)\" $WORK/persisted.txt | post | jq -e '(.hookSpecificOutput.updatedToolOutput | has(\"persistedOutputPath\") | not) and (.hookSpecificOutput.updatedToolOutput.stdout | contains(\"60000 lines\"))'"
+check "a wrapped command's result is not shortened twice" "[ -z \"\$(post_json \"\$(rewritten 'cat x')\" \"\$(cat $WORK/big.txt)\" | post)\" ]"
+check "safety net off (not in the settings): no answer, nothing read" "[ -z \"\$(post_json 'cat x' \"\$(cat $WORK/big.txt)\" | $REPO/bin/teamctl _hook PostToolUse)\" ]"
+
+echo "== cost (measured, not checked against a bound)"
+ms() { # <n> <command string> — mean milliseconds of one run
+  local t0 t1 i
+  t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+  for i in $(seq 1 "$1"); do eval "$2" >/dev/null 2>&1; done
+  t1=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
+  echo $(((t1 - t0) / $1))
+}
+pre_in="$(hook_json 'npm test')"
+short_in="$(post_json 'echo hi' hi)"
+long_in="$(post_json 'cat x' "$(cat "$WORK/big.txt")")"
+printf '  PreToolUse _offload-pre per Bash call: %s ms (off: %s ms)\n' "$(ms 20 'printf %s "$pre_in" | $REPO/bin/teamctl _offload-pre')" "$(ms 20 'printf %s "$pre_in" | WOLFMUX_OFFLOAD=off $REPO/bin/teamctl _offload-pre')"
+printf '  jq alone, the same rewrite: %s ms\n' "$(ms 20 'printf %s "$pre_in" | jq -c .tool_input')"
+printf '  PostToolUse hot path, short result: %s ms with the safety net, %s ms without\n' "$(ms 20 'printf %s "$short_in" | post')" "$(ms 20 'printf %s "$short_in" | $REPO/bin/teamctl _hook PostToolUse')"
+printf '  PostToolUse, long result (14 KB) shortened: %s ms\n' "$(ms 10 'printf %s "$long_in" | post')"
+
 echo
 echo "result: $passed passed, $failed failed"
 [ "$failed" -eq 0 ]

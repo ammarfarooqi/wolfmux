@@ -133,22 +133,34 @@ WOLFMUX_OFFLOAD_MARK="__wm_fin" # the function the line defines; also how a wrap
 # offload_next_log <run-dir> — the path of the next log; the file is created by the wrapped
 # shell itself, so a call that is not wrapped leaves nothing behind
 offload_next_log() {
+  offload_alloc_log "$1" || return 1
+  printf '%s\n' "$OFFLOAD_LOG"
+}
+
+# offload_alloc_log <run-dir> — the same into OFFLOAD_LOG, without a fork (the PreToolUse path)
+offload_alloc_log() {
   local dir="$1/out" n=0
-  /bin/mkdir -p "$dir" 2>/dev/null || return 1
+  [ -d "$dir" ] || /bin/mkdir -p "$dir" 2>/dev/null || return 1
   if [ -r "$dir/next" ]; then IFS= read -r n <"$dir/next" || true; fi
   case "$n" in "" | *[!0-9]*) n=0 ;; esac
   n=$((10#$n + 1))
   printf '%s\n' "$n" >"$dir/next" 2>/dev/null || return 1
   if [ $((n % 20)) -eq 0 ]; then offload_prune "$dir"; fi
-  printf '%s\n' "$dir/$n.log"
+  OFFLOAD_LOG="$dir/$n.log"
 }
 
 # offload_wrap_line <log> <show-script> — the line put in front of a command. Plain sh, so a
 # lead whose shell is zsh runs it too. Paths with a single quote are refused (prints nothing).
 offload_wrap_line() {
+  offload_make_line "$1" "$2" || return 1
+  printf '%s' "$OFFLOAD_LINE"
+}
+
+# offload_make_line <log> <show-script> — the same into OFFLOAD_LINE, without a fork
+offload_make_line() {
   local log="$1" show="$2"
   case "$log$show" in *"'"*) return 1 ;; esac
-  printf '%s' "__wm_fin() { trap - EXIT TERM INT; exec 1>&7 2>&8 7>&- 8>&-; /bin/bash '$show' '$log' \"\$1\" || /bin/cat '$log'; }; if [ -r '$show' ] && exec 7>&1 8>&2 >'$log' 2>&1; then trap '__wm_rc=\$?; __wm_fin \$__wm_rc; exit \$__wm_rc' EXIT; trap '__wm_fin 143; exit 143' TERM; trap '__wm_fin 130; exit 130' INT; fi; "
+  OFFLOAD_LINE="__wm_fin() { trap - EXIT TERM INT; exec 1>&7 2>&8 7>&- 8>&-; /bin/bash '$show' '$log' \"\$1\" || /bin/cat '$log'; }; if [ -r '$show' ] && exec 7>&1 8>&2 >'$log' 2>&1; then trap '__wm_rc=\$?; __wm_fin \$__wm_rc; exit \$__wm_rc' EXIT; trap '__wm_fin 143; exit 143' TERM; trap '__wm_fin 130; exit 130' INT; fi; "
 }
 
 # offload_should_wrap <command> — 0 when the command may be wrapped
@@ -188,14 +200,18 @@ offload_finish() {
 # costs one bash start and one jq. No permissionDecision: whether the call may run is still
 # decided by the CLI and the other hooks (the worktree guard).
 offload_pre_hook() {
-  local jq log line
+  local jq
   offload_enabled || return 0
   [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR" ] || return 0
-  jq="${JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
+  jq="${JQ_BIN:-}"
+  if [ -z "$jq" ]; then
+    for jq in /opt/homebrew/bin/jq /usr/local/bin/jq /usr/bin/jq ""; do [ -x "$jq" ] && break; done
+    [ -n "$jq" ] || jq="$(command -v jq 2>/dev/null || true)"
+  fi
   [ -n "$jq" ] || return 0
-  log="$(offload_next_log "$WOLFMUX_RUN_DIR")" || return 0
-  line="$(offload_wrap_line "$log" "${WOLFMUX_HOME:-$HOME/.config/wolfmux}/lib/offload-show.sh")" || return 0
-  "$jq" -c --arg line "$line" --arg mark "$WOLFMUX_OFFLOAD_MARK" '
+  offload_alloc_log "$WOLFMUX_RUN_DIR" || return 0
+  offload_make_line "$OFFLOAD_LOG" "${WOLFMUX_HOME:-$HOME/.config/wolfmux}/lib/offload-show.sh" || return 0
+  "$jq" -c --arg line "$OFFLOAD_LINE" --arg mark "$WOLFMUX_OFFLOAD_MARK" '
     .tool_input as $in
     | if .tool_name == "Bash" and ($in.command | type) == "string" and ($in.run_in_background != true)
          and ($in.command | test("(^|[^A-Za-z0-9_-])exec([^A-Za-z0-9_-]|$)") | not)
@@ -203,4 +219,70 @@ offload_pre_hook() {
       then {hookSpecificOutput: {hookEventName: "PreToolUse",
                                  updatedInput: ($in + {command: ($line + $in.command)})}}
       else empty end' 2>/dev/null || true
+}
+
+# ---- teamctl run (Codex family): the same, as a command ------------------------------------------
+#
+# A Codex agent's results cannot be rewritten by a hook, so it runs a long command through this:
+# the full output (stdout and stderr, in the order written) to the log, the result to stdout,
+# whole when short and shortened when long, and the command's own exit code.
+
+# offload_run_dir — the agent's run directory, or a private one for a human at a terminal
+offload_run_dir() {
+  if [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR" ]; then
+    printf '%s\n' "$WOLFMUX_RUN_DIR"
+  else
+    printf '%s\n' "${TMPDIR:-/tmp}/wolfmux-run-$(id -u)"
+  fi
+}
+
+# cmd_run -- <command> [args...]
+cmd_run() {
+  local log rc=0
+  if [ "${1:-}" = "--" ]; then shift; fi
+  [ "$#" -gt 0 ] || die_usage "teamctl run -- <command> [args...]"
+  offload_enabled || exec "$@"
+  log="$(offload_next_log "$(offload_run_dir)")" || exec "$@"
+  if ! : >"$log" 2>/dev/null; then exec "$@"; fi
+  trap 'offload_finish "$log" 143; exit 143' TERM
+  trap 'offload_finish "$log" 130; exit 130' INT
+  "$@" >"$log" 2>&1 || rc=$?
+  trap - TERM INT
+  offload_finish "$log" "$rc"
+  return "$rc"
+}
+
+# ---- the safety net (a): PostToolUse on a result the rewrite did not cover -------------------------
+#
+# A Bash call that exits 0 fires PostToolUse, whose answer may replace the result, as the Bash
+# result OBJECT (a string is refused: probe 1). This covers a call the rewrite left alone
+# (run_in_background read back later, a command with exec in it). Above ~30,000 characters the CLI
+# has kept the full text itself (tool_response.persistedOutputPath), which is used instead.
+
+# offload_post <the CLI's JSON> — prints the PostToolUse answer, or nothing
+offload_post() {
+  local input="$1" jq log run
+  offload_enabled || return 0
+  jq="${JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
+  [ -n "$jq" ] || return 0
+  # one jq: is this a long Bash result we did not shorten already?
+  printf '%s' "$input" | "$jq" -e --argjson min "$(offload_min)" --arg mark "$WOLFMUX_OFFLOAD_MARK" '
+    .tool_name == "Bash" and (.tool_response | type) == "object"
+    and ((.tool_input.command // "") | contains($mark) | not)
+    and ((.tool_response.stdout // "") | startswith("[wolfmux] long output shortened") | not)
+    and (((.tool_response.stdout // "") | length) + ((.tool_response.stderr // "") | length) > $min)' >/dev/null 2>&1 || return 0
+  run="$(offload_run_dir)"
+  log="$(offload_next_log "$run")" || return 0
+  printf '%s' "$input" | "$jq" -j '
+    .tool_response | if (.persistedOutputPath // "") != "" then "\u0000" + .persistedOutputPath
+                     else (.stdout // "") + (if (.stderr // "") != "" then "\n" + .stderr else "" end) end' >"$log" 2>/dev/null || return 0
+  if [ "$(/usr/bin/head -c 1 "$log" | /usr/bin/od -An -c | /usr/bin/tr -d ' ')" = '\0' ]; then
+    local persisted
+    persisted="$(/usr/bin/tail -c +2 "$log")"
+    /bin/cp "$persisted" "$log" 2>/dev/null || return 0
+  fi
+  printf '%s' "$input" | "$jq" -c --arg text "$(offload_summary "$log")" '
+    {hookSpecificOutput: {hookEventName: "PostToolUse",
+                          updatedToolOutput: (.tool_response + {stdout: $text, stderr: ""}
+                                              | del(.persistedOutputPath, .persistedOutputSize))}}' 2>/dev/null || true
 }
