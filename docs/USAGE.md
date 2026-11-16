@@ -873,7 +873,7 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 
 | Command | Does |
 |---------|------|
-| `teamctl send <role>\|<team>.<role>\|--all "<subject>" ["<body>"] [--body-file <file>\|-] [--re <bead-id>]` | message an agent, every agent of this team, or reply to a bead |
+| `teamctl send <role>\|<team>.<role>\|--all "<subject>" ["<body>"] [--body-file <file>\|-] [--re <bead-id>]` | message an agent, every agent of this team, or reply to a bead; `human` (`WOLFMUX_HUMAN`) reaches the human's inbox (status-bar number, `prefix N`), and a message sent from a shell with no agent identity carries the human's name |
 | `teamctl mail [<role>] [--peek] [--json]` | your (or that role's) unread mail and open tasks; `--peek` leaves it unread |
 | `teamctl task <role> "<title>" [-d "<text>"\|--body-file <file>\|-] [-p <0-4>] [--after <bead-id>]… [--spawn <model>]` | assign work; `--after` adds a dependency, `--spawn` starts the role if it is not already running |
 | `teamctl claim [<id>]` | claim your only open task, or the one you name; refuses one still waiting on an unclosed blocker |

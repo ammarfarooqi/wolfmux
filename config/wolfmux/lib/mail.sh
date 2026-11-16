@@ -194,7 +194,6 @@ _mail_render_bead() {
   id="$(printf '%s' "$json" | "$JQ_BIN" -r '.id // "?"' 2>/dev/null)"
   type="$(printf '%s' "$json" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
   from="$(printf '%s' "$json" | "$JQ_BIN" -r '.created_by // ""' 2>/dev/null)"
-  [ -n "$from" ] || from="?"
   title="$(_hook_title "$(printf '%s' "$json" | "$JQ_BIN" -r '.title // ""' 2>/dev/null)")"
   prio="$(printf '%s' "$json" | "$JQ_BIN" -r '.priority // 3' 2>/dev/null)"
   status="$(printf '%s' "$json" | "$JQ_BIN" -r '.status // "open"' 2>/dev/null)"
@@ -203,22 +202,28 @@ _mail_render_bead() {
   blocked_by="$(printf '%s' "$json" | "$JQ_BIN" -r '[.blocked_by[]?] | join(", ")' 2>/dev/null)"
   if [ "$event" = "close" ] && [ "$type" != "message" ]; then
     local who role
-    who="$from"
+    who="${from:-someone}"
     role="$(printf '%s' "$json" | "$JQ_BIN" -r '.assignee // "?"' 2>/dev/null)"
     printf '[wolfmux mail] %s closed %s: %s. Review: teamctl diff %s --stat' "$who" "$id" "$title" "$role"
     return 0
   fi
   if [ "$type" = "message" ]; then
-    heading="[wolfmux mail] MESSAGE $id from $from: $title"
-    hint="Marked read. Reply: teamctl send $from \"Re: $title\" \"<text>\""
+    if [ -n "$from" ]; then
+      heading="[wolfmux mail] MESSAGE $id from $from: $title"
+      hint="Marked read. Reply: teamctl send $from \"Re: $title\" \"<text>\""
+    else
+      # no sender recorded (a message written before v1.24.0 fixed the human's name): no "?"
+      heading="[wolfmux mail] MESSAGE $id, sender not recorded: $title"
+      hint="Marked read. Its sender is not recorded, so there is no one to reply to."
+    fi
   else
     # Waiting on an unclosed blocker shows that instead of its own status, so it is never
     # mistaken for ready work (teamctl claim refuses it too, for the same reason).
     [ -z "$blocked_by" ] || status="waiting"
     if [ "$event" = "update" ]; then
-      heading="[wolfmux mail] TASK UPDATED $id from $from, priority P$prio, $status: $title"
+      heading="[wolfmux mail] TASK UPDATED $id from ${from:-someone}, priority P$prio, $status: $title"
     else
-      heading="[wolfmux mail] TASK $id from $from, priority P$prio, $status: $title"
+      heading="[wolfmux mail] TASK $id from ${from:-someone}, priority P$prio, $status: $title"
     fi
     hint=""
     if [ -n "$blocked_by" ]; then
@@ -476,10 +481,16 @@ mail_hook() {
   esac
 }
 
-# _mail_send_target <role>|<team>.<role> — sets MAIL_SEND_TEAM and MAIL_SEND_ROLE, or dies
-# (exit 64) naming the roles that do exist.
+# _mail_send_target <role>|<team>.<role>|<human> — sets MAIL_SEND_TEAM and MAIL_SEND_ROLE, or
+# dies (exit 64) naming the roles that do exist. The human ($WOLFMUX_HUMAN, default "human") is
+# a target too, though no agent has that role: one name for every team, as v1.23.0's human
+# inbox (badge, prefix N) reads it.
 _mail_send_target() {
   local word="$1" team role known
+  if [ "$word" = "$WOLFMUX_HUMAN" ]; then
+    MAIL_SEND_TEAM="$TEAM" MAIL_SEND_ROLE="$WOLFMUX_HUMAN"
+    return 0
+  fi
   case "$word" in
     *.*)
       identity_split "$word"
@@ -507,6 +518,7 @@ _mail_send_target() {
 _mail_send_one() {
   local team="$1" role="$2" subject="$3" body="$4" re="$5" sender="$6" identity id
   identity="$(team_identity "$team" "$role")"
+  [ "$role" != "$WOLFMUX_HUMAN" ] || identity="$WOLFMUX_HUMAN" # the human has no team prefix
   id="$(store_msg_create "$sender" "$identity" "$subject" "$body" "$re")" || return 1
   mail_announce create "$(store_item_json "$id")" "$sender"
   printf '%s\n' "$id"
@@ -557,7 +569,9 @@ cmd_send() {
   require_tools
   load_project
   store_backend_ready
-  self="${BEADS_ACTOR:-${TEAM_ROLE:-}}"
+  # A shell with no agent identity is the human's own terminal: its messages carry the human's
+  # name, so the reader sees who wrote and can reply (never "from ?").
+  self="${BEADS_ACTOR:-${TEAM_ROLE:-$WOLFMUX_HUMAN}}"
   if [ "$all" -eq 1 ]; then
     for r in $(reg_list); do
       [ "$r" != "${TEAM_ROLE:-}" ] || continue

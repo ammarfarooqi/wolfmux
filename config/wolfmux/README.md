@@ -304,6 +304,7 @@ a Grep of `~/.claude`) is refused too (docs/SECURITY.md in the repository says w
 teamctl send backend "Subject" "body"                   # recipient's pane shows it at its next tool call
 teamctl send backend "Subject" --body-file msg.md        # long / code-heavy body (- for stdin)
 teamctl send --all "Subject" "body"                      # one message per role of this team
+teamctl send human "Subject" "body"                      # the human: status-bar number, prefix N (WOLFMUX_HUMAN)
 teamctl mail                                            # your unread mail + open tasks ($BEADS_ACTOR, or <team>.<role>)
 teamctl show <id>                                        # read one; teamctl mail --peek leaves it unread
 teamctl send frontend "Re: ..." "..." --re <id>           # reply, threaded

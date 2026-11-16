@@ -116,6 +116,9 @@ check "send: an unknown role is refused (exit 64), nothing created" \
 check "send: identity in a named team (not yet started) is refused, not crashed" \
   'BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send "review.backend" "x" "y" 2>&1; [ $? -eq 64 ]'
 
+check "send: the human (WOLFMUX_HUMAN) is a target, and the message feeds the human's inbox index" \
+  'id="$(BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send human "For you" "human body")" && bd show "$id" --json | jq -e ".[0].assignee == \"human\"" && wait_for 10 "grep -qF \"$id\" \"$(ls -d "$STATE_ROOT"/* | head -1)/human-inbox\""'
+
 echo "== one delivery system (v1.24.0, D7): the spool, one notice, no wake line of its own"
 BACKEND_RUN="$(run_dir_of backend)"
 STATE_OF_TEAM="$(dirname "$(dirname "$BACKEND_RUN")")"

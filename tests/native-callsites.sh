@@ -112,6 +112,23 @@ check "a native lead's handover prompt says teamctl show <id>" 'printf "%s" "$HA
 check "  ... and never names bd" '! printf "%s" "$HANDOVER" | grep -qw bd'
 check "  ... and points at teamctl mail for the rest (D2), not teamctl inbox" 'printf "%s" "$HANDOVER" | grep -qF "teamctl mail" && ! printf "%s" "$HANDOVER" | grep -qF "teamctl inbox"'
 
+echo "== the human: a target and a sender of teamctl send"
+check "the human is a send target although no agent has that role" \
+  '( _mail_send_target "$WOLFMUX_HUMAN" && [ "$MAIL_SEND_ROLE" = "$WOLFMUX_HUMAN" ] )'
+: >"$(human_inbox_file)"
+HMID="$( (BEADS_ACTOR=lead TEAM_ROLE=lead cmd_send "$WOLFMUX_HUMAN" "Status" "all green") 2>/dev/null | tail -n 1)"
+check "teamctl send human stores a message assigned to the human" \
+  '[ -n "$HMID" ] && [ "$(store_item_json "$HMID" | "$JQ_BIN" -r .assignee)" = "$WOLFMUX_HUMAN" ]'
+check "  ... and feeds v1.23.0's human inbox (the badge count, the prefix N popup)" '[ "$(human_inbox_count)" = 1 ]'
+FROM_HUMAN="$( (unset BEADS_ACTOR TEAM_ROLE WOLFMUX_IDENTITY; cmd_send "$WOLFMUX_LEAD_ROLE" "From me" "hello") 2>/dev/null | tail -n 1)"
+check "a message the human sends from a plain terminal carries the human's name as sender" \
+  '[ -n "$FROM_HUMAN" ] && [ "$(store_item_json "$FROM_HUMAN" | "$JQ_BIN" -r .created_by)" = "$WOLFMUX_HUMAN" ]'
+check "  ... and the lead sees it from the human, with a reply hint to the human" \
+  'out="$(_mail_render_bead "$(store_item_json "$FROM_HUMAN")")"; printf "%s" "$out" | grep -qF "from $WOLFMUX_HUMAN:" && printf "%s" "$out" | grep -qF "teamctl send $WOLFMUX_HUMAN "'
+check "a message with no sender recorded never renders \"from ?\" or \"teamctl send ?\"" \
+  'out="$(_mail_render_bead "{\"id\":\"m9\",\"issue_type\":\"message\",\"title\":\"T\",\"created_by\":\"\"}")"; [ -n "$out" ] && ! printf "%s" "$out" | grep -qF "from ?" && ! printf "%s" "$out" | grep -qF "send ?"'
+check "the protocol names the command that writes to the human" 'grep -qF "teamctl send human" "$WOLFMUX_HOME/TEAM_PROTOCOL.md"'
+
 check "no bd call was made on the native project" 'no_bd'
 [ -e "$BD_MARK" ] && sed 's/^/    bd: /' "$BD_MARK"
 # Last: doctor reports bd's version when it is installed, and only that, on a native project.
