@@ -69,10 +69,17 @@ _doc_profiles() {
 _doc_tools() {
   local tool path
   _head "Tools"
-  for tool in tmux git jq sqlite3; do
+  for tool in tmux git jq; do
     path="$(find_tool "$tool" "/opt/homebrew/bin/$tool" "/usr/bin/$tool" || true)"
-    if [ -n "$path" ]; then _ok "$tool  $path"; elif [ "$tool" = "sqlite3" ]; then _note "sqlite3 not found (unused in V1)"; else _fail "$tool not found"; fi
+    if [ -n "$path" ]; then _ok "$tool  $path"; else _fail "$tool not found"; fi
   done
+  if _store_sqlite_ok; then
+    _ok "sqlite3   $SQLITE_BIN  ($("$SQLITE_BIN" -version 2>/dev/null | /usr/bin/awk '{print $1}'))"
+  elif [ -n "$SQLITE_BIN" ]; then
+    _fail "sqlite3 $("$SQLITE_BIN" -version 2>/dev/null | /usr/bin/awk '{print $1}') found, but the native store needs 3.$WOLFMUX_SQLITE_MIN_MINOR+ ($SQLITE_BIN)"
+  else
+    _fail "sqlite3 not found; the native store (the default for a new project) needs 3.$WOLFMUX_SQLITE_MIN_MINOR+"
+  fi
   case ":$PATH:" in
     *":$WOLFMUX_BIN_DIR:"*) _ok "$(short_path "$WOLFMUX_BIN_DIR") is on PATH" ;;
     *) _fail "$(short_path "$WOLFMUX_BIN_DIR") is not on PATH in this shell (open a new terminal, or check the wolfmux block in ~/.zshrc)" ;;
@@ -499,11 +506,28 @@ _doc_beads_store() {
 }
 
 _doc_beads() {
-  local dir
-  _head "Beads — tasks and messages"
-  if [ -n "$BD_BIN" ]; then _ok "bd        $BD_BIN  ($("$BD_BIN" version 2>/dev/null | head -1))"; else _fail "bd not found. Install: https://github.com/gastownhall/beads#-installation"; return 0; fi
-  if grep -qE 'disabled:[[:space:]]*true' "$HOME/.config/bd/config.yaml" 2>/dev/null; then _ok "bd usage metrics are off"; else _note "bd usage metrics are on (anonymous command names). Turn off: bd metrics off"; fi
+  local dir kind=""
+  _head "Beads — tasks and messages (the second backend; native is the default)"
+  if [ -n "${ROOT:-}" ]; then
+    PROJECT_KEY="$(project_key "$ROOT")"
+    PROJECT_STATE="$WOLFMUX_DATA/state/$PROJECT_KEY"
+    kind="$(store_kind)"
+  fi
+  if [ -n "$BD_BIN" ]; then
+    _ok "bd        $BD_BIN  ($("$BD_BIN" version 2>/dev/null | head -1))"
+    if grep -qE 'disabled:[[:space:]]*true' "$HOME/.config/bd/config.yaml" 2>/dev/null; then _ok "bd usage metrics are off"; else _note "bd usage metrics are on (anonymous command names). Turn off: bd metrics off"; fi
+  elif [ "$kind" = "beads" ]; then
+    _fail "bd not found, but this project's store is beads. Install: https://github.com/gastownhall/beads#-installation (or switch it: teamctl store native)"
+    return 0
+  else
+    _note "bd not found; not needed ($([ -n "$kind" ] && printf 'this project'"'"'s store is native' || printf 'no project is loaded here'))"
+    return 0
+  fi
   [ -n "${ROOT:-}" ] || { _note "not inside a git repository: project checks skipped"; return 0; }
+  if [ "$kind" != "beads" ]; then
+    _note "this project's store is native; bd is installed but unused here (teamctl store beads switches it)"
+    return 0
+  fi
   if dir="$(beads_dir)"; then
     _ok "workspace $(short_path "$dir")"
     _doc_beads_store "$dir"

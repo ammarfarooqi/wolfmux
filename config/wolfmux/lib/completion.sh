@@ -180,6 +180,22 @@ complete_first_word() {
   complete_emit "$prefix" doctor "provider and billing isolation report; --probe checks a key"
   complete_emit "$prefix" models "what fable, opus, sonnet, haiku mean today, and who runs an older one"
   complete_emit "$prefix" completion "<zsh|bash>: print the tab-completion script of that shell"
+  complete_emit "$prefix" store "show, or switch, which backend holds tasks, mail and shared team notes"
+  complete_emit "$prefix" send "<role>|--all \"<subject>\": message an agent"
+  complete_emit "$prefix" mail "[<role>]: unread mail and open tasks, with their bodies"
+  complete_emit "$prefix" task "<role> \"<title>\": assign work"
+  complete_emit "$prefix" claim "[<id>]: claim your only open task, or the one you name"
+  complete_emit "$prefix" done "[<id>] \"<summary>\": close a task and report it"
+  complete_emit "$prefix" blocked "[<id>] \"<why>\": mark a task blocked"
+  complete_emit "$prefix" tasks "[<role>|--all]: a list of tasks"
+  complete_emit "$prefix" show "<id>: one task or message, with its thread"
+  complete_emit "$prefix" note "<id> \"<text>\": a durable note on a task"
+  complete_emit "$prefix" reopen "<id> \"<why>\": (lead) send a closed task back"
+  complete_emit "$prefix" close "<id> -r \"<reason>\": (lead) close or reject a task"
+  complete_emit "$prefix" checkpoint "\"<text>\": save where you left off"
+  complete_emit "$prefix" remember "\"<fact>\": add to the shared team notes"
+  complete_emit "$prefix" memories "[<query>]: search the shared team notes"
+  complete_emit "$prefix" forget "<key>: remove one shared team note"
   complete_emit "$prefix" --team "<name>: act on another team of this project"
   complete_emit "$prefix" help "the full help"
   complete_emit "$prefix" version "the version line"
@@ -213,6 +229,16 @@ complete_options() {
     approvals) options="--all" ;;
     doctor) options="--probe" ;;
     models) options="--json --refresh" ;;
+    send) options="--all --body-file --re" ;;
+    mail) options="--peek --json" ;;
+    checkpoint) options="--body-file --show" ;;
+    task) options="--after --body-file --spawn" ;;
+    done) options="--tests --body-file --allow-dirty" ;;
+    tasks) options="--all --status --json" ;;
+    show) options="--json" ;;
+    close) options="--failed" ;;
+    remember) options="--key" ;;
+    memories) options="--json" ;;
   esac
   for option in $options; do
     case "$option" in
@@ -237,6 +263,14 @@ complete_options() {
       # a different thing in each, and this case block is shared by every command.
       --timeout) complete_emit "$prefix" "$option" "<seconds>: give up waiting for the heavy lock (exit 75)" ;;
       --memory) complete_emit "$prefix" "$option" "with --purge: also the lead's memory folder (yours alone; you type the team's name)" ;;
+      --body-file) complete_emit "$prefix" "$option" "<file>: read the body from it (- for stdin)" ;;
+      --re) complete_emit "$prefix" "$option" "<bead-id>: this message replies to it" ;;
+      --after) complete_emit "$prefix" "$option" "<bead-id>: this task waits on it" ;;
+      --spawn) complete_emit "$prefix" "$option" "<model>: spawn the role if it is not already running" ;;
+      --tests) complete_emit "$prefix" "$option" "\"<command: result>\"" ;;
+      --status) complete_emit "$prefix" "$option" "<list>: statuses to include" ;;
+      --key) complete_emit "$prefix" "$option" "<slug>: this note's key (shared team notes)" ;;
+      --show) complete_emit "$prefix" "$option" "[<role>]: print a role's stored checkpoint" ;;
       *) complete_emit "$prefix" "$option" ;;
     esac
   done

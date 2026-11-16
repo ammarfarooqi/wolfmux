@@ -2,9 +2,11 @@
 # beads-nudge — Beads event hook target (on_create / on_update / on_close).
 #
 # Beads is the data plane: the bead already holds the full task or message.
-# This only turns "a bead now needs <role>'s attention" into a short tmux pane
-# notification via `teamctl nudge`, and keeps the index of the human's unread messages
-# (`teamctl _human-inbox-hook`). It never blocks, slows or fails a bd command.
+# This only decides WHO needs to hear about it, then hands the bead to
+# `teamctl _deliver` (lib/mail.sh), which keeps its body for that agent's hooks and files
+# one notice through `teamctl nudge`'s path (lib/inbox.sh), and keeps the index of the
+# human's unread messages (`teamctl _human-inbox-hook`). It never blocks, slows or fails
+# a bd command.
 #
 # argv:  <bead-id> <create|update|close>       stdin: the bead as JSON
 event="${2:-}"
@@ -60,5 +62,5 @@ case "$event" in
 esac
 
 [ -n "$target" ] || exit 0
-("$teamctl_bin" nudge "$target" --quiet --id "$bead_id" >/dev/null 2>&1 &)
+(printf '%s' "$payload" | "$teamctl_bin" _deliver "$target" --event "$event" >/dev/null 2>&1 &)
 exit 0

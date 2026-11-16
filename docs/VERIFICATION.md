@@ -56,6 +56,12 @@ tests/nudge-typing.sh          # ~2 minutes, 61 checks, its own tmux server and 
 tests/inbox.sh                 # ~4 minutes, 107 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while he is working in it
 tests/human-inbox-keys.sh      # ~35 seconds, 73 checks, its own tmux server (HOME emptied) and pty: prefix N/O open their popups; the popup's key parser, drain, log and "closed: <reason>"
 tests/providers.sh             # the provider table and the config allowlist, 141 checks
+tests/smoke.sh                 # 5 to 7 minutes, 339 checks, isolated from any running team
+tests/store.sh                 # under 60s, 73 checks: lib/store.sh, both backends
+tests/mail.sh                  # 30 checks: lib/mail.sh, delivery through the CLI's hooks
+tests/tasks.sh                 # 31 checks: teamctl task/done/blocked, the Stop reminder
+tests/memory.sh                # 31 checks: team memory, the context watch, checkpoints
+tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/commands.sh              # ~20 seconds, 16 checks, in a throwaway WOLFMUX_INSTALL_HOME: the Claude Code slash commands install.sh writes
@@ -180,6 +186,7 @@ which is the cause — a command is only a proxy for it. Worth being exact about
 because it is easy to get backwards: a lane's real launch is `nohup … &` from a
 non-interactive shell, which leaves HUP **and** INT ignored and is therefore the two-skip
 shape, not the one-skip shape a plain `nohup` gives.
+## smoke.sh: 339 of 339 pass (v1.13.0)
 
 | Area | Checks |
 |------|--------|
@@ -199,6 +206,9 @@ shape, not the one-skip shape a plain `nohup` gives.
 | clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error · a worker with thousands of unmerged commits and more changed files than a report shows: the report is cut and says how much it left out, `remove --force` and `destroy --purge --force` finish (never a silent exit 141) · a teamctl ended by a signal names the signal and the command (its own exit handler installed, SIGPIPE gives 141 with that message); a plain failure, Ctrl-C and a closed terminal add nothing — the Ctrl-C and closed-terminal cases are each skipped, with a stated reason, when their signal already arrives ignored (SIGINT under any background launch, SIGHUP under `nohup`: issue #17) |
 | one manager | default policy is skip / skip / spawning off / isolation on · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |
 | browser-writes (v1.14.3) | defaults to `ask`, `teamctl policy` shows it · at `ask` the settings document is unchanged (no `permissions` key, lead or worker — the default behaves exactly as before this policy existed) · set to `allow`, read back, back to `ask`, read back · an invalid value is refused (exit 64) and the stored value is unchanged · `allow` writes exactly `permissions.allow == ["mcp__claude-in-chrome__*"]` into the lead's settings with `env`/`hooks` untouched · a worker of the same team gets the identical rule, `env`/`hooks` untouched · back to `ask` removes the rule again |
+| clearing up | a running agent is never removed · `destroy --worktrees` names what it kept and both ways out · without `--force` work is never discarded and the refusal lists the commit and the files · a worker cannot remove anyone (exit 77) · `--force` needs a yes when nobody can be asked · `remove --force --yes` takes worktree, branch and record, the main checkout is untouched · a damaged record can never delete a directory outside the worktrees or a branch that is not `ai/*` · all or nothing: one worker that holds work stops the whole command · an unknown role is an error · a worker with thousands of unmerged commits and more changed files than a report shows: the report is cut and says how much it left out, `remove --force` and `destroy --purge --force` finish (never a silent exit 141) · a teamctl ended by a signal names the signal and the command; Ctrl-C and a closed terminal add nothing |
+| one manager | default policy is skip / skip / spawning off / isolation on / worker-context trim · lead and workers start in their CLI's bypass mode · agent teams switched off inside workers, lead's settings left alone · a worker cannot spawn while the toggle is off (exit 77) · a worker cannot stop, restart, destroy, approve, deny or change policy · with the toggle on a worker can spawn, the record says who spawned whom, and the lead is told |
+| worker-context | `trim` (default) switches off every enabled or installed plugin, by name, and still reads the rest of `~/.claude` · `lean` also starts the worker with `--setting-sources project,local`, and the per-agent hooks and guard still reach it · `full` leaves a worker everything · nonsense is refused (exit 64) naming the three choices · the policy shows in `status --json`, and a stored choice outranks the environment |
 | approvals | lead mode starts a worker without bypass and with the hook · a request is filed and the lead is told · status shows it pending · a worker cannot approve its own request · approve → the CLI receives `allow` · deny → the CLI receives `deny` with the reason · no answer → no decision, so the normal prompt appears · ask mode has neither flag nor hook |
 | notifications | fixed line typed into the pane · debounced inside the window · hostile bead id (`x;rm -rf ~`) dropped, never typed |
 | the config file's allowlist (`tests/providers.sh`, 141 of 141 pass) | **the first checks `wolfmux_load_config` has ever had, and the reason the second defect of v1.16.1 could sit there for two releases**: an allow-listed key is taken from `~/.config/wolfmux/config` · spaces around the `=` and around the value are stripped · **a key that is NOT on `WOLFMUX_CONFIG_KEYS` is read and DROPPED, with no error and no effect — which is what `WOLFMUX_NUDGE_TYPE=all` did in that file until this release (measured in the owner's own config on 2026-10-12: written, next nudge still reported `detached-lead`, reverted)** · an environment variable that is already set wins over the file · every key on the list is a `WOLFMUX_` name, so nothing else can be exported from that file · no file at all is not an error. Each case runs in its own subshell with its own throwaway `WOLFMUX_HOME`, so none of it reaches the real config file. Three of the seven fail on v1.16.0's tree |
@@ -259,6 +269,18 @@ root, a symlink inside `node_modules` pointing out, two `teamctl prune` runs at 
 refused, the root's `node_modules` survived every one, and the concurrent runs serialised on
 the project lock. Rule 4 refused even the one case (`GIT_DIR`) where rules 2 and 3 could be
 made to answer about the wrong repository.
+## store.sh, mail.sh, tasks.sh, memory.sh: 165 checks, standalone (v1.13.0)
+
+The four v1.13 modules each got their own isolated suite (own tmux socket, state
+directory and throwaway repository; stub agents instead of real CLIs), run
+separately from `smoke.sh`.
+
+| File | Checks | Area |
+|------|--------|------|
+| `tests/store.sh` | 73 | `lib/store.sh`'s contract, the same checks run against both backends (the Beads half skipped and reported, not failed, when `bd` is not installed), then native-only hostile-input, concurrency and `store_kind` checks |
+| `tests/mail.sh` | 30 | `lib/mail.sh`: delivery to a Claude Code agent's hooks with the body, the typed-notice fallback for a role with no pane or a Codex-family agent, the watchdog for a busy turn, and `_deliver`'s refusal of garbage, an unknown identity or no session |
+| `tests/tasks.sh` | 31 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
+| `tests/memory.sh` | 31 | team memory at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), and that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports |
 
 ## Live checks with the real CLIs
 
@@ -379,13 +401,14 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
 ## docs.sh: 36 of 36 pass (v1.16.1)
+## docs.sh: 36 of 36 pass (v1.13.0)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.
 
 | Area | What is checked |
 |------|-----------------|
-| commands | every public command `bin/teamctl` dispatches (not the internal `_…` ones, the pointers to Beads, `version`, `help`), and every alias, is in `teamctl help`, README.md and docs/USAGE.md; every command is in the user manual |
+| commands | every public command `bin/teamctl` dispatches (not the internal `_…` ones, a retired command's handler such as `removed_command`, `version`, `help`), and every alias, is in `teamctl help`, README.md and docs/USAGE.md; every command is in the user manual |
 | options | every option a command's argument loop accepts stands next to that command in `teamctl help`, README.md and docs/USAGE.md (spellings on one `case` label count as one) |
 | policy keys, models | every key of `POLICY_KEYS` and of `model_info` is in all four, as a word of its own |
 | settings | every key of `WOLFMUX_CONFIG_KEYS` is in the config template, and explained in the user manual or under `docs/` |
@@ -402,6 +425,13 @@ commands, neither alias and no options; `teamctl help` lacked `lead-teams`,
 `--keep-transcripts`, `--quiet` and `--lines`; the user manual lacked two policy keys and
 ten settings; docs/SETUP.md still described two symlinks and knew nothing of `Wolfmux.app`,
 the `codex` wrapper or `--no-notifier-app`.
+
+v1.13 added sixteen commands (`store`, `send`, `inbox`, `checkpoint`, `task`, `done`,
+`blocked`, `claim`, `tasks`, `show`, `note`, `reopen`, `close`, `remember`, `memories`,
+`forget`), the `worker-context` policy key, and five settings, none of them documented
+anywhere yet: the check ran 21 of 36, 15 failed. `broadcast` and `message-history` were
+excluded again, the same way `moved_to_beads` commands always were, since `main()` now
+dispatches them to `removed_command` instead of a `cmd_*` handler.
 
 Does it notice drift? Thirteen mutations, each on a copy of the repository, each caught: a
 command dropped from the README · a new command nobody documented · a new option · an

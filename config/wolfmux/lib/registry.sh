@@ -10,6 +10,7 @@
 #   $STATE_DIR/agents/<role>.json   one record per agent
 #   $STATE_DIR/events.jsonl         append-only lifecycle log
 #   $STATE_DIR/nudge/<role>         epoch of the last pane notification
+#   $STATE_DIR/run/<role>/          the agent's mail, memory and turn state (lib/hooks.sh owns the layout)
 
 _reg_write_atomic() {
   local path="$1" tmp
@@ -63,7 +64,13 @@ reg_list() {
   done | sort | cut -f3
 }
 
-reg_delete() { /bin/rm -f "$(reg_path "$1")" "$STATE_DIR/nudge/$1"; }
+# An agent that is taken off the books leaves nothing: its record, its notification stamp, and its
+# run directory (mail, memory, turn state: lib/hooks.sh). The role was validated when it was recorded.
+reg_delete() {
+  /bin/rm -f "$(reg_path "$1")" "$STATE_DIR/nudge/$1"
+  case "$1" in "" | *[/.]*) return 0 ;; esac
+  /bin/rm -rf "$STATE_DIR/run/$1"
+}
 
 meta_get() {
   [ -f "$STATE_DIR/meta.json" ] || return 1

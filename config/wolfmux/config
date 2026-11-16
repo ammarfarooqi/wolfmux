@@ -71,6 +71,26 @@
 # Keep every worker inside its own worktree and on its own branch: tool calls that reach
 # outside are refused with a reason (a guard against mistakes, not a sandbox).
 #WOLFMUX_WORKER_ISOLATION=on
+# What of your own Claude Code setup (~/.claude) a worker's conversation starts with. Every token
+# of it is sent with every request a worker makes.
+#   full  all of it: plugins with their skills, agents and session hooks, and your rules
+#   trim  your rules and settings; every plugin off for workers (the default)
+#   lean  only the project's own instructions (CLAUDE.md, .claude/) and wolfmux's
+# The lead always starts with everything. Per team: teamctl policy worker-context <full|trim|lean>
+#WOLFMUX_WORKER_CONTEXT=trim
+# Where a worker's CLI compacts its own conversation, in tokens. Unset: the window teamctl counts
+# that model with (200000 for most; teamctl status shows a share of it). Claude Code would
+# otherwise let a current Claude model run toward 1M before it compacts. A number from 100000 to
+# 1000000, or off to leave it to the CLI.
+#WOLFMUX_WORKER_COMPACT_WINDOW=200000
+# The context watch (every tenth tool call): at WOLFMUX_CONTEXT_WARN percent of the window an
+# agent is told once to commit and write a checkpoint (teamctl checkpoint); at
+# WOLFMUX_CONTEXT_ROTATE percent it is told once to start nothing new, and the lead gets a
+# message with the command that gives the task a fresh conversation (teamctl restart <role>).
+# An integer 1-99; WARN must be below ROTATE, or both fall back to their defaults. 0 or off
+# disables that one threshold.
+#WOLFMUX_CONTEXT_WARN=60
+#WOLFMUX_CONTEXT_ROTATE=80
 # May a lead found further teams (teamctl start <model> --team <new> --handover <bead>)?
 # You are notified every time one does.
 #WOLFMUX_LEAD_TEAMS=on
@@ -89,6 +109,10 @@
 #WOLFMUX_RESTORE_ON_LIMIT=report
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
+# Seconds of apparent idle before a watchdog re-types the one-line mail notice, for a worker
+# whose CLI looked busy when mail arrived (an interrupted turn fires no Stop hook, so the
+# first notice may go unseen). 1-3600; nonsense falls back to the default.
+#WOLFMUX_MAIL_WAKE_AFTER=90
 # How workers' branches are named, for every team that does not set its own
 # (`teamctl policy branch-template`). Placeholders: {team} {role} {ts} {ticket}. {ts} is the
 # timestamp and is required: it is what keeps two workers of one role on two branches. With

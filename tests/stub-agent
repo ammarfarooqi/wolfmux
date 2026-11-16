@@ -7,6 +7,7 @@ codexnotify=false
 name=""
 newsession=""
 resumed=""
+sources=""
 previous=""
 for arg in "$@"; do
   case "$arg" in
@@ -16,6 +17,7 @@ for arg in "$@"; do
   if [ "$previous" = "--model" ]; then modelarg="$arg"; fi
   if [ "$previous" = "--session-id" ]; then newsession="$arg"; fi
   if [ "$previous" = "--resume" ]; then resumed="$arg"; fi
+  if [ "$previous" = "--setting-sources" ]; then sources="$arg"; fi
   case "$arg" in notify=*_notify*) codexnotify=true ;; esac
   previous="$arg"
 done
@@ -57,12 +59,13 @@ echo "STUB lastarg=$(printf '%s' "$last" | tr '\n' ' ' | cut -c1-200)"
 echo "STUB modelarg=${modelarg:-none}"
 echo "STUB astra_model=${WOLFMUX_ASTRA_MODEL:-none}"
 echo "STUB codexnotify=$codexnotify"
+if [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR/mail" ]; then echo "STUB rundir=yes"; else echo "STUB rundir=no"; fi
 last=""
 [ "$#" -eq 0 ] || last="${!#}" # the kickoff prompt, when there is one, is the last argument
-case "$last" in *open,in_progress,blocked*"do not start over"*) echo "STUB kickoff_in_progress=yes" ;; *) echo "STUB kickoff_in_progress=no" ;; esac
-assignee="none" # whose inbox the kickoff names: in a named team that is <team>.<role>
-case "$last" in *"--assignee "*) assignee="${last#*--assignee }" && assignee="${assignee%% *}" ;; esac
-echo "STUB kickoff_assignee=$assignee"
+case "$last" in *"do not start over"*) echo "STUB kickoff_in_progress=yes" ;; *) echo "STUB kickoff_in_progress=no" ;; esac
+# which kickoff it was given: a Claude Code agent is told its assignment is already above the prompt
+# (the SessionStart hook put it there), a Codex agent is told to fetch it with one command
+case "$last" in *"are above this line"*) echo "STUB kickoff_kind=briefed" ;; *"run \`teamctl inbox\`, then act"*) echo "STUB kickoff_kind=fetch" ;; *) echo "STUB kickoff_kind=none" ;; esac
 hint="no" # the 401 line a provider worker's kickoff carries: which Keychain slot, which endpoint, and the doctor command
 slot="none"
 endpoint="none"
@@ -84,6 +87,11 @@ if [ -n "${WOLFMUX_EXTRA_SETTINGS:-}" ] && [ -r "$WOLFMUX_EXTRA_SETTINGS" ]; the
   # whatever WOLFMUX_NOTIFY says, so "has a Stop array" no longer answers "is this agent
   # notified" and the two have to be reported apart.
   echo "STUB notify=$(jq -c '{stop: (.hooks.Stop != null), notify: ([.hooks.Stop[]?.hooks[]?.command // ""] | map(select(test("_notify\"?$"))) | length > 0), silenced: .env.ECC_DISABLED_HOOKS}' "$WOLFMUX_EXTRA_SETTINGS")"
+  # worker-context (lib/policy.sh): which of your plugins are off for this agent, and whether ~/.claude is read at all
+  echo "STUB context=$(jq -r '[.enabledPlugins // {} | to_entries[] | select(.value == false) | .key] | sort | join(",")' "$WOLFMUX_EXTRA_SETTINGS") sources=${sources:-all}"
+  echo "STUB compact=$(jq -r '.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW // "none"' "$WOLFMUX_EXTRA_SETTINGS")"
+  # the turn hooks (lib/hooks.sh): which events call `teamctl _hook <Event>`
+  echo "STUB hooks=$(jq -r '[.hooks // {} | to_entries[] | select(.key as $k | any(.value[].hooks[]; .command | endswith("_hook " + $k))) | .key] | sort | join(",")' "$WOLFMUX_EXTRA_SETTINGS")"
 else
   echo "STUB settings=none"
 fi

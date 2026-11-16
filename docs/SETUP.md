@@ -8,9 +8,10 @@ About 10 minutes on a machine that already has the three subscriptions signed in
 |------|-------|-------|
 | macOS | `sw_vers` | built and tested on macOS 26.6 (arm64); uses the login Keychain and `/bin/bash` 3.2 |
 | tmux, git, jq | `tmux -V; git --version; jq --version` | tested with tmux 3.7c, git 2.50, jq 1.7.1 |
+| sqlite3 3.38+ | `sqlite3 -version` | tasks, mail and memory, the default (native) store; ships with macOS, newer than 3.38 since well before macOS 26. `teamctl doctor` checks it |
 | Claude Code, signed in with a Claude subscription | `claude auth status` → `"authMethod": "claude.ai"` | tested with 2.1.278 |
 | Codex CLI, signed in with ChatGPT | `codex login status` → `Logged in using ChatGPT` | the copy inside ChatGPT.app is enough; the installer links it as `~/bin/codex` when no `codex` is on PATH |
-| Beads | `bd version` | tested with 1.3.0; see below |
+| Beads (optional) | `bd version` | only to keep a project on the Beads backend, or to switch one to it (`teamctl store beads`); tested with 1.3.0; see below |
 | Z.ai GLM Coding Plan + an API key | [z.ai/manage-apikey](https://z.ai/manage-apikey/apikey-list) | the key goes into the Keychain in step 3 |
 | other providers (optional) | see step 3 | Kimi, Moonshot, DeepSeek, MiniMax, Qwen: add a key only for the ones you want |
 
@@ -128,7 +129,7 @@ Account-side switches no local tool can see — check them once:
 
 ```bash
 cd ~/code/your-project        # any git repository with at least one commit
-teamctl start fable           # offers the stealth Beads init on first use; any model key can lead
+teamctl start fable           # first use creates the store: native sqlite by default, or --init-beads for Beads
 teamctl spawn backend glm53   # then see the README's command list, or: teamctl help
 ```
 

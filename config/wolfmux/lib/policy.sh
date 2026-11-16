@@ -33,6 +33,12 @@
 #                                           open (lib/reclaim.sh). Off: nothing is removed unless
 #                                           somebody runs `teamctl reclaim`. `teamctl keep <role>`
 #                                           protects a single lane from this too
+#   worker-context      full | trim | lean  what of YOUR Claude Code setup a worker's conversation starts
+#                                           with. full = all of it (plugins, their skills, agents and
+#                                           hooks, your rules). trim = your rules and settings, no
+#                                           plugins. lean = the project's own instructions and
+#                                           wolfmux's, nothing from ~/.claude. See worker_context_*
+#                                           below for what that costs and saves.
 #   branch-template     <template>          how this team names its workers' branches, with the
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
@@ -83,7 +89,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation worker-context lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit"
 
 policy_default() {
   case "$1" in
@@ -98,6 +104,7 @@ policy_default() {
     link-node-modules) printf '%s\n' "${WOLFMUX_LINK_NODE_MODULES:-off}" ;;
     auto-prune) printf '%s\n' "${WOLFMUX_AUTO_PRUNE:-on}" ;;
     auto-reclaim) printf '%s\n' "${WOLFMUX_AUTO_RECLAIM:-on}" ;;
+    worker-context) printf '%s\n' "${WOLFMUX_WORKER_CONTEXT:-trim}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     human-pane-typing) printf '%s\n' "${WOLFMUX_HUMAN_PANE_TYPING:-off}" ;;
     lead-wake) printf '%s\n' "${WOLFMUX_LEAD_WAKE:-unwatched}" ;;
@@ -168,6 +175,7 @@ policy_valid() { # <key> <value>
       case "$2" in "" | *[!${_WM_DIGITS}]* | 0?*) return 1 ;; esac
       [ "$2" -le 10000 ]
       ;;
+    worker-context:full | worker-context:trim | worker-context:lean) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -178,6 +186,7 @@ policy_choices() {
     worker-permissions) printf 'skip|lead|ask\n' ;;
     browser-writes) printf 'ask|allow\n' ;;
     worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim) printf 'on|off\n' ;;
+    worker-context) printf 'full|trim|lean\n' ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
     human-pane-typing) printf 'off|idle\n' ;;
     lead-wake) printf 'unwatched|off\n' ;;
@@ -265,6 +274,8 @@ policy_get() {
   elif [ "$key" = "restore-on-limit" ]; then
     # Unreadable means restore changes no lead's model: it reports, as by default.
     printf 'report\n'
+  elif [ "$key" = "worker-context" ]; then
+    printf 'full\n' # an unreadable value never takes something of yours away from a worker
   else
     printf 'ask\n'
   fi
@@ -586,8 +597,81 @@ team_orphaned_note() {
 }
 
 policy_summary() {
-  printf 'lead: %s · workers: %s · worker spawning: %s · worker isolation: %s\n' \
-    "$(policy_get lead-permissions)" "$(policy_get worker-permissions)" "$(policy_get worker-spawn)" "$(policy_get worker-isolation)"
+  printf 'lead: %s · workers: %s · worker spawning: %s · worker isolation: %s · worker context: %s\n' \
+    "$(policy_get lead-permissions)" "$(policy_get worker-permissions)" "$(policy_get worker-spawn)" "$(policy_get worker-isolation)" "$(policy_get worker-context)"
+}
+
+# --- worker-context: what a worker's conversation starts with ----------------------------
+# Measured on the owner's machine (Claude Code 2.1.323, 2026-11-13): a worker's FIRST request was
+# 111,000 tokens before it had read its task, more than half of a 200k window, and every later
+# request carries it. About 60,000 of that were the listings and session hooks of nine plugins,
+# about 30,000 the rules in ~/.claude; the worker used almost none of it. A `claude -p` probe:
+# full 85,700 tokens, plugins off 56,500, nothing from ~/.claude 19,000.
+#   full  everything, as before v1.13
+#   trim  (default) your rules and settings stay; every plugin is off for the worker
+#   lean  only the project's own instructions (its CLAUDE.md, .claude/) and wolfmux's
+# The lead is never trimmed: it is the conversation you talk to.
+
+# worker_context_plugins_off — a settings fragment that turns off every plugin you have enabled or
+# installed, for one agent ({} when there is none or the files cannot be read)
+worker_context_plugins_off() {
+  local base="${CLAUDE_CONFIG_DIR:-$HOME/.claude}" files=() f
+  for f in "$base/settings.json" "$base/plugins/installed_plugins.json"; do
+    if [ -r "$f" ]; then files+=("$f"); fi
+  done
+  if [ "${#files[@]}" -eq 0 ]; then
+    printf '{}\n'
+    return 0
+  fi
+  "$JQ_BIN" -cs '[.[] | objects | ((.enabledPlugins // {}), (.plugins // {})) | objects | keys[]]
+    | unique | map(select(type == "string" and test("^[A-Za-z0-9._@-]+$"))) | map({key: ., value: false})
+    | if length == 0 then {} else {enabledPlugins: from_entries} end' "${files[@]}" 2>/dev/null || printf '{}\n'
+}
+
+# worker_compact_window <model-key> — the token count at which a worker's CLI compacts its own
+# conversation, or nothing. Claude Code serves the current Claude models a 1M window and compacts
+# near the end of it, so a worker counted as 200k (model_context_window, the number status shows
+# a share of) ran to 255k and further without a compaction, each request slower and dearer than
+# the last. With CLAUDE_CODE_AUTO_COMPACT_WINDOW the CLI compacts where status says 100%.
+# WOLFMUX_WORKER_COMPACT_WINDOW: a number (100000 to 1000000, what the CLI accepts) or off;
+# unset means the model's own window from the table, when that is in the accepted range.
+worker_compact_window() {
+  local want="${WOLFMUX_WORKER_COMPACT_WINDOW:-}" window
+  case "$want" in
+    off) return 0 ;;
+    "" | *[!0-9]*) window="$(model_context_window "$1" 2>/dev/null || true)" ;;
+    *) window="$want" ;;
+  esac
+  case "$window" in "" | *[!0-9]*) return 0 ;; esac
+  [ "${#window}" -le 7 ] && [ "$window" -ge 100000 ] && [ "$window" -le 1000000 ] || return 0
+  printf '%s\n' "$window"
+}
+
+# worker_context_carried — what a lean worker loses together with your user settings and then
+# stops on: your own, already recorded, acceptance of bypass-permissions mode. Without it a
+# lean worker in skip mode sits at the CLI's "Yes, I accept" dialog and never reads its task
+# (seen against Claude Code 2.1.325). Carried only when your settings say so, never invented:
+# someone who has not accepted that mode is still asked.
+worker_context_carried() {
+  local f="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+  if [ -r "$f" ] && "$JQ_BIN" -e '.skipDangerousModePermissionPrompt == true' "$f" >/dev/null 2>&1; then
+    printf '{"skipDangerousModePermissionPrompt":true}\n'
+  else
+    printf '{}\n'
+  fi
+}
+
+# worker_context_settings <kind> <mode> — the fragment write_agent_settings merges in
+worker_context_settings() {
+  if [ "$1" != "worker" ] || [ "$2" = "full" ]; then
+    printf '{}\n'
+    return 0
+  fi
+  if [ "$2" = "lean" ]; then
+    { worker_context_plugins_off; worker_context_carried; } | "$JQ_BIN" -cs 'add // {}' 2>/dev/null || printf '{}\n'
+    return 0
+  fi
+  worker_context_plugins_off
 }
 
 # teamctl policy [<key> <value>]
@@ -603,6 +687,8 @@ cmd_policy() {
     say "  browser-writes      $(policy_get browser-writes)      (ask|allow)       allow writes a Chrome-write ALLOW rule into every agent's settings"
     say "  worker-spawn        $(policy_get worker-spawn)     (on|off)          may workers run 'teamctl spawn'?"
     say "  worker-isolation    $(policy_get worker-isolation)      (on|off)          refuse a worker's tool calls outside its own worktree and branch"
+    say "  worker-context      $(policy_get worker-context)    (full|trim|lean)  what of your ~/.claude a worker starts with: full = all,"
+    say "                      trim = your rules, no plugins · lean = only the project's own instructions and wolfmux's"
     say "  lead-teams          $(policy_get lead-teams)      (on|off)          may the lead found further teams and hand work over?"
     say "  disk-guard          $(policy_get disk-guard)  (refuse|warn|off) what 'teamctl spawn' does under disk-min-gb free disk"
     say "  disk-min-gb         $(policy_get disk-min-gb)       (number, GB)      free space a spawn asks for; 0 = no limit"
