@@ -37,8 +37,8 @@ Details and evidence: [SECURITY.md](../SECURITY.md).
 
 ## How work travels
 
-A task goes out through Beads, one fixed line reaches the worker's pane, the result
-comes back the same way. The text of a task never passes through tmux.
+A task goes out through the store, the worker's own hooks hand it over with its body, and
+the result comes back the same way. The text of a task never passes through tmux.
 
 ![Message flow](message-flow.svg)
 
