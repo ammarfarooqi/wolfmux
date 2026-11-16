@@ -12,6 +12,7 @@
 # allow list in lib/provider-env.sh). These stay environment-only, for a test to override;
 # ~/.config/wolfmux/config does not touch them.
 WOLFMUX_MEMORY_CHARS="${WOLFMUX_MEMORY_CHARS:-4000}"
+WOLFMUX_MEMORY_NOTE_MAX="${WOLFMUX_MEMORY_NOTE_MAX:-1500}" # one teamctl remember note, refused above this
 WOLFMUX_CHECKPOINT_CHARS="${WOLFMUX_CHECKPOINT_CHARS:-8000}"
 WOLFMUX_CHECKPOINT_MAX_AGE_H="${WOLFMUX_CHECKPOINT_MAX_AGE_H:-72}"
 
@@ -21,6 +22,14 @@ WOLFMUX_CHECKPOINT_MAX_AGE_H="${WOLFMUX_CHECKPOINT_MAX_AGE_H:-72}"
 # data an agent did not write for a terminal; this is read back into one.
 _memory_clean() {
   LC_ALL=C tr -d '\000-\010\013-\037\177' | _hook_cap "$1"
+}
+
+# _memory_quote_notes — stdin to stdout: the shared notes cleaned as mail bodies are
+# (lib/mail.sh _mail_sanitize_body): control characters and escape sequences gone, tab and
+# newline kept, and a line that starts "[wolfmux" quoted with "> " so a note can never pass
+# for a wolfmux notice in an agent's context. No length cap here: the block already has one.
+_memory_quote_notes() {
+  LC_ALL=C /usr/bin/tr -d '\000-\010\013-\037\177' | /usr/bin/sed 's/^\[wolfmux/> [wolfmux/'
 }
 
 # _memory_threshold <raw> <default> — an integer 1..99, else <default>; "0" or "off" is 0
@@ -89,7 +98,7 @@ _memory_session_start() {
     startup | clear | compact) /bin/rm -f "$HOOK_RUN/memory/warned" 2>/dev/null || true ;;
   esac
   local body
-  if body="$(memory_store_memories_text)" && [ -n "$body" ]; then
+  if body="$(memory_store_memories_text)" && body="$(printf '%s\n' "$body" | _memory_quote_notes)" && [ -n "$body" ]; then
     hook_context "[wolfmux memory] What this project's teams have learned (teamctl memories <word> to search, teamctl remember \"<fact>\" to add):
 
 $body"
@@ -319,6 +328,8 @@ cmd_remember() {
   done
   text="${positional[0]:-}"
   [ -n "$text" ] || die_usage 'usage: teamctl remember "<fact>" [--key <slug>]'
+  [ "${#text}" -le "$WOLFMUX_MEMORY_NOTE_MAX" ] ||
+    die_usage "a note is at most $WOLFMUX_MEMORY_NOTE_MAX characters (this one has ${#text}); keep it to one fact, and put the detail in a doc or a task note"
   [ -n "$key" ] || key="$(_memory_slug "$text")"
   require_tools
   load_project

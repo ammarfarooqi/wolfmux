@@ -464,17 +464,19 @@ store_native_memory_list_json() {
   printf '%s\n' "${out:-[]}"
 }
 
-# store_native_memory_text <max-chars> — whole memories only, newest first, stop (do not
-# truncate) at the first one that would not fit.
+# _STORE_MEMORY_TEXT_JQ — whole memories only, in the order given, each one that would not
+# fit skipped (never truncated): one oversized note can no longer blank the whole block, as
+# stopping at the first misfit did (Riley 6). Both backends' memory_text use it.
+_STORE_MEMORY_TEXT_JQ='reduce .[] as $m ("";
+  (. + (if .=="" then "" else "\n\n" end) + "### " + $m.key + "\n" + $m.text) as $cand |
+  if ($cand|length) <= $max then $cand else . end)'
+
+# store_native_memory_text <max-chars> — whole memories only, newest first, a note that would
+# not fit skipped (see _STORE_MEMORY_TEXT_JQ).
 store_native_memory_text() {
   local rows
   rows="$(store_native_memory_list_json)"
-  printf '%s' "${rows:-[]}" | "$JQ_BIN" -r --argjson max "$1" '
-    reduce .[] as $m ({out:"", stop:false};
-      if .stop then . else
-        (.out + (if .out=="" then "" else "\n\n" end) + "### " + $m.key + "\n" + $m.text) as $cand |
-        (if ($cand|length) <= $max then {out:$cand, stop:false} else {out:.out, stop:true} end)
-      end) | .out'
+  printf '%s' "${rows:-[]}" | "$JQ_BIN" -r --argjson max "$1" "$_STORE_MEMORY_TEXT_JQ"
 }
 
 store_native_memory_forget() {
@@ -632,12 +634,7 @@ store_beads_memory_list_json() {
 store_beads_memory_text() {
   local rows
   rows="$(store_beads_memory_list_json)"
-  printf '%s' "${rows:-[]}" | "$JQ_BIN" -r --argjson max "$1" '
-    reduce .[] as $m ({out:"", stop:false};
-      if .stop then . else
-        (.out + (if .out=="" then "" else "\n\n" end) + "### " + $m.key + "\n" + $m.text) as $cand |
-        (if ($cand|length) <= $max then {out:$cand, stop:false} else {out:.out, stop:true} end)
-      end) | .out'
+  printf '%s' "${rows:-[]}" | "$JQ_BIN" -r --argjson max "$1" "$_STORE_MEMORY_TEXT_JQ"
 }
 
 store_beads_memory_forget() { _store_bd forget "$1" --json >/dev/null 2>&1; }

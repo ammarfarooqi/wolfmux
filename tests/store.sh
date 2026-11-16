@@ -122,6 +122,12 @@ run_contract() { # <label>
     'store_memory_text 10000 | grep -q "### release-notes" && store_memory_text 10000 | grep -q "second draft, replaced"'
   check "memory_text respects a tiny budget (nothing, or well under it)" \
     '[ "$(store_memory_text 1 | wc -c | tr -d " ")" -le 1 ]'
+  store_memory_set small-note "tiny" alice
+  store_memory_set big-note "$(printf 'z%.0s' $(seq 1 300))" alice
+  check "memory_text skips a note that does not fit and still shows the others (Riley 6)" \
+    'store_memory_text 100 | grep -q "tiny" && ! store_memory_text 100 | grep -q zzzz'
+  store_memory_forget small-note
+  store_memory_forget big-note
   store_memory_forget release-notes
   check "memory_forget removes the key" \
     '[ "$(store_memory_list_json | "$JQ_BIN" -r "[.[] | select(.key==\"release-notes\")] | length")" = 0 ]'
