@@ -229,6 +229,7 @@ teamctl policy disk-min-gb 20                   # free space a spawn asks for (1
 teamctl policy link-node-modules on|off         # share the repository's node_modules default off
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
+teamctl policy output-offload on|off            # a long Bash output goes to a log, the agent sees a short form  default on
 teamctl policy human-pane-typing off|idle       # type notices into a pane you are watching?  default off (yours alone)
 teamctl policy lead-wake unwatched|off          # may an idle lead wake itself for a notice?  default unwatched (yours alone)
 teamctl policy orphan-steward <team>|off        # whose lead may bring back a team YOU founded  default off (yours alone)
@@ -341,6 +342,7 @@ teamctl memories redis                                   # search it
 teamctl forget redis-url                                 # a memory's key defaults to a slug of its text
 teamctl checkpoint "API done; next: wire the UI; watch out for the stale cache key"
 teamctl checkpoint --show backend                        # read a role's stored checkpoint
+teamctl run -- npm test                                  # a long output to a log; head, tail, failure lines, path
 ```
 
 Shared team notes is shown to every new, resumed or compacted conversation (capped, 4,000
@@ -931,6 +933,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_LEAD_WAKE` | `unwatched` | the default of the `lead-wake` policy: may an idle Claude lead wake itself for a notice while you are not using its pane? `unwatched`: yes, its waiter hook hands the notices over and it takes a turn; nothing is typed. `off`: it waits for its next turn end or prompt. A value that is neither word is read as `unwatched` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
 | `WOLFMUX_WATCH_FOCUS_MAX` | `0` | how long, in seconds, a focused terminal counts as "you are using this pane" with no key pressed. `0`: no limit. A terminal that never reports focus reads focused for ever, so a lead shown in it never wakes itself; `600` makes focus count only with a key in the last 10 minutes |
 | `WOLFMUX_AUTO_RECLAIM` | `on` | the default of the `auto-reclaim` policy: take a parked lane off the books by itself (worktree, branch, record) once its task is closed, its content is in main, nothing is uncommitted or stashed and no PR is open. `off`: nothing is removed unless you run `teamctl reclaim`. A value that is neither word is read as `off`: this one deletes a checkout and a branch, so an unreadable setting must never read as yes. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
+| `WOLFMUX_OFFLOAD` | `on` | `off`: no Bash output is shortened and, for agents started with it, no hook entry of the feature is written (ADR-0036). `WOLFMUX_OFFLOAD_MIN` (default `4000`): an output longer than this many characters is shortened; `WOLFMUX_OFFLOAD_BACKSTOP` (default `16000`): the CLI's own cap on a Bash result for those agents. `WOLFMUX_OUTPUT_OFFLOAD` is the default of the `output-offload` policy |
 | `WOLFMUX_HUMAN` | `human` | your own name in Beads. Agents write to you with `bd create "Subject" -t message -a human`; the 📨 number next to the wolf counts those still unread, and `prefix N` or a click on the number opens them (Enter reads one, `r` marks it read). Letters, digits, `.`, `_`, `-` |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |

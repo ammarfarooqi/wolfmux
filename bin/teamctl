@@ -159,6 +159,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       disk-guard refuse|warn|off · disk-min-gb <number> · link-node-modules on|off
                                                       auto-prune on|off (sweep a lane's build output as soon as it is parked)
                                                       auto-reclaim on|off (take a parked lane off the books once its work is all in main)
+                                                      output-offload on|off (a long Bash output goes to a log; the agent sees its head,
+                                                      tail, failure lines and the path; default on)
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
                                                       human-pane-typing off|idle (type a notice into a pane you are watching?
                                                       default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
