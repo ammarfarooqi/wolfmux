@@ -330,6 +330,57 @@ else
   echo "  skip  status --json regression check (no agents directory was created)"
 fi
 
+echo "== a stalled agent is reported: its last turn ended on an error, idle, a task in progress (lib/stall.sh) =="
+AGENTS_DIR="$(ls -d "$WOLFMUX_DATA"/state/*/agents 2>/dev/null | head -1)"
+# A real pane (the stub agent) that sits idle, as a stalled CLI does; its transcript is planted
+# under the conversation id on its record.
+teamctl spawn stl fable --no-kickoff >/dev/null 2>&1
+teamctl spawn stl2 fable --no-kickoff >/dev/null 2>&1
+sleep 1
+stl_transcript() { # <role> -> the path its conversation's transcript has
+  local wd sid
+  wd="$(jq -r .workdir "$AGENTS_DIR/$1.json")" sid="$(jq -r .session_id "$AGENTS_DIR/$1.json")"
+  /bin/mkdir -p "$WOLFMUX_CLAUDE_PROJECTS/$(cd "$wd" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')"
+  printf '%s\n' "$WOLFMUX_CLAUDE_PROJECTS/$(cd "$wd" && pwd -P | sed 's|[^A-Za-z0-9]|-|g')/$sid.jsonl"
+}
+STL_TRANS="$(stl_transcript stl)"
+# What Claude Code 2.1.325 writes when a turn ends on an API error: an assistant row with
+# isApiErrorMessage, model <synthetic>, then turn_duration. No hook runs after it.
+api_error_rows() {
+  echo '{"type":"user","message":{"role":"user","content":"go on"},"timestamp":"2026-11-16T09:00:00.000Z"}'
+  printf '{"type":"assistant","isApiErrorMessage":true,"timestamp":"%s","message":{"model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"%s"}]}}\n' "$1" "$2"
+  echo '{"type":"system","subtype":"turn_duration","durationMs":1200}'
+}
+stalled_beads() { bd list --assignee lead --status open --include-infra --json 2>/dev/null | jq "[.[] | select(.title | startswith(\"$1: stalled\"))] | length"; }
+old_mtime() { touch -t 202611160800 "$1"; }
+STL_TASK="$(bd create "a task for stl" -t task -a stl --json | jq -r .id)"
+BEADS_ACTOR=stl bd update "$STL_TASK" --claim >/dev/null 2>&1
+api_error_rows 2026-11-16T09:00:05.000Z 'API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\"}}\nsecond line' >"$STL_TRANS"
+STL2_TRANS="$(stl_transcript stl2)"
+api_error_rows 2026-11-16T09:00:06.000Z "API Error: 529 Overloaded" >"$STL2_TRANS"
+old_mtime "$STL2_TRANS"
+check "a turn that ended on an error a moment ago is not a stall yet (WOLFMUX_STALL_AFTER, 300 s); idle past it with a task in progress, status tells the lead ONE message, with the error first line, since when, the task and the restart command, and says so itself" \
+  'teamctl status >/dev/null 2>&1; sleep 1; [ "$(stalled_beads stl)" = 0 ] && old_mtime "$STL_TRANS" && out="$(teamctl status 2>&1)" && printf "%s" "$out" | grep -q "^stalled   .*stl: its last turn ended on an error" && poll_bead lead "[.[] | select(.title == \"stl: stalled on an error since 2026-11-16T09:00:05.000Z\")] | length == 1" &&
+   bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"stl: stalled\"))][0].description | contains(\"error: API Error: 529\") and (contains(\"second line\") | not) and contains(\"'"$STL_TASK"'\") and contains(\"teamctl restart stl --continue\")"'
+check "a second look at the same error tells nobody again, and an idle agent with no task in progress (stl2, the same error row) is not a stall: idle is its right" \
+  'teamctl status >/dev/null 2>&1; sleep 1; [ "$(stalled_beads stl)" = 1 ] && [ "$(stalled_beads stl2)" = 0 ]'
+api_error_rows 2026-11-16T09:40:00.000Z "Autocompact is thrashing: the context refilled to the limit within 3 turns of the previous compact, 3 times in a row" >"$STL_TRANS"
+old_mtime "$STL_TRANS"
+check "the CLI's own thrash stop is the same kind of row: a NEW error is told once more" \
+  'teamctl status >/dev/null 2>&1; poll_bead lead "[.[] | select(.title | startswith(\"stl: stalled\"))] | length == 2" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title == \"stl: stalled on an error since 2026-11-16T09:40:00.000Z\")][0].description | contains(\"Autocompact is thrashing\")"'
+{ api_error_rows 2026-11-16T10:00:00.000Z "API Error: 500"; echo '{"type":"user","message":{"role":"user","content":"[wolfmux mail] go on"}}'; } >"$STL_TRANS"
+old_mtime "$STL_TRANS"
+check "a prompt after the error (mail typed in, a human) is a conversation that went on: nobody told" 'teamctl status >/dev/null 2>&1; sleep 1; [ "$(stalled_beads stl)" = 2 ]'
+teamctl stop stl2 >/dev/null 2>&1
+check "the lead's tenth tool call looks too, at most once per WOLFMUX_STALL_LOOK, in the background" \
+  'api_error_rows 2026-11-16T10:10:00.000Z "API Error: 529 Overloaded" >"$STL_TRANS"; old_mtime "$STL_TRANS"; /bin/rm -f "$(dirname "$AGENTS_DIR")/stall/.looked"; RUN_LS="$(dirname "$AGENTS_DIR")/run/lead"; force_through "" "$RUN_LS";
+   hook_json transcript_path=/nonexistent/x.jsonl | TEAM_ROLE=lead WOLFMUX_RUN_DIR="$RUN_LS" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse >/dev/null; poll_bead lead "[.[] | select(.title | startswith(\"stl: stalled\"))] | length == 3" &&
+   api_error_rows 2026-11-16T10:20:00.000Z "API Error: 529 Overloaded" >"$STL_TRANS" && old_mtime "$STL_TRANS" && force_through "" "$RUN_LS" &&
+   hook_json transcript_path=/nonexistent/x.jsonl | TEAM_ROLE=lead WOLFMUX_RUN_DIR="$RUN_LS" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse >/dev/null; sleep 1.5; [ "$(stalled_beads stl)" = 3 ]'
+check "a worker's own tenth call does not look (only the lead's)" \
+  '/bin/rm -f "$(dirname "$AGENTS_DIR")/stall/.looked"; RUN_WS="$(dirname "$AGENTS_DIR")/run/stl2"; force_through "" "$RUN_WS"; hook_json transcript_path=/nonexistent/x.jsonl | TEAM_ROLE=stl2 WOLFMUX_RUN_DIR="$RUN_WS" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse >/dev/null; sleep 1.5; [ "$(stalled_beads stl)" = 3 ] && [ ! -e "$(dirname "$AGENTS_DIR")/stall/.looked" ]'
+teamctl stop stl >/dev/null 2>&1
+
 echo ""
 echo "$passed passed, $failed failed"
 [ "$failed" -eq 0 ]

@@ -87,9 +87,26 @@ memory_store_lead_message() {
 recall_hook() {
   case "$1" in
     SessionStart) _memory_session_start ;;
-    PostToolUse) _memory_context_watch ;;
+    PostToolUse)
+      _memory_context_watch
+      _recall_stall_look
+      ;;
     PreCompact) _memory_precompact ;;
   esac
+  return 0
+}
+
+# _recall_stall_look — the lead's tenth tool call is one of the three lookers of lib/stall.sh:
+# while the lead works its wake waiter does not run. At most once per WOLFMUX_STALL_LOOK
+# seconds, in the background, so the lead's tool call never waits on another agent's transcript.
+_recall_stall_look() {
+  [ "${HOOK_ROLE:-}" = "$WOLFMUX_LEAD_ROLE" ] || return 0
+  [ -z "$(hook_input .agent_id)" ] || return 0
+  # A hook loads no project: the team's state directory is the one its run directory is in.
+  [ -n "${STATE_DIR:-}" ] || STATE_DIR="$(_memory_state_dir)"
+  [ -d "$STATE_DIR/agents" ] || return 0
+  stall_scan_due || return 0
+  (stall_scan >/dev/null 2>&1 &) >/dev/null 2>&1
   return 0
 }
 
