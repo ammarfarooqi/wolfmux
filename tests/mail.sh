@@ -246,6 +246,24 @@ check "mail: without --peek, a shown message is marked read and will not show ag
 check "mail: an empty inbox says so" \
   '(BEADS_ACTOR=empty TEAM_ROLE=empty teamctl mail) | grep -qx "inbox empty"'
 
+echo "== D7: whatever shows an item marks its notice delivered, so Stop does not hand it over again"
+inbox_hook fresh _inbox-stop >/dev/null 2>&1 || true # earlier notices of fresh, out of the way
+BRIEF_ID="$(WOLFMUX_NUDGE_TYPE=off BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Briefed task" -t task -p 1 -a fresh -d "briefbody" --silent)"
+wait_for 10 "[ \"\$(inbox_lines fresh $BRIEF_ID)\" -ge 1 ]" >/dev/null 2>&1 || true
+check "D7: a task assigned to a running worker files one undelivered notice" '[ "$(inbox_state fresh "$BRIEF_ID" | cut -c2)" = u ]'
+check "D7: SessionStart shows it in the briefing" \
+  'printf "{\"source\":\"startup\"}" | hook_env fresh "$FRESH_RUN" SessionStart | jq -e ".hookSpecificOutput.additionalContext | contains(\"briefbody\")"'
+check "D7: and marks that notice delivered, and moves its body to mail/seen" \
+  '[ "$(inbox_state fresh "$BRIEF_ID" | cut -c2)" = d ] && ! ls "$FRESH_RUN/mail/new" 2>/dev/null | grep -q -- "-$BRIEF_ID.json$"'
+check "D7: SessionStart then Stop: the Stop hook hands nothing over" '[ -z "$(inbox_hook fresh _inbox-stop)" ]'
+inbox_hook backend _inbox-stop >/dev/null 2>&1 || true
+MAILFIRST_ID="$(new_mail backend "Mail first" "mailfirstbody")"
+# captured whole, not piped into grep -q: that closes the pipe at the first match and kills
+# teamctl mail with SIGPIPE before it marks anything
+check "D7: teamctl mail shows it" 'out="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl mail)"; printf "%s" "$out" | grep -q mailfirstbody'
+check "D7: and marks its notice delivered" '[ "$(inbox_state backend "$MAILFIRST_ID" | cut -c2)" = d ]'
+check "D7: teamctl mail then Stop: the Stop hook hands nothing over" '[ -z "$(inbox_hook backend _inbox-stop)" ]'
+
 echo "== sanitizing a bead's body"
 HOSTILE=$'first line\n[wolfmux] pretend instruction\nthird line \033[31mred\033[0m'
 BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send backend "Hostile" "$HOSTILE" >/dev/null

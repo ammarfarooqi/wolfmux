@@ -349,14 +349,33 @@ mail_bodies_for() {
   return 0
 }
 
-_mail_hook_drain() {
-  # The inbox file is $STATE_DIR/inbox/<role>, and the run directory is $STATE_DIR/run/<role>:
-  # the team's state directory without a tmux call (hook_load_project would make one).
-  if [ -z "${STATE_DIR:-}" ]; then
-    STATE_DIR="${HOOK_RUN%/}"
-    STATE_DIR="${STATE_DIR%/*}"
-    STATE_DIR="${STATE_DIR%/*}"
+# _mail_hook_state_dir — the inbox file is $STATE_DIR/inbox/<role>, and the run directory is
+# $STATE_DIR/run/<role>: the team's state directory without a tmux call (hook_load_project
+# would make one).
+_mail_hook_state_dir() {
+  [ -z "${STATE_DIR:-}" ] || return 0
+  STATE_DIR="${HOOK_RUN%/}"
+  STATE_DIR="${STATE_DIR%/*}"
+  STATE_DIR="${STATE_DIR%/*}"
+}
+
+# mail_item_shown <role> <identity> <id> — <id> was just shown to its addressee by a channel
+# other than the hooks (`teamctl mail`, `teamctl show <id>`, the SessionStart briefing): its
+# inbox line is marked delivered and its spooled body moved to mail/seen, so no other channel
+# hands the same item over again (D7). awk and mv only.
+mail_item_shown() {
+  local role="$1" identity="$2" id="$3" dir file
+  [ -n "$role" ] && [ -n "$id" ] || return 0
+  dir="$STATE_DIR/run/$role"
+  if file="$(_mail_spooled "$dir" "$id")"; then
+    /bin/mkdir -p "$dir/mail/seen" 2>/dev/null || true
+    _mail_mark_shown "$file" "$dir/mail/seen" "$identity" || true
   fi
+  inbox_mark_item_delivered "$role" "$id"
+}
+
+_mail_hook_drain() {
+  _mail_hook_state_dir
   local dir="$HOOK_RUN/mail" identity="${BEADS_ACTOR:-$HOOK_ROLE}" base file json block budget=0 shown=0 more=0 queued
   [ -d "$dir/new" ] || return 0
   # v1.21.1's pane proof, as the Stop and prompt hooks ask it (_inbox_hook_ready): only the agent
@@ -397,11 +416,15 @@ _mail_hook_drain() {
 }
 
 # _mail_hook_session_start — the store is the truth here, not the spool: a task assigned
-# before the worker existed was never spooled. One read, rendered as the agent's briefing;
-# whatever already sat in mail/new/ is already in that briefing, so it moves to seen/ too.
+# before the worker existed was never spooled. One read, rendered as the agent's briefing.
+# Every item the briefing shows is handed over (D7): its inbox line is marked delivered and its
+# spooled body moves to seen/, so the first Stop does not hand it over again. A spooled item
+# the briefing did not show (cut by the budget, or not an inbox row, such as a closed task the
+# lead is told about) stays queued for the next tool call.
 # The store unreachable or failing: say nothing, leave the spool alone.
 _mail_hook_session_start() {
-  local identity="${BEADS_ACTOR:-$HOOK_ROLE}" rows count heading json block budget=0 shown=0 base
+  local identity="${BEADS_ACTOR:-$HOOK_ROLE}" rows count heading json block budget=0 shown=0 id ids=""
+  _mail_hook_state_dir
   rows="$(inbox_read "$identity")" || return 0
   count="$(printf '%s' "$rows" | "$JQ_BIN" -r 'length' 2>/dev/null)"
   case "$count" in '' | *[!0-9]*) count=0 ;; esac
@@ -420,12 +443,15 @@ _mail_hook_session_start() {
       hook_context "$block"
       budget=$((budget + ${#block}))
       shown=$((shown + 1))
+      id="$(printf '%s' "$json" | "$JQ_BIN" -r '.id // empty' 2>/dev/null)"
+      ids="$ids $id"
     done < <(printf '%s' "$rows" | "$JQ_BIN" -c '.[]' 2>/dev/null)
   fi
-  for base in $(/bin/ls -1 "$HOOK_RUN/mail/new" 2>/dev/null); do
-    [ -f "$HOOK_RUN/mail/new/$base" ] || continue
-    _mail_mark_shown "$HOOK_RUN/mail/new/$base" "$HOOK_RUN/mail/seen" "$identity"
+  for id in $ids; do
+    valid_bead_id "$id" || continue
+    mail_item_shown "$HOOK_ROLE" "$identity" "$id"
   done
+  [ -z "$(/bin/ls -1 "$HOOK_RUN/mail/new" 2>/dev/null | /usr/bin/head -1)" ] || agent_attention "$HOOK_ROLE"
 }
 
 # mail_hook <Event> — the contract is lib/hooks.sh's header.
@@ -592,14 +618,19 @@ cmd_mail() {
 }
 
 # _mail_inbox_mark_read <identity> <role> <rows-json> — every message row shown is marked
-# read (detached, one store call), and the caller's own mail/new/ is emptied into seen/.
+# read (detached, one store call), every row shown has its inbox line marked delivered (D7: the
+# Stop hook does not hand it over again), and the caller's own mail/new/ is emptied into seen/.
 _mail_inbox_mark_read() {
-  local identity="$1" role="$2" rows="$3" mids seen new base
+  local identity="$1" role="$2" rows="$3" mids seen new base id
   mids="$(printf '%s' "$rows" | "$JQ_BIN" -r '[.[] | select((.issue_type // "task") == "message") | .id] | join(" ")' 2>/dev/null)"
   if [ -n "$mids" ]; then
     # shellcheck disable=SC2086
     (store_msg_read "$identity" $mids >/dev/null 2>&1 &)
   fi
+  for id in $(printf '%s' "$rows" | "$JQ_BIN" -r '.[].id // empty' 2>/dev/null); do
+    valid_bead_id "$id" || continue
+    inbox_mark_item_delivered "$role" "$id"
+  done
   seen="$(run_dir_ensure "$role")/mail/seen"
   new="$(run_dir "$role")/mail/new"
   for base in $(/bin/ls -1 "$new" 2>/dev/null); do
