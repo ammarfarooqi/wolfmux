@@ -47,8 +47,7 @@ number.)
 
 ## Re-run it
 
-The suites at v1.24.1, with the check count each one holds at the release commit (the v1.23.0
-line plus the store line, merged, and the v1.24.1 hotfix). Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
+The suites at v1.25.0, with the check count each one holds at the release commit afec957 (v1.24.1 plus offload, the smaller start and the context number). A count marked n/a is not yet measured at that commit and is kept at its v1.24.1 figure only where noted. Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
 `BEADS_ACTOR`, `TMUX` and `TMUX_PANE` variable unset, so an agent's own environment cannot
 leak into a suite, and `smoke.sh` alone, since its timing checks fail under parallel load.
 
@@ -61,14 +60,15 @@ tests/reclaim.sh               # 10 to 14 minutes, 142 checks, its own tmux serv
 tests/inbox.sh                 # ~4 minutes, 220 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while they work in it, and the hooks hand mail over with its body
 tests/nudge-typing.sh          # ~2 minutes, 62 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/human-inbox-keys.sh      # ~35 seconds, 73 checks, its own tmux server (HOME emptied) and pty: prefix N/O open their popups
+tests/context.sh               # 33 checks: what a trimmed agent starts with (denied tools, connectors, context-exclude, lead-context)
 tests/offload.sh               # ~40 seconds, 220 checks: lib/offload.sh, a long Bash output kept in a log
 tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/providers.sh             # the provider table and the config allowlist, 147 checks
 tests/models.sh                # ~2.5 minutes, 34 checks, its own tmux server, HOME and state: the newest model of an alias, the drift check
 tests/store.sh                 # under 60 s, 95 checks: lib/store.sh, both backends
-tests/mail.sh                  # 61 checks: lib/mail.sh, one delivery system through the CLI's hooks and v1.23.0's inbox
+tests/mail.sh                  # 62 checks: lib/mail.sh, one delivery system through the CLI's hooks and v1.23.0's inbox
 tests/tasks.sh                 # 41 checks: teamctl task/done/blocked, the Stop reminder
-tests/recall.sh                # 35 checks: shared team notes, the context watch, checkpoints
+tests/recall.sh                # 69 checks: shared team notes, the context watch, the one context figure, compaction counting, checkpoints
 tests/native-callsites.sh      # 34 checks: the v1.23.0 code that asked bd directly works on a native store and never runs bd there
 tests/memory.sh                # 130 checks: team memory (teamctl memory), the lead's private folder
 tests/memory-skeleton.sh       # 283 checks: the memory skeleton and its tool, bin/mem
@@ -280,7 +280,7 @@ root, a symlink inside `node_modules` pointing out, two `teamctl prune` runs at 
 refused, the root's `node_modules` survived every one, and the concurrent runs serialised on
 the project lock. Rule 4 refused even the one case (`GIT_DIR`) where rules 2 and 3 could be
 made to answer about the wrong repository.
-## store.sh, mail.sh, tasks.sh, recall.sh, native-callsites.sh: 266 checks, standalone (v1.24.1)
+## store.sh, mail.sh, tasks.sh, recall.sh, native-callsites.sh, offload.sh, context.sh: standalone (v1.25.0)
 
 The store line's modules each have their own isolated suite (own tmux socket, state
 directory and throwaway repository; stub agents instead of real CLIs), run separately from
@@ -289,10 +289,11 @@ directory and throwaway repository; stub agents instead of real CLIs), run separ
 | File | Checks | Area |
 |------|--------|------|
 | `tests/store.sh` | 95 | `lib/store.sh`'s contract, the same checks run against both backends (the Beads half skipped and reported, not failed, when `bd` is not installed), then native-only hostile-input, concurrency and `store_kind` checks |
-| `tests/mail.sh` | 61 | `lib/mail.sh`: one delivery system (ADR-0032 as amended): an item is spooled for a Claude Code agent and files one notice through v1.23.0's inbox, the hooks hand it over with its body, a Codex-family agent gets the notice alone, nothing is typed outside the typing gates, `_deliver`'s refusal of garbage, an unknown identity or no session, and (v1.24.1) that a hook call of an in-process subagent (`agent_id` in its input) hands nothing over and leaves the mail for the agent's own next call |
+| `tests/mail.sh` | 62 | `lib/mail.sh`: one delivery system (ADR-0032 as amended): an item is spooled for a Claude Code agent and files one notice through v1.23.0's inbox, the hooks hand it over with its body, a Codex-family agent gets the notice alone, nothing is typed outside the typing gates, `_deliver`'s refusal of garbage, an unknown identity or no session, and (v1.24.1) that a hook call of an in-process subagent (`agent_id` in its input) hands nothing over and leaves the mail for the agent's own next call |
 | `tests/tasks.sh` | 41 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
-| `tests/recall.sh` | 35 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports, and (v1.24.1) that a subagent's call neither says nor uses up a threshold |
+| `tests/recall.sh` | 69 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports, and (v1.24.1) that a subagent's call neither says nor uses up a threshold |
 | `tests/native-callsites.sh` | 34 | the v1.23.0 code that asked `bd` directly works on a native-store project and never runs `bd` there (a stub `bd` records any call), D8 |
+| `tests/context.sh` | 33 | what a trimmed agent starts with (ADR-0037): the denied tools, `ENABLE_CLAUDEAI_MCP_SERVERS`, `claudeMdExcludes`, `lead-context`, the doctor line |
 | `tests/offload.sh` | 220 | `lib/offload.sh` (ADR-0036): the PreToolUse rewrite, an equivalence corpus run plain and wrapped under real bash and under zsh as the CLI starts it (exit code, output, cwd and exports agree: heredoc, `exit 3`, `set -e`, pipelines, `&` and `wait`, `exec`, the command's own traps, an unmatched glob, a syntax error, stdin, binary output), a 5 MB log with a failure in the cut middle (bash and zsh), fail open, a timeout kill (bash and zsh), parallel calls never sharing a log, pruning, the settings entries and the policy switch, `teamctl run --`, the PostToolUse safety net, and the measured hook times |
 
 ## Live checks with the real CLIs
