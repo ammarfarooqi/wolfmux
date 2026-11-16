@@ -620,7 +620,7 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 4
   BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Quote test" -t message -a backend -d 'body with "quotes" $HOME `ticks`' --silent >/dev/null 2>&1
   sleep 3
-  # Mail now reaches an idle pane through its hooks (ADR-0028): the Beads hook spools it and
+  # Mail now reaches an idle pane through its hooks (ADR-0032): the Beads hook spools it and
   # types the wake line _mail_type uses ("New mail for …"), not the older typed Beads-update
   # notice (still what a Codex-family or paneless target gets, unaffected here).
   check "beads: message to a role notifies its pane" 'teamctl capture backend -n 12 | grep -q "New mail for backend"'
@@ -696,7 +696,7 @@ plant_ctx ctx-haiku haiku claude "/nonexistent/ctx"
 # whatever the key means today, for an agent nobody could name the model of. That guess is gone
 # on purpose (an unknown model has no window: tests/models.sh), so the fixture now says what a
 # real record says.
-for pair in ctx-opus:claude-opus-5-5 ctx-sonnet:claude-sonnet-5-5 ctx-fable:claude-fable-5-1 ctx-haiku:claude-haiku-5-5; do
+for pair in ctx-opus:claude-opus-5-5 ctx-sonnet:claude-sonnet-5-5 ctx-fable:claude-fable-5-2 ctx-haiku:claude-haiku-5-5; do
   jq --arg id "${pair#*:}" '.model_id = $id' "$CTX_AGENTS/${pair%%:*}.json" >"$CTX_AGENTS/${pair%%:*}.json.new" &&
     /bin/mv "$CTX_AGENTS/${pair%%:*}.json.new" "$CTX_AGENTS/${pair%%:*}.json"
 done
@@ -774,9 +774,12 @@ check "spawn: --from-worktree refuses a worktree with uncommitted changes, and l
 teamctl policy worker-spawn on >/dev/null 2>&1
 check "spawn: --from-worktree is the lead's decision: a worker may not take another worker's worktree, even with worker-spawn on (exit 77), and nothing changes" 'TEAM_ROLE=qa teamctl spawn thief flash --from-worktree builder --no-kickoff; [ $? -eq 77 ] && teamctl status --json | jq -e "([.agents[] | select(.role == \"builder\")] | length == 1) and ([.agents[] | select(.role == \"thief\")] | length == 0)" && [ -z "$(git branch --list "ai/thief-*")" ]'
 teamctl policy worker-spawn off >/dev/null 2>&1
+git -C "$BUILDER_DIR" -c user.name=test -c user.email=test@example.invalid commit -q --allow-empty -m "builder's own work" >/dev/null 2>&1
 BUILDER_OLD_BRANCH="$(git -C "$BUILDER_DIR" branch --show-current)"
+BUILDER_TIP="$(git -C "$BUILDER_DIR" rev-parse --short=12 HEAD)"
 check "spawn: --from-worktree starts a fresh worker in the same worktree, on a new branch, and the old record is gone" 'teamctl spawn builder2 flash --from-worktree builder && sleep 2 && teamctl status --json | jq -e --arg dir "$BUILDER_DIR" "([.agents[] | select(.role == \"builder2\")][0] | .state == \"running\" and .workdir == \$dir and (.branch | startswith(\"ai/builder2-\"))) and ([.agents[] | select(.role == \"builder\")]) == []"'
-check "spawn: --from-worktree bases the new branch on the project's current HEAD" 'teamctl diff builder2 | grep -q "base:    main @ $(git rev-parse --short=12 HEAD)"'
+# v1.24.0: without --base, a handover continues the stopped worker's branch, not main.
+check "spawn: --from-worktree without --base bases the new branch on the stopped worker's branch tip" 'teamctl diff builder2 | grep -q "base:    $BUILDER_OLD_BRANCH @ $BUILDER_TIP" && [ "$(git -C "$BUILDER_DIR" rev-parse --short=12 HEAD)" = "$BUILDER_TIP" ]'
 check "spawn: the old branch and its commits stay" '[ "$(git show "$BUILDER_OLD_BRANCH:.gitignore" 2>/dev/null)" = "node_modules/" ] && [ "$(git -C "$BUILDER_DIR" branch --show-current)" != "$BUILDER_OLD_BRANCH" ]'
 # The keep flag protects the WORKTREE, so it has to survive the role change with it: without
 # this, the first `teamctl stop builder2` would sweep the install the handover just preserved.
@@ -886,7 +889,7 @@ check "teams: with several teams a command has to say which one (exit 64, and it
 check "teams: the same role name can exist in two teams; --team works before or after the command" 'teamctl spawn backend glm53 --team review --no-kickoff && teamctl --team default spawn backend flash --no-kickoff && sleep 2 && [ "$(git branch --list "ai/review/backend-*" | wc -l | tr -d " ")" = 1 ] && [ "$(git branch --list "ai/backend-*" | wc -l | tr -d " ")" = 1 ] && teamctl status --json --team review | jq -e "[.agents[] | select(.role == \"backend\")][0] | (.branch | startswith(\"ai/review/backend-\")) and .commits_ahead == \"0\""'
 check "teams: status shows every team as a hierarchy: team, wolf, dogs" 'out="$(teamctl status)"; printf "%s\n" "$out" | grep -q "^TEAM default" && printf "%s\n" "$out" | grep -q "^TEAM review" && [ "$(printf "%s\n" "$out" | grep -c "🐺 lead")" = 2 ] && [ "$(printf "%s\n" "$out" | grep -c "🐶 backend")" = 2 ]'
 check "teams: status --json lists the teams; with --team it keeps the single-team shape" 'teamctl status --json | jq -e "(.teams | map(.team) | sort) == [\"default\", \"review\"] and ([.teams[] | select(.team == \"review\")][0].agents | map(.role)) == [\"lead\", \"backend\"]" && teamctl status --json --team review | jq -e ".team == \"review\" and .session_running and (.agents | length == 2)"'
-check "teams: teamctl teams is the short list" 'teamctl teams | grep -q "review .*running .*Fable 5.1" && teamctl teams | grep -q "default .*running .*GPT-6 Astra"'
+check "teams: teamctl teams is the short list" 'teamctl teams | grep -q "review .*running .*Fable 5.2" && teamctl teams | grep -q "default .*running .*GPT-6 Astra"'
 check "teams: a named team has its own Beads identities (<team>.<role>); the first team keeps plain roles" 'teamctl capture backend --team review --all | grep -q "STUB role=backend actor=review.backend" && teamctl capture backend --team default --all | grep -q "STUB role=backend actor=backend "'
 check "teams: a teammate in a named team is started as <team>.<role> in the store, and its kickoff says the assignment is already in the conversation" 'teamctl spawn scribe flash --team review && sleep 2 && teamctl capture scribe --team review --all | grep -q "STUB role=scribe actor=review.scribe" && teamctl capture scribe --team review --all | grep -q "STUB kickoff_kind=briefed"'
 teamctl stop scribe --team review >/dev/null 2>&1
@@ -918,7 +921,7 @@ if [ "$HAVE_BD" -eq 1 ]; then
   sleep 3
   # review's lead is Claude family (fable): the new hooks-based "New mail for …" line.
   # default's lead is Codex family (astra, started at the top of this file): no hooks yet
-  # (ADR-0028 point 9), so it still gets the older typed "Beads update for …" notice.
+  # (ADR-0032 point 9), so it still gets the older typed "Beads update for …" notice.
   check "teams: teams talk to each other through Beads, in both directions" '[ "$(teamctl capture lead --team review --all | grep -c "New mail for review.lead")" -ge 2 ] && teamctl capture lead --team default --all | grep -q "Beads update for lead "'
 fi
 check "teams: every agent is told that other teams exist and how to reach them" 'teamctl _prompt lead --team default | grep -q "teamctl teams" && teamctl _prompt lead --team default | grep -q -- "teamctl send <team>.lead"'
@@ -1001,7 +1004,7 @@ complete_is "completion: remove offers workers only, never the lead" '^backend	|
 complete_isnt "completion: remove never offers the lead" '^lead($TAB|\$)' "--team" "default" "remove" ""
 complete_is "completion: --from-worktree offers workers only" '^backend	|^qa	' "--team" "default" "spawn" "x" "--from-worktree" ""
 complete_is "completion: nudge and capture and diff offer roles" '^lead	|^backend	|^qa	' "--team" "review" "nudge" ""
-complete_is "completion: start completes the model keys with their labels" '^glm53	GLM-5.3$|^flash	GLM-5.3 Flash$|^fable	Fable 5.1$' "start" ""
+complete_is "completion: start completes the model keys with their labels" '^glm53	GLM-5.3$|^flash	GLM-5.3 Flash$|^fable	Fable 5.2$' "start" ""
 complete_is "completion: spawn <role> completes the models, providers included" '^kimi	' "spawn" "x" ""
 complete_is "completion: policy completes the keys" '^lead-permissions$|^worker-spawn$|^branch-template$' "policy" ""
 complete_is "completion: policy <key> completes the fixed choices" '^on$|^off$' "policy" "worker-spawn" ""

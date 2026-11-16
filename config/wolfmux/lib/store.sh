@@ -16,8 +16,8 @@
 
 # --- which backend ------------------------------------------------------------------
 # store_kind: the file wins; else WOLFMUX_STORE; else beads for a project that already has
-# agent state from before v1.13 (teams started on Beads keep using it after an upgrade);
-# else native, for a project with nothing on disk yet.
+# agent state and no $PROJECT_STATE/store file (teams started on Beads keep using it after the
+# upgrade to v1.24.0); else native, for a new project with nothing on disk yet.
 store_kind() {
   local f="$PROJECT_STATE/store" v p
   if [ -f "$f" ]; then

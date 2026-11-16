@@ -394,6 +394,10 @@ reclaim_beads_load() {
     return 1
   fi
   reclaim_beads_forget
+  if [ "$(store_kind)" = "native" ]; then
+    reclaim_native_load "$key"
+    return
+  fi
   [ -n "$BD_BIN" ] || { _reclaim_beads_down "bd is not installed" || return 1; }
   # A project with no Beads workspace is not asked at all. `bd where` is how the rest of
   # teamctl finds one, and it took 18 s here under load; a team that runs without Beads
@@ -449,6 +453,37 @@ reclaim_beads_load() {
     /bin/rm -f "$out.beads"
     _reclaim_beads_down "its answer stopped at $RECLAIM_BEADS_LIMIT beads, and an open task could be past that" "$key" || return 1
   fi
+  RECLAIM_BEADS_FILE="$out.beads"
+  RECLAIM_BEADS_AT="$key"
+  return 0
+}
+
+# reclaim_native_tasks <file> [<statuses>] — a native store's tasks (v1.24.0), in the shape a
+# bd query answers with: a JSON array, closed_at set from updated_at for a closed one. 1 when
+# the store cannot be read. The native store is a local SQLite file: no limit, no long wait.
+reclaim_native_tasks() {
+  local file="$1" json
+  json="$(store_tasks_json "" "${2:-}" 2>/dev/null)" || return 1
+  printf '%s' "$json" | "$JQ_BIN" -c 'if type == "array" then map(. + {closed_at: (if .status == "closed" then .updated_at else null end)}) else error("not a list") end' \
+    >"$file" 2>/dev/null || { /bin/rm -f "$file"; return 1; }
+}
+
+# reclaim_native_load <key> — reclaim_beads_load for a native store: the same names, the same
+# file, read from the store instead of bd.
+reclaim_native_load() {
+  local key="$1" role who out
+  for role in $(reg_list); do
+    [ "$(reg_field "$role" kind 2>/dev/null || true)" = "worker" ] || continue
+    who="$(team_identity "$TEAM" "$role")"
+    RECLAIM_BEADS_WHO="$RECLAIM_BEADS_WHO$who$_RECLAIM_NL"
+  done
+  out="$(/usr/bin/mktemp "${TMPDIR:-/tmp}/wolfmux-reclaim.XXXXXX" 2>/dev/null || true)"
+  [ -n "$out" ] || { _reclaim_beads_down "no scratch file could be made in ${TMPDIR:-/tmp}" || return 1; }
+  if ! reclaim_native_tasks "$out.beads"; then
+    reclaim_scratch_done "$out"
+    _reclaim_beads_down "the native store could not be read" || return 1
+  fi
+  reclaim_scratch_done "$out"
   RECLAIM_BEADS_FILE="$out.beads"
   RECLAIM_BEADS_AT="$key"
   return 0

@@ -10,7 +10,7 @@
 # Why hooks: a notice typed into a pane reaches an agent only at the end of its turn, and
 # then costs it three or four model round trips to read (bd show, bd list, bd close). A hook
 # answer is put into the conversation by the CLI itself, at the next tool call, with the text
-# already in it (ADR-0028).
+# already in it (ADR-0032).
 #
 # The contract for a feature module (lib/mail.sh, lib/recall.sh, lib/tasks.sh):
 #

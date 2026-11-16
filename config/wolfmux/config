@@ -109,10 +109,6 @@
 #WOLFMUX_RESTORE_ON_LIMIT=report
 # Seconds a worker waits for the lead's decision before its own prompt appears (lead mode).
 #WOLFMUX_APPROVAL_TIMEOUT=600
-# Seconds of apparent idle before a watchdog re-types the one-line mail notice, for a worker
-# whose CLI looked busy when mail arrived (an interrupted turn fires no Stop hook, so the
-# first notice may go unseen). 1-3600; nonsense falls back to the default.
-#WOLFMUX_MAIL_WAKE_AFTER=90
 # How workers' branches are named, for every team that does not set its own
 # (`teamctl policy branch-template`). Placeholders: {team} {role} {ts} {ticket}. {ts} is the
 # timestamp and is required: it is what keeps two workers of one role on two branches. With
@@ -242,7 +238,7 @@
 
 # Model pins. A pin wins under either policy, and is never probed: the key means exactly that
 # id until you delete the line. Leave them commented out to always get the newest model.
-#WOLFMUX_FABLE_MODEL=claude-fable-5-1
+#WOLFMUX_FABLE_MODEL=claude-fable-5-2
 #WOLFMUX_OPUS_MODEL=claude-opus-5-5
 #WOLFMUX_SONNET_MODEL=claude-sonnet-5-5
 #WOLFMUX_HAIKU_MODEL=claude-haiku-5-5

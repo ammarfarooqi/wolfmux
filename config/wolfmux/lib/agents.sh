@@ -594,13 +594,14 @@ cmd_spawn() {
   local role="" model="" base="HEAD" kickoff=1 stamp path branch base_commit base_ref target pane spawner
   local from_tree="" old_record="" old_branch="" old_keep="" old_pane dirty
   local want_branch="" ticket="" repo_arg="" repo="" spawn_repo trees repo_note=""
-  local pin="" link=0 linked=0
+  local pin="" link=0 linked=0 base_given=0
   if [ "${WOLFMUX_NO_KICKOFF:-}" = "1" ]; then kickoff=0; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --base)
         [ "$#" -ge 2 ] || die_usage "--base needs a git ref"
         base="$2"
+        base_given=1
         shift
         ;;
       --from-worktree)
@@ -651,7 +652,7 @@ cmd_spawn() {
   require_session
   spawner="$(caller_role)"
   if ! is_manager && [ "$(policy_get worker-spawn)" != "on" ]; then
-    die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: bd create \"Need a helper: <for what>\" -t message -a lead -d \"<why, which model>\"" 77
+    die "worker spawning is off, and you are '$spawner'. Only the lead spawns teammates. Ask it: teamctl send $WOLFMUX_LEAD_ROLE \"Need a helper: <for what>\" \"<why, which model>\"" 77
   fi
   # Handing a worktree over deletes another agent's record: that is the lead's call (or yours),
   # never a worker's, even with worker-spawn on (review of issues #4/#5).
@@ -707,6 +708,14 @@ cmd_spawn() {
   fi
   /bin/mkdir -p "$trees"
 
+  # A handover continues the stopped worker's work: with no --base, the new branch starts at
+  # the tip of that worker's branch (as checked out in its worktree), not at the project's HEAD.
+  if [ -n "$from_tree" ] && [ "$base_given" -eq 0 ]; then
+    base="$(reg_field "$from_tree" branch 2>/dev/null || true)"
+    if [ -z "$base" ] || ! git_in "$spawn_repo" rev-parse --verify -q "$base^{commit}" >/dev/null 2>&1; then
+      base="$("$GIT_BIN" -C "$path" rev-parse --verify -q HEAD 2>/dev/null)" || die "cannot find the tip of $from_tree's branch in $(short_path "$path")"
+    fi
+  fi
   base_commit="$(git_in "$spawn_repo" rev-parse --verify -q "$base^{commit}")" || die "cannot resolve base ref '$base' in $(short_path "$spawn_repo")"
   base_ref="$base"
   if [ "$base" = "HEAD" ]; then
@@ -883,7 +892,7 @@ build_role_prompt() {
 
 # kickoff_text <role> <beads-identity> <provider> <family> — a Claude Code family agent's
 # SessionStart hook already put its assignment, its inbox and its checkpoint into the
-# conversation before this prompt runs (lib/hooks.sh, v1.13): its kickoff only has to say to
+# conversation before this prompt runs (lib/hooks.sh, v1.24.0): its kickoff only has to say to
 # act on what is already there, not to go fetch it with bd list + bd show. A Codex agent has
 # no hooks (family = codex): its kickoff still fetches its own inbox, in the one command that
 # carries bodies (`teamctl inbox`) instead of bd list + bd show per item.
@@ -1046,7 +1055,7 @@ cmd_run_agent() {
     # A teammate spawned with --repo sits in another repository, and bd resolves its workspace
     # through git: without this it would look for Beads in THAT repository and find none or the
     # wrong one. The team's tasks and messages live in the project's workspace, so name it.
-    if [ -n "$(reg_field "$role" repo)" ] && [ -z "${BEADS_DIR:-}" ]; then
+    if [ -n "$(reg_field "$role" repo)" ] && [ -z "${BEADS_DIR:-}" ] && [ "$(store_kind)" = "beads" ]; then
       beads_workspace="$(beads_dir 2>/dev/null || true)"
       if [ -n "$beads_workspace" ]; then export BEADS_DIR="$beads_workspace"; fi
     fi
@@ -1272,7 +1281,8 @@ restart_without_session() {
   elif [ "$resume" -eq 1 ]; then start_args+=(--continue); fi
   # A team that ran without Beads is not asked about Beads again: a project with no Beads workspace is started with
   # --skip-beads. A bd that is not installed is not that: start dies about it, as a manual start does.
-  if [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
+  # A native-store project never asks bd at all (v1.24.0): `bd where` alone can take seconds.
+  if [ "$(store_kind)" = "beads" ] && [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
   WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
   LEAD_RESTART=1           # this start is `teamctl restart lead`, which the orphan steward may run (start_permitted)
   cmd_start "${start_args[@]}"

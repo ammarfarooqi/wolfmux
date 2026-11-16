@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 1002" width="1280" height="1002" role="img" aria-labelledby="title desc">
 <title id="title">Wolfmux teams: several teams in one project</title>
-<desc id="desc">One project holds three teams. Each team is its own tmux session with one lead, marked with a wolf, and teammates, marked with a dog, each teammate on its own branch and worktree. The first team is called default and is led by GPT-6 Astra; a second team called review was started by the user and is led by Fable 5.1; a third team called next was founded by the lead of team review with a handover bead. All teams share the project's Beads database, where agents of the first team are addressed by role and agents of a named team by team dot role, so teams can message each other. A terminal shows teamctl status listing every team as a tree of lead and teammates.</desc>
+<desc id="desc">One project holds three teams. Each team is its own tmux session with one lead, marked with a wolf, and teammates, marked with a dog, each teammate on its own branch and worktree. The first team is called default and is led by GPT-6 Astra; a second team called review was started by the user and is led by Fable 5.2; a third team called next was founded by the lead of team review with a handover bead. All teams share the project's Beads database, where agents of the first team are addressed by role and agents of a named team by team dot role, so teams can message each other. A terminal shows teamctl status listing every team as a tree of lead and teammates.</desc>
 <style>
   .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
@@ -51,7 +51,7 @@
 <text class="mono faint" x="476" y="266" font-size="11.5">teamctl start fable --team review</text>
 <rect class="inner" x="472" y="290" width="336" height="58" rx="12" stroke="#f5b942"/>
 <text class="sans amber" x="490" y="315" font-size="16" font-weight="700">🐺 lead</text>
-<text class="sans muted" x="572" y="315" font-size="12.5">Fable 5.1 · works in your checkout</text>
+<text class="sans muted" x="572" y="315" font-size="12.5">Fable 5.2 · works in your checkout</text>
 <text class="sans faint" x="490" y="336" font-size="11.5">name in Beads</text><text class="mono green" x="792" y="336" text-anchor="end" font-size="11.5">review.lead</text>
 <rect class="inner" x="472" y="358" width="336" height="52" rx="12" stroke="#b69cff"/>
 <text class="sans violet" x="490" y="381" font-size="14.5" font-weight="700">🐶 fe-check</text>
@@ -71,7 +71,7 @@
 <text class="mono faint" x="880" y="278" font-size="11">        --no-attach --handover shop-41</text>
 <rect class="inner" x="876" y="290" width="336" height="58" rx="12" stroke="#f5b942"/>
 <text class="sans amber" x="894" y="315" font-size="16" font-weight="700">🐺 lead</text>
-<text class="sans muted" x="976" y="315" font-size="12.5">Fable 5.1 · first words: read shop-41</text>
+<text class="sans muted" x="976" y="315" font-size="12.5">Fable 5.2 · first words: read shop-41</text>
 <text class="sans faint" x="894" y="336" font-size="11.5">name in Beads</text><text class="mono green" x="1196" y="336" text-anchor="end" font-size="11.5">next.lead</text>
 <g class="sans muted" font-size="12.5">
   <text x="894" y="378">staffs itself with <tspan class="mono text" font-size="12">teamctl spawn</tspan> as the work needs</text>
@@ -111,11 +111,11 @@
   <text class="violet" x="106" y="790">🐶 backend</text><text class="text" x="250" y="790">GLM-5.3</text><text class="green" x="380" y="790">running</text><text class="muted" x="470" y="790">ai/backend-20260920-141205</text><text class="text" x="770" y="790">3</text>
   <text class="violet" x="106" y="810">🐶 qa</text><text class="text" x="250" y="810">GLM-5.3 Flash</text><text class="muted" x="380" y="810">stopped</text><text class="muted" x="470" y="810">ai/qa-20260920-141530</text><text class="text" x="770" y="810">0</text>
   <text class="ice" x="72" y="836" font-weight="700">TEAM review · team-shop-review · running</text>
-  <text class="amber" x="86" y="856">🐺 lead</text><text class="text" x="250" y="856">Fable 5.1</text><text class="green" x="380" y="856">running</text><text class="muted" x="470" y="856">main</text><text class="muted" x="770" y="856">-</text>
+  <text class="amber" x="86" y="856">🐺 lead</text><text class="text" x="250" y="856">Fable 5.2</text><text class="green" x="380" y="856">running</text><text class="muted" x="470" y="856">main</text><text class="muted" x="770" y="856">-</text>
   <text class="violet" x="106" y="876">🐶 fe-check</text><text class="text" x="250" y="876">Sonnet 5</text><text class="green" x="380" y="876">running</text><text class="muted" x="470" y="876">ai/review/fe-check-20260920-160112</text><text class="text" x="770" y="876">1</text>
   <text class="violet" x="106" y="896">🐶 api</text><text class="text" x="250" y="896">GPT-6 Astra</text><text class="green" x="380" y="896">running</text><text class="muted" x="470" y="896">ai/review/api-20260920-160440</text><text class="text" x="770" y="896">0</text>
   <text class="ice" x="72" y="922" font-weight="700">TEAM next · team-shop-next · running</text>
-  <text class="amber" x="86" y="942">🐺 lead</text><text class="text" x="250" y="942">Fable 5.1</text><text class="green" x="380" y="942">running</text><text class="muted" x="470" y="942">main</text><text class="muted" x="770" y="942">-</text>
+  <text class="amber" x="86" y="942">🐺 lead</text><text class="text" x="250" y="942">Fable 5.2</text><text class="green" x="380" y="942">running</text><text class="muted" x="470" y="942">main</text><text class="muted" x="770" y="942">-</text>
 </g>
 
 <!-- the rules -->

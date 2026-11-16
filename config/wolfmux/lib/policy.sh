@@ -607,7 +607,7 @@ policy_summary() {
 # request carries it. About 60,000 of that were the listings and session hooks of nine plugins,
 # about 30,000 the rules in ~/.claude; the worker used almost none of it. A `claude -p` probe:
 # full 85,700 tokens, plugins off 56,500, nothing from ~/.claude 19,000.
-#   full  everything, as before v1.13
+#   full  everything, as before v1.24.0
 #   trim  (default) your rules and settings stay; every plugin is off for the worker
 #   lean  only the project's own instructions (its CLAUDE.md, .claude/) and wolfmux's
 # The lead is never trimmed: it is the conversation you talk to.

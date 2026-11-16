@@ -419,11 +419,35 @@ restore_wait_up() {
   done
 }
 
-# restore_tell <root> <team> <title> <body> — one Beads message to the team's lead, and one nudge.
-# Prints the bead id, or nothing when Beads could not take it (the nudge is sent either way).
+# restore_read_hint <root> <team> — how that lead reads its tasks and messages
+restore_read_hint() {
+  if [ "$(restore_kind "$1")" = "native" ]; then
+    printf 'teamctl mail'
+  else
+    printf 'bd list --assignee %s --status open,in_progress,blocked --include-infra' "$(team_identity "$2" "$WOLFMUX_LEAD_ROLE")"
+  fi
+}
+
+# restore_kind <root> — that project's store backend (native or beads)
+restore_kind() {
+  local PROJECT_STATE
+  PROJECT_STATE="$WOLFMUX_DATA/state/$(project_key "$1")"
+  store_kind
+}
+
+# restore_tell <root> <team> <title> <body> — one message to the team's lead, and one nudge.
+# Prints the message id, or nothing when the store could not take it (the nudge is sent either
+# way). A native store takes it through `teamctl send`, whose own delivery is the nudge.
 restore_tell() {
   local root="$1" team="$2" title="$3" body="$4" who bead=""
   who="$(team_identity "$team" "$WOLFMUX_LEAD_ROLE")"
+  if [ "$(restore_kind "$root")" = "native" ]; then
+    bead="$(_restore_in "$root" "$team" send "$WOLFMUX_LEAD_ROLE" "$title" "$body" 2>/dev/null | tail -n 1 || true)"
+    valid_bead_id "$bead" 2>/dev/null || bead=""
+    [ -n "$bead" ] || _restore_in "$root" "$team" nudge "$WOLFMUX_LEAD_ROLE" >/dev/null 2>&1 || true
+    printf '%s\n' "$bead"
+    return 0
+  fi
   if [ -n "$BD_BIN" ]; then
     bead="$( (cd "$root" 2>/dev/null && BEADS_ACTOR="${BEADS_ACTOR:-$WOLFMUX_HUMAN}" "$BD_BIN" create "$title" -t message -a "$who" -d "$body" --silent </dev/null 2>/dev/null) | tail -n 1 || true)"
     valid_bead_id "$bead" 2>/dev/null || bead=""
@@ -692,8 +716,8 @@ cmd_restore() {
     esac
     restore_log "$key" "$team" "restart $tag" "up"
     bead="$(restore_tell "$root" "$team" "Restored after the reboot at $(_finish_when "${T_SEEN[$i]}"): continue your work" \
-      "teamctl restore brought your pane back at $(_finish_when "$since") ($tag): the machine restarted, and your team was last seen running at $(_finish_when "${T_SEEN[$i]}"). Read your inbox (bd list --assignee $(team_identity "$team" "$WOLFMUX_LEAD_ROLE") --status open,in_progress,blocked --include-infra), look at your workers (teamctl status), and continue your work.")"
-    say "    told: ${bead:+Beads message $bead and }one nudge"
+      "teamctl restore brought your pane back at $(_finish_when "$since") ($tag): the machine restarted, and your team was last seen running at $(_finish_when "${T_SEEN[$i]}"). Read your inbox ($(restore_read_hint "$root" "$team")), look at your workers (teamctl status), and continue your work.")"
+    say "    told: ${bead:+message $bead and }one nudge"
     R_KEY+=("$key") R_TEAM+=("$team") R_ROOT+=("$root") R_SID+=("${RU_SID:-}") R_FAMILY+=("${T_FAMILY[$i]}")
     R_SINCE+=("$since") R_LABEL+=("${T_LABEL[$i]}")
     [ -z "${T_NOTE[$i]}" ] || NOTES+=("$team: ${T_NOTE[$i]}")

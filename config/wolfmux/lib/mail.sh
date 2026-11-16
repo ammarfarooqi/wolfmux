@@ -70,7 +70,7 @@ _mail_spool_write() {
 # attention is flagged for the mid-turn channel (PostToolUse). Then, for every agent, exactly
 # one notice through v1.23.0's _nudge_one: one inbox_add line (badge, popup, desktop
 # notification, wake waiter) and, only where its gates allow, the typed line. Nothing in this
-# file types into a pane any more: the v1.13 wake line and its watchdog are gone, because the
+# file types into a pane any more: the wake line of the first hook-mail design and its watchdog are gone, because the
 # Stop and prompt hooks, the lead's wake waiter and the gated typing already cover an idle and
 # a busy agent. A Codex-family agent gets exactly what v1.23.0 gave it: no spool, the notice.
 # Shared by cmd_deliver (the Beads hook) and mail_announce (the native store's own delivery).
@@ -126,6 +126,14 @@ mail_announce() {
   assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.assignee // ""' 2>/dev/null)"
   type="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
   status="$(printf '%s' "$item" | "$JQ_BIN" -r '.status // ""' 2>/dev/null)"
+  # The human's unread-message index (badge, popup): on Beads, hooks/beads-nudge feeds it
+  # every message bead; here, every message this store writes. Never fails the caller.
+  if [ "$type" = "message" ]; then
+    (
+      set +e
+      _human_inbox_hook "$item"
+    ) >/dev/null 2>&1 || true
+  fi
   case "$actor" in
     *.*) lead="${actor%%.*}.$WOLFMUX_LEAD_ROLE" ;;
     *) lead="$WOLFMUX_LEAD_ROLE" ;;
@@ -240,13 +248,15 @@ _mail_prune_seen() {
 # _mail_mark_shown <file> <seen-dir> <identity> — moves a shown spool file into seen/, prunes
 # seen/ to the newest 50, and for a message marks it read for this agent, detached (so the
 # agent does not spend a turn doing that itself, and a hook never blocks on the store).
+# Native store only: on Beads a hook makes no bd call at all (v1.20.0, tests/beads-hotpath.sh),
+# so there the message stays open until the agent or `teamctl mail` closes it, as in v1.23.0.
 _mail_mark_shown() {
   local file="$1" seen="$2" identity="$3" dest type id
   dest="$seen/$(basename "$file")"
   /bin/mv -f "$file" "$dest" 2>/dev/null || return 0
   type="$("$JQ_BIN" -r '.issue_type // "task"' "$dest" 2>/dev/null)"
   id="$("$JQ_BIN" -r '.id // empty' "$dest" 2>/dev/null)"
-  if [ "$type" = "message" ] && valid_bead_id "$id" && [ -n "$identity" ]; then
+  if [ "$type" = "message" ] && valid_bead_id "$id" && [ -n "$identity" ] && [ "$(store_kind)" = "native" ]; then
     (store_msg_read "$identity" "$id" >/dev/null 2>&1 &)
   fi
   _mail_prune_seen "$seen"

@@ -42,13 +42,13 @@ models_is_alias() {
 }
 
 # models_builtin <alias> — sets MB_ID and MB_CONTEXT: the ids this release pins. Each one is
-# what the probe answered on 2026-10-13 (Claude Code 2.1.296), with the context window that
+# what the real CLI accepted on 2026-11-16 (v1.24.0; first probed 2026-10-13, Claude Code 2.1.296), with the context window that
 # answer declared (the same window when the id itself is passed with --model). Update them
 # per release: policy pinned, a failed probe and a launcher run by hand under policy pinned use them.
 models_builtin() {
   MB_CONTEXT="1000000"
   case "$1" in
-    fable) MB_ID="claude-fable-5-1" ;;
+    fable) MB_ID="claude-fable-5-2" ;;
     opus) MB_ID="claude-opus-5-5" ;;
     sonnet) MB_ID="claude-sonnet-5-5" ;;
     haiku) MB_ID="claude-haiku-5-5" ;;

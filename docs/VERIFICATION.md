@@ -58,9 +58,10 @@ tests/human-inbox-keys.sh      # ~35 seconds, 73 checks, its own tmux server (HO
 tests/providers.sh             # the provider table and the config allowlist, 141 checks
 tests/smoke.sh                 # 5 to 7 minutes, 339 checks, isolated from any running team
 tests/store.sh                 # under 60s, 73 checks: lib/store.sh, both backends
+tests/native-callsites.sh      # 22 checks: v1.23.0 bd call sites on a native store (D8)
 tests/mail.sh                  # 30 checks: lib/mail.sh, delivery through the CLI's hooks
 tests/tasks.sh                 # 31 checks: teamctl task/done/blocked, the Stop reminder
-tests/memory.sh                # 31 checks: team memory, the context watch, checkpoints
+tests/memory.sh                # 31 checks: shared team notes, the context watch, checkpoints
 tests/providers.sh             # the provider table, 134 checks
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment
@@ -186,7 +187,7 @@ which is the cause — a command is only a proxy for it. Worth being exact about
 because it is easy to get backwards: a lane's real launch is `nohup … &` from a
 non-interactive shell, which leaves HUP **and** INT ignored and is therefore the two-skip
 shape, not the one-skip shape a plain `nohup` gives.
-## smoke.sh: 339 of 339 pass (v1.13.0)
+## smoke.sh: 339 of 339 pass (the v1.24.0 store line, before the merge)
 
 | Area | Checks |
 |------|--------|
@@ -269,9 +270,9 @@ root, a symlink inside `node_modules` pointing out, two `teamctl prune` runs at 
 refused, the root's `node_modules` survived every one, and the concurrent runs serialised on
 the project lock. Rule 4 refused even the one case (`GIT_DIR`) where rules 2 and 3 could be
 made to answer about the wrong repository.
-## store.sh, mail.sh, tasks.sh, memory.sh: 165 checks, standalone (v1.13.0)
+## store.sh, mail.sh, tasks.sh, recall.sh: 165 checks, standalone (v1.24.0)
 
-The four v1.13 modules each got their own isolated suite (own tmux socket, state
+The four v1.24.0 store modules each got their own isolated suite (own tmux socket, state
 directory and throwaway repository; stub agents instead of real CLIs), run
 separately from `smoke.sh`.
 
@@ -280,13 +281,13 @@ separately from `smoke.sh`.
 | `tests/store.sh` | 73 | `lib/store.sh`'s contract, the same checks run against both backends (the Beads half skipped and reported, not failed, when `bd` is not installed), then native-only hostile-input, concurrency and `store_kind` checks |
 | `tests/mail.sh` | 30 | `lib/mail.sh`: delivery to a Claude Code agent's hooks with the body, the typed-notice fallback for a role with no pane or a Codex-family agent, the watchdog for a busy turn, and `_deliver`'s refusal of garbage, an unknown identity or no session |
 | `tests/tasks.sh` | 31 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
-| `tests/memory.sh` | 31 | team memory at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), and that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports |
+| `tests/memory.sh` | 31 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), and that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports |
 
 ## Live checks with the real CLIs
 
 | Check | Result |
 |-------|--------|
-| `teamctl start fable` in a throwaway repo | real Claude Code TUI in the lead pane, stopped at its folder-trust prompt; process flags: `--model claude-fable-5-1[1m] --append-system-prompt <protocol> --name team/lead` |
+| `teamctl start fable` in a throwaway repo | real Claude Code TUI in the lead pane, stopped at its folder-trust prompt; process flags: `--model claude-fable-5-2[1m] --append-system-prompt <protocol> --name team/lead` |
 | `teamctl start astra` in the same repo | real Codex TUI, at its folder-trust prompt; flags: `forced_login_method="chatgpt"`, `model_provider="openai"`, `model="gpt-6-astra"`, `developer_instructions=…`; no `OPENAI_*` / `CODEX_API_KEY` in the process environment |
 | 2×2 layout | lead (0,1) · backend (110,1) · frontend (0,30) · qa (110,30) on a 220×60 window |
 | real `claude-glm` with no Keychain item | pane shows the exact `security add-generic-password …` command, state `exited(78)`, pane kept |
@@ -401,7 +402,7 @@ one worker, stub agents, its own tmux sockets), then `migrate-from-ai-team.sh`.
 | not observable from a script | whether the banner was shown (it needs the one-time "allow notifications" answer) and the click itself; both are macOS behaviour, the second is the very behaviour that used to open Script Editor |
 
 ## docs.sh: 36 of 36 pass (v1.16.1)
-## docs.sh: 36 of 36 pass (v1.13.0)
+## docs.sh: 36 of 36 pass (the v1.24.0 store line, before the merge)
 
 `tests/docs.sh` reads the code for what exists and the documents for whether it is named.
 Nothing is started; it takes about two seconds.
@@ -426,7 +427,7 @@ commands, neither alias and no options; `teamctl help` lacked `lead-teams`,
 ten settings; docs/SETUP.md still described two symlinks and knew nothing of `Wolfmux.app`,
 the `codex` wrapper or `--no-notifier-app`.
 
-v1.13 added sixteen commands (`store`, `send`, `inbox`, `checkpoint`, `task`, `done`,
+v1.24.0 added sixteen commands (`store`, `send`, `mail`, `checkpoint`, `task`, `done`,
 `blocked`, `claim`, `tasks`, `show`, `note`, `reopen`, `close`, `remember`, `memories`,
 `forget`), the `worker-context` policy key, and five settings, none of them documented
 anywhere yet: the check ran 21 of 36, 15 failed. `broadcast` and `message-history` were

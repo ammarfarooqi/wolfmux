@@ -135,7 +135,7 @@ new branch (its branch and commits stay; node_modules and build output survive, 
 lane was protected with `teamctl keep <role>` before it was parked — parking sweeps build
 output since v1.17.0, and the flag travels with the worktree). The lead
 reads each agent's CONTEXT in `teamctl status` (tokens, and the share of a known
-window — the window Claude Code declared for the model, 1,000,000 tokens for Fable 5.1,
+window — the window Claude Code declared for the model, 1,000,000 tokens for Fable 5.2,
 Opus 5.5, Sonnet 5.5 and Haiku 5.5; anything else shows tokens alone) to choose
 between `restart` (keep the conversation) and a fresh worker.
 
@@ -304,8 +304,8 @@ a Grep of `~/.claude`) is refused too (docs/SECURITY.md in the repository says w
 teamctl send backend "Subject" "body"                   # recipient's pane shows it at its next tool call
 teamctl send backend "Subject" --body-file msg.md        # long / code-heavy body (- for stdin)
 teamctl send --all "Subject" "body"                      # one message per role of this team
-teamctl inbox                                            # your unread mail + open tasks ($BEADS_ACTOR, or <team>.<role>)
-teamctl show <id>                                        # read one; teamctl inbox --peek leaves it unread
+teamctl mail                                            # your unread mail + open tasks ($BEADS_ACTOR, or <team>.<role>)
+teamctl show <id>                                        # read one; teamctl mail --peek leaves it unread
 teamctl send frontend "Re: ..." "..." --re <id>           # reply, threaded
 teamctl show <id>                                        # the whole thread of a message
 ```
@@ -336,14 +336,14 @@ Two different things an agent is otherwise never told: what this project's team 
 already learned, and where **this role's own** last conversation left off.
 
 ```bash
-teamctl remember "the test suite needs REDIS_URL set, or 40 tests hang"   # team memory, any agent
+teamctl remember "the test suite needs REDIS_URL set, or 40 tests hang"   # shared team notes, any agent
 teamctl memories redis                                   # search it
 teamctl forget redis-url                                 # a memory's key defaults to a slug of its text
 teamctl checkpoint "API done; next: wire the UI; watch out for the stale cache key"
 teamctl checkpoint --show backend                        # read a role's stored checkpoint
 ```
 
-Team memory is shown to every new, resumed or compacted conversation (capped, 4,000
+Shared team notes is shown to every new, resumed or compacted conversation (capped, 4,000
 characters). A checkpoint is appended as a note to the agent's own in-progress task
 and kept in its run directory with a generated header (time, branch, HEAD,
 uncommitted files); `SessionStart` shows it again after a compaction, a resume or a
@@ -368,7 +368,8 @@ teamctl store beads                     # switch back, if a Beads workspace exis
 ```
 
 A project with nothing on disk yet starts on the native store; a project that
-already has agent state from before v1.13 stays on Beads until you migrate it.
+already has agent state and no `store` file (it was started before v1.24.0) stays on Beads
+until you migrate it.
 Nothing is deleted from Beads by `--migrate`. An agent started before a switch was
 taught the other store's commands and should be restarted (`teamctl restart <role>`).
 
@@ -919,7 +920,6 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_WORKER_COMPACT_WINDOW` | the window `teamctl status` counts that model with | tokens, or `off`: where a worker's own CLI compacts its conversation |
 | `WOLFMUX_CONTEXT_WARN` | `60` | percent of its window at which an agent is told to commit and checkpoint ([Memory and checkpoints](#memory-and-checkpoints)); `0`/`off` disables it |
 | `WOLFMUX_CONTEXT_ROTATE` | `80` | percent at which an agent is told to start nothing new, and the lead is messaged; must be above `WOLFMUX_CONTEXT_WARN` or both fall back |
-| `WOLFMUX_MAIL_WAKE_AFTER` | `90` | seconds of apparent idle before the mail watchdog re-types the one-line notice for a worker whose CLI looked busy when mail arrived |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
 | `WOLFMUX_ORPHAN_STEWARD` | `off` | the default of the `orphan-steward` policy: the team whose lead may restart the lead of a team you founded, or stop its agents, while that lead is not running. A value that is no team name is read as `off`. `teamctl policy orphan-steward` sets it per project, and only you can |
 | `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
@@ -1042,7 +1042,7 @@ at your terminal; an agent that offers to flip it for you should be refused.
 
 | Pane | Type | Expect |
 |------|------|--------|
-| Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.1 |
+| Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.2 |
 | Astra lead | `/status` | Signed in with ChatGPT · model `gpt-6-astra` |
 | GLM worker | `/status` | Base URL `https://api.z.ai/api/anthropic` · auth: apiKeyHelper (or ANTHROPIC_AUTH_TOKEN in env mode) · model `glm-5.3` / `glm-5.3-flash` |
 | provider worker | `/status` | that provider's base URL and model (Kimi auth may be `ANTHROPIC_API_KEY` in env mode); `WOLFMUX_DRY_RUN=1 claude-<provider>` prints the exact values |

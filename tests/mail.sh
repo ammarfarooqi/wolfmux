@@ -144,7 +144,7 @@ check "D7: one event files exactly one notice line, naming the item" '[ "$(inbox
 check "D7: and its body waits in mail/new/ for whichever hook hands it over" 'ls "$BACKEND_RUN/mail/new" | grep -q -- "-$MSG_ID.json$"'
 check "mail: the body is never typed into the pane" \
   '! teamctl capture backend --all | grep -q "the secret body"'
-check "D7: no v1.13 wake line is typed (\"New mail for\" is not a v1.23.0 notice)" \
+check "D7: no wake line of the first hook-mail design is typed (\"New mail for\" is not a v1.23.0 notice)" \
   '! teamctl capture backend --all | grep -q "New mail for backend: it is shown with this line"'
 
 echo "== PostToolUse first: the Stop hook does not hand it over again"
@@ -154,8 +154,11 @@ check "D7: shown mid-turn, the notice line is marked delivered for every channel
 check "D7: so the Stop hook has nothing left to hand over" '[ -z "$(inbox_hook backend _inbox-stop)" ]'
 check "hook: a second PostToolUse with nothing queued says nothing" \
   '[ -z "$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)" ]'
-check "hook: the message bead ends closed (detached bd close)" \
-  'wait_for 10 "bd show \"$MSG_ID\" --json | jq -e \".[0].status == \\\"closed\\\"\""'
+# v1.24.0 (D8, v1.20.0 hot path): on Beads a hook makes no bd call, so the shown message stays
+# open until the agent or `teamctl mail` closes it. The native store closes it (tests/native-callsites.sh).
+sleep 1
+check "hook: on Beads the shown message bead stays open (no bd call from a hook)" \
+  'bd show "$MSG_ID" --json | jq -e ".[0].status == \"open\""'
 
 echo "== the Stop hook first: PostToolUse does not show it again"
 STOP_ID="$(new_mail backend "Stop test" "stopbody")"

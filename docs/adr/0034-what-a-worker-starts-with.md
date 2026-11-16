@@ -1,4 +1,4 @@
-# ADR-0030: What a worker's conversation starts with is a policy (`worker-context`)
+# ADR-0034: What a worker's conversation starts with is a policy (`worker-context`)
 
 **Date**: 2026-11-13
 **Status**: accepted
@@ -60,6 +60,6 @@ error never takes something of the owner's away from a worker.
   shape changes, nothing is switched off and the worker starts as with `full`.
 
 ### Risks
-- A change of default: workers behaved differently before v1.13. `teamctl policy worker-context
+- A change of default: workers behaved differently before v1.24.0. `teamctl policy worker-context
   full` brings the old behaviour back for a team; `WOLFMUX_WORKER_CONTEXT=full` in the config
   file does it everywhere.

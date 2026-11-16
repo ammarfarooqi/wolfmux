@@ -5,7 +5,7 @@
 | Plane | Tool | Owns | Never touches |
 |-------|------|------|---------------|
 | Control | `teamctl` | tmux panes, which model runs where, git worktrees and branches, start / stop / restart / destroy, diagnostics | — |
-| Data | `teamctl`'s store interface (`lib/store.sh`, `store_*`) | tasks, dependencies, messages, team memory, history, who-did-what | tmux, worktrees |
+| Data | `teamctl`'s store interface (`lib/store.sh`, `store_*`) | tasks, dependencies, messages, shared team notes, history, who-did-what | tmux, worktrees |
 
 The glue between them is a three-line Beads event hook that calls
 `teamctl nudge <role>`, and one question going the other way. Beads does not know tmux
@@ -15,13 +15,13 @@ finished lane is taken off the books, `lib/reclaim.sh` asks which tasks are clos
 the price of not deleting a lane whose task is still open.
 Tasks, messages and memory sit behind one interface with two backends: a native
 `sqlite3` file per project (the default for one with nothing on disk yet) or Beads
-(`bd`), kept for a project already on it (`teamctl store`, [ADR-0031](adr/0031-a-store-of-our-own.md)).
+(`bd`), kept for a project already on it (`teamctl store`, [ADR-0035](adr/0035-a-store-of-our-own.md)).
 Every module above the interface (`mail.sh`, `tasks.sh`, `memory.sh`) calls `store_*`
 only, so neither they nor an agent's commands differ by backend. On the native
 backend, a write that should notify someone calls `mail_announce` itself; on the
 Beads backend a three-line event hook calls `teamctl _deliver` instead. Delivery
 itself is one more seam below both: a Claude Code agent's CLI hooks carry the body
-straight into its conversation ([ADR-0028](adr/0028-mail-through-the-clis-hooks.md));
+straight into its conversation ([ADR-0032](adr/0032-mail-through-the-clis-hooks.md));
 a role with no running pane, or a Codex-family agent (no such hooks), still gets the
 one-line typed notice this always worked by.
 
@@ -89,7 +89,7 @@ backend, or to switch to it with `teamctl store beads`).
 | `store.sh` | `store_*`: one interface over the two task/message/memory backends, plus `teamctl store` |
 | `mail.sh` | `send`, `inbox`, delivery (`mail_announce`, `_deliver`, the hook drain) |
 | `tasks.sh` | `task`, `claim`, `done`, `blocked`, `tasks`, `show`, `note`, `reopen`, `close`, and the Stop-hook reminder for work left open |
-| `memory.sh` | team memory and checkpoints at `SessionStart`, the context watch at `PostToolUse`, `PreCompact`'s own note, `checkpoint`, `remember`, `memories`, `forget` |
+| `memory.sh` | shared team notes and checkpoints at `SessionStart`, the context watch at `PostToolUse`, `PreCompact`'s own note, `checkpoint`, `remember`, `memories`, `forget` |
 
 The **model table** in `common.sh` is the single place that knows which launcher
 serves which model key (`fable`, `astra`, `glm53`, `flash`) and which CLI family it
@@ -169,8 +169,8 @@ and status reads it.
 ### The store (`lib/store.sh`)
 
 `store_kind` picks the backend: the file `$PROJECT_STATE/store` wins if one exists;
-else `WOLFMUX_STORE`; else `beads` for a project that already has agent state from
-before v1.13 (a registry record, or `meta.json`); else `native`. A public `store_*`
+else `WOLFMUX_STORE`; else `beads` for a project that already has agent state and no
+`store` file (a registry record, or `meta.json`: it was started before v1.24.0); else `native`. A public `store_*`
 function validates what both backends share the same way, then dispatches to
 `store_native_<name>` or `store_beads_<name>`.
 
@@ -182,7 +182,7 @@ travel as one JSON document, hex-encoded and fed to `sqlite3` on stdin rather th
 interpolated into the SQL text, bound in a `WITH` clause for a single statement
 (`_sq`) or a temp table for several under one `BEGIN IMMEDIATE … COMMIT` (`_sqx`); the
 SQL text itself is always a constant. WAL mode is what lets several agents write at
-once without the embedded-Dolt single-writer queue ([ADR-0031](adr/0031-a-store-of-our-own.md),
+once without the embedded-Dolt single-writer queue ([ADR-0035](adr/0035-a-store-of-our-own.md),
 with the measurements that motivated it).
 
 **Beads**, kept for a project already on it. Initialized per project in **stealth,
@@ -338,18 +338,18 @@ one blocked. Comments fire no hook, by Beads' design.
    fires `.beads/hooks/on_create` with the bead as JSON on stdin and the hook calls
    `teamctl _deliver backend --event create` in the background. Either way the next
    step is `_mail_deliver_to`, the one path to a recipient.
-3. a role with no running pane, or a Codex-family agent (no hooks of its own), gets
-   the old typed nudge instead (one fixed line, debounced 3 s under a per-role guard:
-   `[wolfmux] New mail for backend: it is shown with this line. If nothing is shown,
-   run: teamctl inbox`). Otherwise the item is spooled to `$STATE_DIR/run/backend/mail/new/`
-   and flagged for attention
-4. idle: the next `PostToolUse`, `UserPromptSubmit` or `Stop` hook on backend's own
-   CLI drains the spool and puts the rendered item straight into its conversation
-   (`additionalContext`), no command run. Busy: a detached watchdog waits
-   `WOLFMUX_MAIL_WAKE_AFTER` seconds of apparent idle before typing the one-line
-   notice, in case the turn was interrupted and fired no `Stop`
+3. for a Claude-family agent whose pane runs, the item is spooled to
+   `$STATE_DIR/run/backend/mail/new/` and flagged for attention. Then, for every agent,
+   exactly one notice through `_nudge_one` (v1.24.0, ADR-0032): one line in the inbox file
+   (`lib/inbox.sh`: the badge, the popup, the desktop notification, the lead's wake waiter)
+   and, only where v1.23.0's typing gates allow, the typed line. A Codex-family agent gets
+   just that, as in v1.23.0
+4. whichever channel comes first hands the item over with its body: the next `PostToolUse`
+   (mid-turn) drains the spool and marks the inbox line delivered; the `Stop` hook, the
+   `UserPromptSubmit` hook or the lead's wake waiter hand the notice over with the spooled
+   body attached and move it to `mail/seen`. Nothing is shown twice
 5. the worker reads the body in its own conversation and acts on it directly — no
-   round trip through `teamctl show` or `teamctl inbox` just to see what arrived
+   round trip through `teamctl show` or `teamctl mail` just to see what arrived
 
 The message body never travels through tmux on the hook path, so there is nothing
 to quote, escape or truncate. The same path tells the lead when a worker closes a

@@ -1,5 +1,5 @@
 #!/bin/bash
-# memory.sh — tests for lib/memory.sh: team memory at session start, context watch,
+# memory.sh — tests for lib/memory.sh: shared team notes at session start, context watch,
 # checkpoints, and the lib/agents.sh _ctx_of_transcript refactor it rides on.
 #
 # Fully isolated from any team you have running: its own tmux server (socket
@@ -69,7 +69,7 @@ hook_json() { # key=value ... -> {"key":"value", ...}
 }
 force_through() { : >"$2/attention"; } # the PostToolUse hot path: force the 10th-call bypass
 
-echo "== team memory (SessionStart) =="
+echo "== shared team notes (SessionStart) =="
 RUN_W1="$WORK/run-w1"
 /bin/mkdir -p "$RUN_W1"
 # "w1" has no registry record, so mail_hook's own SessionStart briefing ("nothing is

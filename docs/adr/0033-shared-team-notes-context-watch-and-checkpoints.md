@@ -1,4 +1,4 @@
-# ADR-0029: Team memory at session start, a context watch, and checkpoints
+# ADR-0033: Shared team notes at session start, a context watch, and checkpoints
 
 **Date**: 2026-11-13
 **Status**: accepted
@@ -21,8 +21,8 @@ initializes Beads without its own agent hooks (ADR-0003).
 
 ## Decision
 
-1. Team memory is Beads' memories. Wolfmux adds no store and no wrapper command. The SessionStart
-   hook (ADR-0028) puts them into every new, resumed or compacted conversation, capped
+1. Shared team notes is Beads' memories. Wolfmux adds no store and no wrapper command. The SessionStart
+   hook (ADR-0032) puts them into every new, resumed or compacted conversation, capped
    (4,000 characters). The protocol tells agents what is worth a `bd remember`: how to build and
    test, what broke and why, a decision and its reason. Not the task at hand.
 2. The context watch: every tenth tool call the PostToolUse hook reads how full the conversation
@@ -36,7 +36,7 @@ initializes Beads without its own agent hooks (ADR-0003).
    hook adds the git state by itself, since an agent cannot be asked anything at that moment.
 4. SessionStart shows the checkpoint to that role's next conversation: after a compaction, a
    resume, or a restart. So `teamctl restart <role>` is the rotation: same worktree, same branch,
-   a new conversation that starts from the checkpoint, the inbox and the team memory.
+   a new conversation that starts from the checkpoint, the inbox and the shared team notes.
 
 ## Alternatives Considered
 
