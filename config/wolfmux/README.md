@@ -271,10 +271,16 @@ files of `context-exclude` (`WOLFMUX_CONTEXT_EXCLUDE`); `lead-context trim`
 (`WOLFMUX_LEAD_CONTEXT`) does the same for the lead, which is otherwise never trimmed
 (docs/USAGE.md, "What an agent starts with"). A stored or configured value that cannot be
 read means `full`.
-`WOLFMUX_WORKER_COMPACT_WINDOW` sets where a worker's own CLI compacts its
-conversation, in tokens (default: the window `teamctl status` counts that model
-with; `off` leaves it to the CLI) — otherwise a current Claude model would run
-toward 1M before compacting on its own.
+`WOLFMUX_WORKER_COMPACT_WINDOW` sets the window a worker's own CLI compacts its
+conversation with, in tokens; the CLI compacts about 33,000 below it, and that
+limit is the number `teamctl status`, the dashboard and the context watch count
+against. Default: the first request measured for a worker of this team, plus what
+a compaction keeps, plus 33,000, plus `WOLFMUX_CONTEXT_ROOM` (150000), never above
+the model's own window. `off` leaves it to the CLI. A window that would leave under
+30,000 tokens to work in after a compaction is raised, and the pane and the event
+log say why. The command that spawns or restarts a worker may carry it:
+`WOLFMUX_WORKER_COMPACT_WINDOW=400000 teamctl restart <role>`
+([ADR-0038](../../docs/adr/0038-one-context-number.md)).
 
 Inside workers, Claude Code's own agent-teams feature is switched off. With it on, any
 subagent a worker names becomes a teammate that treats the *worker* as its team lead and
@@ -926,8 +932,9 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_WORKER_SPAWN` | `off` | may workers spawn teammates (same rule: a team's own policy wins) |
 | `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
 | `WOLFMUX_WORKER_CONTEXT` | `trim` | what of `~/.claude` a worker's conversation starts with: `full`, `trim`, `lean` ([above](#one-manager-permissions-spawning)) |
-| `WOLFMUX_WORKER_COMPACT_WINDOW` | the window `teamctl status` counts that model with | tokens, or `off`: where a worker's own CLI compacts its conversation |
-| `WOLFMUX_CONTEXT_WARN` | `60` | percent of its window at which an agent is told to commit and checkpoint ([Memory and checkpoints](#memory-and-checkpoints)); `0`/`off` disables it |
+| `WOLFMUX_WORKER_COMPACT_WINDOW` | first request + kept + 33000 + `WOLFMUX_CONTEXT_ROOM`, at most the model's window | tokens (100000 to 1000000), or `off`: the window a worker's own CLI compacts its conversation with; also read from the command that spawns or restarts it |
+| `WOLFMUX_CONTEXT_ROOM` | `150000` | tokens to work in between two compactions, when that window is computed |
+| `WOLFMUX_CONTEXT_WARN` | `60` | percent of the limit its CLI compacts at (window minus 33000) at which an agent is told to commit and checkpoint ([Memory and checkpoints](#memory-and-checkpoints)); `0`/`off` disables it |
 | `WOLFMUX_CONTEXT_ROTATE` | `80` | percent at which an agent is told to start nothing new, and the lead is messaged; must be above `WOLFMUX_CONTEXT_WARN` or both fall back |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
 | `WOLFMUX_ORPHAN_STEWARD` | `off` | the default of the `orphan-steward` policy: the team whose lead may restart the lead of a team you founded, or stop its agents, while that lead is not running. A value that is no team name is read as `off`. `teamctl policy orphan-steward` sets it per project, and only you can |

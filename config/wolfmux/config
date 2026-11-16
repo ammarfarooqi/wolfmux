@@ -86,11 +86,16 @@
 # spaces. Empty: nothing of yours is left out. teamctl doctor names a rules folder that repeats
 # another one in a second language. Per team: teamctl policy context-exclude '<glob>'...
 #WOLFMUX_CONTEXT_EXCLUDE=**/rules/ecc/zh/**
-# Where a worker's CLI compacts its own conversation, in tokens. Unset: the window teamctl counts
-# that model with (200000 for most; teamctl status shows a share of it). Claude Code would
-# otherwise let a current Claude model run toward 1M before it compacts. A number from 100000 to
-# 1000000, or off to leave it to the CLI.
-#WOLFMUX_WORKER_COMPACT_WINDOW=200000
+# Where a worker's CLI compacts its own conversation, in tokens (the window; the CLI compacts
+# about 33000 below it, and that limit is what teamctl status shows a share of). Unset: made from
+# what was measured: the first request of a worker of this team + what a compaction keeps + 33000
+# + WOLFMUX_CONTEXT_ROOM, never above the model's own window. A number from 100000 to 1000000,
+# or off to leave it to the CLI. A window too small to work in after a compaction is raised, and
+# the pane and the event log say so. Also read from the command that spawns or restarts a worker:
+# WOLFMUX_WORKER_COMPACT_WINDOW=400000 teamctl restart <role>
+#WOLFMUX_WORKER_COMPACT_WINDOW=300000
+# Room to work in between two compactions, in tokens, when the window is computed.
+#WOLFMUX_CONTEXT_ROOM=150000
 # The context watch (every tenth tool call): at WOLFMUX_CONTEXT_WARN percent of the window an
 # agent is told once to commit and write a checkpoint (teamctl checkpoint); at
 # WOLFMUX_CONTEXT_ROTATE percent it is told once to start nothing new, and the lead gets a

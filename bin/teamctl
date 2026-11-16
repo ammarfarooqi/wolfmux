@@ -207,7 +207,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
-                                                      CONTEXT: what each agent's conversation holds (tokens, share of the window)
+                                                      CONTEXT: used/limit and the share: what each agent's conversation holds against
+                                                      the limit its CLI compacts at (its window minus 33,000)
     teamctl teams [--json]                            the short list: state (running or orphaned), lead, agents, disk and founder per team
     teamctl dashboard [--json] [--once] [--interval <seconds>] [--full] [--socket <path>]
                                                       EVERY team on this machine, across every project, in one read-only view:
