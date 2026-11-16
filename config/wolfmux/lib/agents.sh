@@ -917,6 +917,12 @@ handover_text() {
   me="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   bead="$(reg_field "$WOLFMUX_LEAD_ROLE" handover)"
   founder="$(reg_field "$WOLFMUX_LEAD_ROLE" spawned_by)"
+  # A team on Beads is told what v1.23.0 told it (D8); a native one gets the teamctl verbs.
+  if [ "$(store_kind)" = "beads" ]; then
+    printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `bd show %s`. Then check your inbox: `bd list --assignee %s --status open,in_progress,blocked --include-infra`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s through Beads (-a %s) when the handover asks for it.' \
+      "$TEAM" "$founder" "$bead" "$me" "$founder" "$founder"
+    return 0
+  fi
   printf 'You are the lead of the new team "%s". %s founded this team to hand work over to you. Read the handover first: run `teamctl show %s`. Then check your inbox: `teamctl inbox`. Staff your team with `teamctl spawn <role> <model>` as the work needs, and report back to %s with `teamctl send %s "<subject>" "<body>"` when the handover asks for it.' \
     "$TEAM" "$founder" "$bead" "$me" "$founder" "$founder"
 }
