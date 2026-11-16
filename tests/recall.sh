@@ -235,6 +235,26 @@ hook_json source=compact transcript_path="$TRANS" | TEAM_ROLE=w13 BEADS_ACTOR=w1
 check "two compactions 80 tool calls apart are ordinary: nobody is told" \
   'sleep 1; [ "$(bd list --assignee lead --status open --include-infra --json 2>/dev/null | jq "[.[] | select(.title | startswith(\"w13: compacted\"))] | length")" = 0 ] && [ "$(wc -l <"$RUN_W13/memory/compactions" | tr -d " ")" = 2 ]'
 
+# Measured on Claude Code 2.1.325 (run 2 of tests/research/results/part-b-real-cli.md): SessionStart
+# with source compact fires BEFORE the compact_boundary row is written (a probe hook counted 0
+# boundaries at the first one, and only the previous one at the second). The row follows within a second.
+RUN_W15="$(run_of w15)"
+TRANS15="$WORK/transcript15.jsonl"
+compacted15() { hook_json source=compact transcript_path="$TRANS15" | TEAM_ROLE=w15 BEADS_ACTOR=w15 WOLFMUX_RUN_DIR="$RUN_W15" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=141000 teamctl _hook SessionStart; }
+usage_line 62382 >"$TRANS15"
+printf '40\n' >"$RUN_W15/calls"
+compacted15 >/dev/null
+(sleep 1; boundary 109628 63390 >>"$TRANS15") &
+check "the boundary row comes after SessionStart:compact, as the CLI writes it: what it kept is read when it appears (63390), and the first request is measured then too (62382)" \
+  'i=0; while [ $i -lt 20 ] && [ "$(cat "$RUN_W15/memory/kept" 2>/dev/null)" != 63390 ]; do sleep 0.3; i=$((i + 1)); done; [ "$(cat "$RUN_W15/memory/kept")" = 63390 ] && [ "$(cat "$RUN_W15/memory/first")" = 62382 ]'
+wait
+printf '44\n' >"$RUN_W15/calls"
+compacted15 >/dev/null
+(sleep 1; boundary 165158 17894 >>"$TRANS15") &
+check "the thrash message carries the SECOND compaction's numbers, not the first's: 165158 before it, 17894 kept, the first request measured, the room left (108000 - 62382 - 17894)" \
+  'poll_bead lead "[.[] | select(.title == \"w15: compacted twice within 4 tool calls\")] | length == 1" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"w15: compacted twice\"))][0].description | contains(\"before the second: 165158 tokens\") and contains(\"kept by this compaction: 17894\") and contains(\"first request (sent again every time): 62382\") and contains(\"about 27724 tokens\")" && [ "$(cat "$RUN_W15/memory/kept")" = 17894 ]'
+wait
+
 echo "== the window a worker's CLI is told to compact at (worker_compact_plan) =="
 plan() { # <state-dir> <model> <override> [VAR=value...] -> "window|note"
   local st="$1" model="$2" want="$3"

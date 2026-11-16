@@ -116,7 +116,7 @@ _memory_session_start() {
   esac
   case "$HOOK_SOURCE" in
     # A new conversation: what the last one measured is not this one's.
-    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" 2>/dev/null || true ;;
+    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" 2>/dev/null || true ;;
     compact) _memory_compacted || true ;;
   esac
   local body
@@ -331,20 +331,7 @@ teamctl restart $HOOK_ROLE : a new conversation in the same worktree and branch;
 # to work in: ONE message to the lead per conversation, with the numbers. A hook can count tool
 # calls for free, not requests; a request makes one tool call or more.
 _memory_compacted() {
-  local file="$HOOK_RUN/memory/compactions" pre="" kept="" calls=0 now prev_calls="" prev_at="" rest gap max row=""
-  row="$(/usr/bin/tail -n 400 "$HOOK_TRANSCRIPT" 2>/dev/null | "$JQ_BIN" -R -r '
-    fromjson? | objects | select(.type == "system" and .subtype == "compact_boundary") | .compactMetadata | objects
-    | [.preTokens, .postTokens] | map(numbers | floor | tostring) | join(" ")' 2>/dev/null | /usr/bin/tail -n 1)" || row=""
-  IFS=' ' read -r pre kept <<EOF
-$row
-EOF
-  _memory_number "$pre" || pre=0
-  if _memory_number "$kept" && [ "$kept" -gt 0 ]; then
-    printf '%s\n' "$kept" >"$HOOK_RUN/memory/kept" 2>/dev/null || true
-    _memory_measured_put "" "$kept"
-  else
-    kept=0
-  fi
+  local file="$HOOK_RUN/memory/compactions" calls=0 now prev_calls="" prev_at="" rest gap max row="" seen=0 count thrash=0
   if [ -r "$HOOK_RUN/calls" ]; then IFS= read -r calls <"$HOOK_RUN/calls" || true; fi
   _memory_number "$calls" || calls=0
   if [ -r "$file" ]; then
@@ -354,16 +341,85 @@ $row
 EOF
   fi
   now="$(now_epoch)"
-  printf '%s %s %s %s\n' "$calls" "$now" "$pre" "$kept" >>"$file" 2>/dev/null || true
-  _memory_number "$prev_calls" || return 0
-  case "$prev_at" in "" | *[!0-9]*) return 0 ;; esac # an epoch has ten digits
+  printf '%s %s\n' "$calls" "$now" >>"$file" 2>/dev/null || true
   max="$WOLFMUX_THRASH_CALLS"
   _memory_number "$max" || max=10
-  gap=$((10#$calls - 10#$prev_calls))
-  [ "$gap" -ge 0 ] && [ "$gap" -le "$max" ] || return 0
-  [ ! -e "$HOOK_RUN/memory/thrash-told" ] || return 0
-  : >"$HOOK_RUN/memory/thrash-told" 2>/dev/null || true
-  _memory_tell_thrash "$gap" "$prev_at" "$now" "$pre" "$kept"
+  gap=""
+  if _memory_number "$prev_calls"; then
+    case "$prev_at" in "" | *[!0-9]*) ;; *) gap=$((10#$calls - 10#$prev_calls)) ;; esac # an epoch has ten digits
+  fi
+  if [ -n "$gap" ] && [ "$gap" -ge 0 ] && [ "$gap" -le "$max" ] && [ ! -e "$HOOK_RUN/memory/thrash-told" ]; then
+    : >"$HOOK_RUN/memory/thrash-told" 2>/dev/null || true
+    thrash=1
+  fi
+  # Claude Code 2.1.325 runs this hook BEFORE it writes the compaction's compact_boundary row (run 2
+  # of tests/research/results/part-b-real-cli.md): the row's numbers are read once it is there.
+  if [ -r "$HOOK_RUN/memory/boundaries" ]; then IFS= read -r seen <"$HOOK_RUN/memory/boundaries" || true; fi
+  _memory_number "$seen" || seen=0
+  count="$(_memory_boundary_count)"
+  if [ "$count" -gt "$seen" ]; then
+    _memory_compaction_numbers "$count" "$thrash" "$gap" "$prev_at" "$now"
+    return 0
+  fi
+  if [ "$thrash" = 1 ] && [ "$HOOK_ROLE" = "${WOLFMUX_LEAD_ROLE:-lead}" ]; then
+    # The lead is told in its own context, which only this hook can write: the numbers are not there yet
+    _memory_tell_thrash "$gap" "$prev_at" "$now" "" ""
+    thrash=0
+  fi
+  (_memory_await_boundary "$seen" "$thrash" "$gap" "$prev_at" "$now" &) >/dev/null 2>&1
+  return 0
+}
+
+# _memory_boundary_count — how many compact_boundary rows the transcript holds
+_memory_boundary_count() {
+  local n
+  n="$(/usr/bin/grep -c '"subtype":"compact_boundary"' "$HOOK_TRANSCRIPT" 2>/dev/null)" || true
+  _memory_number "$n" || n=0
+  printf '%s\n' "$n"
+}
+
+# _memory_await_boundary <seen> <thrash> <gap> <first-epoch> <second-epoch> — in the background, after
+# the hook has returned: waits up to WOLFMUX_COMPACT_WAIT (30) seconds for the row, then records it.
+# Without a row the thrash message still goes, with the numbers it could not read marked as such.
+_memory_await_boundary() {
+  local waited=0 count limit
+  limit="${WOLFMUX_COMPACT_WAIT:-30}"
+  _memory_number "$limit" || limit=30
+  while [ "$waited" -lt $((limit * 2)) ]; do
+    count="$(_memory_boundary_count)"
+    if [ "$count" -gt "$1" ]; then
+      _memory_compaction_numbers "$count" "$2" "$3" "$4" "$5"
+      return 0
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  [ "$2" = 1 ] && _memory_tell_thrash "$3" "$4" "$5" "" ""
+  return 0
+}
+
+# _memory_compaction_numbers <boundaries> <thrash> <gap> <first-epoch> <second-epoch> — the last
+# compact_boundary row: K is its postTokens, kept for this conversation and for the team; the first
+# request is measured now if no look of the watch did it before; then the thrash message, if due.
+_memory_compaction_numbers() {
+  local row="" pre="" kept=""
+  printf '%s\n' "$1" >"$HOOK_RUN/memory/boundaries" 2>/dev/null || true
+  row="$(/usr/bin/tail -n 400 "$HOOK_TRANSCRIPT" 2>/dev/null | "$JQ_BIN" -R -r '
+    fromjson? | objects | select(.type == "system" and .subtype == "compact_boundary") | .compactMetadata | objects
+    | [.preTokens, .postTokens] | map(numbers | floor | tostring) | join(" ")' 2>/dev/null | /usr/bin/tail -n 1)" || row=""
+  IFS=' ' read -r pre kept <<EOF
+$row
+EOF
+  _memory_number "$pre" || pre=""
+  if _memory_number "$kept" && [ "$kept" -gt 0 ]; then
+    printf '%s\n' "$kept" >"$HOOK_RUN/memory/kept" 2>/dev/null || true
+    _memory_measured_put "" "$kept"
+  else
+    kept=""
+  fi
+  _memory_first
+  [ "$2" = 1 ] || return 0
+  _memory_tell_thrash "$3" "$4" "$5" "$pre" "$kept"
 }
 
 # _memory_tell_thrash <calls-between> <first-epoch> <second-epoch> <tokens-before> <kept>
@@ -373,10 +429,10 @@ _memory_tell_thrash() {
   _memory_limit
   limit="$MEM_LIMIT"
   if [ -r "$HOOK_RUN/memory/first" ]; then IFS= read -r first <"$HOOK_RUN/memory/first" || true; fi
-  if _memory_number "$limit" && _memory_number "$first"; then room="$((limit - first - $5))"; fi
+  if _memory_number "$limit" && _memory_number "$first" && _memory_number "$5"; then room="$((limit - first - $5))"; fi
   body="compacted at $(/bin/date -u -r "$2" +%H:%M:%SZ 2>/dev/null) and again at $(/bin/date -u -r "$3" +%H:%M:%SZ 2>/dev/null), $1 tool calls apart
-before the second: $4 tokens${limit:+ of a limit of $limit} (window ${window:-unset}, limit = window - $WOLFMUX_COMPACT_RESERVE)
-first request (sent again every time): ${first:-not measured}; kept by this compaction: $5
+before the second: ${4:-(not written yet)} tokens${limit:+ of a limit of $limit} (window ${window:-unset}, limit = window - $WOLFMUX_COMPACT_RESERVE)
+first request (sent again every time): ${first:-not measured}; kept by this compaction: ${5:-(not written yet)}
 room left to work in: about $room tokens. It will compact again soon, and each time it stands still.
 A new conversation with a larger window: WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl restart $HOOK_ROLE
 (it starts from its checkpoint: $HOOK_RUN/memory/checkpoint.md). Said once per conversation."
