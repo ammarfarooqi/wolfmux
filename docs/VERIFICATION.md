@@ -47,8 +47,8 @@ number.)
 
 ## Re-run it
 
-The suites at v1.24.0, with the check count each one holds at the release commit (the v1.23.0
-line plus the store line, merged). Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
+The suites at v1.24.1, with the check count each one holds at the release commit (the v1.23.0
+line plus the store line, merged, and the v1.24.1 hotfix). Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
 `BEADS_ACTOR`, `TMUX` and `TMUX_PANE` variable unset, so an agent's own environment cannot
 leak into a suite, and `smoke.sh` alone, since its timing checks fail under parallel load.
 
@@ -65,9 +65,9 @@ tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and
 tests/providers.sh             # the provider table and the config allowlist, 147 checks
 tests/models.sh                # ~2.5 minutes, 34 checks, its own tmux server, HOME and state: the newest model of an alias, the drift check
 tests/store.sh                 # under 60 s, 95 checks: lib/store.sh, both backends
-tests/mail.sh                  # 53 checks: lib/mail.sh, one delivery system through the CLI's hooks and v1.23.0's inbox
+tests/mail.sh                  # 61 checks: lib/mail.sh, one delivery system through the CLI's hooks and v1.23.0's inbox
 tests/tasks.sh                 # 41 checks: teamctl task/done/blocked, the Stop reminder
-tests/recall.sh                # 34 checks: shared team notes, the context watch, checkpoints
+tests/recall.sh                # 35 checks: shared team notes, the context watch, checkpoints
 tests/native-callsites.sh      # 34 checks: the v1.23.0 code that asked bd directly works on a native store and never runs bd there
 tests/memory.sh                # 130 checks: team memory (teamctl memory), the lead's private folder
 tests/memory-skeleton.sh       # 283 checks: the memory skeleton and its tool, bin/mem
@@ -279,7 +279,7 @@ root, a symlink inside `node_modules` pointing out, two `teamctl prune` runs at 
 refused, the root's `node_modules` survived every one, and the concurrent runs serialised on
 the project lock. Rule 4 refused even the one case (`GIT_DIR`) where rules 2 and 3 could be
 made to answer about the wrong repository.
-## store.sh, mail.sh, tasks.sh, recall.sh, native-callsites.sh: 257 checks, standalone (v1.24.0)
+## store.sh, mail.sh, tasks.sh, recall.sh, native-callsites.sh: 266 checks, standalone (v1.24.1)
 
 The store line's modules each have their own isolated suite (own tmux socket, state
 directory and throwaway repository; stub agents instead of real CLIs), run separately from
@@ -288,9 +288,9 @@ directory and throwaway repository; stub agents instead of real CLIs), run separ
 | File | Checks | Area |
 |------|--------|------|
 | `tests/store.sh` | 95 | `lib/store.sh`'s contract, the same checks run against both backends (the Beads half skipped and reported, not failed, when `bd` is not installed), then native-only hostile-input, concurrency and `store_kind` checks |
-| `tests/mail.sh` | 53 | `lib/mail.sh`: one delivery system (ADR-0032 as amended): an item is spooled for a Claude Code agent and files one notice through v1.23.0's inbox, the hooks hand it over with its body, a Codex-family agent gets the notice alone, nothing is typed outside the typing gates, and `_deliver`'s refusal of garbage, an unknown identity or no session |
+| `tests/mail.sh` | 61 | `lib/mail.sh`: one delivery system (ADR-0032 as amended): an item is spooled for a Claude Code agent and files one notice through v1.23.0's inbox, the hooks hand it over with its body, a Codex-family agent gets the notice alone, nothing is typed outside the typing gates, `_deliver`'s refusal of garbage, an unknown identity or no session, and (v1.24.1) that a hook call of an in-process subagent (`agent_id` in its input) hands nothing over and leaves the mail for the agent's own next call |
 | `tests/tasks.sh` | 41 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
-| `tests/recall.sh` | 34 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), and that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports |
+| `tests/recall.sh` | 35 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports, and (v1.24.1) that a subagent's call neither says nor uses up a threshold |
 | `tests/native-callsites.sh` | 34 | the v1.23.0 code that asked `bd` directly works on a native-store project and never runs `bd` there (a stub `bd` records any call), D8 |
 
 ## Live checks with the real CLIs

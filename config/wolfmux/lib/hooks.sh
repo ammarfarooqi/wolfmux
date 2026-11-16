@@ -158,7 +158,18 @@ cmd_hook() {
   HOOK_RUN="${WOLFMUX_RUN_DIR:-}"
   HOOK_CONTEXT="" HOOK_PROJECT_LOADED=""
   HOOK_INPUT="$(/bin/cat 2>/dev/null || true)"
-  printf '%s' "$HOOK_INPUT" | "$JQ_BIN" -e 'type == "object"' >/dev/null 2>&1 || HOOK_INPUT="{}"
+  # One jq call checks the input and reads agent_id. Claude Code runs an agent's hooks for the
+  # tool calls of its in-process subagents (the Agent tool) too: their input carries agent_id
+  # and agent_type, with the MAIN conversation's session_id and transcript_path. Whatever a
+  # turn hook says there reaches the subagent, not the agent, and is then marked handed over
+  # (v1.24.0 lost a lead's mail that way). So such a call says nothing and touches nothing:
+  # the attention file stays, and the agent's own next tool call takes the full path (v1.24.1).
+  local agent_id
+  if agent_id="$(printf '%s' "$HOOK_INPUT" | "$JQ_BIN" -er 'if type == "object" then (.agent_id // "" | tostring) else error end' 2>/dev/null)"; then
+    [ -z "$agent_id" ] || return 0
+  else
+    HOOK_INPUT="{}"
+  fi
   # Not an agent of a team (a hook file reused by hand): nothing to do. The "finished"
   # notification is lib/notify.sh's own Stop hook (_notify), not this one (v1.24.0).
   if ! known_role_name "$HOOK_ROLE" || [ -z "$HOOK_RUN" ] || ! /bin/mkdir -p "$HOOK_RUN/mail" "$HOOK_RUN/memory" 2>/dev/null; then
