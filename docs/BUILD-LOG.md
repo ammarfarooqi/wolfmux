@@ -2237,7 +2237,7 @@ outcome on a fake clock (no notices never exits 2 until the re-arm, two waiters,
 pane gone, agent gone, PID 1, a failed print, the typed waiter's skip), and an end-to-end pair of
 waiters whose `bin/teamctl` process exits 2. Checks that meant "a pane in use" now show the
 lead's pane to the client. Commits: S1 b08e900, S2 9a4ee6d, S3 the Stop rule, S4 this one.
-## 26. A store of our own (v1.24.0)
+## 40. A store of our own (v1.24.0, the store line)
 
 Three complaints from the same day of real use: a worker inside one long turn did not
 read "commit now" for two hours because the typed nudge queues until the turn ends
@@ -2251,7 +2251,8 @@ one commit, with no warning along the way. A four-worker team took one ADR each.
   the agent's next tool call, no `bd show` round trip needed to read it. The hot path
   above the module loader in `bin/teamctl` keeps this cheap: an idle `PostToolUse` with
   nothing queued costs about 3 ms, no module loaded. A role with no running pane, or a
-  Codex-family agent (no such hooks), still gets the typed nudge.
+  Codex-family agent (no such hooks), still gets the notice line. (Amended in the merge,
+  section 41: the hooks and the notice are one delivery system.)
 - **Team memory, the context watch, and checkpoints** (ADR-0033). `teamctl remember` /
   `memories` put what a team has learned in front of every new, resumed or compacted
   conversation. Every tenth tool call the context watch checks how full the conversation
@@ -2276,17 +2277,60 @@ one commit, with no warning along the way. A four-worker team took one ADR each.
   open tasks, unread messages and memories over without deleting anything from Beads.
 
 Every command an agent used to run as `bd` became a `teamctl` verb that calls the store
-interface underneath (`send`, `inbox`, `task`, `claim`, `done`, `blocked`, `tasks`,
+interface underneath (`send`, `mail`, `task`, `claim`, `done`, `blocked`, `tasks`,
 `show`, `note`, `reopen`, `close`, `checkpoint`, `remember`, `memories`, `forget`), plus
 `teamctl store` to see or switch the backend. `broadcast` and `message-history`, which
 used to point at the `bd` equivalent, are retired the same way the `moved_to_beads`
 commands always were (`removed_command`, naming the real commands instead).
 
-`tests/smoke.sh`: 327 → 339. New: `tests/store.sh` (73), `tests/mail.sh` (30),
-`tests/tasks.sh` (31), `tests/memory.sh` (31). `tests/providers.sh`: 134 (unchanged).
-`tests/docs.sh`: 36 (unchanged in count; 21 → 36 passing, once `usage()`, the completion
-backend, the config template, README.md, docs/USAGE.md and the user manual caught up).
-`tests/migration.sh`: 36 (unchanged). v1.24.0.
+On the store line's own branch, as it stood before the merge: `tests/smoke.sh` 327 → 339,
+new `tests/store.sh` (73), `tests/mail.sh` (30), `tests/tasks.sh` (31) and a shared-notes
+suite of 31 that the merge renamed `tests/recall.sh`. `tests/docs.sh` ran 21 of 36
+until `usage()`, the completion backend, the config template, README.md, docs/USAGE.md and
+the user manual caught up. The counts after the merge are in VERIFICATION.md.
+
+## 41. Two lines made one (v1.24.0, the merge)
+
+Two branches had grown from the same v1.12.0 base. v1.23.0, the released line, had answered
+the human's complaints: a notice typed into a pane they were using (the typing gates, ADR-0028
+and 0029), a lead that was quiet when it should have woken (the wake waiter, ADR-0031), a
+private memory for one lead (ADR-0030), the newest model behind each alias, `teamctl finish`,
+`restore` and the disk work. The store line, called v1.13 while it was in flight, had answered
+the agents' complaints: every task and message cost a `bd` round trip, nothing one agent
+learned reached the next, and a worker spent half its window before reading its task
+(section 40). Both were right and both had touched the same files, so the merge went in two
+steps: the store line was merged onto v1.23.0 as v1.24.0, then every place where two designs
+did one job was settled by a decision.
+
+- **D1, v1.23.0's rules for the human's pane stand.** A pane a human is watching, a Claude lead
+  attached to, the typing gates and the CONTEXT column's window (the model table, not a guess
+  per agent) are v1.23.0's. The store line's hooks plug into them and do not add their own.
+- **D2, `inbox` and `notices` keep their meaning.** They read the notices file, as in v1.23.0.
+  The command that reads an agent's mail and open tasks is `teamctl mail`. Kickoffs, the native
+  handover prompt and the status footer say so.
+- **D3, two kinds of memory, two names.** `teamctl memory` is the lead's private folder (ADR-0030).
+  What the store line called team memory is "shared team notes": `remember`, `memories`,
+  `forget` and `checkpoint`.
+- **D5, an existing project stays where it is.** A project that already has agent state and no
+  `store` file stays on Beads. A new project is native. `teamctl store native --migrate` moves one.
+- **D6, `send` is a real command.** `broadcast` and `message-history` keep their old answer
+  (`removed_command`, naming what to use).
+- **D7, one delivery system.** An item files one notice line through v1.23.0's inbox, whose
+  gates decide whether anything is typed, and a Claude agent gets the body with the hand-over.
+  Gone: the typed "New mail for" wake line of the hook design, the mail watchdog,
+  `WOLFMUX_MAIL_WAKE_AFTER`, and a hook that closed a bead with `bd`.
+- **D8, v1.23.0 code works on either store.** Every place that asked `bd` directly (status
+  bar, reclaim, restart, finish, the lead's handover) answers from the store on a native
+  project and never runs `bd` there. On Beads the handover prompt is v1.23.0's `bd` text.
+- **D10, an alias means the newest model.** `fable` is `claude-fable-5-2`, `opus` is
+  `claude-opus-5-5`, `sonnet` is `claude-sonnet-5-5`, `haiku` is `claude-haiku-5-5`.
+- D4 and D9: see the lead's report for this release; they are not restated here.
+
+What the merge removed: the wake line typed to wake an idle agent, the watchdog that typed it
+after 90 s, `WOLFMUX_MAIL_WAKE_AFTER`, the hook's close of a bead through `bd`, and
+`notify_stop` (v1.23.0's `_notify` hook notifies at Stop). The suites that model Beads now pin
+`WOLFMUX_STORE=beads`, since a new project is native. Port3 ran every suite at `affd4de`; the
+counts are in VERIFICATION.md.
 
 ## Footprint on the machine
 
