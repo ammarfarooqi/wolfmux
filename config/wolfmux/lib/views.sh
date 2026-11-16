@@ -333,19 +333,21 @@ _status_team_text() {
 
 # teamctl status [--json] — every team of the project, or the one named with --team
 cmd_status() {
-  local json=0 teams team first=1 stalled role
+  local json=0 teams team first=1 stalled role asked
   if [ "${1:-}" = "--json" ]; then json=1; fi
   require_tools
   load_project any
   if [ -n "$TEAM" ]; then teams="$TEAM"; else teams="$(team_list)"; fi
   # One of the three lookers of lib/stall.sh: an agent whose last turn ended on an error, idle
   # with a task in progress, is told to its lead once. Before the table, so the badge counts it.
-  stalled=""
+  # team_paths sets TEAM: what was asked for is kept and put back, or a team list reads as --team
+  stalled="" asked="$TEAM"
   for team in $teams; do
     team_paths "$team"
     stalled="$stalled$(TEAM="$team" stall_scan | sed "s|^|$team/|")
 "
   done
+  TEAM="$asked"
   if [ "$json" -eq 1 ]; then
     if [ -n "$TEAM" ]; then
       _status_team_json
