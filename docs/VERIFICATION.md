@@ -280,10 +280,10 @@ separately from `smoke.sh`.
 | File | Checks | Area |
 |------|--------|------|
 | `tests/store.sh` | 73 | `lib/store.sh`'s contract, the same checks run against both backends (the Beads half skipped and reported, not failed, when `bd` is not installed), then native-only hostile-input, concurrency and `store_kind` checks |
-| `tests/mail.sh` | 30 | `lib/mail.sh`: delivery to a Claude Code agent's hooks with the body, the typed-notice fallback for a role with no pane or a Codex-family agent, the watchdog for a busy turn, and `_deliver`'s refusal of garbage, an unknown identity or no session |
+| `tests/mail.sh` | 36 | `lib/mail.sh`: delivery to a Claude Code agent's hooks with the body, the typed-notice fallback for a role with no pane or a Codex-family agent, the watchdog for a busy turn, and `_deliver`'s refusal of garbage, an unknown identity or no session |
 | `tests/tasks.sh` | 31 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
 | `tests/memory.sh` | 31 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), and that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports |
-| `tests/offload.sh` | 109 | `lib/offload.sh` (ADR-0036): the PreToolUse rewrite, an equivalence corpus run plain and wrapped under real bash (exit code, output, cwd and exports agree: heredoc, `exit 3`, `set -e`, pipelines, `&` and `wait`, `exec`, a syntax error, stdin, binary output), a 5 MB log with a failure in the cut middle, fail open, a timeout kill, pruning, the settings entries and the policy switch, `teamctl run --`, the PostToolUse safety net, and the measured hook times |
+| `tests/offload.sh` | 220 | `lib/offload.sh` (ADR-0036): the PreToolUse rewrite, an equivalence corpus run plain and wrapped under real bash and under zsh as the CLI starts it (exit code, output, cwd and exports agree: heredoc, `exit 3`, `set -e`, pipelines, `&` and `wait`, `exec`, the command's own traps, an unmatched glob, a syntax error, stdin, binary output), a 5 MB log with a failure in the cut middle (bash and zsh), fail open, a timeout kill (bash and zsh), parallel calls never sharing a log, pruning, the settings entries and the policy switch, `teamctl run --`, the PostToolUse safety net, and the measured hook times |
 
 ## Live checks with the real CLIs
 
