@@ -147,6 +147,9 @@ _hook_emit() {
   esac
 }
 
+# WOLFMUX_HOOK_BD_BUDGET: seconds one hook run may spend, in all, waiting on Beads reads.
+WOLFMUX_HOOK_BD_BUDGET=5
+
 # cmd_hook <Event> — internal (`teamctl _hook`): the CLI's JSON on stdin
 cmd_hook() {
   local module
@@ -157,6 +160,10 @@ cmd_hook() {
   HOOK_ROLE="${TEAM_ROLE:-}"
   HOOK_RUN="${WOLFMUX_RUN_DIR:-}"
   HOOK_CONTEXT="" HOOK_PROJECT_LOADED=""
+  # One budget for every bounded Beads read of this run (_bd_bounded, lib/store.sh), not 5 s
+  # each: SessionStart alone reads the inbox, the memories and the in_progress task. $SECONDS,
+  # no fork; the run stays near 6 s with a wedged bd, inside the CLI's 20 s.
+  HOOK_DEADLINE=$((SECONDS + WOLFMUX_HOOK_BD_BUDGET))
   HOOK_INPUT="$(/bin/cat 2>/dev/null || true)"
   # One jq call checks the input and reads agent_id. Claude Code runs an agent's hooks for the
   # tool calls of its in-process subagents (the Agent tool) too: their input carries agent_id

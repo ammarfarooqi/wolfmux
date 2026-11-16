@@ -1,0 +1,4 @@
+```
+PROBE-REPLACED-7731: the original output was withheld by the hook.
+PROBE-STDERR-REPLACED
+```

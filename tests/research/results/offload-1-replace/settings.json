@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PROBE_EVENT=PostToolUse PROBE_MODE=replace PROBE_OUT='/Users/x/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/../results/offload-1-replace' '/Users/x/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/hook.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}

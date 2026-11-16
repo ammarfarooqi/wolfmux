@@ -1,0 +1,5 @@
+```
+Exit code 4
+PROBE-REWRITTEN-5512
+PROBE-REWRITTEN-ERR
+```

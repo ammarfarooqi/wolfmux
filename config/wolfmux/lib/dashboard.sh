@@ -206,7 +206,7 @@ dash_age_span() {
   }'
 }
 
-# dash_context_label <tokens> <window> — what the CONTEXT column shows. THREE cases, not
+# dash_context_label <used> <limit> - what the CONTEXT column shows. THREE cases, not
 # two:
 #
 #   a known share          "142k 71%"   the window is known
@@ -403,7 +403,7 @@ dash_team_records() {
     | .[]
     | [.role, (.kind // ""), (.model // ""), (.label // ""), (.workdir // ""),
        (.session_id // ""), (.family // ""), (.branch // ""), (.spawned_by // ""),
-       (.model_id // ""), (.model_context // ""), (.model_at // "")]
+       (.model_id // ""), (.model_context // ""), (.model_at // ""), (.compact_window // "")]
     | map(tostring) | join("\u001f")' "$STATE_DIR"/agents/*.json 2>/dev/null || true
 }
 
@@ -416,12 +416,12 @@ dash_team_records() {
 # budget rule: a fast dashboard people open beats a complete one they do not.
 dash_team_json() {
   local panes="$1" snapshot="$2" full="$3" live=0 orphaned=0 rows="" lead_label="" lead_mark="" founder=""
-  local role kind model label workdir session_id family branch spawned_by recorded_id recorded_window recorded_at
+  local role kind model label workdir session_id family branch spawned_by recorded_id recorded_window recorded_at recorded_compact
   local row pane dead pid state cpu rss usage cctx active lead_row="" lanes_kb="" stamp=""
   SESSION="$(dash_meta_session "$STATE_DIR")"
   [ -n "$SESSION" ] || SESSION="$(session_name_for_project)"
   if dash_has_session "$(dash_sessions "$panes")" "$SESSION"; then live=1; fi
-  while IFS="$DASH_US" read -r role kind model label workdir session_id family branch spawned_by recorded_id recorded_window recorded_at; do
+  while IFS="$DASH_US" read -r role kind model label workdir session_id family branch spawned_by recorded_id recorded_window recorded_at recorded_compact; do
     [ -n "$role" ] || continue
     row="$(dash_pane_row "$panes" "$SESSION" "$role")"
     # "pane|dead|pid", picked apart without a process: cut would be two more forks per agent.
@@ -448,8 +448,8 @@ dash_team_json() {
     MR_ID="$recorded_id" MR_HOW="" MR_LABEL="" MR_MARK=""
     if [ "$full" = "1" ] || [ "$state" = "running" ]; then
       CTX_FILE=""
-      agent_context "$workdir" "$model" "$family" "$session_id" "$recorded_window" "$recorded_id" "$recorded_at" || true
-      cctx="$(dash_context_label "$CTX_TOKENS" "$CTX_WINDOW")"
+      agent_context "$workdir" "$model" "$family" "$session_id" "$recorded_window" "$recorded_id" "$recorded_at" "$recorded_compact" || true
+      cctx="$(dash_context_label "$CTX_TOKENS" "$CTX_LIMIT")"
       # The transcript's own mtime: the very file the context reader just opened, and it
       # moves on every turn the agent takes. A file timestamp, not a claim about what the
       # agent is doing.

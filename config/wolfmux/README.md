@@ -221,6 +221,8 @@ teamctl policy lead-permissions skip|ask        # default skip
 teamctl policy browser-writes ask|allow         # allow writes a Chrome-write ALLOW rule into every agent's settings  default ask
 teamctl policy worker-isolation on|off          # the worktree guard (below)         default on
 teamctl policy worker-context full|trim|lean    # what of ~/.claude a worker starts with  default trim
+teamctl policy lead-context full|trim           # the same reductions for the lead   default full
+teamctl policy context-exclude '<glob>'...      # instruction files a trimmed agent does not load  default none
 teamctl policy lead-teams on|off                # may the lead found further teams?  default on
 teamctl policy branch-template '<template>'     # how this team names workers' branches (above)
 teamctl policy branch-template default          # …back to ai/{role}-{ts} · ai/{team}/{role}-{ts}
@@ -229,6 +231,7 @@ teamctl policy disk-min-gb 20                   # free space a spawn asks for (1
 teamctl policy link-node-modules on|off         # share the repository's node_modules default off
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
+teamctl policy output-offload on|off            # a long Bash output goes to a log, the agent sees a short form  default on
 teamctl policy human-pane-typing off|idle       # type notices into a pane you are watching?  default off (yours alone)
 teamctl policy lead-wake unwatched|off          # may an idle lead wake itself for a notice?  default unwatched (yours alone)
 teamctl policy orphan-steward <team>|off        # whose lead may bring back a team YOU founded  default off (yours alone)
@@ -262,12 +265,22 @@ Claude Code teammates only: Codex has no such hook.
 `trim` (the default) keeps your rules and settings but switches off every plugin
 enabled there. `lean` also starts the worker with `--setting-sources project,local`,
 so nothing from `~/.claude` is read at all — only the project's own `CLAUDE.md` /
-`.claude/` and the per-agent settings (hooks, guard) and login. The lead is never
-trimmed; a stored or configured value that cannot be read means `full`.
-`WOLFMUX_WORKER_COMPACT_WINDOW` sets where a worker's own CLI compacts its
-conversation, in tokens (default: the window `teamctl status` counts that model
-with; `off` leaves it to the CLI) — otherwise a current Claude model would run
-toward 1M before compacting on its own.
+`.claude/` and the per-agent settings (hooks, guard) and login. From v1.25.0 `trim` and
+`lean` also leave out the tools a pane agent cannot use, the claude.ai connectors and the
+files of `context-exclude` (`WOLFMUX_CONTEXT_EXCLUDE`); `lead-context trim`
+(`WOLFMUX_LEAD_CONTEXT`) does the same for the lead, which is otherwise never trimmed
+(docs/USAGE.md, "What an agent starts with"). A stored or configured value that cannot be
+read means `full`.
+`WOLFMUX_WORKER_COMPACT_WINDOW` sets the window a worker's own CLI compacts its
+conversation with, in tokens; the CLI compacts about 33,000 below it, and that
+limit is the number `teamctl status`, the dashboard and the context watch count
+against. Default: the first request measured for a worker of this team, plus what
+a compaction keeps, plus 33,000, plus `WOLFMUX_CONTEXT_ROOM` (150000), never above
+the model's own window. `off` leaves it to the CLI. A window that would leave under
+30,000 tokens to work in after a compaction is raised, and the pane and the event
+log say why. The command that spawns or restarts a worker may carry it:
+`WOLFMUX_WORKER_COMPACT_WINDOW=400000 teamctl restart <role>`
+([ADR-0038](../../docs/adr/0038-one-context-number.md)).
 
 Inside workers, Claude Code's own agent-teams feature is switched off. With it on, any
 subagent a worker names becomes a teammate that treats the *worker* as its team lead and
@@ -342,6 +355,7 @@ teamctl memories redis                                   # search it
 teamctl forget redis-url                                 # a memory's key defaults to a slug of its text
 teamctl checkpoint "API done; next: wire the UI; watch out for the stale cache key"
 teamctl checkpoint --show backend                        # read a role's stored checkpoint
+teamctl run -- npm test                                  # a long output to a log; head, tail, failure lines, path
 ```
 
 Shared team notes is shown to every new, resumed or compacted conversation (capped, 4,000
@@ -918,9 +932,12 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_WORKER_SPAWN` | `off` | may workers spawn teammates (same rule: a team's own policy wins) |
 | `WOLFMUX_WORKER_ISOLATION` | `on` | the worktree guard |
 | `WOLFMUX_WORKER_CONTEXT` | `trim` | what of `~/.claude` a worker's conversation starts with: `full`, `trim`, `lean` ([above](#one-manager-permissions-spawning)) |
-| `WOLFMUX_WORKER_COMPACT_WINDOW` | the window `teamctl status` counts that model with | tokens, or `off`: where a worker's own CLI compacts its conversation |
-| `WOLFMUX_CONTEXT_WARN` | `60` | percent of its window at which an agent is told to commit and checkpoint ([Memory and checkpoints](#memory-and-checkpoints)); `0`/`off` disables it |
+| `WOLFMUX_WORKER_COMPACT_WINDOW` | first request + kept + 33000 + `WOLFMUX_CONTEXT_ROOM`, at most the model's window | tokens (100000 to 1000000), or `off`: the window a worker's own CLI compacts its conversation with; also read from the command that spawns or restarts it |
+| `WOLFMUX_CONTEXT_ROOM` | `150000` | tokens to work in between two compactions, when that window is computed |
+| `WOLFMUX_CONTEXT_WARN` | `60` | percent of the limit its CLI compacts at (window minus 33000) at which an agent is told to commit and checkpoint ([Memory and checkpoints](#memory-and-checkpoints)); `0`/`off` disables it |
 | `WOLFMUX_CONTEXT_ROTATE` | `80` | percent at which an agent is told to start nothing new, and the lead is messaged; must be above `WOLFMUX_CONTEXT_WARN` or both fall back |
+| `WOLFMUX_STALL_AFTER` | `300` | seconds an agent sits idle after a turn that ended on an API error (or the CLI's thrash stop), with a task in progress, before its lead gets ONE message with the error and `teamctl restart <role> --continue`. Looked for by the lead's wake waiter and its tenth tool call (at most once a minute, `WOLFMUX_STALL_LOOK`) and by `teamctl status` (ADR-0038) |
+| `WOLFMUX_COMPACT_RESERVE` · `WOLFMUX_CONTEXT_FIRST` · `WOLFMUX_CONTEXT_KEPT` · `WOLFMUX_CONTEXT_MIN_ROOM` · `WOLFMUX_CONTEXT_NEAR` · `WOLFMUX_THRASH_CALLS` · `WOLFMUX_STALL_LOOK` | `33000` · `90000` · `45000` · `30000` · `10` · `10` · `60` | environment only, for measuring: the tokens the CLI keeps free under its window; the first request and the kept part assumed until one is measured (kept is also the floor); the least room a computed window may leave (a smaller one is raised); the points under a threshold from which every tool call is looked at; the tool calls within which two compactions are told to the lead; the seconds between two stall looks of the lead's hooks (ADR-0038) |
 | `WOLFMUX_LEAD_TEAMS` | `on` | may a lead found further teams |
 | `WOLFMUX_ORPHAN_STEWARD` | `off` | the default of the `orphan-steward` policy: the team whose lead may restart the lead of a team you founded, or stop its agents, while that lead is not running. A value that is no team name is read as `off`. `teamctl policy orphan-steward` sets it per project, and only you can |
 | `WOLFMUX_APPROVAL_TIMEOUT` | `600` | seconds a worker waits for the lead's decision before its own prompt appears |
@@ -932,6 +949,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_LEAD_WAKE` | `unwatched` | the default of the `lead-wake` policy: may an idle Claude lead wake itself for a notice while you are not using its pane? `unwatched`: yes, its waiter hook hands the notices over and it takes a turn; nothing is typed. `off`: it waits for its next turn end or prompt. A value that is neither word is read as `unwatched` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
 | `WOLFMUX_WATCH_FOCUS_MAX` | `0` | how long, in seconds, a focused terminal counts as "you are using this pane" with no key pressed. `0`: no limit. A terminal that never reports focus reads focused for ever, so a lead shown in it never wakes itself; `600` makes focus count only with a key in the last 10 minutes |
 | `WOLFMUX_AUTO_RECLAIM` | `on` | the default of the `auto-reclaim` policy: take a parked lane off the books by itself (worktree, branch, record) once its task is closed, its content is in main, nothing is uncommitted or stashed and no PR is open. `off`: nothing is removed unless you run `teamctl reclaim`. A value that is neither word is read as `off`: this one deletes a checkout and a branch, so an unreadable setting must never read as yes. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
+| `WOLFMUX_OFFLOAD` | `on` | `off`: no Bash output is shortened and, for agents started with it, no hook entry of the feature is written (ADR-0036). `WOLFMUX_OFFLOAD_MIN` (default `4000`): an output longer than this many characters is shortened; `WOLFMUX_OFFLOAD_BACKSTOP` (default `16000`): the CLI's own cap on a Bash result for those agents. `WOLFMUX_OUTPUT_OFFLOAD` is the default of the `output-offload` policy |
 | `WOLFMUX_HUMAN` | `human` | your own name in Beads. Agents write to you with `bd create "Subject" -t message -a human`; the 📨 number next to the wolf counts those still unread, and `prefix N` or a click on the number opens them (Enter reads one, `r` marks it read). Letters, digits, `.`, `_`, `-` |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |

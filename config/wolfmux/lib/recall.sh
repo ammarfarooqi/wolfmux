@@ -87,15 +87,37 @@ memory_store_lead_message() {
 recall_hook() {
   case "$1" in
     SessionStart) _memory_session_start ;;
-    PostToolUse) _memory_context_watch ;;
+    PostToolUse)
+      _memory_context_watch
+      _recall_stall_look
+      ;;
     PreCompact) _memory_precompact ;;
   esac
   return 0
 }
 
+# _recall_stall_look - the lead's tenth tool call is one of the three lookers of lib/stall.sh:
+# while the lead works its wake waiter does not run. At most once per WOLFMUX_STALL_LOOK
+# seconds, in the background, so the lead's tool call never waits on another agent's transcript.
+_recall_stall_look() {
+  [ "${HOOK_ROLE:-}" = "$WOLFMUX_LEAD_ROLE" ] || return 0
+  [ -z "$(hook_input .agent_id)" ] || return 0
+  # A hook loads no project: the team's state directory is the one its run directory is in.
+  [ -n "${STATE_DIR:-}" ] || STATE_DIR="$(_memory_state_dir)"
+  [ -d "$STATE_DIR/agents" ] || return 0
+  stall_scan_due || return 0
+  (stall_scan >/dev/null 2>&1 &) >/dev/null 2>&1
+  return 0
+}
+
 _memory_session_start() {
   case "$HOOK_SOURCE" in
-    startup | clear | compact) /bin/rm -f "$HOOK_RUN/memory/warned" 2>/dev/null || true ;;
+    startup | clear | compact) /bin/rm -f "$HOOK_RUN/memory/warned" "$HOOK_RUN/near" 2>/dev/null || true ;;
+  esac
+  case "$HOOK_SOURCE" in
+    # A new conversation: what the last one measured is not this one's.
+    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" 2>/dev/null || true ;;
+    compact) _memory_compacted || true ;;
   esac
   local body
   if body="$(memory_store_memories_text)" && body="$(printf '%s\n' "$body" | _memory_quote_notes)" && [ -n "$body" ]; then
@@ -125,61 +147,304 @@ _memory_session_checkpoint() {
 $(/bin/cat "$file" 2>/dev/null | _hook_tail_cap "$WOLFMUX_CHECKPOINT_CHARS")"
 }
 
-# _memory_context_watch — PostToolUse: how full is this conversation, and has it crossed a
-# threshold it has not already announced.
-_memory_context_watch() {
-  _ctx_of_transcript "$HOOK_TRANSCRIPT"
-  [ -n "$CTX_TOKENS" ] || return 0
-  local window percent
-  window="$(model_context_window "${WOLFMUX_MODEL:-}")"
-  [ -n "$window" ] && [ "$window" -gt 0 ] 2>/dev/null || window=200000
-  percent=$((CTX_TOKENS * 100 / window))
-  _memory_write_ctx "$CTX_TOKENS" "$window" "$percent"
-  _memory_check_thresholds "$percent" "$CTX_TOKENS" "$window"
+# --- the context watch (ADR-0038) --------------------------------------------------------------
+# ONE figure: what the conversation holds (the last request of its transcript) against the limit
+# its CLI compacts at (context_limit_for, lib/policy.sh): the window the CLI was started with,
+# CLAUDE_CODE_AUTO_COMPACT_WINDOW in this hook's own environment, or its model's window, minus the
+# reserve. Status and the dashboard show the same two numbers (agent_context, lib/agents.sh).
+# WOLFMUX_CONTEXT_WARN and _ROTATE are shares of that limit. With no known limit nothing is
+# divided and nothing is announced: a share of a guessed window announced "93%" at 186k of 400k.
+WOLFMUX_CONTEXT_NEAR="${WOLFMUX_CONTEXT_NEAR:-10}"   # points under a threshold from which EVERY tool call is looked at
+WOLFMUX_THRASH_CALLS="${WOLFMUX_THRASH_CALLS:-10}"   # two compactions within this many tool calls are told to the lead
+
+# _memory_number <value> - 0 when it is a plain number of 1 to 9 digits
+_memory_number() {
+  case "${1:-}" in "" | *[!0-9]*) return 1 ;; esac
+  [ "${#1}" -le 9 ]
 }
 
-# _memory_write_ctx <tokens> <window> <percent> — one JSON line, atomically
+# _memory_state_dir - the team's state directory, from the run directory ($STATE_DIR/run/<role>):
+# no tmux call, which load_project would cost.
+_memory_state_dir() { printf '%s\n' "${HOOK_RUN%/run/*}"; }
+
+# _memory_limit - sets MEM_LIMIT ("" = unknown) and MEM_WINDOW (the window it was taken from).
+# Needs models_transcript_tail to have run on this conversation (MT_MODEL: what it really runs).
+_memory_limit() {
+  local compact="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" record window="" rec_id="" rec_window="" rec_at="" row=""
+  MEM_LIMIT="" MEM_WINDOW=""
+  record="$(_memory_state_dir)/agents/$HOOK_ROLE.json"
+  if models_is_alias "${WOLFMUX_MODEL:-}"; then
+    if [ -r "$record" ]; then
+      row="$("$JQ_BIN" -r '[.model_id, .model_context, .model_at] | map(. // "" | tostring) | join("\u001f")' "$record" 2>/dev/null)" || row=""
+      IFS="$_MODELS_SEP" read -r rec_id rec_window rec_at <<EOF
+$row
+EOF
+    fi
+    models_running "$WOLFMUX_MODEL" "$rec_id" "$rec_window" "$rec_at" "${MT_MODEL:-}" "${MT_MODEL_AT:-}"
+    window="$MR_WINDOW"
+  else
+    window="$(model_context_window "${WOLFMUX_MODEL:-}" 2>/dev/null)" || window=""
+  fi
+  context_limit_for claude "$window" "$compact"
+  MEM_LIMIT="$CTX_LIMIT"
+  [ -z "$MEM_LIMIT" ] || MEM_WINDOW="$((MEM_LIMIT + WOLFMUX_COMPACT_RESERVE))"
+}
+
+# _memory_first - sets MEM_FIRST: this conversation's first request, the part that is sent again
+# with every request and after every compaction. Read once, from the HEAD of the transcript.
+_memory_first() {
+  local file="$HOOK_RUN/memory/first" value=""
+  MEM_FIRST=""
+  if [ -r "$file" ]; then IFS= read -r value <"$file" || true; fi
+  if ! _memory_number "$value"; then
+    value="$(/usr/bin/head -n 200 "$HOOK_TRANSCRIPT" 2>/dev/null | "$JQ_BIN" -R -r '
+      fromjson? | objects | select(.type == "assistant" and .isSidechain != true and .isApiErrorMessage != true)
+      | (.message.usage | objects) | ([.input_tokens, .cache_read_input_tokens, .cache_creation_input_tokens] | map(numbers) | add // 0)
+      | select(. > 0)' 2>/dev/null | /usr/bin/head -n 1)"
+    _memory_number "$value" || return 0
+    printf '%s\n' "$value" >"$file" 2>/dev/null || true
+    _memory_measured_put "$value" ""
+  fi
+  MEM_FIRST="$value"
+}
+
+# _memory_kept - sets MEM_KEPT: what this conversation's last compaction kept ("" = none yet)
+_memory_kept() {
+  MEM_KEPT=""
+  if [ -r "$HOOK_RUN/memory/kept" ]; then IFS= read -r MEM_KEPT <"$HOOK_RUN/memory/kept" || true; fi
+  _memory_number "$MEM_KEPT" || MEM_KEPT=""
+}
+
+# _memory_measured_put <first> <kept> - the copy that outlives this agent (context_measured,
+# lib/policy.sh): the LAST first request and the LARGEST kept part measured for an agent of this
+# kind in this team. An empty argument keeps what is there.
+_memory_measured_put() {
+  local dir kind="worker" first="$1" kept="$2"
+  dir="$(_memory_state_dir)"
+  [ "$HOOK_ROLE" != "${WOLFMUX_LEAD_ROLE:-lead}" ] || kind="lead"
+  context_measured "$dir" "$kind"
+  [ -n "$first" ] || first="${CM_FIRST:-0}"
+  if [ -z "$kept" ] || { [ -n "$CM_KEPT" ] && [ "$CM_KEPT" -gt "$kept" ]; }; then kept="${CM_KEPT:-0}"; fi
+  /bin/mkdir -p "$dir/context" 2>/dev/null || return 0
+  printf '%s %s %s %s\n' "$first" "$kept" "$(now_epoch)" "$HOOK_ROLE" | _reg_write_atomic "$dir/context/$kind" 2>/dev/null || true
+}
+
+# _memory_figure <used> <limit> - "142k/167k 85%", exactly as status prints it (ctx_display)
+_memory_figure() { ctx_display "$1" "${2:-}"; }
+
+# _memory_context_watch — PostToolUse: how full is this conversation, and has it crossed a
+# threshold it has not already announced. Not inside an in-process subagent: there the CLI's
+# input carries agent_id (and the MAIN conversation's transcript_path), and whatever this said
+# would go to the subagent, which cannot commit or checkpoint for anybody (measured 2026-11-16,
+# tests/research/results/subagent-hook-probe.jsonl).
+_memory_context_watch() {
+  [ -z "$(hook_input .agent_id)" ] || return 0
+  _ctx_of_transcript "$HOOK_TRANSCRIPT"
+  [ -n "$CTX_TOKENS" ] || return 0
+  local percent=""
+  _memory_limit
+  _memory_first
+  _memory_kept
+  [ -z "$MEM_LIMIT" ] || percent=$((CTX_TOKENS * 100 / MEM_LIMIT))
+  _memory_write_ctx "$CTX_TOKENS" "$MEM_LIMIT" "$MEM_WINDOW" "$MEM_FIRST" "$MEM_KEPT" "$percent"
+  [ -n "$percent" ] || return 0
+  _memory_check_thresholds "$percent" "$CTX_TOKENS" "$MEM_LIMIT"
+}
+
+# _memory_write_ctx <used> <limit> <window> <first> <kept> <percent> - one JSON line, atomically.
+# An empty argument is null: unknown, never a guess.
 _memory_write_ctx() {
-  "$JQ_BIN" -cn --argjson tokens "$1" --argjson window "$2" --argjson percent "$3" --argjson at "$(now_epoch)" \
-    '{tokens: $tokens, window: $window, percent: $percent, at: $at}' 2>/dev/null | _reg_write_atomic "$HOOK_RUN/memory/ctx"
+  "$JQ_BIN" -cn --arg used "$1" --arg limit "$2" --arg window "$3" --arg first "$4" --arg kept "$5" --arg percent "$6" \
+    --argjson at "$(now_epoch)" 'def n: tonumber? // null;
+    {used: ($used | n), limit: ($limit | n), window: ($window | n), first: ($first | n), kept: ($kept | n),
+     percent: ($percent | n), at: $at}' 2>/dev/null | _reg_write_atomic "$HOOK_RUN/memory/ctx"
 }
 
 _memory_warned() { grep -qx "$1" "$HOOK_RUN/memory/warned" 2>/dev/null; }
 _memory_mark_warned() { printf '%s\n' "$1" >>"$HOOK_RUN/memory/warned" 2>/dev/null || true; }
 
-# _memory_check_thresholds <percent> <tokens> <window> — warn and rotate each fire once per
-# conversation (recall_hook SessionStart resets memory/warned).
+# _memory_check_thresholds <percent> <used> <limit> - warn and rotate each fire once per
+# conversation (recall_hook SessionStart resets memory/warned). Then the near file: the hot path
+# (bin/teamctl) looks only every tenth tool call, and ten calls can add more than is left under a
+# threshold. Within WOLFMUX_CONTEXT_NEAR points of the next threshold not yet announced, the file
+# exists and the hot path lets every call through, so the warning comes with the call that
+# crosses it, before the CLI compacts.
 _memory_check_thresholds() {
-  local percent="$1" tokens="$2" window="$3" warn rotate
+  local percent="$1" used="$2" limit="$3" warn rotate figure next="" near
   warn="$(_memory_threshold "${WOLFMUX_CONTEXT_WARN:-}" 60)"
   rotate="$(_memory_threshold "${WOLFMUX_CONTEXT_ROTATE:-}" 80)"
   if [ "$warn" -gt 0 ] && [ "$rotate" -gt 0 ] && [ "$warn" -ge "$rotate" ]; then warn=60 rotate=80; fi
   if [ "$rotate" -gt 0 ] && [ "$percent" -ge "$rotate" ] && ! _memory_warned rotate; then
     _memory_mark_warned rotate
-    hook_context "[wolfmux] Your conversation holds ${percent}% of its window. Do not start anything new: commit, run
+    figure="$(_memory_figure "$used" "$limit")"
+    hook_context "[wolfmux] Your conversation holds $figure of the limit its CLI compacts at. Do not start anything new: commit, run
 teamctl checkpoint \"<done so far / what is next / what to watch out for>\", and finish or hand back the current step. The lead has been told and may
 give this task a fresh conversation."
-    [ "$HOOK_ROLE" = "lead" ] || _memory_tell_lead "$percent" "$tokens" "$window"
+    [ "$HOOK_ROLE" = "lead" ] || _memory_tell_lead "$percent" "$figure"
   fi
   if [ "$warn" -gt 0 ] && [ "$percent" -ge "$warn" ] && ! _memory_warned warn; then
     _memory_mark_warned warn
-    hook_context "[wolfmux] Your conversation holds ${percent}% of its window. Commit what works now. Then record where you
+    hook_context "[wolfmux] Your conversation holds ${figure:-$(_memory_figure "$used" "$limit")} of the limit its CLI compacts at. Commit what works now. Then record where you
 stand, so nothing is lost if this conversation is compacted or replaced:
 teamctl checkpoint \"<done so far / what is next / what to watch out for>\""
   fi
+  if [ "$warn" -gt 0 ] && ! _memory_warned warn; then
+    next="$warn"
+  elif [ "$rotate" -gt 0 ] && ! _memory_warned rotate; then
+    next="$rotate"
+  fi
+  near="$WOLFMUX_CONTEXT_NEAR"
+  _memory_number "$near" || near=10
+  if [ -n "$next" ] && [ "$percent" -ge $((next - near)) ]; then
+    : >"$HOOK_RUN/near" 2>/dev/null || true
+  else
+    /bin/rm -f "$HOOK_RUN/near" 2>/dev/null || true
+  fi
 }
 
-# _memory_tell_lead <percent> <tokens> <window> — a message to this team's lead, detached: a
+# _memory_numbers - "window W, first request F, kept by the last compaction K", what is known of it
+_memory_numbers() {
+  printf 'window %s (limit = window - %s), first request %s, kept by its last compaction %s' \
+    "${MEM_WINDOW:-unknown}" "$WOLFMUX_COMPACT_RESERVE" "${MEM_FIRST:-not measured}" "${MEM_KEPT:-none yet}"
+}
+
+# _memory_tell_lead <percent> <figure> - a message to this team's lead, detached: a
 # store write is slow enough (Beads) that a hook may never wait on it.
 _memory_tell_lead() {
   local lead sender body
   lead="$(team_identity "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" lead)"
   sender="${BEADS_ACTOR:-$HOOK_ROLE}"
-  body="tokens: $2 of $3 ($1%)
+  body="context: $2 of the limit its CLI compacts at
+$(_memory_numbers)
 checkpoint: $HOOK_RUN/memory/checkpoint.md
 teamctl restart $HOOK_ROLE : a new conversation in the same worktree and branch; it starts from the checkpoint"
   (
     memory_store_lead_message "$lead" "$sender" "$HOOK_ROLE: context at $1%" "$body" &
+  ) >/dev/null 2>&1
+}
+
+# _memory_compacted - SessionStart with source "compact": the CLI has just compacted this
+# conversation (the hook fires after every compaction; the CLI's own "Autocompact is thrashing"
+# stop fires no hook at all). Records what it kept, K, and counts it: the tool-call counter
+# (run/<role>/calls, which goes on across a compaction) and the time, one line per compaction.
+# Two of them within WOLFMUX_THRASH_CALLS tool calls is a conversation that no longer has room
+# to work in: ONE message to the lead per conversation, with the numbers. A hook can count tool
+# calls for free, not requests; a request makes one tool call or more.
+_memory_compacted() {
+  local file="$HOOK_RUN/memory/compactions" calls=0 now prev_calls="" prev_at="" rest gap max row="" seen=0 count thrash=0
+  if [ -r "$HOOK_RUN/calls" ]; then IFS= read -r calls <"$HOOK_RUN/calls" || true; fi
+  _memory_number "$calls" || calls=0
+  if [ -r "$file" ]; then
+    row="$(/usr/bin/tail -n 1 "$file" 2>/dev/null)" || row=""
+    IFS=' ' read -r prev_calls prev_at rest <<EOF
+$row
+EOF
+  fi
+  now="$(now_epoch)"
+  printf '%s %s\n' "$calls" "$now" >>"$file" 2>/dev/null || true
+  max="$WOLFMUX_THRASH_CALLS"
+  _memory_number "$max" || max=10
+  gap=""
+  if _memory_number "$prev_calls"; then
+    case "$prev_at" in "" | *[!0-9]*) ;; *) gap=$((10#$calls - 10#$prev_calls)) ;; esac # an epoch has ten digits
+  fi
+  if [ -n "$gap" ] && [ "$gap" -ge 0 ] && [ "$gap" -le "$max" ] && [ ! -e "$HOOK_RUN/memory/thrash-told" ]; then
+    : >"$HOOK_RUN/memory/thrash-told" 2>/dev/null || true
+    thrash=1
+  fi
+  # Claude Code 2.1.325 runs this hook BEFORE it writes the compaction's compact_boundary row (run 2
+  # of tests/research/results/part-b-real-cli.md): the row's numbers are read once it is there.
+  if [ -r "$HOOK_RUN/memory/boundaries" ]; then IFS= read -r seen <"$HOOK_RUN/memory/boundaries" || true; fi
+  _memory_number "$seen" || seen=0
+  count="$(_memory_boundary_count)"
+  if [ "$count" -gt "$seen" ]; then
+    _memory_compaction_numbers "$count" "$thrash" "$gap" "$prev_at" "$now"
+    return 0
+  fi
+  if [ "$thrash" = 1 ] && [ "$HOOK_ROLE" = "${WOLFMUX_LEAD_ROLE:-lead}" ]; then
+    # The lead is told in its own context, which only this hook can write: the numbers are not there yet
+    _memory_tell_thrash "$gap" "$prev_at" "$now" "" ""
+    thrash=0
+  fi
+  (_memory_await_boundary "$seen" "$thrash" "$gap" "$prev_at" "$now" &) >/dev/null 2>&1
+  return 0
+}
+
+# _memory_boundary_count - how many compact_boundary rows the transcript holds
+_memory_boundary_count() {
+  local n
+  n="$(/usr/bin/grep -c '"subtype":"compact_boundary"' "$HOOK_TRANSCRIPT" 2>/dev/null)" || true
+  _memory_number "$n" || n=0
+  printf '%s\n' "$n"
+}
+
+# _memory_await_boundary <seen> <thrash> <gap> <first-epoch> <second-epoch> - in the background, after
+# the hook has returned: waits up to WOLFMUX_COMPACT_WAIT (30) seconds for the row, then records it.
+# Without a row the thrash message still goes, with the numbers it could not read marked as such.
+_memory_await_boundary() {
+  local waited=0 count limit
+  limit="${WOLFMUX_COMPACT_WAIT:-30}"
+  _memory_number "$limit" || limit=30
+  while [ "$waited" -lt $((limit * 2)) ]; do
+    count="$(_memory_boundary_count)"
+    if [ "$count" -gt "$1" ]; then
+      _memory_compaction_numbers "$count" "$2" "$3" "$4" "$5"
+      return 0
+    fi
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  [ "$2" = 1 ] && _memory_tell_thrash "$3" "$4" "$5" "" ""
+  return 0
+}
+
+# _memory_compaction_numbers <boundaries> <thrash> <gap> <first-epoch> <second-epoch> - the last
+# compact_boundary row: K is its postTokens, kept for this conversation and for the team; the first
+# request is measured now if no look of the watch did it before; then the thrash message, if due.
+_memory_compaction_numbers() {
+  local row="" pre="" kept=""
+  printf '%s\n' "$1" >"$HOOK_RUN/memory/boundaries" 2>/dev/null || true
+  row="$(/usr/bin/tail -n 400 "$HOOK_TRANSCRIPT" 2>/dev/null | "$JQ_BIN" -R -r '
+    fromjson? | objects | select(.type == "system" and .subtype == "compact_boundary") | .compactMetadata | objects
+    | [.preTokens, .postTokens] | map(numbers | floor | tostring) | join(" ")' 2>/dev/null | /usr/bin/tail -n 1)" || row=""
+  IFS=' ' read -r pre kept <<EOF
+$row
+EOF
+  _memory_number "$pre" || pre=""
+  if _memory_number "$kept" && [ "$kept" -gt 0 ]; then
+    printf '%s\n' "$kept" >"$HOOK_RUN/memory/kept" 2>/dev/null || true
+    _memory_measured_put "" "$kept"
+  else
+    kept=""
+  fi
+  _memory_first
+  [ "$2" = 1 ] || return 0
+  _memory_tell_thrash "$3" "$4" "$5" "$pre" "$kept"
+}
+
+# _memory_tell_thrash <calls-between> <first-epoch> <second-epoch> <tokens-before> <kept>
+_memory_tell_thrash() {
+  local lead sender body limit="" window="${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" first="" room="unknown"
+  models_transcript_tail "$HOOK_TRANSCRIPT"
+  _memory_limit
+  limit="$MEM_LIMIT"
+  if [ -r "$HOOK_RUN/memory/first" ]; then IFS= read -r first <"$HOOK_RUN/memory/first" || true; fi
+  if _memory_number "$limit" && _memory_number "$first" && _memory_number "$5"; then room="$((limit - first - $5))"; fi
+  body="compacted at $(/bin/date -u -r "$2" +%H:%M:%SZ 2>/dev/null) and again at $(/bin/date -u -r "$3" +%H:%M:%SZ 2>/dev/null), $1 tool calls apart
+before the second: ${4:-(not written yet)} tokens${limit:+ of a limit of $limit} (window ${window:-unset}, limit = window - $WOLFMUX_COMPACT_RESERVE)
+first request (sent again every time): ${first:-not measured}; kept by this compaction: ${5:-(not written yet)}
+room left to work in: about $room tokens. It will compact again soon, and each time it stands still.
+A new conversation with a larger window: WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl restart $HOOK_ROLE
+(it starts from its checkpoint: $HOOK_RUN/memory/checkpoint.md). Said once per conversation."
+  if [ "$HOOK_ROLE" = "${WOLFMUX_LEAD_ROLE:-lead}" ]; then
+    hook_context "[wolfmux] This conversation was compacted twice within $1 tool calls.
+$body"
+    return 0
+  fi
+  lead="$(team_identity "${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}" lead)"
+  sender="${BEADS_ACTOR:-$HOOK_ROLE}"
+  (
+    memory_store_lead_message "$lead" "$sender" "$HOOK_ROLE: compacted twice within $1 tool calls" "$body" &
   ) >/dev/null 2>&1
 }
 
@@ -214,12 +479,26 @@ _memory_precompact() {
     printf '%s%s\n' "$_MEMORY_PRECOMPACT_MARKER" "$(now_iso)"
     [ -z "$branch" ] || printf 'branch: %s\n' "$branch"
     [ -z "$head" ] || printf 'head: %s\n' "$head"
+    _memory_ctx_line "$HOOK_RUN"
     printf 'git status --short (first 20 lines):\n%s\n' "$status_lines"
     printf 'git log --oneline -5:\n%s\n' "$log_lines"
   } | _reg_write_atomic "$file" 2>/dev/null || true
 }
 
-# _checkpoint_header <role> <stamp> <task-id> <task-title>
+# _memory_ctx_line <run-dir> - "context: 142k/167k 85%", the watch's last reading of that agent
+# (memory/ctx), in status's own words; nothing when there is none.
+_memory_ctx_line() {
+  local used="" limit="" row=""
+  [ -r "$1/memory/ctx" ] || return 0
+  row="$("$JQ_BIN" -r '[.used, .limit] | map(. // "" | tostring) | join(" ")' "$1/memory/ctx" 2>/dev/null)" || row=""
+  IFS=' ' read -r used limit <<EOF
+$row
+EOF
+  _memory_number "$used" || return 0
+  printf 'context: %s\n' "$(ctx_display "$used" "$limit")"
+}
+
+# _checkpoint_header <role> <stamp> <task-id> <task-title> [<run-dir>]
 _checkpoint_header() {
   local role="$1" stamp="$2" task_id="$3" task_title="$4" branch head dirty
   branch="$("$GIT_BIN" branch --show-current 2>/dev/null)" || branch=""
@@ -230,6 +509,7 @@ _checkpoint_header() {
   [ -z "$branch" ] || printf 'branch: %s\n' "$branch"
   [ -z "$head" ] || printf 'head: %s\n' "$head"
   printf 'uncommitted files: %s\n' "$dirty"
+  [ -z "${5:-}" ] || _memory_ctx_line "$5"
   [ -z "$task_id" ] || printf 'task: %s %s\n' "$task_id" "$task_title"
   printf '\n'
 }
@@ -293,7 +573,7 @@ cmd_checkpoint() {
   clean_text="$(printf '%s' "$text" | _memory_clean "$WOLFMUX_CHECKPOINT_CHARS")"
   [ ! -r "$cur" ] || /bin/cp "$cur" "$prev" 2>/dev/null || true
   {
-    _checkpoint_header "$role" "$stamp" "$task_id" "$task_title"
+    _checkpoint_header "$role" "$stamp" "$task_id" "$task_title" "$dir"
     printf '%s\n' "$clean_text"
   } | _reg_write_atomic "$cur"
   say "checkpoint saved: $(short_path "$cur")"

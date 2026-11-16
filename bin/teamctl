@@ -10,7 +10,8 @@ set -euo pipefail
 # The hot path. An agent's CLI runs `teamctl _hook PostToolUse` after every tool call, so the usual
 # case, nothing to say, has to cost one bash start: no module, no fork. It counts the call (the
 # file's age is the agent's last sign of life) and ends, unless something is queued for the agent
-# (the attention file) or this is the tenth call since the last full look (WOLFMUX_HOOK_EVERY in
+# (the attention file), the context watch asked to see every call (the near file), or this is
+# the tenth call since the last full look (WOLFMUX_HOOK_EVERY in
 # lib/hooks.sh, which this cannot read without loading it).
 if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR" ]; then
   _calls=0
@@ -19,13 +20,43 @@ if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN
   [ "${#_calls}" -le 9 ] || _calls=0
   _calls=$((10#$_calls + 1))
   printf '%s\n' "$_calls" >"$WOLFMUX_RUN_DIR/calls" 2>/dev/null || true
-  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ $((_calls % 10)) -ne 0 ]; then exit 0; fi
+  # Mail first: with something queued, or on the tenth call, the full hook below runs with the
+  # whole of stdin and the offload safety net stays out of this call (the backstop still caps
+  # the result).
+  # The near file (lib/recall.sh): the conversation is within a few points of a context threshold
+  # it has not been told about, so every call is looked at until it has been.
+  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ ! -e "$WOLFMUX_RUN_DIR/near" ] && [ $((_calls % 10)) -ne 0 ]; then
+    # The offload safety net (lib/offload.sh offload_post), only when the agent's settings
+    # switched it on. The read builtin takes at most WOLFMUX_OFFLOAD_MIN characters, so a short
+    # result costs no fork. A long one is looked at only when it is a Bash result: the CLI writes
+    # "tool_name" before "tool_input" (tests/research/results/*/input-0.json), so the first
+    # "tool_name":"..." in what was read is the tool's, found without a fork. When the name is not
+    # in what was read, offload_post's jq decides.
+    if [ "${WOLFMUX_OFFLOAD_SAFETY:-}" = on ] && IFS= read -r -d '' -n "${WOLFMUX_OFFLOAD_MIN:-4000}" _wm_in; then
+      _wm_tool="${_wm_in#*\"tool_name\":\"}"
+      if [ "$_wm_tool" = "$_wm_in" ] || [ "${_wm_tool%%\"*}" = Bash ]; then
+        WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
+        # shellcheck source=/dev/null
+        . "$WOLFMUX_HOME/lib/offload.sh" 2>/dev/null && offload_post "$_wm_in$(/bin/cat)" || true
+      fi
+    fi
+    exit 0
+  fi
 fi
 
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
+# The offload rewrite (lib/offload.sh): a PreToolUse hook on every Bash call, so it loads that one
+# module and nothing else: one bash start and one jq.
+if [ "${1:-}" = "_offload-pre" ]; then
+  if [ -r "$WOLFMUX_HOME/lib/offload.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$WOLFMUX_HOME/lib/offload.sh" && offload_pre_hook || true
+  fi
+  exit 0
+fi
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall tasks; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall stall tasks offload; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -134,10 +165,15 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       settings) · worker-spawn ·
                                                       worker-isolation (the worktree guard) · worker-context full|trim|lean
                                                       (what of ~/.claude a worker's conversation starts with; default trim) ·
+                                                      lead-context full|trim (the same reductions for the lead; default full) ·
+                                                      context-exclude '<glob>'...|none (instruction files a trimmed agent
+                                                      does not load; teamctl doctor suggests one) ·
                                                       lead-teams (may the lead found teams) ·
                                                       disk-guard refuse|warn|off · disk-min-gb <number> · link-node-modules on|off
                                                       auto-prune on|off (sweep a lane's build output as soon as it is parked)
                                                       auto-reclaim on|off (take a parked lane off the books once its work is all in main)
+                                                      output-offload on|off (a long Bash output goes to a log; the agent sees its head,
+                                                      tail, failure lines and the path; default on)
                                                       branch-template (how this team names workers' branches: {team} {role} {ts} {ticket})
                                                       human-pane-typing off|idle (type a notice into a pane you are watching?
                                                       default off = never; idle = once it is quiet. Yours alone: an agent gets 77)
@@ -171,7 +207,12 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
-                                                      CONTEXT: what each agent's conversation holds (tokens, share of the window)
+                                                      CONTEXT: used/limit and the share: what each agent's conversation holds against
+                                                      the limit its CLI compacts at (its window minus 33,000); a worker's window is
+                                                      first request + kept + 33,000 + WOLFMUX_CONTEXT_ROOM (ADR-0038).
+                                                      A worker idle WOLFMUX_STALL_AFTER seconds (300) after a turn that ended on an
+                                                      API error, with a task in progress, is told to the lead once (also by the
+                                                      lead's own hooks); "stalled" lines under the table
     teamctl teams [--json]                            the short list: state (running or orphaned), lead, agents, disk and founder per team
     teamctl dashboard [--json] [--once] [--interval <seconds>] [--full] [--socket <path>]
                                                       EVERY team on this machine, across every project, in one read-only view:
@@ -293,6 +334,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl note <id> "<text>"                        a durable note on a task; notifies nobody
     teamctl reopen <id> "<why>"      (lead)           send a closed task back, open, the assignee told
     teamctl close <id> -r "<reason>" [--failed]   (lead)    close or reject any task of this team
+  Long output  (ADR-0036)
+    teamctl run -- <command> [args...]                runs it; a long output goes to a log and you get its head, tail,
+                                                      failure lines and the path (Codex agents; Claude agents get this by hook)
   Shared team notes  team knowledge and where an agent left off (ADR-0033)
     teamctl checkpoint "<text>"|--body-file <file>|-|--show [<role>]    save, or print a role's
                                                       stored checkpoint
@@ -408,6 +452,7 @@ main() {
     send) cmd_send "$@" ;;
     mail) cmd_mail "$@" ;;
     checkpoint) cmd_checkpoint "$@" ;;
+    run) cmd_run "$@" ;;
     task) cmd_task "$@" ;;
     done) cmd_done "$@" ;;
     blocked) cmd_blocked "$@" ;;

@@ -571,6 +571,67 @@ _doc_policy() {
   fi
 }
 
+# _doc_nonascii_share <dir>: how much of that folder's *.md is not ASCII, in percent of its bytes
+_doc_nonascii_share() {
+  local total high
+  total="$(/bin/cat "$1"/*.md 2>/dev/null | /usr/bin/wc -c | /usr/bin/tr -d ' ')"
+  case "$total" in "" | 0 | *[!0-9]*) printf '0\n'; return 0 ;; esac
+  high="$(/bin/cat "$1"/*.md 2>/dev/null | LC_ALL=C /usr/bin/tr -d '\000-\177' | /usr/bin/wc -c | /usr/bin/tr -d ' ')"
+  printf '%s\n' $((${high:-0} * 100 / total))
+}
+
+# _doc_rules_twin <dir>: the sibling folder this one repeats: at least three *.md files, four
+# out of five of them with a namesake there, and that sibling written in ASCII. Prints nothing
+# when there is none.
+_doc_rules_twin() {
+  local dir="$1" sibling file mine=0 shared
+  for file in "$dir"/*.md; do [ -f "$file" ] && mine=$((mine + 1)); done
+  [ "$mine" -ge 3 ] || return 0
+  for sibling in "${dir%/*}"/*/; do
+    sibling="${sibling%/}"
+    [ "$sibling" != "$dir" ] || continue
+    shared=0
+    for file in "$dir"/*.md; do
+      if [ -f "$sibling/${file##*/}" ]; then shared=$((shared + 1)); fi
+    done
+    if [ $((shared * 5)) -ge $((mine * 4)) ] && [ "$(_doc_nonascii_share "$sibling")" -lt 5 ]; then
+      printf '%s\n' "$sibling"
+      return 0
+    fi
+  done
+}
+
+# _doc_context: a rules folder of yours that repeats another one in a second language is read
+# by every agent with every request. Named with the policy line that leaves it out and with what
+# that saves: 0.85 tokens per character, measured on a Chinese copy (9,142 characters, 7,785
+# tokens, Claude Code 2.1.325). A note, never a warning: both copies are yours to keep.
+_doc_context() {
+  local rules="$CLAUDE_DIR/rules" dir twin chars glob found=0 configured
+  _head "What every agent starts with (worker-context, lead-context, context-exclude)"
+  _note "worker-context=$(policy_default worker-context)  lead-context=$(policy_default lead-context)  context-exclude=$(policy_default context-exclude | /usr/bin/sed 's/^$/none/')"
+  [ -d "$rules" ] || return 0
+  configured=" $(policy_default context-exclude) "
+  while IFS= read -r dir; do
+    [ -n "$dir" ] && [ "$(_doc_nonascii_share "$dir")" -ge 20 ] || continue
+    twin="$(_doc_rules_twin "$dir")"
+    [ -n "$twin" ] || continue
+    found=1
+    chars="$(/bin/cat "$dir"/*.md 2>/dev/null | LC_ALL=en_US.UTF-8 /usr/bin/wc -m | /usr/bin/tr -d ' ')"
+    glob="**/${dir#"$CLAUDE_DIR"/}/**"
+    case "$configured" in
+      *" $glob "*) _ok "rules: $(short_path "$dir") repeats $(short_path "$twin") in a second language and is left out by context-exclude" ;;
+      *)
+        _note "rules: $(short_path "$dir") repeats $(short_path "$twin") in a second language. Every agent reads both, with every request."
+        _note "       leave it out for workers:  teamctl policy context-exclude '$glob'   (for the lead too: teamctl policy lead-context trim)"
+        _note "       saves about $((${chars:-0} * 85 / 100)) tokens per request (${chars:-0} characters; an estimate from its size)"
+        ;;
+    esac
+  done <<DIRS
+$(/usr/bin/find "$rules" -mindepth 1 -maxdepth 3 -type d 2>/dev/null | /usr/bin/sort)
+DIRS
+  if [ "$found" -eq 0 ]; then _ok "rules: no folder under $(short_path "$rules") repeats another one in a second language"; fi
+}
+
 # _doc_models — what fable, opus, sonnet and haiku mean (lib/models.sh), and every running agent
 # of this project that started on an older member of its family than the newest one known. Reads
 # the cache and the agents' transcripts; it never probes (teamctl models --refresh does). Nothing
@@ -684,6 +745,7 @@ cmd_doctor() {
   _doc_beads
   _doc_team
   _doc_policy
+  _doc_context
   _doc_models
   _doc_daemons
   _head "Account-side settings no local tool can see — check them once"

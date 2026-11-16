@@ -227,8 +227,14 @@ N_AFTER_ONE="$(lead_reports "Done: Once only")"
 AGAIN2_OUT="$(TEAM_ROLE=nworker teamctl done "$NW_ONE" "second" --allow-dirty 2>&1)"
 check "native done: a closed task is refused the second time, no second report" \
   '[ "$N_AFTER_ONE" = 1 ] && [ "$(lead_reports "Done: Once only")" = 1 ] && printf "%s" "$AGAIN2_OUT" | grep -q "already closed"'
-check "native done: the lead may still close a worker's task with done" \
-  'TEAM_ROLE=lead teamctl done "$NQA_ID" "lead closes it" --allow-dirty && [ "$(nstatus "$NQA_ID")" = closed ]'
+# Riley N1 (v1.24.0 review): the lead's exemption goes through the pane proof (is_manager). A process
+# outside any pane that claims TEAM_ROLE=lead is refused (77) on another agent's task; the lead in its pane is not.
+check "native done: TEAM_ROLE=lead outside any pane is refused (77) on a worker's task, which stays in_progress" \
+  'TEAM_ROLE=lead teamctl done "$NQA_ID" "not the lead" --allow-dirty; [ $? -eq 77 ] && [ "$(nstatus "$NQA_ID")" = in_progress ]'
+check "native blocked: TEAM_ROLE=lead outside any pane is refused (77) on a worker's task, which stays in_progress" \
+  'TEAM_ROLE=lead teamctl blocked "$NQA_ID" "not the lead"; [ $? -eq 77 ] && [ "$(nstatus "$NQA_ID")" = in_progress ]'
+check "native done: the lead in its own pane may still close a worker's task with done" \
+  'TEAM_ROLE=lead "$REPO/tests/in-pane" done "$NQA_ID" "lead closes it" --allow-dirty && [ "$(nstatus "$NQA_ID")" = closed ]'
 cd "$PROJECT" || exit 1
 
 echo "== beads store: done and blocked belong to the assignee"
@@ -244,6 +250,17 @@ check "beads blocked: another agent's task is refused" \
 BW_ID="$(teamctl task backend "Beads waiting" -d x --after "$QA_ID" | last_task_id)"
 check "beads done: a task waiting on a blocker is refused and stays open" \
   '! BEADS_ACTOR=backend TEAM_ROLE=backend teamctl done "$BW_ID" "too early" --allow-dirty && bd show "$BW_ID" --json | jq -e ".[0].status != \"closed\""'
+check "beads done: TEAM_ROLE=lead outside any pane is refused (77) on a worker's task" \
+  'BEADS_ACTOR=lead TEAM_ROLE=lead teamctl done "$QA_ID" "not the lead" --allow-dirty; [ $? -eq 77 ] && bd show "$QA_ID" --json | jq -e ".[0].status == \"in_progress\""'
+check "beads blocked: TEAM_ROLE=lead outside any pane is refused (77) on a worker's task" \
+  'BEADS_ACTOR=lead TEAM_ROLE=lead teamctl blocked "$QA_ID" "not the lead"; [ $? -eq 77 ] && bd show "$QA_ID" --json | jq -e ".[0].status == \"in_progress\""'
+# tests/in-pane takes the first live lead pane on the suite's socket; the native project's lead
+# (session team-nproject, same team name) would come first, so its session goes now.
+tmux -L "$WOLFMUX_TMUX_SOCKET" kill-session -t team-nproject >/dev/null 2>&1
+check "beads blocked: the lead in its own pane may mark a worker's task blocked" \
+  'BEADS_ACTOR=lead TEAM_ROLE=lead "$REPO/tests/in-pane" blocked "$QA_ID" "lead parks it" && bd show "$QA_ID" --json | jq -e ".[0].status == \"blocked\""'
+check "beads done: the lead in its own pane may close a worker's task with done" \
+  'BEADS_ACTOR=lead TEAM_ROLE=lead "$REPO/tests/in-pane" done "$QA_ID" "lead closes it" --allow-dirty && bd show "$QA_ID" --json | jq -e ".[0].status == \"closed\""'
 
 echo "== named team"
 # A second team: once it exists, every teamctl call below needs --team (ambiguous

@@ -39,6 +39,18 @@
 #                                           plugins. lean = the project's own instructions and
 #                                           wolfmux's, nothing from ~/.claude. See worker_context_*
 #                                           below for what that costs and saves.
+#   lead-context        full | trim         DEFAULT full: the lead starts with everything of yours, as before
+#                                           v1.25.0. trim = the reductions a trimmed worker gets (the tools a
+#                                           pane agent cannot use, the claude.ai connectors, context-exclude),
+#                                           except that it keeps AskUserQuestion and your plugins.
+#   context-exclude     <glob>...           instruction files (CLAUDE.md, rules) that a trimmed agent does
+#                                           not load: workers under trim and lean, the lead under
+#                                           lead-context trim. Empty by default: nothing of yours is left
+#                                           out unless you name it. Free text, handled apart below.
+#   output-offload      on | off            DEFAULT on. A Bash call's long output goes to a log and
+#                                           the agent sees a shortened form with the path
+#                                           (lib/offload.sh, ADR-0036), lead and workers alike. Off:
+#                                           not one hook entry of it is registered.
 #   branch-template     <template>          how this team names its workers' branches, with the
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
@@ -89,7 +101,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation worker-context lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation worker-context lead-context context-exclude lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit output-offload"
 
 policy_default() {
   case "$1" in
@@ -105,6 +117,8 @@ policy_default() {
     auto-prune) printf '%s\n' "${WOLFMUX_AUTO_PRUNE:-on}" ;;
     auto-reclaim) printf '%s\n' "${WOLFMUX_AUTO_RECLAIM:-on}" ;;
     worker-context) printf '%s\n' "${WOLFMUX_WORKER_CONTEXT:-trim}" ;;
+    lead-context) printf '%s\n' "${WOLFMUX_LEAD_CONTEXT:-full}" ;;
+    context-exclude) printf '%s\n' "${WOLFMUX_CONTEXT_EXCLUDE:-}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
     human-pane-typing) printf '%s\n' "${WOLFMUX_HUMAN_PANE_TYPING:-off}" ;;
     lead-wake) printf '%s\n' "${WOLFMUX_LEAD_WAKE:-unwatched}" ;;
@@ -112,6 +126,7 @@ policy_default() {
     lead-model) printf '%s\n' "${WOLFMUX_LEAD_MODEL:-opus}" ;;
     team-memory) printf 'off\n' ;; # no setting: only `teamctl memory enable` turns it on
     restore-on-limit) printf '%s\n' "${WOLFMUX_RESTORE_ON_LIMIT:-report}" ;;
+    output-offload) printf '%s\n' "${WOLFMUX_OUTPUT_OFFLOAD:-on}" ;;
     *) return 1 ;;
   esac
 }
@@ -153,6 +168,10 @@ policy_valid() { # <key> <value>
     restore_on_limit_valid "$2"
     return
   fi
+  if [ "$1" = "context-exclude" ]; then
+    context_exclude_valid "$2"
+    return
+  fi
   case "$1:$2" in
     lead-permissions:skip | lead-permissions:ask) return 0 ;;
     worker-permissions:skip | worker-permissions:lead | worker-permissions:ask) return 0 ;;
@@ -164,6 +183,7 @@ policy_valid() { # <key> <value>
     link-node-modules:on | link-node-modules:off) return 0 ;;
     auto-prune:on | auto-prune:off) return 0 ;;
     auto-reclaim:on | auto-reclaim:off) return 0 ;;
+    output-offload:on | output-offload:off) return 0 ;;
     human-pane-typing:off | human-pane-typing:idle) return 0 ;;
     lead-wake:unwatched | lead-wake:off) return 0 ;;
     # A number, not a word: whole gigabytes, 0 switches the limit off, and the ceiling is
@@ -176,6 +196,7 @@ policy_valid() { # <key> <value>
       [ "$2" -le 10000 ]
       ;;
     worker-context:full | worker-context:trim | worker-context:lean) return 0 ;;
+    lead-context:full | lead-context:trim) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -185,8 +206,10 @@ policy_choices() {
     lead-permissions) printf 'skip|ask\n' ;;
     worker-permissions) printf 'skip|lead|ask\n' ;;
     browser-writes) printf 'ask|allow\n' ;;
-    worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim) printf 'on|off\n' ;;
+    worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim | output-offload) printf 'on|off\n' ;;
     worker-context) printf 'full|trim|lean\n' ;;
+    lead-context) printf 'full|trim\n' ;;
+    context-exclude) printf "one or more globs of instruction files ('**/rules/pack/zh/**'), or the word none\n" ;;
     disk-guard) printf 'refuse|warn|off\n' ;;
     human-pane-typing) printf 'off|idle\n' ;;
     lead-wake) printf 'unwatched|off\n' ;;
@@ -229,6 +252,12 @@ policy_get() {
     # Empty, or anything unusable, means the built-in shape: a stored template that can no
     # longer be expanded must never stop a spawn.
     if [ -n "$value" ] && branch_template_valid "$value"; then printf '%s\n' "$value"; fi
+    return 0
+  fi
+  if [ "$key" = "context-exclude" ]; then
+    # Empty, or anything that is not a list of globs, means nothing is left out: an unreadable
+    # value must never take an instruction file of yours away from an agent.
+    if [ -n "$value" ] && context_exclude_valid "$value"; then printf '%s\n' "$value"; fi
     return 0
   fi
   if policy_valid "$key" "$value"; then
@@ -274,8 +303,8 @@ policy_get() {
   elif [ "$key" = "restore-on-limit" ]; then
     # Unreadable means restore changes no lead's model: it reports, as by default.
     printf 'report\n'
-  elif [ "$key" = "worker-context" ]; then
-    printf 'full\n' # an unreadable value never takes something of yours away from a worker
+  elif [ "$key" = "worker-context" ] || [ "$key" = "lead-context" ]; then
+    printf 'full\n' # an unreadable value never takes something of yours away from an agent
   else
     printf 'ask\n'
   fi
@@ -292,6 +321,17 @@ policy_set() { # <key> <value>
     why="$(branch_template_error "$2")"
     [ -z "$why" ] || die_usage "branch-template '$2': $why"
     meta_put policy_branch_template "$2"
+    return 0
+  fi
+  # context-exclude none: back to leaving nothing out. Stored as no list at all, as branch-template is.
+  if [ "$1" = "context-exclude" ]; then
+    if [ "$2" = "none" ]; then
+      meta_put policy_context_exclude ""
+      return 0
+    fi
+    context_exclude_valid "$2" || die_usage "context-exclude must be $(policy_choices context-exclude)
+a glob may hold letters, digits and . _ / * ? ~ @ + - only, at most $CONTEXT_EXCLUDE_MAX of them"
+    meta_put policy_context_exclude "$2"
     return 0
   fi
   # lead-model default: back to the config file's value, or opus. Stored as nothing at all, as branch-template is.
@@ -617,7 +657,52 @@ policy_summary() {
 #   full  everything, as before v1.24.0
 #   trim  (default) your rules and settings stay; every plugin is off for the worker
 #   lean  only the project's own instructions (its CLAUDE.md, .claude/) and wolfmux's
-# The lead is never trimmed: it is the conversation you talk to.
+# The lead is not trimmed unless you say so (lead-context trim): it is the conversation you talk to.
+#
+# v1.25.0, measured on Claude Code 2.1.325 (2026-11-16, docs/adr/0037): a trimmed worker still began
+# at 81,024 tokens. Three more things it never uses went with every request:
+#   - the schemas of tools a pane agent cannot use (WOLFMUX_PANE_UNUSED_TOOLS; Artifact alone is
+#     37,000 characters). A bare tool name in permissions.deny takes the tool out of the request.
+#   - the claude.ai connectors of your account: they connect after the first request and then add
+#     their tool names and instructions (36,879 characters in a two-line task).
+#   - instruction files you name with context-exclude (a second-language copy of your rules).
+# With all three: 54,289. full keeps every one of them.
+
+# The tools of Claude Code that an agent in a pane has no use for: they publish a page, ask a
+# dialog nobody is watching, send feedback, schedule a wake-up or start a second agent system.
+# AskUserQuestion is the lead's way to ask you, so a trimmed lead keeps it.
+WOLFMUX_PANE_UNUSED_TOOLS="Artifact AskUserQuestion SendFeedback ScheduleWakeup Workflow ReportFindings ListAgents"
+CONTEXT_EXCLUDE_MAX=16 # globs in one context-exclude list
+
+# context_exclude_valid <list>: one to CONTEXT_EXCLUDE_MAX globs, separated by spaces, each made
+# of the characters a path and a glob need and nothing a shell or JSON would read otherwise.
+context_exclude_valid() {
+  local glob count=0
+  [ -n "$1" ] || return 1
+  set -f # the globs are words here, never patterns to expand against this directory
+  for glob in $1; do
+    count=$((count + 1))
+    case "$glob" in
+      *[!A-Za-z0-9._/*?~@+-]*) set +f; return 1 ;;
+    esac
+    if [ "${#glob}" -gt 200 ]; then set +f; return 1; fi
+  done
+  set +f
+  [ "$count" -ge 1 ] && [ "$count" -le "$CONTEXT_EXCLUDE_MAX" ]
+}
+
+# context_reductions <kind>: the settings fragment of the three reductions above, for a trimmed
+# worker or a trimmed lead ({} when jq fails: a reduction that cannot be written is not made)
+context_reductions() {
+  local tools="$WOLFMUX_PANE_UNUSED_TOOLS" exclude
+  if [ "$1" = "lead" ]; then tools="${tools/AskUserQuestion /}"; fi
+  exclude="$(policy_get context-exclude)"
+  "$JQ_BIN" -cn --arg tools "$tools" --arg exclude "$exclude" '
+    {permissions: {deny: ($tools | split(" ") | map(select(length > 0)))},
+     env: {ENABLE_CLAUDEAI_MCP_SERVERS: "false"}}
+    + (($exclude | split(" ") | map(select(length > 0))) as $globs
+       | if ($globs | length) > 0 then {claudeMdExcludes: $globs} else {} end)' 2>/dev/null || printf '{}\n'
+}
 
 # worker_context_plugins_off — a settings fragment that turns off every plugin you have enabled or
 # installed, for one agent ({} when there is none or the files cannot be read)
@@ -635,23 +720,131 @@ worker_context_plugins_off() {
     | if length == 0 then {} else {enabledPlugins: from_entries} end' "${files[@]}" 2>/dev/null || printf '{}\n'
 }
 
-# worker_compact_window <model-key> — the token count at which a worker's CLI compacts its own
-# conversation, or nothing. Claude Code serves the current Claude models a 1M window and compacts
-# near the end of it, so a worker counted as 200k (model_context_window, the number status shows
-# a share of) ran to 255k and further without a compaction, each request slower and dearer than
-# the last. With CLAUDE_CODE_AUTO_COMPACT_WINDOW the CLI compacts where status says 100%.
-# WOLFMUX_WORKER_COMPACT_WINDOW: a number (100000 to 1000000, what the CLI accepts) or off;
-# unset means the model's own window from the table, when that is in the accepted range.
-worker_compact_window() {
-  local want="${WOLFMUX_WORKER_COMPACT_WINDOW:-}" window
+# --- one context number, and a window that cannot thrash (ADR-0038) ---------------------------
+# The reserve: Claude Code compacts a conversation at about its window MINUS this many tokens.
+# Observed on two windows of Claude Code 2.1.325 (165-171k of 200k, 66-89k of 100k), in line with
+# the vendor's "about 967k of 1M", and stated by the vendor nowhere. Environment only, for a test.
+WOLFMUX_COMPACT_RESERVE="${WOLFMUX_COMPACT_RESERVE:-33000}"
+# What a worker's window is made of: its first request F (the part re-sent with every request),
+# what a compaction keeps K, the reserve, and room to work in. F and K are measured by the watch
+# (lib/recall.sh) and kept per team in $STATE_DIR/context/worker; until then these stand in. Both
+# err high: a window too large costs one later compaction, a window too small thrashes.
+WOLFMUX_CONTEXT_FIRST="${WOLFMUX_CONTEXT_FIRST:-90000}" # F with nothing measured (measured: 54k trimmed, 81k full)
+WOLFMUX_CONTEXT_KEPT="${WOLFMUX_CONTEXT_KEPT:-45000}"   # K, and its floor: one agent's compactions kept 19k to 47k
+WOLFMUX_CONTEXT_ROOM="${WOLFMUX_CONTEXT_ROOM:-150000}"  # room to work in between two compactions (config file)
+# Under this much room after a compaction the CLI compacts again within a few requests (measured:
+# 4-5k of room, 10 compactions in 5 minutes, then the CLI stops). One file read is up to 25k.
+WOLFMUX_CONTEXT_MIN_ROOM="${WOLFMUX_CONTEXT_MIN_ROOM:-30000}"
+
+# _ctx_number <value> <default> - <value> when it is a plain number of at most 9 digits, else <default>
+_ctx_number() {
+  case "$1" in "" | *[!0-9]*) printf '%s\n' "$2"; return 0 ;; esac
+  if [ "${#1}" -le 9 ]; then printf '%s\n' "$((10#$1))"; else printf '%s\n' "$2"; fi
+}
+
+# context_limit <window> - where a CLI with that window compacts: the window minus the reserve.
+# Nothing for a window that is not a number above the reserve.
+context_limit() {
+  case "${1:-}" in "" | *[!0-9]*) return 0 ;; esac
+  [ "${#1}" -le 9 ] && [ "$1" -gt "$WOLFMUX_COMPACT_RESERVE" ] || return 0
+  printf '%s\n' "$(($1 - WOLFMUX_COMPACT_RESERVE))"
+}
+
+# context_limit_for <family> <model-window> <compact-window> - sets CTX_LIMIT, the ONE number every
+# view and the watch divide by ("" = unknown, and then nothing is divided). Claude Code: the
+# smaller of the window its CLI was told to compact at and its model's window, minus the reserve.
+# Codex states its own window in its rollout and nothing here measured where it compacts: its
+# limit is that window, unreduced. No fork: status calls this once per agent.
+context_limit_for() {
+  local window="${2:-}" compact="${3:-}"
+  CTX_LIMIT=""
+  case "$window" in "" | 0 | *[!0-9]*) window="" ;; esac
+  case "$compact" in "" | 0 | *[!0-9]*) compact="" ;; esac
+  [ "${#window}" -le 9 ] || window=""
+  [ "${#compact}" -le 9 ] || compact=""
+  if [ "$1" = "codex" ]; then
+    CTX_LIMIT="$window"
+    return 0
+  fi
+  # A model whose window nobody declared has no limit, whatever its CLI was told: the CLI caps the
+  # compact window at the model's own, so the number on record is only an upper bound.
+  [ -n "$window" ] || return 0
+  if [ -n "$compact" ] && [ "$compact" -lt "$window" ]; then window="$compact"; fi
+  [ "$window" -gt "$WOLFMUX_COMPACT_RESERVE" ] || return 0
+  CTX_LIMIT="$((window - WOLFMUX_COMPACT_RESERVE))"
+}
+
+# context_measured <state-dir> <kind> - sets CM_FIRST and CM_KEPT ("" = never measured) from what
+# the watch last recorded for an agent of that kind in this team: one line "first kept epoch role".
+# It outlives the agent that measured it, so a NEW worker starts from a measured F.
+context_measured() {
+  local first="" kept="" rest=""
+  CM_FIRST="" CM_KEPT=""
+  [ -r "$1/context/$2" ] || return 0
+  IFS=' ' read -r first kept rest <"$1/context/$2" || true
+  case "$first" in "" | 0 | *[!0-9]*) ;; *) [ "${#first}" -gt 9 ] || CM_FIRST="$first" ;; esac
+  case "$kept" in "" | 0 | *[!0-9]*) ;; *) [ "${#kept}" -gt 9 ] || CM_KEPT="$kept" ;; esac
+  return 0
+}
+
+# worker_compact_plan <model-key> <override> - sets WCP_WINDOW: the token count a worker's CLI is
+# told to compact its conversation at (CLAUDE_CODE_AUTO_COMPACT_WINDOW; "" = left to the CLI), and
+# WCP_NOTE: one sentence when the window is not the one asked for ("" otherwise).
+#   <override>  off: left to the CLI. A number from 100000 to 1000000 (what the CLI accepts): that
+#               window. Anything else: none.
+#   no override F + K + reserve + WOLFMUX_CONTEXT_ROOM, from what was measured (context_measured).
+# Either way the window is at least F + K + reserve + WOLFMUX_CONTEXT_MIN_ROOM, so that a
+# compaction leaves room to work in, and at most the model's own window (the CLI caps it there
+# anyway). A model whose window nobody declared gets a window only when one was asked for.
+# Needs STATE_DIR. The CLI reads the window when it starts: it is computed at spawn and restart.
+worker_compact_plan() {
+  local model="$1" want="${2:-}" cap first kept floor window="" asked=""
+  WCP_WINDOW="" WCP_NOTE="" WCP_FIRST="" WCP_KEPT=""
+  [ "$want" != "off" ] || return 0
+  cap="$(model_context_window "$model" 2>/dev/null || true)"
+  cap="$(_ctx_number "$cap" "")"
+  if [ -n "$cap" ] && [ "$cap" -gt 1000000 ]; then cap=1000000; fi
+  if [ -n "$cap" ] && [ "$cap" -lt 100000 ]; then return 0; fi
   case "$want" in
-    off) return 0 ;;
-    "" | *[!0-9]*) window="$(model_context_window "$1" 2>/dev/null || true)" ;;
-    *) window="$want" ;;
+    "") ;;
+    *[!0-9]*) WCP_NOTE="WOLFMUX_WORKER_COMPACT_WINDOW=$want is neither off nor a number: ignored." ;;
+    *)
+      if [ "${#want}" -le 7 ] && [ "$want" -ge 100000 ] && [ "$want" -le 1000000 ]; then
+        asked="$want"
+      else
+        WCP_NOTE="WOLFMUX_WORKER_COMPACT_WINDOW=$want is outside 100000 to 1000000, what the CLI accepts: ignored."
+      fi
+      ;;
   esac
-  case "$window" in "" | *[!0-9]*) return 0 ;; esac
-  [ "${#window}" -le 7 ] && [ "$window" -ge 100000 ] && [ "$window" -le 1000000 ] || return 0
-  printf '%s\n' "$window"
+  [ -n "$cap" ] || [ -n "$asked" ] || return 0
+  context_measured "${STATE_DIR:-}" worker
+  first="$(_ctx_number "${CM_FIRST:-}" "$(_ctx_number "$WOLFMUX_CONTEXT_FIRST" 90000)")"
+  kept="$(_ctx_number "$WOLFMUX_CONTEXT_KEPT" 45000)"
+  if [ -n "$CM_KEPT" ] && [ "$CM_KEPT" -gt "$kept" ]; then kept="$CM_KEPT"; fi
+  WCP_FIRST="$first" WCP_KEPT="$kept"
+  floor=$((first + kept + WOLFMUX_COMPACT_RESERVE + $(_ctx_number "$WOLFMUX_CONTEXT_MIN_ROOM" 30000)))
+  window="${asked:-$((first + kept + WOLFMUX_COMPACT_RESERVE + $(_ctx_number "$WOLFMUX_CONTEXT_ROOM" 150000)))}"
+  if [ "$window" -lt "$floor" ]; then
+    WCP_NOTE="compact window $floor, not ${asked:-$window}: a limit of $((${asked:-$window} - WOLFMUX_COMPACT_RESERVE)) tokens leaves under $(_ctx_number "$WOLFMUX_CONTEXT_MIN_ROOM" 30000) after a compaction (first request $first + kept $kept), and the CLI would compact over and over."
+    window="$floor"
+  fi
+  window=$((((window + 999) / 1000) * 1000))
+  [ "$window" -ge 100000 ] || window=100000
+  [ "$window" -le 1000000 ] || window=1000000
+  if [ -n "$cap" ] && [ "$window" -gt "$cap" ]; then
+    window="$cap"
+    if [ "$cap" -lt "$floor" ]; then
+      WCP_NOTE="compact window $cap, the model's own: after a compaction only about $((cap - WOLFMUX_COMPACT_RESERVE - first - kept)) tokens are left to work in (first request $first + kept $kept). Expect compactions close together; a smaller start helps (teamctl policy worker-context, context-exclude)."
+    fi
+  fi
+  WCP_WINDOW="$window"
+}
+
+# worker_compact_window <model-key> [<override>] - prints worker_compact_plan's window, or nothing.
+# The override defaults to WOLFMUX_WORKER_COMPACT_WINDOW of this process.
+worker_compact_window() {
+  worker_compact_plan "$1" "${2-${WOLFMUX_WORKER_COMPACT_WINDOW:-}}"
+  [ -z "$WCP_WINDOW" ] || printf '%s\n' "$WCP_WINDOW"
 }
 
 # worker_context_carried — what a lean worker loses together with your user settings and then
@@ -668,22 +861,41 @@ worker_context_carried() {
   fi
 }
 
-# worker_context_settings <kind> <mode> — the fragment write_agent_settings merges in
+# worker_context_settings <kind> <mode>: the fragment write_agent_settings merges in for a
+# worker. full: nothing. trim: your plugins off and the reductions. lean: that, and what a
+# worker without your user settings needs carried over.
 worker_context_settings() {
   if [ "$1" != "worker" ] || [ "$2" = "full" ]; then
     printf '{}\n'
     return 0
   fi
-  if [ "$2" = "lean" ]; then
-    { worker_context_plugins_off; worker_context_carried; } | "$JQ_BIN" -cs 'add // {}' 2>/dev/null || printf '{}\n'
-    return 0
+  {
+    worker_context_plugins_off
+    context_reductions worker
+    if [ "$2" = "lean" ]; then worker_context_carried; fi
+  } | "$JQ_BIN" -cs 'reduce .[] as $part ({}; . * $part)' 2>/dev/null || printf '{}\n'
+}
+
+# agent_context_settings <kind>: what write_agent_settings merges in for any agent: a worker by
+# worker-context, the lead by lead-context (full: nothing; trim: the reductions, plugins untouched).
+agent_context_settings() {
+  if [ "$1" = "worker" ]; then
+    worker_context_settings worker "$(policy_get worker-context)"
+  elif [ "$1" = "lead" ] && [ "$(policy_get lead-context)" = "trim" ]; then
+    context_reductions lead
+  else
+    printf '{}\n'
   fi
-  worker_context_plugins_off
 }
 
 # teamctl policy [<key> <value>]
 cmd_policy() {
-  local key="${1:-}" value="${2:-}" template teams
+  local key="${1:-}" value="${2:-}" template teams exclude
+  # context-exclude takes a list: every further word is one more glob
+  if [ "$key" = "context-exclude" ] && [ "$#" -gt 2 ]; then
+    shift
+    value="$*"
+  fi
   require_tools
   # orphan-steward and lead-model are the project's, not a team's: they are set without naming a team.
   if [ "$key" = "orphan-steward" ] || [ "$key" = "lead-model" ] || [ "$key" = "team-memory" ]; then load_project any; else load_project; fi
@@ -695,13 +907,22 @@ cmd_policy() {
     say "  worker-spawn        $(policy_get worker-spawn)     (on|off)          may workers run 'teamctl spawn'?"
     say "  worker-isolation    $(policy_get worker-isolation)      (on|off)          refuse a worker's tool calls outside its own worktree and branch"
     say "  worker-context      $(policy_get worker-context)    (full|trim|lean)  what of your ~/.claude a worker starts with: full = all,"
-    say "                      trim = your rules, no plugins · lean = only the project's own instructions and wolfmux's"
+    say "                      trim = your rules, no plugins, no tools a pane cannot use, no claude.ai connectors ·"
+    say "                      lean = only the project's own instructions and wolfmux's"
+    say "  lead-context        $(policy_get lead-context)    (full|trim)       what the lead starts with: full = everything of yours ·"
+    say "                      trim = without the tools a pane cannot use (it keeps AskUserQuestion), the claude.ai"
+    say "                      connectors and the files of context-exclude. Your plugins stay."
+    exclude="$(policy_get context-exclude)"
+    say "  context-exclude     ${exclude:-none}    (<glob>...|none)  instruction files (CLAUDE.md, rules) a trimmed agent does not load:"
+    say "                      workers under trim and lean, the lead under lead-context trim. teamctl doctor names a"
+    say "                      rules folder that repeats another one in a second language, with the line to use."
     say "  lead-teams          $(policy_get lead-teams)      (on|off)          may the lead found further teams and hand work over?"
     say "  disk-guard          $(policy_get disk-guard)  (refuse|warn|off) what 'teamctl spawn' does under disk-min-gb free disk"
     say "  disk-min-gb         $(policy_get disk-min-gb)       (number, GB)      free space a spawn asks for; 0 = no limit"
     say "  link-node-modules   $(policy_get link-node-modules)     (on|off)          link a new lane's node_modules to its repository's copy"
     say "  auto-prune          $(policy_get auto-prune)      (on|off)          sweep a lane's build output as soon as it is parked (protect one: teamctl keep <role>)"
     say "  auto-reclaim        $(policy_get auto-reclaim)      (on|off)          take a parked lane off the books once its task is closed and its work is all in main (protect one: teamctl keep <role>)"
+    say "  output-offload      $(policy_get output-offload)      (on|off)          a long Bash output goes to a log; the agent sees head, tail, failure lines and the path"
     template="$(policy_get branch-template)"
     if [ -n "$template" ]; then
       say "  branch-template     $template     how this team names its workers' branches"
@@ -787,6 +1008,9 @@ cmd_policy() {
   event_log policy "" "$key=$value"
   if [ "$key" = "branch-template" ] && [ "$value" = "default" ]; then
     say "policy: branch-template = $(wt_default_template)   (the built-in shape)"
+  elif [ "$key" = "context-exclude" ]; then
+    exclude="$(policy_get context-exclude)"
+    say "policy: context-exclude = ${exclude:-none}   (workers under trim and lean; the lead under lead-context trim)"
   else
     say "policy: $key = $value"
   fi

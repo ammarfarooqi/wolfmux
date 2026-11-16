@@ -319,6 +319,13 @@ another team is still a Beads message to `<team>.lead`.
   the commit message. Shown to every agent at the start of its conversation
   (`teamctl memories [<word>]` to search it; `teamctl forget <key>` to remove one).
 - Durable facts go into a task or a memory; terminal scrollback is not a record.
+- A long command output reaches you shortened: `[wolfmux] long output shortened`, its first and last
+  lines, the failure lines between, and the path of the full log. Search that log with `grep`; never
+  `cat` it. Codex agents get the same with `teamctl run -- <command>` for tests, builds and logs.
+- A report or an answer needs no acknowledgement, and an acknowledgement needs no reply: do not
+  send "thanks" or "noted" messages.
+- Read your own mail yourself. Do not have a subagent run `teamctl mail` or `teamctl show` for you:
+  it marks the mail read and you would see only its summary.
 - Long or code-heavy text goes through `--body-file` (write the file inside your
   own worktree, or under `${TMPDIR:-/tmp}`), not through shell quoting.
 - If a `teamctl` command fails, read the error, fix the cause, and say so

@@ -208,6 +208,9 @@ SS_SECS=$(($(date +%s) - SS_START))
 check "SessionStart with a hanging bd answers well inside the CLI's 20 s (took ${SS_SECS}s)" '[ "$SS_SECS" -lt 18 ]'
 check "  ... and its mail part tells the agent to read its mail itself, never that nothing is assigned" \
   'ctx="$(printf "%s" "$SS_OUT" | jq -r .hookSpecificOutput.additionalContext)"; printf "%s" "$ctx" | grep -qF "teamctl mail" && ! printf "%s" "$ctx" | grep -qF "nothing is assigned"'
+# Riley N2 (v1.24.0 review): one hook run has one budget for its bounded bd reads (HOOK_DEADLINE, set
+# once in cmd_hook), not 5 s per read: mail, memory and the in-progress task read add up otherwise.
+check "SessionStart with a hanging bd returns within 7 s: one budget for all its bd reads (took ${SS_SECS}s)" '[ "$SS_SECS" -le 7 ]'
 
 echo
 echo "result: $passed passed, $failed failed, $skipped skipped"

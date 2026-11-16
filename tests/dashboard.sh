@@ -183,7 +183,7 @@ jq -n --arg dir "$CX_TREE" '{role: "cx", kind: "worker", model: "astra", label: 
 } >"$WOLFMUX_CODEX_SESSIONS/2026/03/03/rollout-2026-03-03T00-00-00-cx.jsonl"
 export CX_STATE
 check "an empty field moves nothing: a Codex agent (no conversation id) keeps its own branch, and its context is read as Codex's" \
-  'lib_eval "team_paths default; STATE_DIR=\$CX_STATE; dash_team_json \"\" \"\" 1 | \$JQ_BIN -e \".agents[0] | .role == \\\"cx\\\" and .branch == \\\"ai/cx-1\\\" and .context == \\\"5.0k 1%\\\"\""'
+  'lib_eval "team_paths default; STATE_DIR=\$CX_STATE; dash_team_json \"\" \"\" 1 | \$JQ_BIN -e \".agents[0] | .role == \\\"cx\\\" and .branch == \\\"ai/cx-1\\\" and .context == \\\"5.0k/272k 1%\\\"\""'
 check "dash_pane_row finds the same pane tm_pane_for_role finds" \
   'lib_eval "team_paths default; SESSION=\$(session_name_for_project); row=\$(dash_pane_row \"\$(dash_panes)\" \"\$SESSION\" worker1); [ \"\${row%%|*}\" = \"\$(tm_pane_for_role \"\$SESSION\" worker1)\" ]"'
 check "dash_pane_row agrees with tm_pane_state about a running pane" \
@@ -287,7 +287,7 @@ echo "== the context column: three cases, never an invented percentage"
 # guessed window is worse than no percentage. ctx_display does the formatting; the
 # dashboard only decides whether the share may be shown at all.
 check "a known window gives a token count and a share" \
-  'lib_eval "[ \"\$(dash_context_label 142000 200000)\" = \"142k 71%\" ]"'
+  'lib_eval "[ \"\$(dash_context_label 142000 167000)\" = \"142k/167k 85%\" ]"'
 check "an unknown window gives the token count and NO share" \
   'lib_eval "[ \"\$(dash_context_label 142000 \"\")\" = 142k ]"'
 check "a zero window gives the token count and NO share — never 0%" \
@@ -299,7 +299,7 @@ check "no reading at all is a dash, not a zero" \
 check "no percent sign is ever printed for an unknown window" \
   'lib_eval "case \"\$(dash_context_label 142000 \"\")\" in *%*) exit 1 ;; esac"'
 check "a team whose agent has an unknown window still renders, with no share" \
-  'lib_eval "agent_context() { CTX_TOKENS=142000 CTX_WINDOW=\"\" CTX_FILE=\"\"; return 0; }; team_paths default; dash_team_json \"\" \"\" 1 | \$JQ_BIN -e \".agents[0].context == \\\"142k\\\"\""'
+  'lib_eval "agent_context() { CTX_TOKENS=142000 CTX_WINDOW=\"\" CTX_LIMIT=\"\" CTX_FILE=\"\"; return 0; }; team_paths default; dash_team_json \"\" \"\" 1 | \$JQ_BIN -e \".agents[0].context == \\\"142k\\\"\""'
 
 # The six checks above, and the one directly above this comment, all hand an empty window
 # STRAIGHT TO the formatter — the last one by replacing agent_context with a fake that
