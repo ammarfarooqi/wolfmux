@@ -427,11 +427,13 @@ teamctl restart qa >/dev/null 2>&1
 # so it is spawned fresh rather than restarted.
 teamctl spawn summary sonnet --no-kickoff >/dev/null 2>&1
 sleep 2
-check "compaction: a worker's CLI is told to compact at the window status counts with (flash 200000, sonnet 1000000)" 'teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "^STUB compact=200000$" && teamctl capture summary --all | grep -q "^STUB compact=1000000$"'
+check "compaction: a worker's CLI is told to compact at a window made of first request + kept + reserve + room (sonnet: 90000 + 45000 + 33000 + 150000 = 318000), never above its model's own (flash 200000), and its record says which" 'teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "^STUB compact=200000$" && teamctl capture summary --all | grep -q "^STUB compact=318000$" && [ "$(jq -r .compact_window "$(ls -d "$WOLFMUX_DATA"/state/*/agents)/summary.json")" = 318000 ]'
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW off
 teamctl restart qa >/dev/null 2>&1
 sleep 2
-check "compaction: WOLFMUX_WORKER_COMPACT_WINDOW=off leaves it to the CLI, a number in the accepted range is passed on, one outside it is not" 'teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=none$" && tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW 150000 && teamctl restart qa && sleep 2 && teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=150000$" && tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW 5000 && teamctl restart qa && sleep 2 && teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=none$"'
+check "compaction: WOLFMUX_WORKER_COMPACT_WINDOW=off leaves it to the CLI, a window that would thrash is raised (150000 becomes 198000, said in the pane), one the CLI does not accept is ignored for the computed one" 'teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=none$" && tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW 150000 && teamctl restart qa && sleep 2 && teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=198000$" && teamctl capture qa --all | grep -q "compact window 198000, not 150000" && tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -g WOLFMUX_WORKER_COMPACT_WINDOW 5000 && teamctl restart qa && sleep 2 && teamctl capture qa --all | grep "STUB compact=" | tail -1 | grep -q "compact=200000$"'
+tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -gu WOLFMUX_WORKER_COMPACT_WINDOW
+check "compaction: a window given only to the command that restarts or spawns a worker reaches it (the pane never sees that command's environment), and stays on its record for the next restart" 'WOLFMUX_WORKER_COMPACT_WINDOW=400000 teamctl restart summary >/dev/null 2>&1 && sleep 2 && teamctl capture summary --all | grep "STUB compact=" | tail -1 | grep -q "compact=400000$" && teamctl restart summary >/dev/null 2>&1 && sleep 2 && teamctl capture summary --all | grep "STUB compact=" | tail -1 | grep -q "compact=400000$" && WOLFMUX_WORKER_COMPACT_WINDOW=450000 teamctl spawn cwin sonnet --no-kickoff >/dev/null 2>&1 && sleep 2 && teamctl capture cwin --all | grep -q "^STUB compact=450000$"; rc=$?; teamctl stop cwin >/dev/null 2>&1; teamctl remove cwin --force --yes >/dev/null 2>&1; [ $rc -eq 0 ]'
 tmux -L "$WOLFMUX_TMUX_SOCKET" set-environment -gu WOLFMUX_WORKER_COMPACT_WINDOW
 teamctl restart qa >/dev/null 2>&1
 sleep 2
@@ -654,7 +656,7 @@ BACKEND_ID="$(teamctl status --json | jq -r '[.agents[] | select(.role == "backe
   echo '{"type":"assistant","message":{"usage":{"input_tokens":100000,"cache_read_input_tokens":30000,"cache_creation_input_tokens":12000}}}'
 } >"$BACKEND_TRANS/$BACKEND_ID.jsonl"
 check "status: context in use is what the last assistant turn saw (input plus both caches), every counted turn is a request" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"backend\")][0] | .context_tokens == 142000 and .requests == 2 and .context_window == 200000"'
-check "status: the CONTEXT column shows the tokens and the share of the window" 'teamctl status | grep -E "backend .*142k +71%"'
+check "status: the CONTEXT column shows used/limit and the share of the limit the CLI compacts at (200000 - 33000)" 'teamctl status | grep -E "backend .*142k/167k +85%"'
 check "status: nothing readable shows as -, in json as null and 0" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"qa\")][0] | .context_tokens == null and .requests == 0" && teamctl status | grep "🐶 qa " | grep -Eq "0 +- "'
 {
   for i in $(seq 1 500); do echo '{"type":"user","message":{"content":"filler"}}'; done
@@ -685,7 +687,7 @@ plant_ctx ctx-codex astra codex "$CODEX_TREE"
 plant_ctx ctx-old fable claude "$BACKEND_DIR" # no session_id: a record from before conversation ids
 check "status: a record from before conversation ids still reads the newest transcript of its folder" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-old\")][0] | .context_tokens == 7000 and .session_id == \"\""'
 check "status: a codex agent is read from the rollout whose session cwd is its worktree: last token_count event, its window, its request count" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-codex\")][0] | .context_tokens == 129200 and .requests == 3 and .context_window == 258400"'
-check "status: the codex agent's column" 'teamctl status | grep -E "ctx-codex .*129k +50%"'
+check "status: the codex agent's column" 'teamctl status | grep -E "ctx-codex .*129k/258k +50%"'
 plant_ctx ctx-1m "claude:claude-opus-4-1[1m]" claude "/nonexistent/ctx"
 plant_ctx ctx-kimi kimi claude "/nonexistent/ctx"
 plant_ctx ctx-ds "deepseek:deepseek-v4-flash" claude "/nonexistent/ctx"
@@ -731,7 +733,7 @@ OPUS_REAL_DIR="$WORK/ctx-opus-real-tree"
 echo '{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":2,"cache_read_input_tokens":231411,"cache_creation_input_tokens":597}}}' >"$(transcripts_of "$OPUS_REAL_DIR")/opus-real.jsonl"
 plant_ctx ctx-opus-real opus claude "$OPUS_REAL_DIR"
 jq '.session_id = "opus-real"' "$CTX_AGENTS/ctx-opus-real.json" >"$CTX_AGENTS/ctx-opus-real.json.new" && /bin/mv "$CTX_AGENTS/ctx-opus-real.json.new" "$CTX_AGENTS/ctx-opus-real.json"
-check "status: 232,010 tokens on opus's real 1M window renders 232k 23%, not the old fallback's 116% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-opus-real\")][0] | .context_tokens == 232010 and .context_window == 1000000 and .context == \"232k 23%\"" && teamctl status | grep -E "ctx-opus-real .*232k +23%"'
+check "status: 232,010 tokens on opus's real 1M window renders 232k/967k 23%, not the old fallback's 116% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-opus-real\")][0] | .context_tokens == 232010 and .context_window == 1000000 and .context == \"232k/967k 23%\"" && teamctl status | grep -E "ctx-opus-real .*232k/967k +23%"'
 # haiku now means Haiku 5.5 (1M), but an agent still on Haiku 4.5 (200k) must keep its own window:
 # the one recorded with its id at spawn. One known only from its transcript, as an id no answer of
 # Claude Code ever named, has no known window: tokens alone, never a share of Haiku 5.5's 1M.
@@ -747,7 +749,7 @@ plant_ctx ctx-haiku-real haiku claude "$HAIKU_REAL_DIR"
 jq '.session_id = "haiku-real"' "$CTX_AGENTS/ctx-haiku-real.json" >"$CTX_AGENTS/ctx-haiku-real.json.new" && /bin/mv "$CTX_AGENTS/ctx-haiku-real.json.new" "$CTX_AGENTS/ctx-haiku-real.json"
 jq '.model_id = "claude-haiku-4-5-20251001" | .model_context = "200000"' "$CTX_AGENTS/ctx-haiku-real.json" >"$CTX_AGENTS/ctx-haiku-rec.json.new" &&
   jq '.role = "ctx-haiku-rec"' "$CTX_AGENTS/ctx-haiku-rec.json.new" >"$CTX_AGENTS/ctx-haiku-rec.json" && /bin/rm -f "$CTX_AGENTS/ctx-haiku-rec.json.new"
-check "status: a Haiku 4.5 agent keeps the window recorded with its id - a real 150k/200k conversation still renders 150k 75% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-haiku-rec\")][0] | .context_tokens == 150000 and .context_window == 200000 and .context == \"150k 75%\"" && teamctl status | grep -E "ctx-haiku-rec .*150k +75%"'
+check "status: a Haiku 4.5 agent keeps the window recorded with its id - a real 150k conversation on that 200k window still renders against it: 150k/167k 89% (v1.14.1)" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-haiku-rec\")][0] | .context_tokens == 150000 and .context_window == 200000 and .context == \"150k/167k 89%\"" && teamctl status | grep -E "ctx-haiku-rec .*150k/167k +89%"'
 check "status: a haiku agent known only from its transcript to run Haiku 4.5 shows 150k and no share of Haiku 5.5's 1M" 'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctx-haiku-real\")][0] | .context_tokens == 150000 and .context_window == 0 and (.context | test(\"%\") | not)"'
 /bin/rm -f "$CTX_AGENTS/ctx-old.json" "$CTX_AGENTS/ctx-codex.json" "$CTX_AGENTS/ctx-1m.json" "$CTX_AGENTS/ctx-kimi.json" "$CTX_AGENTS/ctx-ds.json" \
   "$CTX_AGENTS/ctx-opus.json" "$CTX_AGENTS/ctx-sonnet.json" "$CTX_AGENTS/ctx-fable.json" "$CTX_AGENTS/ctx-haiku.json" \

@@ -500,8 +500,10 @@ settings but switches off every plugin; `lean` also starts the worker with
 `--setting-sources project,local`, so nothing from `~/.claude` is read at all — only
 the project's own `CLAUDE.md` / `.claude/` and the per-agent hooks and guard. The lead
 is never trimmed ([ADR-0034](docs/adr/0034-what-a-worker-starts-with.md)). A worker's
-own CLI compacts its conversation at `WOLFMUX_WORKER_COMPACT_WINDOW` tokens (default:
-the window `teamctl status` counts that model with); `off` leaves it to the CLI.
+own CLI compacts its conversation about 33,000 tokens below `WOLFMUX_WORKER_COMPACT_WINDOW`
+(default: made from the first request and the kept part measured in this team, plus
+`WOLFMUX_CONTEXT_ROOM`); `off` leaves it to the CLI. CONTEXT in `teamctl status` is
+used/limit against exactly that limit ([ADR-0038](docs/adr/0038-one-context-number.md)).
 
 Behind the keys are launchers you can also run by hand: `claude-fable`, `claude-opus`,
 `claude-sonnet`, `claude-haiku`, `codex-astra`, `claude-glm`, `claude-glm-flash`,

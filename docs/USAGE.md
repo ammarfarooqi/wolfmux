@@ -15,6 +15,20 @@ settings; every plugin, the tools a pane agent cannot use and the claude.ai conn
 start nothing new (`WOLFMUX_CONTEXT_WARN` / `WOLFMUX_CONTEXT_ROTATE`); `teamctl restart
 <role>` picks the work back up from that checkpoint.
 
+**One context number.** Every view prints the same figure for an agent, `142k/167k 85%`:
+what its conversation holds, the limit its CLI compacts at, and the share of that limit.
+The limit is the window the CLI was started with (`WOLFMUX_WORKER_COMPACT_WINDOW` for a
+worker, the model's own window for a lead) minus 33,000, the reserve Claude Code keeps.
+`teamctl status`, the dashboard, the watch's notices, the lead's "context at N%" message
+and a checkpoint's header all use it; `status --json` has `context_limit` next to
+`context_window`. A model whose window nobody declared shows tokens alone and is never
+warned by percentage. A worker's window is made from what was measured in this team
+(first request + kept part + 33,000 + `WOLFMUX_CONTEXT_ROOM`, default 150000) and is
+raised when it would leave under 30,000 tokens after a compaction. Near a threshold the
+watch looks at every tool call instead of every tenth, so the warning comes before the
+CLI compacts. Two compactions within 10 tool calls send the lead one message with the
+numbers. The watch says nothing inside an in-process subagent.
+
 ## Upgrading from v1.23.0
 
 Installing v1.24.0 changes nothing in a project that is already running.

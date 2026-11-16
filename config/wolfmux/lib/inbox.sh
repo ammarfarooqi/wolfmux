@@ -1149,7 +1149,7 @@ cmd_inbox_prompt() {
 #     types, so under human-pane-typing idle the two cannot hand over the same line.
 # Every outcome is one event: inbox-wake, -superseded, -gone, -off, -rearm, -failed.
 cmd_inbox_wake() {
-  local start owner token life notices left count
+  local start owner token life notices left count stall_left
   set +e # a long-running loop: one read that fails in passing must not end it
   # A write to a Claude that has just gone fails with an error rather than killing this
   # process mid-hand-over, so the notices it took are put back (inbox_requeue)
@@ -1176,6 +1176,10 @@ cmd_inbox_wake() {
     return 0
   fi
   life="$(_inbox_wake_life)"
+  # One of the three lookers of lib/stall.sh: while the lead is idle, every WOLFMUX_STALL_LOOK
+  # seconds (a countdown, no fork). A worker found stalled becomes a message to the lead, and
+  # the look below hands it over at once.
+  stall_left=0
   while :; do
     sleep "$WOLFMUX_WAKE_POLL"
     if ! inbox_wake_read "$INBOX_ROLE" || [ "$WAKE_TOKEN" != "$token" ]; then
@@ -1193,6 +1197,11 @@ cmd_inbox_wake() {
     if [ $(($(now_epoch) - start)) -ge "$life" ]; then
       _inbox_wake_rearm "$token" "$start"
       return $?
+    fi
+    stall_left=$((stall_left - WOLFMUX_WAKE_POLL))
+    if [ "$stall_left" -le 0 ] && declare -F stall_scan >/dev/null 2>&1; then
+      case "${WOLFMUX_STALL_LOOK:-60}" in "" | *[!0-9]*) stall_left=60 ;; *) stall_left="${WOLFMUX_STALL_LOOK:-60}" ;; esac
+      stall_scan >/dev/null 2>&1 || true
     fi
     count="$(inbox_count_undelivered "$INBOX_ROLE")"
     case "$count" in "" | *[!0-9]* | 0) continue ;; esac

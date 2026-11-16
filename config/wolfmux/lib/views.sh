@@ -111,7 +111,7 @@ _status_rows() { # emits one JSON object per agent
       inbox_wake_state "$role"
       wake="$WAKE_STATE"
     fi
-    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)" "$recorded_id" "$(reg_field "$role" model_at)"
+    agent_context "$workdir" "$model" "$(reg_field "$role" family)" "$session_id" "$(reg_field "$role" model_context)" "$recorded_id" "$(reg_field "$role" model_at)" "$(reg_field "$role" compact_window)"
     # A /model typed into its pane: the record follows, so its next restart keeps that model (agent_adopt_live).
     if [ "$MR_HOW" = "transcript" ]; then
       agent_adopt_live "$role" "$CTX_MODEL_AT"
@@ -119,7 +119,7 @@ _status_rows() { # emits one JSON object per agent
       recorded_id="$(reg_field "$role" model_id)"
     fi
     if [ -n "$CTX_TOKENS" ]; then
-      cctx="$(ctx_display "$CTX_TOKENS" "$CTX_WINDOW")"
+      cctx="$(ctx_display "$CTX_TOKENS" "$CTX_LIMIT")"
     else
       cctx="-"
     fi
@@ -136,7 +136,7 @@ _status_rows() { # emits one JSON object per agent
       --arg label "$label" --arg family "$(reg_field "$role" family)" --arg billing "$(_billing_of "$role")" --arg state "$state" --arg pane "$pane" \
       --arg branch "$branch" --arg ahead "$ahead" --arg dirty "$dirty" --arg workdir "$workdir" --arg repo "$repo" \
       --arg permissions "$(reg_field "$role" permissions)" --arg spawned_by "$(reg_field "$role" spawned_by)" \
-      --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
+      --arg ct "$CTX_TOKENS" --arg cw "$CTX_WINDOW" --arg cl "$CTX_LIMIT" --arg cr "$CTX_REQUESTS" --arg cctx "$cctx" \
       --arg session_id "$shown_id" --arg keep "$(reg_field "$role" keep_build)" \
       --arg model_id "$MR_ID" --arg recorded_id "$recorded_id" --arg known_from "$MR_HOW" --arg mark "$MR_MARK" \
       --arg model_source "$(reg_field "$role" model_source)" \
@@ -157,7 +157,7 @@ _status_rows() { # emits one JSON object per agent
         session_id: $session_id,
         branch: $branch, commits_ahead: $ahead, uncommitted: $dirty, workdir: $workdir, repo: $repo,
         context_tokens: (if $ct == "" then null else ($ct | tonumber) end),
-        context_window: ($cw | tonumber? // 0), requests: ($cr | tonumber? // 0), context: $cctx,
+        context_window: ($cw | tonumber? // 0), context_limit: ($cl | tonumber? // null), requests: ($cr | tonumber? // 0), context: $cctx,
         held: {count: ($held_n | tonumber? // 0), oldest_epoch: ($held_oldest | tonumber? // null),
                wake: (if $wake == "" then null else $wake end), wake_since: ($wake_since | tonumber? // null)}}
         + (if $state == "backgrounded" then {hint: $hint, continued_in: (if $continued == "" then null else $continued end)} else {} end)'
@@ -185,17 +185,20 @@ _hold_age() {
   fi
 }
 
-# ctx_display <tokens> <window> — "142k 71%": what the CONTEXT column shows. When the
-# window is unknown (empty or 0 — nobody declared it, so there is nothing to be a share
-# of), there is no percentage: the tokens still mean something on their own, a wrong
-# share does not.
+# ctx_display <used> <limit> — "142k/167k 85%": what the CONTEXT column shows, in status, in
+# the dashboard, in the watch's notices and in a checkpoint: what the conversation holds, the
+# limit its CLI compacts at (context_limit_for, lib/policy.sh), and the share of THAT. When the
+# limit is unknown (empty or 0: nobody declared the window) there is no limit and no share:
+# the tokens still mean something on their own, a share of a guess does not.
 ctx_display() {
-  awk -v t="$1" -v w="$2" 'BEGIN {
-    if (t >= 1000000) s = sprintf("%.1fM", t / 1000000);
-    else if (t >= 10000) s = sprintf("%.0fk", t / 1000);
-    else s = sprintf("%.1fk", t / 1000);
-    if (w + 0 > 0) printf "%s %d%%\n", s, int(t * 100 / w);
-    else printf "%s\n", s
+  awk -v t="$1" -v w="$2" 'function k(n) {
+    if (n >= 1000000) return sprintf("%.1fM", n / 1000000);
+    if (n >= 10000) return sprintf("%.0fk", n / 1000);
+    return sprintf("%.1fk", n / 1000)
+  }
+  BEGIN {
+    if (w + 0 > 0) printf "%s/%s %d%%\n", k(t), k(w), int(t * 100 / w);
+    else printf "%s\n", k(t)
   }'
 }
 
@@ -272,15 +275,15 @@ _status_team_text() {
     fi
   done
   if [ -n "$repo_col" ]; then
-    printf '     %-*s %-14s %-12s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" REPO BRANCH AHEAD DIRTY CONTEXT WORKDIR
+    printf '     %-*s %-14s %-12s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-14s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" REPO BRANCH AHEAD DIRTY CONTEXT WORKDIR
   else
-    printf '     %-*s %-14s %-12s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
+    printf '     %-*s %-14s %-12s %-5s %-5s %-10s %-30s %-6s %-6s %-14s %s\n' "$((width + 2))" ROLE MODEL STATE PANE PERM "SPAWNED BY" BRANCH AHEAD DIRTY CONTEXT WORKDIR
   fi
   # "|" keeps empty columns in place; a whitespace IFS would collapse them.
   # A metered agent is marked with a $ after its label (every token it uses is billed), and a
   # model its record does not vouch for with a * (label_mark; the legend is below the table).
-  # CONTEXT is what the agent's transcript says the conversation holds: tokens, and the
-  # share of the window when the model's window is known (tokens alone otherwise — see
+  # CONTEXT is what the agent's transcript says the conversation holds, the limit its CLI
+  # compacts at, and the share of that limit (tokens alone when the limit is unknown: see
   # ctx_display). A stopped worker's line is the reuse-or-respawn signal.
   # The three hold fields come last, and the reason last of all: it is the one free text in
   # the row, and `read` gives whatever is left to its final variable.
@@ -294,9 +297,9 @@ _status_team_text() {
         printf '    %s %-*s' "$WOLFMUX_WORKER_MARK" "$width" "$role"
       fi
       if [ -n "$repo_col" ]; then
-        printf ' %-14s %-12s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+        printf ' %-14s %-12s %-5s %-5s %-10s %-16s %-30s %-6s %-6s %-14s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$([ -n "$repo" ] && basename "$repo" || printf -- '-')" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
       else
-        printf ' %-14s %-12s %-5s %-5s %-10s %-30s %-6s %-6s %-9s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
+        printf ' %-14s %-12s %-5s %-5s %-10s %-30s %-6s %-6s %-14s %s\n' "$label" "$state" "$pane" "$permissions" "$spawned_by" "$branch" "$ahead" "$dirty" "$cctx" "$(short_path "$workdir")"
       fi
       # A parked lane that could not be taken off the books says what it holds and why, right
       # under its own row: space nobody can see is the complaint this line answers. A parked
@@ -330,11 +333,21 @@ _status_team_text() {
 
 # teamctl status [--json] — every team of the project, or the one named with --team
 cmd_status() {
-  local json=0 teams team first=1
+  local json=0 teams team first=1 stalled role asked
   if [ "${1:-}" = "--json" ]; then json=1; fi
   require_tools
   load_project any
   if [ -n "$TEAM" ]; then teams="$TEAM"; else teams="$(team_list)"; fi
+  # One of the three lookers of lib/stall.sh: an agent whose last turn ended on an error, idle
+  # with a task in progress, is told to its lead once. Before the table, so the badge counts it.
+  # team_paths sets TEAM: what was asked for is kept and put back, or a team list reads as --team
+  stalled="" asked="$TEAM"
+  for team in $teams; do
+    team_paths "$team"
+    stalled="$stalled$(TEAM="$team" stall_scan | sed "s|^|$team/|")
+"
+  done
+  TEAM="$asked"
   if [ "$json" -eq 1 ]; then
     if [ -n "$TEAM" ]; then
       _status_team_json
@@ -353,6 +366,9 @@ cmd_status() {
     _status_team_text
   done
   say ""
+  for role in $stalled; do
+    say "stalled   $role: its last turn ended on an error, its task is in progress; the lead has been told (teamctl restart ${role#*/} --continue)"
+  done
   if [ "$(printf '%s\n' "$teams" | wc -w | tr -d ' ')" -gt 1 ]; then
     say "several teams: add --team <name> to a command · each team has its own session: teamctl attach --team <name>"
     if [ "$(store_kind)" = "native" ]; then

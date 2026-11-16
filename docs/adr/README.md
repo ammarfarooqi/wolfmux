@@ -42,3 +42,4 @@ build; superseded decisions will link to their replacement.
 | [0035](0035-a-store-of-our-own.md) | A store of our own: native SQLite by default, Beads kept as the second | accepted | 2026-11-13 |
 | [0036](0036-long-output-stays-out-of-the-context.md) | A long command output stays out of the context window | accepted | 2026-11-16 |
 | [0037](0037-what-a-trimmed-agent-starts-with.md) | A trimmed agent also starts without unusable tools, connectors and named instruction files; the lead may opt in | accepted | 2026-11-16 |
+| [0038](0038-one-context-number.md) | One context number per agent (used against the limit its CLI compacts at), and a worker window made from what was measured | accepted in part | 2026-11-16 |

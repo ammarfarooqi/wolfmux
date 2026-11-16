@@ -2079,6 +2079,18 @@ echo "== v1.23.0 (issue #34): the wake waiter, teamctl _inbox-wake"
   # and the real timeout's words: 7 days, 300 s before Claude Code's 604800
   [ "$(WOLFMUX_WAKE_TIMEOUT=604800 _inbox_wake_life)" = "604500" ] || exit 1
   WOLFMUX_WAKE_TIMEOUT=604800 _inbox_wake_rearm tok 0 | grep -q "re-arms after 7 days. No new notices; nothing to do. End your turn." || exit 1
+  # 2b. v1.25.0 (lib/stall.sh): the idle lead's waiter is one of the lookers for a stalled agent,
+  #     once per WOLFMUX_STALL_LOOK (60 s) of its loop: at the looks of 15, 75, 135, 195 and 255 s
+  stall_scan() { STALL_LOOKS=$((STALL_LOOKS + 1)); }
+  STALL_LOOKS=0
+  run
+  [ "$RC" -eq 2 ] && [ "$TICKS" -eq 20 ] && [ "$STALL_LOOKS" -eq 5 ] || exit 1
+  #     and what a look finds is a message to the lead: the same look hands it over, no wait
+  stall_scan() { STALL_LOOKS=$((STALL_LOOKS + 1)); [ "$STALL_LOOKS" -ne 1 ] || add n-stall; }
+  STALL_LOOKS=0
+  run
+  [ "$RC" -eq 2 ] && [ "$TICKS" -eq 1 ] && grep -q "(n-stall)" "$OUT" || exit 1
+  unset -f stall_scan
   # the lifetime is up under lead-wake off: it just ends
   on_tick() { [ "$TICKS" -ne 19 ] || POLICY=off; }
   run

@@ -262,9 +262,9 @@ echo "== one answer to 'which model does this agent run', in every view"
 check "status looks where models looks: y is Opus 5 (claude-opus-5) from its transcript, marked * because its record does not vouch for it" \
   '[ "$(field y label)" = "Opus 5" ] && [ "$(field y model_id)" = "claude-opus-5" ] && [ "$(field y known_from)" = "transcript" ] && [ -z "$(field y recorded_id)" ] &&
    teamctl status | grep -Eq "y +Opus 5\* +running" && teamctl status | grep -q "^  \* = "'
-check "the window comes with the id: 411k of the 1M Claude Code declared for claude-opus-5 is 41%, in json and in the table" \
-  'teamctl status --json | jq -e "[.agents[] | select(.role == \"y\")][0] | .context_tokens == 411000 and .context_window == 1000000 and .context == \"411k 41%\"" &&
-   teamctl status | grep -Eq "y +Opus 5\* .*411k +41%"'
+check "the window comes with the id: the 1M Claude Code declared for claude-opus-5, and 411k against the limit of the worker's own compact window (318k - 33k), in json and in the table" \
+  'teamctl status --json | jq -e "[.agents[] | select(.role == \"y\")][0] | .context_tokens == 411000 and .context_window == 1000000 and .context == \"411k/285k 144%\"" &&
+   teamctl status | grep -Eq "y +Opus 5\* .*411k/285k +144%"'
 # The no-guess rule, kept: a share is printed only of a window Claude Code declared for exactly
 # the model the agent runs. f1: nothing says which model. f2: the model is known, its window is not.
 old_record f1
@@ -283,9 +283,9 @@ answer claude-sonnet-6 320000 2020-01-01T00:00:00.000Z >"$(transcript_of s3)"
 echo "claude-sonnet-7" >"$FAKE/answers/sonnet"
 /bin/rm -f "$FAKE/answers/sonnet.window"
 teamctl models --refresh >/dev/null 2>&1
-check "a window this machine was told is kept after the alias moves on: sonnet means claude-sonnet-7 now, s3 still shows 320k as 50% of claude-sonnet-6's 640k" \
+check "a window this machine was told is kept after the alias moves on: sonnet means claude-sonnet-7 now, s3 still shows 320k as 52% of the 607k limit of claude-sonnet-6's 640k" \
   'teamctl models | grep -Eq "^  sonnet +claude-sonnet-7 " &&
-   teamctl status --json | jq -e "[.agents[] | select(.role == \"s3\")][0] | .model_id == \"claude-sonnet-6\" and .context_window == 640000 and .context == \"320k 50%\""'
+   teamctl status --json | jq -e "[.agents[] | select(.role == \"s3\")][0] | .model_id == \"claude-sonnet-6\" and .context_window == 640000 and .context == \"320k/607k 52%\""'
 # x was restarted on claude-opus-6 above; an answer written after that came from another model.
 answer claude-opus-5-5 90000 2099-01-01T00:00:00.000Z >"$(transcript_of x)"
 check "what was served outranks what was asked for: x's record says claude-opus-6, a later answer came from claude-opus-5-5, so status and models both say Opus 5.5, marked, and behind" \
@@ -310,7 +310,7 @@ check "status and models never answer differently: the same id, label and proven
    printf "%s\n" "$a" | grep -q "|transcript$" && printf "%s\n" "$a" | grep -q "|record$" && printf "%s\n" "$a" | grep -q "|unknown$"'
 check "the dashboard is the same answer a third time: id, label, provenance and context for every running agent, and the same mark in its table" \
   'a="$(status_says)" && b="$(dashboard_says)" && [ "$(printf "%s\n" "$a" | wc -l | tr -d " ")" = 8 ] && [ "$a" = "$b" ] &&
-   printf "%s\n" "$b" | grep -qx "y|claude-opus-5|Opus 5|transcript|411k 41%" &&
+   printf "%s\n" "$b" | grep -qx "y|claude-opus-5|Opus 5|transcript|411k/285k 144%" &&
    teamctl dashboard --once | grep -Eq "y +Opus 5\* +running" && teamctl dashboard --once | grep -q "\* = "'
 teamctl start opus --team second --no-attach --skip-beads >/dev/null 2>&1
 # Its pane first: a pane that starts fresh and finds a transcript under its conversation id

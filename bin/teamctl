@@ -10,7 +10,8 @@ set -euo pipefail
 # The hot path. An agent's CLI runs `teamctl _hook PostToolUse` after every tool call, so the usual
 # case, nothing to say, has to cost one bash start: no module, no fork. It counts the call (the
 # file's age is the agent's last sign of life) and ends, unless something is queued for the agent
-# (the attention file) or this is the tenth call since the last full look (WOLFMUX_HOOK_EVERY in
+# (the attention file), the context watch asked to see every call (the near file), or this is
+# the tenth call since the last full look (WOLFMUX_HOOK_EVERY in
 # lib/hooks.sh, which this cannot read without loading it).
 if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR" ]; then
   _calls=0
@@ -22,7 +23,9 @@ if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN
   # Mail first: with something queued, or on the tenth call, the full hook below runs with the
   # whole of stdin and the offload safety net stays out of this call (the backstop still caps
   # the result).
-  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ $((_calls % 10)) -ne 0 ]; then
+  # The near file (lib/recall.sh): the conversation is within a few points of a context threshold
+  # it has not been told about, so every call is looked at until it has been.
+  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ ! -e "$WOLFMUX_RUN_DIR/near" ] && [ $((_calls % 10)) -ne 0 ]; then
     # The offload safety net (lib/offload.sh offload_post), only when the agent's settings
     # switched it on. The read builtin takes at most WOLFMUX_OFFLOAD_MIN characters, so a short
     # result costs no fork. A long one is looked at only when it is a Bash result: the CLI writes
@@ -53,7 +56,7 @@ if [ "${1:-}" = "_offload-pre" ]; then
 fi
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall tasks offload; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall stall tasks offload; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -204,7 +207,12 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl approve <id>...|--all      teamctl deny <id> "<reason>"
   Look
     teamctl status [--json]        (alias: workers)   process + worktree state per role, team by team;
-                                                      CONTEXT: what each agent's conversation holds (tokens, share of the window)
+                                                      CONTEXT: used/limit and the share: what each agent's conversation holds against
+                                                      the limit its CLI compacts at (its window minus 33,000); a worker's window is
+                                                      first request + kept + 33,000 + WOLFMUX_CONTEXT_ROOM (ADR-0038).
+                                                      A worker idle WOLFMUX_STALL_AFTER seconds (300) after a turn that ended on an
+                                                      API error, with a task in progress, is told to the lead once (also by the
+                                                      lead's own hooks); "stalled" lines under the table
     teamctl teams [--json]                            the short list: state (running or orphaned), lead, agents, disk and founder per team
     teamctl dashboard [--json] [--once] [--interval <seconds>] [--full] [--socket <path>]
                                                       EVERY team on this machine, across every project, in one read-only view:
