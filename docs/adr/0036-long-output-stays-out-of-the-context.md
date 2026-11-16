@@ -38,9 +38,15 @@ against the real CLI (`tests/research/results/offload-probes.md`) showed where t
    missing, log not writable) it does nothing; when the helper fails at the end, the log is printed
    whole.
 3. **Safety net (PostToolUse)**: a long exit-0 result the rewrite did not cover is replaced by the
-   shortened form, as the result object; above 30k the CLI's own saved file is the full text. The
-   hot path learns the size with the `read` builtin (at most `WOLFMUX_OFFLOAD_MIN` characters), so
-   a short result costs no fork; only when the read does not hit the end is the module loaded.
+   shortened form, as the result object; above 30k the CLI's own saved file is the full text.
+   Mail comes first: with something queued (`attention`) or on the tenth call the full hook runs
+   with the whole stdin and the safety net stays out of that call (the backstop still caps it),
+   so a queued message reaches the agent at its next tool call (D7). Otherwise the hot path learns
+   the size with the `read` builtin (at most `WOLFMUX_OFFLOAD_MIN` characters), so a short result
+   costs no fork, and a long one loads the module only when it is a Bash result: the CLI writes
+   `"tool_name"` before `"tool_input"` (verified on the recorded inputs in
+   `tests/research/results/`), so the name is taken from what was read by parameter expansion. A
+   long Read, Edit or Write result costs no fork; when the name is not in what was read, jq decides.
 4. **Backstop**: `bashOutputMaxChars` and `BASH_MAX_OUTPUT_LENGTH` at 16000 for every agent with the
    feature on.
 5. **Codex family**: no hook can rewrite its results, so `teamctl run -- <command>` does the same
@@ -59,7 +65,10 @@ against the real CLI (`tests/research/results/offload-probes.md`) showed where t
   No shape differed under zsh, so none is excluded for it.
 - stderr is merged into stdout in the order written (it was stdout first, then stderr).
 - Cost per Bash call, measured on the owner's Mac: PreToolUse 6 ms (3 ms with the feature off; jq
-  alone 3 ms). PostToolUse for a short result unchanged (no fork); a long one 34 ms.
+  alone 3 ms). PostToolUse for a short result unchanged (no fork), for a 20 KB Read result
+  unchanged (no fork); a long Bash result 34 ms.
+- Two Bash calls run in parallel never share a log: its name is `<n>-<pid>.log`, the pid being
+  the hook's own process (no lock, no fork).
 - A command that `exec`s, sets or resets a trap (any command with the word `trap`, `grep trap`
   too), or runs in the background, is covered only by the safety net and the backstop.
 - An agent can still `cat` the log; the protocol says not to, and the shortened form says so.

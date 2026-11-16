@@ -271,6 +271,37 @@ check "above 30k the CLI's persisted file is the full text" "seq 1 60000 >$WORK/
 check "a wrapped command's result is not shortened twice" "[ -z \"\$(post_json \"\$(rewritten 'cat x')\" \"\$(cat $WORK/big.txt)\" | post)\" ]"
 check "safety net off (not in the settings): no answer, nothing read" "[ -z \"\$(post_json 'cat x' \"\$(cat $WORK/big.txt)\" | $REPO/bin/teamctl _hook PostToolUse)\" ]"
 
+echo "== the safety net never stands in the way of mail, and costs nothing for another tool"
+# A stand-in jq first on the PATH writes down every start; a stand-in WOLFMUX_HOME whose
+# lib/offload.sh writes down every load (and then loads the real one).
+mkdir -p "$WORK/fakebin" "$WORK/home/lib"
+printf '#!/bin/bash\necho jq >>%s/jq.starts\nexec %s "$@"\n' "$WORK" "$(command -v jq)" >"$WORK/fakebin/jq"
+chmod +x "$WORK/fakebin/jq"
+printf 'echo loaded >>%s/loads\n. %s/lib/offload.sh\n' "$WORK" "$WOLFMUX_HOME" >"$WORK/home/lib/offload.sh"
+big20k="$(head -c 20000 "$WORK/big.txt")"
+read_json="$(jq -cn --arg c "$big20k" '{session_id: "s", cwd: "/w", hook_event_name: "PostToolUse", tool_name: "Read", tool_input: {file_path: "/w/big.txt"},
+  tool_response: {type: "text", file: {filePath: "/w/big.txt", content: $c}}}')"
+bash_json="$(post_json 'cat big.txt' "$big20k")"
+# hot <json> [attention]: one PostToolUse through the hot path as the CLI calls it, counters reset
+hot() {
+  /bin/rm -f "$WORK/jq.starts" "$WORK/loads" "$WOLFMUX_RUN_DIR/attention"
+  printf '1\n' >"$WOLFMUX_RUN_DIR/calls"
+  if [ -n "${2:-}" ]; then : >"$WOLFMUX_RUN_DIR/attention"; fi
+  printf '%s' "$1" | env PATH="$WORK/fakebin:$PATH" JQ_BIN= WOLFMUX_HOME="$WORK/home" WOLFMUX_OFFLOAD_SAFETY=on "$REPO/bin/teamctl" _hook PostToolUse 2>/dev/null
+}
+out="$(hot "$bash_json")"
+check "control: a 20 KB Bash result loads the module, starts jq and is shortened" "[ -s $WORK/loads ] && [ -s $WORK/jq.starts ] && printf '%s' \"\$out\" | jq -e '.hookSpecificOutput.updatedToolOutput.stdout | startswith(\"[wolfmux] long output shortened\")'"
+out="$(hot "$read_json")"
+check "a 20 KB Read result with nothing queued: no jq started, no module loaded, no answer" "[ ! -e $WORK/loads ] && [ ! -e $WORK/jq.starts ] && [ -z \"\$out\" ]"
+out="$(printf '%s' "$bash_json" | (: >"$WOLFMUX_RUN_DIR/attention"; printf '1\n' >"$WOLFMUX_RUN_DIR/calls"; WOLFMUX_OFFLOAD_SAFETY=on "$REPO/bin/teamctl" _hook PostToolUse 2>/dev/null))"
+check "mail queued (attention): a 20 KB Bash result goes to the full hook, the safety net stays out" "! printf '%s' \"\$out\" | grep -q updatedToolOutput"
+out="$(printf '%s' "$bash_json" | (/bin/rm -f "$WOLFMUX_RUN_DIR/attention"; printf '9\n' >"$WOLFMUX_RUN_DIR/calls"; WOLFMUX_OFFLOAD_SAFETY=on "$REPO/bin/teamctl" _hook PostToolUse 2>/dev/null))"
+check "the tenth call: the full hook looks, the safety net stays out" "! printf '%s' \"\$out\" | grep -q updatedToolOutput"
+far_json="$(printf '%s' "$bash_json" | jq -c --arg cwd "/$(printf '%05000d' 0)" '{cwd: $cwd} + .')"
+out="$(hot "$far_json")"
+check "the tool's name beyond what was read (a 5,000-character cwd first): jq decides, still shortened" "printf '%s' \"\$out\" | jq -e '.hookSpecificOutput.updatedToolOutput.stdout | startswith(\"[wolfmux] long output shortened\")'"
+/bin/rm -f "$WOLFMUX_RUN_DIR/attention"
+
 echo "== cost (measured, not checked against a bound)"
 ms() { # <n> <command string>: mean milliseconds of one run
   local t0 t1 i
@@ -286,6 +317,7 @@ printf '  PreToolUse _offload-pre per Bash call: %s ms (off: %s ms)\n' "$(ms 20 
 printf '  jq alone, the same rewrite: %s ms\n' "$(ms 20 'printf %s "$pre_in" | jq -c .tool_input')"
 printf '  PostToolUse hot path, short result: %s ms with the safety net, %s ms without\n' "$(ms 20 'printf %s "$short_in" | post')" "$(ms 20 'printf %s "$short_in" | $REPO/bin/teamctl _hook PostToolUse')"
 printf '  PostToolUse, long result (14 KB) shortened: %s ms\n' "$(ms 10 'printf %s "$long_in" | post')"
+printf '  PostToolUse hot path, 20 KB Read result: %s ms with the safety net, %s ms without\n' "$(ms 20 'printf %s "$read_json" | post')" "$(ms 20 'printf %s "$read_json" | $REPO/bin/teamctl _hook PostToolUse')"
 
 echo
 echo "result: $passed passed, $failed failed"

@@ -19,21 +19,26 @@ if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN
   [ "${#_calls}" -le 9 ] || _calls=0
   _calls=$((10#$_calls + 1))
   printf '%s\n' "$_calls" >"$WOLFMUX_RUN_DIR/calls" 2>/dev/null || true
-  # The offload safety net (lib/offload.sh offload_post), only when the agent's settings switched
-  # it on: the CLI's JSON is read with the read builtin, at most WOLFMUX_OFFLOAD_MIN characters, so
-  # a short result costs no fork. Only a longer one loads the module. What was read is handed on to
-  # the full hook in WOLFMUX_HOOK_STDIN, since stdin cannot be read twice.
-  if [ "${WOLFMUX_OFFLOAD_SAFETY:-}" = on ]; then
-    _wm_in=""
-    if IFS= read -r -d '' -n "${WOLFMUX_OFFLOAD_MIN:-4000}" _wm_in; then
-      WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
-      # shellcheck source=/dev/null
-      . "$WOLFMUX_HOME/lib/offload.sh" 2>/dev/null && offload_post "$_wm_in$(/bin/cat)" || true
-      exit 0
+  # Mail first: with something queued, or on the tenth call, the full hook below runs with the
+  # whole of stdin and the offload safety net stays out of this call (the backstop still caps
+  # the result).
+  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ $((_calls % 10)) -ne 0 ]; then
+    # The offload safety net (lib/offload.sh offload_post), only when the agent's settings
+    # switched it on. The read builtin takes at most WOLFMUX_OFFLOAD_MIN characters, so a short
+    # result costs no fork. A long one is looked at only when it is a Bash result: the CLI writes
+    # "tool_name" before "tool_input" (tests/research/results/*/input-0.json), so the first
+    # "tool_name":"..." in what was read is the tool's, found without a fork. When the name is not
+    # in what was read, offload_post's jq decides.
+    if [ "${WOLFMUX_OFFLOAD_SAFETY:-}" = on ] && IFS= read -r -d '' -n "${WOLFMUX_OFFLOAD_MIN:-4000}" _wm_in; then
+      _wm_tool="${_wm_in#*\"tool_name\":\"}"
+      if [ "$_wm_tool" = "$_wm_in" ] || [ "${_wm_tool%%\"*}" = Bash ]; then
+        WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
+        # shellcheck source=/dev/null
+        . "$WOLFMUX_HOME/lib/offload.sh" 2>/dev/null && offload_post "$_wm_in$(/bin/cat)" || true
+      fi
     fi
-    export WOLFMUX_HOOK_STDIN="$_wm_in"
+    exit 0
   fi
-  if [ ! -e "$WOLFMUX_RUN_DIR/attention" ] && [ $((_calls % 10)) -ne 0 ]; then exit 0; fi
 fi
 
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"

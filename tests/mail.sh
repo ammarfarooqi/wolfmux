@@ -152,6 +152,11 @@ check "hook: PostToolUse renders heading, sender and body in additionalContext, 
   'out="$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)"; printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"MESSAGE\") and contains(\"lead\") and contains(\"the secret body\")" && [ -z "$(ls "$BACKEND_RUN/mail/new" 2>/dev/null)" ]'
 check "D7: shown mid-turn, the notice line is marked delivered for every channel" '[ "$(inbox_state backend "$MSG_ID" | cut -c2)" = d ]'
 check "D7: so the Stop hook has nothing left to hand over" '[ -z "$(inbox_hook backend _inbox-stop)" ]'
+# v1.25.0: with the offload safety net on, a long Bash result does not keep queued mail back
+BIG_ID="$(new_mail backend "Big" "the body after a long result")"
+BIG_JSON="$(seq 1 5000 | jq -Rsc '{hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: {command: "seq 1 5000"}, tool_response: {stdout: ., stderr: "", interrupted: false, isImage: false, noOutputExpected: false}}')"
+check "offload: mail queued and a 20 KB Bash result: the mail is handed over at that call, the safety net stays out" \
+  'out="$(printf "%s" "$BIG_JSON" | WOLFMUX_OFFLOAD_SAFETY=on hook_env backend "$BACKEND_RUN" PostToolUse)"; printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"the body after a long result\")" && ! printf "%s" "$out" | grep -q updatedToolOutput && [ "$(inbox_state backend "$BIG_ID" | cut -c2)" = d ]'
 check "hook: a second PostToolUse with nothing queued says nothing" \
   '[ -z "$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)" ]'
 # v1.24.0 (D8, v1.20.0 hot path): on Beads a hook makes no bd call, so the shown message stays
