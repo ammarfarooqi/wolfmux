@@ -245,15 +245,19 @@ _mail_prune_seen() {
   done
 }
 
-# _mail_mark_shown <file> <seen-dir> <identity> — moves a shown spool file into seen/, prunes
-# seen/ to the newest 50, and for a message marks it read for this agent, detached (so the
-# agent does not spend a turn doing that itself, and a hook never blocks on the store).
+# _mail_mark_shown <file> <seen-dir> <identity> — moves a spool file about to be shown into
+# seen/, prunes seen/ to the newest 50, and for a message marks it read for this agent, detached
+# (so the agent does not spend a turn doing that itself, and a hook never blocks on the store).
 # Native store only: on Beads a hook makes no bd call at all (v1.20.0, tests/beads-hotpath.sh),
 # so there the message stays open until the agent or `teamctl mail` closes it, as in v1.23.0.
+# 1 when the move failed: another reader (`teamctl mail`, the Stop hook) took the file first, or
+# seen/ is not writable. The caller then does NOT show the item: the move is the claim, so two
+# readers racing for one file show it once, never twice.
 _mail_mark_shown() {
   local file="$1" seen="$2" identity="$3" dest type id
   dest="$seen/$(basename "$file")"
-  /bin/mv -f "$file" "$dest" 2>/dev/null || return 0
+  /bin/mv -f "$file" "$dest" 2>/dev/null || return 1
+  [ -f "$dest" ] || return 1
   type="$("$JQ_BIN" -r '.issue_type // "task"' "$dest" 2>/dev/null)"
   id="$("$JQ_BIN" -r '.id // empty' "$dest" 2>/dev/null)"
   if [ "$type" = "message" ] && valid_bead_id "$id" && [ -n "$identity" ] && [ "$(store_kind)" = "native" ]; then
@@ -336,10 +340,11 @@ mail_bodies_for() {
       agent_attention "$role"
       break
     fi
+    # moved first, printed only once moved: the move is the claim (_mail_mark_shown)
+    _mail_mark_shown "$file" "$dir/mail/seen" "$identity" || continue
     printf '%s\n\n' "$block"
     budget=$((budget + ${#block}))
     shown=$((shown + 1))
-    _mail_mark_shown "$file" "$dir/mail/seen" "$identity"
   done
   return 0
 }
@@ -375,10 +380,15 @@ _mail_hook_drain() {
       more=1
       break
     fi
+    # Moved first, shown only once moved: the move is the claim (_mail_mark_shown). One that
+    # could not be moved stays queued, and attention is set again so the next call retries it.
+    if ! _mail_mark_shown "$file" "$dir/seen" "$identity"; then
+      [ ! -f "$file" ] || more=1
+      continue
+    fi
     hook_context "$block"
     budget=$((budget + ${#block}))
     shown=$((shown + 1))
-    _mail_mark_shown "$file" "$dir/seen" "$identity"
     # handed over here: the inbox line that announced it is delivered too, so the Stop and
     # prompt hooks do not hand the same item over a second time
     inbox_mark_item_delivered "$HOOK_ROLE" "$(_mail_spool_id "$base")"

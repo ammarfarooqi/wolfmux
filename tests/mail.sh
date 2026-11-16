@@ -201,6 +201,13 @@ PROMPT_ID="$(new_mail backend "Prompt test" "promptbody")"
 check "D7: UserPromptSubmit carries the body and marks it delivered" \
   'out="$(inbox_hook backend _inbox-prompt)"; printf "%s" "$out" | grep -q "promptbody" && [ "$(inbox_state backend "$PROMPT_ID" | cut -c2)" = d ] && [ -z "$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)" ]'
 
+echo "== the drain shows an item only once it moved it (a lost race never shows it twice)"
+RACE_ID="$(new_mail backend "Race test" "racebody")"
+check "drain: a spool file it cannot move to mail/seen is not shown" \
+  ': >"$BACKEND_RUN/attention"; chmod 555 "$BACKEND_RUN/mail/seen"; out="$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)"; chmod 755 "$BACKEND_RUN/mail/seen"; ! printf "%s" "$out" | grep -q racebody && ls "$BACKEND_RUN/mail/new" | grep -q -- "-$RACE_ID.json$"'
+check "  ... and the next tool call shows it, and only then marks its notice delivered" \
+  'out="$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)"; printf "%s" "$out" | grep -q racebody && [ "$(inbox_state backend "$RACE_ID" | cut -c2)" = d ]'
+
 echo "== an attached, in-use lead pane is never typed into by a mail event"
 LEAD_BEFORE="$(teamctl capture lead --all 2>/dev/null | grep -c "Beads update for lead" || true)"
 LEAD_PANE_ID="$(jq -r '.pane_id // empty' "$STATE_OF_TEAM/agents/lead.json" 2>/dev/null)"
