@@ -134,6 +134,16 @@ run_contract "native"
 if [ "$HAVE_BD" -eq 1 ]; then
   new_beads_repo beads-contract
   run_contract "beads"
+  echo "== beads: a title that starts with a dash (Riley 11)"
+  dtid="$(store_task_create lead bob 2 "-p" "x")"
+  check "beads task_create: a title \"-p\" is a title, not a flag" \
+    'valid_bead_id "$dtid" && [ "$(store_item_json "$dtid" | "$JQ_BIN" -r .title)" = "-p" ]'
+  dmid="$(store_msg_create lead bob "--help" "x")"
+  check "beads msg_create: a subject \"--help\" is a subject, not a flag" \
+    'valid_bead_id "$dmid" && [ "$(store_item_json "$dmid" | "$JQ_BIN" -r .title)" = "--help" ]'
+  drid="$(store_msg_create bob lead "-r reply" "x" "$dmid")"
+  check "beads msg_create (reply): a subject starting with a dash works" \
+    'valid_bead_id "$drid" && [ "$(store_item_json "$drid" | "$JQ_BIN" -r .title)" = "-r reply" ]'
   echo "== beads: close carries the actor, no --force (Riley 1)"
   gid_b="$(store_task_create lead bob 2 "Guarded" "x")"
   check "beads task_close: a non-assignee actor is refused by bd, the task stays open" \

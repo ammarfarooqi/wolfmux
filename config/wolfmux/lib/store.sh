@@ -502,9 +502,11 @@ _STORE_ITEM_JQ='{id, issue_type, title, description: (.description // ""), statu
 
 store_beads_ensure() { :; } # lib/beads.sh (beads_ensure) makes the workspace; nothing else to do
 
+# A title travels as --title=<text>, never positional: bd would read one that starts with
+# "-" as a flag (Riley 11). The same holds for a message subject below.
 store_beads_task_create() {
   local creator="$1" assignee="$2" priority="$3" title="$4" body="$5" id
-  id="$(_store_bd create "$title" -t task -p "$priority" -a "$assignee" --actor "$creator" --description "$body" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
+  id="$(_store_bd create --title="$title" -t task -p "$priority" -a "$assignee" --actor "$creator" --description "$body" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
   [ -n "$id" ] || return 1
   printf '%s\n' "$id"
 }
@@ -572,9 +574,9 @@ store_beads_msg_create() {
   # bash 3.2: "${arr[@]}" on a still-empty array raises "unbound variable" under set -u,
   # so the reply dependency is a plain conditional call, not an optional array element.
   if [ -n "$reply_to" ]; then
-    id="$(_store_bd create "$subject" -t message -a "$recipient" --actor "$sender" --description "$body" --deps "replies-to:$reply_to" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
+    id="$(_store_bd create --title="$subject" -t message -a "$recipient" --actor "$sender" --description "$body" --deps "replies-to:$reply_to" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
   else
-    id="$(_store_bd create "$subject" -t message -a "$recipient" --actor "$sender" --description "$body" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
+    id="$(_store_bd create --title="$subject" -t message -a "$recipient" --actor "$sender" --description "$body" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
   fi
   [ -n "$id" ] || return 1
   printf '%s\n' "$id"
