@@ -25,9 +25,11 @@ Installing v1.24.0 changes nothing in a project that is already running.
   `store: beads (<directory>)`, then the open tasks, unread messages and notes it holds. The
   answer is kept in the file `~/.wolfmux/state/<project>/store`. `WOLFMUX_STORE=native|beads`
   decides when that file is absent.
-- **To move to the native store**, run `teamctl store native --migrate`: it copies open tasks,
-  their dependencies, unread messages and notes into the native file and switches, and deletes
-  nothing from Beads. `teamctl store native` alone switches without copying;
+- **To move to the native store**, run `teamctl store native --migrate`: it copies open tasks
+  (with their status, assignee and blockers), unread messages and notes into the native file,
+  prints how many of each it saw and wrote, and switches; it deletes nothing from Beads. If one
+  item cannot be read or written it names it, exits 1 and does not switch; run it again once
+  fixed (nothing already copied is copied twice). `teamctl store native` alone switches without copying;
   `teamctl store beads` switches back (it needs `bd` and a Beads workspace in the project).
   Switching is the lead's, or yours from a plain shell: any other agent is refused (exit 77),
   while `teamctl store` with no argument stays open to everyone. A switch without `--migrate`

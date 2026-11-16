@@ -658,33 +658,87 @@ _store_migrate_record() {
     "$("$JQ_BIN" -cn --arg old "$1" --arg new "$2" --arg kind "$3" --arg now "$(now_iso)" '{old:$old,new:$new,kind:$kind,now:$now}')" >/dev/null
 }
 
-# _store_migrate_tasks — pass 1: every non-closed task, new ids recorded in `migrated`
+# The migration counts what it saw in Beads against what it wrote (or had already written on
+# an earlier run) per kind, and collects every item it could not read or write in
+# _MIG_FAILED. _store_cmd_migrate switches the store only when that list is empty (Riley 5).
+_MIG_FAILED=""
+_mig_fail() { _MIG_FAILED="${_MIG_FAILED}  $1"$'\n'; }
+
+# _store_migrate_tasks — pass 1: every non-closed task with its status (open, in_progress,
+# blocked), assignee, creator, priority and notes; new ids recorded in `migrated`.
 _store_migrate_tasks() {
-  local old_id item title desc assignee prio created_by new_id
-  for old_id in $(_store_bd list --type task --all --include-infra --json --limit 0 2>/dev/null | "$JQ_BIN" -r 'map(select(.status != "closed")) | .[].id'); do
-    [ -n "$(_store_migrated_new_id "$old_id")" ] && continue
-    item="$(_store_bd show "$old_id" --json 2>/dev/null)" || continue
-    title="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].title')"
+  local list ids old_id item title desc assignee prio created_by status notes new_id
+  _MIG_TASKS_SEEN=0
+  _MIG_TASKS_WRITTEN=0
+  list="$(_store_bd list --type task --all --include-infra --json --limit 0 2>/dev/null)" &&
+    ids="$(printf '%s' "$list" | "$JQ_BIN" -r 'map(select(.status != "closed")) | .[].id' 2>/dev/null)" || {
+    _mig_fail "tasks: bd list failed"
+    return 0
+  }
+  for old_id in $ids; do
+    _MIG_TASKS_SEEN=$((_MIG_TASKS_SEEN + 1))
+    if [ -n "$(_store_migrated_new_id "$old_id")" ]; then
+      _MIG_TASKS_WRITTEN=$((_MIG_TASKS_WRITTEN + 1))
+      continue
+    fi
+    item="$(_store_bd show "$old_id" --json --long 2>/dev/null)" &&
+      title="$(printf '%s' "$item" | "$JQ_BIN" -er '.[0].title')" || {
+      _mig_fail "task $old_id: bd show failed"
+      continue
+    }
     desc="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].description // ""')"
     assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].assignee // ""')"
     prio="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].priority')"
     created_by="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].created_by // ""')"
-    new_id="$(store_native_task_create "$created_by" "$assignee" "$prio" "$title" "$desc")" || continue
+    status="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].status // "open"')"
+    notes="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].notes // ""')"
+    new_id="$(store_native_task_create "$created_by" "$assignee" "$prio" "$title" "$desc")" && [ -n "$new_id" ] || {
+      _mig_fail "task $old_id: could not write it to the native store"
+      continue
+    }
+    case "$status" in
+      open) ;;
+      in_progress | blocked)
+        store_native_task_status "$new_id" "$status" || {
+          _mig_fail "task $old_id: written as $new_id, but its status $status could not be set"
+          continue
+        }
+        ;;
+      *) store_native_task_note "$new_id" migrate "status in Beads was $status; it is open here" ;;
+    esac
+    [ -z "$notes" ] || store_native_task_note "$new_id" migrate "notes from Beads: $notes"
     store_native_task_note "$new_id" migrate "migrated from $old_id"
-    _store_migrate_record "$old_id" "$new_id" task
+    _store_migrate_record "$old_id" "$new_id" task || {
+      _mig_fail "task $old_id: written as $new_id, but the mapping could not be recorded"
+      continue
+    }
+    _MIG_TASKS_WRITTEN=$((_MIG_TASKS_WRITTEN + 1))
   done
 }
 
 # _store_migrate_task_deps — pass 2: dependencies between migrated tasks (a blocker that
 # was not migrated, because it was closed, is dropped: its block is already moot)
 _store_migrate_task_deps() {
-  local old_id new_id old_blocker new_blocker
+  local old_id new_id deps old_blocker new_blocker
+  _MIG_DEPS_SEEN=0
+  _MIG_DEPS_WRITTEN=0
   for old_id in $(_sq "SELECT COALESCE((SELECT json_group_array(old_id) FROM migrated WHERE kind='task'), '[]');" '{}' | "$JQ_BIN" -r '.[]'); do
     new_id="$(_store_migrated_new_id "$old_id")"
     [ -n "$new_id" ] || continue
-    for old_blocker in $(_store_bd dep list "$old_id" --direction=down --type blocks --json 2>/dev/null | "$JQ_BIN" -r '.[].id' 2>/dev/null); do
+    deps="$(_store_bd dep list "$old_id" --direction=down --type blocks --json 2>/dev/null)" &&
+      deps="$(printf '%s' "$deps" | "$JQ_BIN" -r '.[].id' 2>/dev/null)" || {
+      _mig_fail "task $old_id: its dependencies could not be read"
+      continue
+    }
+    for old_blocker in $deps; do
       new_blocker="$(_store_migrated_new_id "$old_blocker")"
-      [ -n "$new_blocker" ] && store_native_task_dep_add "$new_id" "$new_blocker"
+      [ -n "$new_blocker" ] || continue
+      _MIG_DEPS_SEEN=$((_MIG_DEPS_SEEN + 1))
+      if store_native_task_dep_add "$new_id" "$new_blocker"; then
+        _MIG_DEPS_WRITTEN=$((_MIG_DEPS_WRITTEN + 1))
+      else
+        _mig_fail "dependency $old_id -> $old_blocker could not be written"
+      fi
     done
   done
 }
@@ -692,35 +746,80 @@ _store_migrate_task_deps() {
 # _store_migrate_messages — every unread message; no per-message note mechanism exists, so
 # the "migrated from <old-id>" line goes at the top of the body instead
 _store_migrate_messages() {
-  local old_id item sender recipient subject body
-  for old_id in $(_store_bd list --type message --status open,in_progress,blocked --include-infra --json --limit 0 2>/dev/null | "$JQ_BIN" -r '.[].id'); do
-    [ -n "$(_store_migrated_new_id "$old_id")" ] && continue
-    item="$(_store_bd show "$old_id" --json 2>/dev/null)" || continue
+  local list ids old_id item sender recipient subject body new_id
+  _MIG_MSGS_SEEN=0
+  _MIG_MSGS_WRITTEN=0
+  list="$(_store_bd list --type message --status open,in_progress,blocked --include-infra --json --limit 0 2>/dev/null)" &&
+    ids="$(printf '%s' "$list" | "$JQ_BIN" -r '.[].id' 2>/dev/null)" || {
+    _mig_fail "messages: bd list failed"
+    return 0
+  }
+  for old_id in $ids; do
+    _MIG_MSGS_SEEN=$((_MIG_MSGS_SEEN + 1))
+    if [ -n "$(_store_migrated_new_id "$old_id")" ]; then
+      _MIG_MSGS_WRITTEN=$((_MIG_MSGS_WRITTEN + 1))
+      continue
+    fi
+    item="$(_store_bd show "$old_id" --json 2>/dev/null)" &&
+      subject="$(printf '%s' "$item" | "$JQ_BIN" -er '.[0].title')" || {
+      _mig_fail "message $old_id: bd show failed"
+      continue
+    }
     sender="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].created_by // ""')"
     recipient="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].assignee // ""')"
-    subject="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].title')"
     body="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].description // ""')"
-    new_id="$(store_native_msg_create "$sender" "$recipient" "$subject" "$(printf 'migrated from %s\n\n%s' "$old_id" "$body")")" || continue
-    _store_migrate_record "$old_id" "$new_id" message
+    new_id="$(store_native_msg_create "$sender" "$recipient" "$subject" "$(printf 'migrated from %s\n\n%s' "$old_id" "$body")")" && [ -n "$new_id" ] || {
+      _mig_fail "message $old_id: could not write it to the native store"
+      continue
+    }
+    _store_migrate_record "$old_id" "$new_id" message || {
+      _mig_fail "message $old_id: written as $new_id, but the mapping could not be recorded"
+      continue
+    }
+    _MIG_MSGS_WRITTEN=$((_MIG_MSGS_WRITTEN + 1))
   done
 }
 
 _store_migrate_memories() {
-  local raw key text
-  raw="$(_store_bd memories --json 2>/dev/null)" || return 0
-  for key in $(printf '%s' "$raw" | "$JQ_BIN" -r 'to_entries | map(select(.key != "schema_version")) | .[].key'); do
+  local raw keys key text
+  _MIG_MEMS_SEEN=0
+  _MIG_MEMS_WRITTEN=0
+  raw="$(_store_bd memories --json 2>/dev/null)" &&
+    keys="$(printf '%s' "$raw" | "$JQ_BIN" -r 'to_entries | map(select(.key != "schema_version")) | .[].key' 2>/dev/null)" || {
+    _mig_fail "memories: bd memories failed"
+    return 0
+  }
+  for key in $keys; do
+    _MIG_MEMS_SEEN=$((_MIG_MEMS_SEEN + 1))
     text="$(printf '%s' "$raw" | "$JQ_BIN" -r --arg k "$key" '.[$k]')"
-    store_native_memory_set "$key" "$text" migrate 2>/dev/null || true
+    if store_native_memory_set "$key" "$text" migrate 2>/dev/null; then
+      _MIG_MEMS_WRITTEN=$((_MIG_MEMS_WRITTEN + 1))
+    else
+      _mig_fail "memory $key: could not write it to the native store"
+    fi
   done
 }
 
+# _store_cmd_migrate — all or nothing as far as the switch goes: every item that could not
+# be read or written is named, the command exits 1, and the store stays on Beads. What was
+# written is kept and recorded, so a rerun picks up where this one stopped without duplicates.
 _store_cmd_migrate() {
   [ -n "$BD_BIN" ] || die "store: cannot migrate: bd is not installed"
   store_native_ensure || die "store: cannot migrate: native store is not usable"
+  _MIG_FAILED=""
   _store_migrate_tasks
   _store_migrate_task_deps
   _store_migrate_messages
   _store_migrate_memories
+  say "store: migrate from Beads (open tasks, unread messages, notes; closed tasks and read messages stay in Beads)"
+  say "  tasks: $_MIG_TASKS_SEEN seen, $_MIG_TASKS_WRITTEN written"
+  say "  dependencies: $_MIG_DEPS_SEEN seen, $_MIG_DEPS_WRITTEN written"
+  say "  messages: $_MIG_MSGS_SEEN seen, $_MIG_MSGS_WRITTEN written"
+  say "  memories: $_MIG_MEMS_SEEN seen, $_MIG_MEMS_WRITTEN written"
+  if [ -n "$_MIG_FAILED" ]; then
+    printf '%s' "$_MIG_FAILED" >&2
+    die "store: migration incomplete; NOT switched, the store stays beads. Fix the items above and run it again (what was written is kept, nothing is duplicated)."
+  fi
   store_set_kind native
   say "store: migrated into the native store ($(store_db)); switched. Nothing was deleted from Beads."
 }

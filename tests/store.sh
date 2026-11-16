@@ -279,6 +279,45 @@ if [ "$HAVE_BD" -eq 1 ]; then
   cmd_store native --migrate >/dev/null 2>&1
   check "migrate: idempotent, a second run does not duplicate" \
     '[ "$(store_tasks_json "" "" | "$JQ_BIN" -r "[.[] | select(.title==\"Migrate me\")] | length")" = 1 ]'
+
+  echo "== migrate: status, blockers and assignee survive; counts; all or nothing (Riley 5)"
+  new_repo migrate-lossless
+  beads_ensure yes >/dev/null 2>&1
+  store_set_kind beads
+  m_blocker="$(store_task_create lead qa 1 "M blocker" "b")"
+  store_task_claim "$m_blocker" qa
+  m_wait="$(store_task_create lead backend 2 "M waiting" "w")"
+  store_task_dep_add "$m_wait" "$m_blocker"
+  m_blk="$(store_task_create lead backend 2 "M blocked" "x")"
+  store_task_status "$m_blk" blocked
+  store_msg_create lead backend "M msg one" "1" >/dev/null
+  store_msg_create lead qa "M msg two" "2" >/dev/null
+  # a failing bd show for one task: nothing switches, the command fails and names the item
+  _store_bd_real="$(declare -f _store_bd)"
+  eval "_store_bd() { if [ \"\$1\" = show ] && [ \"\$2\" = \"$m_blk\" ]; then return 1; fi; (cd \"\$ROOT\" && \"\$BD_BIN\" \"\$@\"); }"
+  fail_out="$( (cmd_store native --migrate) 2>&1)"
+  fail_rc=$?
+  eval "$_store_bd_real"
+  check "migrate: one unreadable item -> non-zero exit, the store is NOT switched" '[ "$fail_rc" -ne 0 ] && [ "$(store_kind)" = beads ]'
+  check "migrate: the failure names the item" 'printf "%s" "$fail_out" | grep -q "$m_blk"'
+  eval "_store_bd() { if [ \"\$1\" = list ]; then return 1; fi; (cd \"\$ROOT\" && \"\$BD_BIN\" \"\$@\"); }"
+  list_out="$( (cmd_store native --migrate) 2>&1)"
+  list_rc=$?
+  eval "$_store_bd_real"
+  check "migrate: a failed bd list is a failure, not zero rows; not switched" '[ "$list_rc" -ne 0 ] && [ "$(store_kind)" = beads ]'
+  ok_out="$( (cmd_store native --migrate) 2>&1)"
+  ok_rc=$?
+  check "migrate: the clean rerun succeeds and switches" '[ "$ok_rc" -eq 0 ] && [ "$(store_kind)" = native ]'
+  check "migrate: prints seen and written counts per kind" \
+    'printf "%s" "$ok_out" | grep -q "tasks: 3 seen, 3 written" && printf "%s" "$ok_out" | grep -q "messages: 2 seen, 2 written"'
+  mrow() { store_tasks_json "" "" | "$JQ_BIN" -c --arg t "$1" '.[] | select(.title==$t)'; }
+  check "migrate: an in_progress task stays in_progress, with its assignee" \
+    '[ "$(mrow "M blocker" | "$JQ_BIN" -r "[.status,.assignee]|join(\" \")")" = "in_progress qa" ]'
+  check "migrate: a blocked task stays blocked" '[ "$(mrow "M blocked" | "$JQ_BIN" -r .status)" = blocked ]'
+  check "migrate: a waiting task still waits on its (new) blocker" \
+    '[ "$(mrow "M waiting" | "$JQ_BIN" -r ".blocked_by[0]")" = "$(mrow "M blocker" | "$JQ_BIN" -r .id)" ]'
+  check "migrate: both unread messages arrived" \
+    '[ "$(store_inbox_json backend | "$JQ_BIN" "[.[]|select(.title==\"M msg one\")]|length")" = 1 ] && [ "$(store_inbox_json qa | "$JQ_BIN" "[.[]|select(.title==\"M msg two\")]|length")" = 1 ]'
 else
   skip "migrate: bd is not installed"
 fi
