@@ -94,3 +94,102 @@ offload_summary() {
       for (i = start; i <= n; i++) print show(ring[i % tail])
     }' "$log"
 }
+
+# ---- the wrap (Claude family): a PreToolUse hook rewrites a Bash call's command ------------------
+#
+# Why a rewrite and not only a PostToolUse answer: a command that exits non-zero (a failing test
+# run) fires PostToolUseFailure, which cannot replace the result, and the CLI cuts that result to
+# its first ~10,000 characters, so the FAIL lines at the end of a long log never reach the model
+# (tests/research/results/offload-probes.md, probes 3 and 5).
+#
+# The rewrite puts a prefix in front of the agent's command, on its first line (so bash's line
+# numbers in an error message stay what they were), and nothing after it:
+#   - it sends the shell's stdout and stderr to the log (one file, so the order is the order
+#     written) and keeps the originals on fds 7 and 8;
+#   - an EXIT trap puts them back and prints the result: whole when it is short, shortened when
+#     it is long (lib/offload-show.sh). The shell's exit status is kept. An `exit 3` in the
+#     command, `set -e`, and a syntax error (bash's message lands in the log) all end through it.
+#   - TERM and INT traps do the same for a command the CLI ends at its timeout, then exit 143/130.
+# The command runs in the same shell, unchanged: cd and export persist as before. When the line
+# cannot set itself up (helper missing, log not writable) it does nothing and the command runs
+# as it would have. A command is never run twice: the line only redirects and sets traps.
+#
+# Never wrapped: run_in_background calls, a command with the word `exec` in it (an exec'd
+# program would replace the shell and its trap), a command already wrapped.
+
+WOLFMUX_OFFLOAD_MARK="__wm_fin" # the function the line defines; also how a wrapped command is recognised
+
+# offload_next_log <run-dir> — the path of the next log; the file is created by the wrapped
+# shell itself, so a call that is not wrapped leaves nothing behind
+offload_next_log() {
+  local dir="$1/out" n=0
+  /bin/mkdir -p "$dir" 2>/dev/null || return 1
+  if [ -r "$dir/next" ]; then IFS= read -r n <"$dir/next" || true; fi
+  case "$n" in "" | *[!0-9]*) n=0 ;; esac
+  n=$((10#$n + 1))
+  printf '%s\n' "$n" >"$dir/next" 2>/dev/null || return 1
+  if [ $((n % 20)) -eq 0 ]; then offload_prune "$dir"; fi
+  printf '%s\n' "$dir/$n.log"
+}
+
+# offload_wrap_line <log> <show-script> — the line put in front of a command. Plain sh, so a
+# lead whose shell is zsh runs it too. Paths with a single quote are refused (prints nothing).
+offload_wrap_line() {
+  local log="$1" show="$2"
+  case "$log$show" in *"'"*) return 1 ;; esac
+  printf '%s' "__wm_fin() { trap - EXIT TERM INT; exec 1>&7 2>&8 7>&- 8>&-; /bin/bash '$show' '$log' \"\$1\" || /bin/cat '$log'; }; if [ -r '$show' ] && exec 7>&1 8>&2 >'$log' 2>&1; then trap '__wm_rc=\$?; __wm_fin \$__wm_rc; exit \$__wm_rc' EXIT; trap '__wm_fin 143; exit 143' TERM; trap '__wm_fin 130; exit 130' INT; fi; "
+}
+
+# offload_should_wrap <command> — 0 when the command may be wrapped
+offload_should_wrap() {
+  case "$1" in *"$WOLFMUX_OFFLOAD_MARK"*) return 1 ;; esac
+  printf '%s' "$1" | /usr/bin/grep -Eq '(^|[^A-Za-z0-9_-])exec([^A-Za-z0-9_-]|$)' && return 1
+  return 0
+}
+
+# offload_wrap_command <command> <log> <show-script> — the rewritten command, to stdout
+offload_wrap_command() {
+  local line
+  line="$(offload_wrap_line "$2" "$3")" || {
+    printf '%s' "$1"
+    return 0
+  }
+  printf '%s%s' "$line" "$1"
+}
+
+# offload_finish <log> <exit-code> — what the model sees at the end of a wrapped command: the
+# whole text when it is short (and the log goes), the shortened form when it is long.
+offload_finish() {
+  local log="$1" rc="${2:-}" chars
+  [ -f "$log" ] || return 0
+  chars="$(LC_ALL=en_US.UTF-8 /usr/bin/wc -m <"$log" 2>/dev/null | /usr/bin/tr -d ' ')"
+  case "$chars" in "" | *[!0-9]*) chars=0 ;; esac
+  if [ "$chars" -le "$(offload_min)" ]; then
+    /bin/cat "$log"
+    /bin/rm -f "$log"
+  else
+    offload_summary "$log" "$rc"
+  fi
+}
+
+# offload_pre_hook — `teamctl _offload-pre`, a PreToolUse hook for Bash: the CLI's JSON on stdin,
+# an updatedInput on stdout, or nothing. Run from the fast path at the top of bin/teamctl, so it
+# costs one bash start and one jq. No permissionDecision: whether the call may run is still
+# decided by the CLI and the other hooks (the worktree guard).
+offload_pre_hook() {
+  local jq log line
+  offload_enabled || return 0
+  [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR" ] || return 0
+  jq="${JQ_BIN:-$(command -v jq 2>/dev/null || true)}"
+  [ -n "$jq" ] || return 0
+  log="$(offload_next_log "$WOLFMUX_RUN_DIR")" || return 0
+  line="$(offload_wrap_line "$log" "${WOLFMUX_HOME:-$HOME/.config/wolfmux}/lib/offload-show.sh")" || return 0
+  "$jq" -c --arg line "$line" --arg mark "$WOLFMUX_OFFLOAD_MARK" '
+    .tool_input as $in
+    | if .tool_name == "Bash" and ($in.command | type) == "string" and ($in.run_in_background != true)
+         and ($in.command | test("(^|[^A-Za-z0-9_-])exec([^A-Za-z0-9_-]|$)") | not)
+         and ($in.command | contains($mark) | not)
+      then {hookSpecificOutput: {hookEventName: "PreToolUse",
+                                 updatedInput: ($in + {command: ($line + $in.command)})}}
+      else empty end' 2>/dev/null || true
+}

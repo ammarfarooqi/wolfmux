@@ -23,6 +23,15 @@ if [ "${1:-}" = "_hook" ] && [ "${2:-}" = "PostToolUse" ] && [ -n "${WOLFMUX_RUN
 fi
 
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
+# The offload rewrite (lib/offload.sh): a PreToolUse hook on every Bash call, so it loads that one
+# module and nothing else: one bash start and one jq.
+if [ "${1:-}" = "_offload-pre" ]; then
+  if [ -r "$WOLFMUX_HOME/lib/offload.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$WOLFMUX_HOME/lib/offload.sh" && offload_pre_hook || true
+  fi
+  exit 0
+fi
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
 for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall tasks; do
