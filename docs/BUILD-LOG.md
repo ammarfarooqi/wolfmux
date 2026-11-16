@@ -2334,8 +2334,24 @@ did one job was settled by a decision.
 What the merge removed: the wake line typed to wake an idle agent, the watchdog that typed it
 after 90 s, `WOLFMUX_MAIL_WAKE_AFTER`, the hook's close of a bead through `bd`, and
 `notify_stop` (v1.23.0's `_notify` hook notifies at Stop). The suites that model Beads now pin
-`WOLFMUX_STORE=beads`, since a new project is native. Port3 ran every suite at `affd4de`; the
-counts are in VERIFICATION.md.
+`WOLFMUX_STORE=beads`, since a new project is native.
+
+The review before the release. The merged tree (`affd4de`) passed every suite and was still
+refused by the reviewer of record, with eleven findings, each reproduced by experiment. The
+four that blocked the release: `teamctl done` and `blocked` did not check whose task it was
+(and closed with `--force` on Beads); a task shown at SessionStart was handed over again at
+the first Stop; on Beads the SessionStart mail read waited on `bd` with no bound; and the human
+could not be messaged on a native store. Also fixed: a migration that lost task status and
+switched after a failed read, one oversized shared note hiding all the others, a store switch
+any agent could run, `bd` commands in refusals shown on a native store, a report sent before
+the close, an item printed before it was moved, and a Beads title starting with a dash. Each
+fix began with a check that failed. Two things the stub suites could not show were run against
+the real Claude Code CLI with Haiku agents on a native store: a message sent mid-turn reached
+the worker through the PostToolUse hook 17 s later, and a worker started with
+`worker-context lean` was refused both writes outside its worktree. Two low findings are left
+for v1.25.0: the lead exemption of `teamctl done` trusts the caller's role without the pane
+proof for a process outside any pane, and the SessionStart hook's two bounded `bd` reads can
+add up to 10 s of its 20 s. The counts at the release commit are in VERIFICATION.md.
 
 ## Footprint on the machine
 
