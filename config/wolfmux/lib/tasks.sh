@@ -246,7 +246,10 @@ $extra"
   # Close first, report after: a close that fails must not leave the lead holding a "Done"
   # report for a task that is still open.
   [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && force="force"
-  _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" "" "$force" || die "could not close $id"
+  # The worker's Done: report below already tells the lead; the close is not announced to it
+  # a second time (D7, one notice per event; lib/mail.sh reads WOLFMUX_MAIL_CLOSE_REPORTED).
+  WOLFMUX_MAIL_CLOSE_REPORTED="$([ "$role" != "$WOLFMUX_LEAD_ROLE" ] && printf 1)" \
+    _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" "" "$force" || die "could not close $id"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
     _tasks_reply "$me" "$lead_id" "Done: $title" "$report" "$id" ||
@@ -458,6 +461,7 @@ cmd_show() {
       say "$(_mail_render_bead "$m")"
       say ""
     done
+    _show_mark_shown "$item" "$id"
     return 0
   fi
   if [ "$asjson" -eq 1 ]; then
@@ -465,6 +469,16 @@ cmd_show() {
     return 0
   fi
   _show_render_task "$item"
+  _show_mark_shown "$item" "$id"
+}
+
+# _show_mark_shown <item-json> <id> — D7: whatever shows an item to its addressee marks it
+# delivered (lib/mail.sh mail_item_shown; a no-op before that function exists).
+_show_mark_shown() {
+  [ -n "${BEADS_ACTOR:-}" ] || return 0
+  [ "$(printf '%s' "$1" | "$JQ_BIN" -r '.assignee // ""')" = "$BEADS_ACTOR" ] || return 0
+  declare -F mail_item_shown >/dev/null 2>&1 || return 0
+  mail_item_shown "$(caller_role)" "$BEADS_ACTOR" "$2" || true
 }
 
 # teamctl note <id> "<text>" — a durable note on a task. Notifies nobody.

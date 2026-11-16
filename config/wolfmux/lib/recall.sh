@@ -1,5 +1,5 @@
 #!/bin/bash
-# memory.sh — team memory, context watch, checkpoints. The contract is the header of lib/hooks.sh.
+# recall.sh — team memory, context watch, checkpoints. The contract is the header of lib/hooks.sh.
 #
 # Three things an agent is otherwise never told: what earlier agents of this project learned
 # (team memory, lib/store.sh), how full its own conversation is, and where it (or its
