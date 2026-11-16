@@ -38,6 +38,6 @@ build; superseded decisions will link to their replacement.
 | [0031](0031-idle-lead-wake-waiter.md) | An idle lead wakes itself, through a waiter hook, when nobody is using its pane | accepted | 2026-11-04 |
 | [0032](0032-mail-through-the-clis-hooks.md) | Mail reaches an agent through its CLI's hooks, with the body, in the middle of a turn | accepted | 2026-11-13 |
 | [0033](0033-shared-team-notes-context-watch-and-checkpoints.md) | Shared team notes at session start, a context watch, and checkpoints | accepted | 2026-11-13 |
-| [0034](0034-what-a-worker-starts-with.md) | What a worker's conversation starts with is a policy (`worker-context`) | accepted, amended by [0036](0036-what-a-trimmed-agent-starts-with.md) | 2026-11-13 |
+| [0034](0034-what-a-worker-starts-with.md) | What a worker's conversation starts with is a policy (`worker-context`) | accepted, amended by [0037](0037-what-a-trimmed-agent-starts-with.md) | 2026-11-13 |
 | [0035](0035-a-store-of-our-own.md) | A store of our own: native SQLite by default, Beads kept as the second | accepted | 2026-11-13 |
-| [0036](0036-what-a-trimmed-agent-starts-with.md) | A trimmed agent also starts without unusable tools, connectors and named instruction files; the lead may opt in | accepted | 2026-11-16 |
+| [0037](0037-what-a-trimmed-agent-starts-with.md) | A trimmed agent also starts without unusable tools, connectors and named instruction files; the lead may opt in | accepted | 2026-11-16 |

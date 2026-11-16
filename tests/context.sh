@@ -1,5 +1,5 @@
 #!/bin/bash
-# context.sh: tests for what an agent's conversation starts with (v1.25.0, ADR-0036):
+# context.sh: tests for what an agent's conversation starts with (v1.25.0, ADR-0037):
 # the reductions of worker-context trim and lean, the lead-context and context-exclude policies
 # (lib/policy.sh), and the rules-folder hint of teamctl doctor (lib/doctor.sh).
 #

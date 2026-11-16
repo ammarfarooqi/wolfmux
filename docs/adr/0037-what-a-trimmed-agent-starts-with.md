@@ -1,4 +1,4 @@
-# ADR-0036: A trimmed agent also starts without unusable tools, connectors and named instruction files; the lead may opt in
+# ADR-0037: A trimmed agent also starts without unusable tools, connectors and named instruction files; the lead may opt in
 
 **Date**: 2026-11-16
 **Status**: accepted, amends [0034](0034-what-a-worker-starts-with.md)

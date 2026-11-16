@@ -956,7 +956,7 @@ offline and never reads a key value.
 ## What an agent starts with
 
 Everything in an agent's first request is sent again with every later request, and it decides
-how much room a compaction leaves. Measured on Claude Code 2.1.325 (2026-11-16, ADR-0036):
+how much room a compaction leaves. Measured on Claude Code 2.1.325 (2026-11-16, ADR-0037):
 
 | First request | Worker | Lead |
 |---|---|---|

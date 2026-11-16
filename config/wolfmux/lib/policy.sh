@@ -653,7 +653,7 @@ policy_summary() {
 #   lean  only the project's own instructions (its CLAUDE.md, .claude/) and wolfmux's
 # The lead is not trimmed unless you say so (lead-context trim): it is the conversation you talk to.
 #
-# v1.25.0, measured on Claude Code 2.1.325 (2026-11-16, docs/adr/0036): a trimmed worker still began
+# v1.25.0, measured on Claude Code 2.1.325 (2026-11-16, docs/adr/0037): a trimmed worker still began
 # at 81,024 tokens. Three more things it never uses went with every request:
 #   - the schemas of tools a pane agent cannot use (WOLFMUX_PANE_UNUSED_TOOLS; Artifact alone is
 #     37,000 characters). A bare tool name in permissions.deny takes the tool out of the request.
