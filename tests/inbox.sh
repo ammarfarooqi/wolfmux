@@ -1692,6 +1692,9 @@ settings_of() { printf '%s\n' "$STATE_DIR/settings/$1.json"; }
 norm_self() { sed "s#$REPO/bin/teamctl#<TEAMCTL>#g"; }
 settings_doc() { jq -S . "$(settings_of "$1")" | norm_self; }
 settings_doc_noperm() { jq -S 'del(.permissions)' "$(settings_of "$1")" | norm_self; }
+# v1.25.0: a trimmed worker's permissions hold worker-context's deny list at every browser-writes
+# value (lib/policy.sh), so for a worker the delta of the allow policy is permissions.allow alone.
+settings_doc_noallow() { jq -S 'del(.permissions.allow)' "$(settings_of "$1")" | norm_self; }
 settings_keys() { jq -Sc 'keys' "$(settings_of "$1")"; }
 # Every hook command in the document, by event: a quiet change of hook SHAPE fails this
 # even when both documents change together, which is what the delta below cannot see.
@@ -1706,7 +1709,7 @@ allow_doc_ok() { # <role>
     and ([.hooks.Stop[].hooks[].command] | map(select(test("_notify$"))) | length) == 1
     and ([.hooks.Stop[].hooks[].command] | map(select(test("_inbox-stop$"))) | length) == 1
     and (.hooks.UserPromptSubmit[0].hooks[0].command | test("_inbox-prompt$"))
-    and .permissions == {allow: ["mcp__claude-in-chrome__*"]}
+    and (.permissions | del(.deny)) == {allow: ["mcp__claude-in-chrome__*"]}
   ' "$(settings_of "$1")" >/dev/null 2>&1
 }
 worker_guard_ok() { # <role> — the worktree guard is still there beside the rest
@@ -1733,7 +1736,7 @@ DEFAULT_QA_KEYS="$(settings_keys qa)"
 DEFAULT_LEAD_HOOKS="$(settings_hooks lead)"
 DEFAULT_QA_HOOKS="$(settings_hooks qa)"
 DEFAULT_LEAD_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of lead)" 2>/dev/null)"
-DEFAULT_QA_PERMKEY="$(jq -c 'has("permissions")' "$(settings_of qa)" 2>/dev/null)"
+DEFAULT_QA_PERMKEY="$(jq -c '(.permissions // {}) | has("allow")' "$(settings_of qa)" 2>/dev/null)"
 # v1.23.0: the lead's wake waiter on SessionStart and as the third Stop entry (exec'd)
 # v1.24.0 (D7): and `teamctl _hook <Event>` exactly once for each of the five turn events (lib/hooks.sh)
 EXPECT_LEAD_HOOKS='{"PostToolUse":["\"<TEAMCTL>\" _hook PostToolUse"],"PreCompact":["\"<TEAMCTL>\" _hook PreCompact"],"SessionStart":["\"<TEAMCTL>\" _hook SessionStart","exec \"<TEAMCTL>\" _inbox-wake"],"Stop":["\"<TEAMCTL>\" _notify","\"<TEAMCTL>\" _inbox-stop","\"<TEAMCTL>\" _hook Stop","exec \"<TEAMCTL>\" _inbox-wake"],"UserPromptSubmit":["\"<TEAMCTL>\" _inbox-prompt","\"<TEAMCTL>\" _hook UserPromptSubmit"]}'
@@ -1743,7 +1746,7 @@ teamctl restart lead >/dev/null 2>&1
 teamctl restart qa >/dev/null 2>&1
 settings_wait lead 'has("permissions")'
 LEAD_ALLOW_WAIT=$?
-settings_wait qa 'has("permissions")'
+settings_wait qa '.permissions.allow != null'
 QA_ALLOW_WAIT=$?
 check "settings at allow: both documents really were rewritten after the policy change (polled, not slept)" '[ "$LEAD_ALLOW_WAIT" -eq 0 ] && [ "$QA_ALLOW_WAIT" -eq 0 ]'
 check "settings at allow (lead): env, the notification hook, BOTH inbox hooks and permissions.allow as an exact array — all in one document" 'allow_doc_ok lead'
@@ -1751,7 +1754,7 @@ check "settings at allow (worker): the same, with the worktree guard still besid
 # The DELTA, from both directions: their arm adds exactly the permissions key and nothing
 # else. A one-directional "has no permissions key" would miss a second thing it also added.
 check "settings delta (lead): at the default there is no permissions key at all, and that document equals the allow document with .permissions deleted" '[ "$DEFAULT_LEAD_PERMKEY" = "false" ] && [ "$DEFAULT_LEAD_DOC" = "$(settings_doc_noperm lead)" ]'
-check "settings delta (worker): the same both ways round" '[ "$DEFAULT_QA_PERMKEY" = "false" ] && [ "$DEFAULT_QA_DOC" = "$(settings_doc_noperm qa)" ]'
+check "settings delta (worker): the same both ways round (for a worker the key is permissions.allow: its permissions also hold worker-context's deny list)" '[ "$DEFAULT_QA_PERMKEY" = "false" ] && [ "$DEFAULT_QA_DOC" = "$(settings_doc_noallow qa)" ]'
 # The DRIFT, which the delta cannot see: if something else in that jq chain quietly changes
 # shape, BOTH documents change together and the delta still passes.
 check "settings drift (lead): the key set is exactly disableAgentView, env and hooks, and the hooks are exactly the notification hook, the inbox Stop hook, the wake waiter (Stop and SessionStart), the inbox UserPromptSubmit hook and the turn hooks" '[ "$DEFAULT_LEAD_KEYS" = "[\"disableAgentView\",\"env\",\"hooks\"]" ] && [ "$DEFAULT_LEAD_HOOKS" = "$EXPECT_LEAD_HOOKS" ]'

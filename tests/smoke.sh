@@ -494,7 +494,7 @@ teamctl restart qa >/dev/null 2>&1
 sleep 2
 
 echo "== one manager, permissions, spawning"
-check "policy: defaults are skip / skip / worker spawning off / worker isolation on / worker context trim / disk guard refuse at 20 GB / no shared node_modules / auto-prune on / auto-reclaim on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", worker_context: \"trim\", lead_teams: \"on\", disk_guard: \"refuse\", disk_min_gb: 20, link_node_modules: \"off\", auto_prune: \"on\", auto_reclaim: \"on\"}"'
+check "policy: defaults are skip / skip / worker spawning off / worker isolation on / worker context trim / disk guard refuse at 20 GB / no shared node_modules / auto-prune on / auto-reclaim on" 'teamctl status --json | jq -e ".manager == \"lead\" and .policy == {lead_permissions: \"skip\", worker_permissions: \"skip\", worker_spawn: \"off\", worker_isolation: \"on\", worker_context: \"trim\", lead_teams: \"on\", lead_context: \"full\", context_exclude: [], disk_guard: \"refuse\", disk_min_gb: 20, link_node_modules: \"off\", auto_prune: \"on\", auto_reclaim: \"on\"}"'
 check "permissions: lead and workers start in their CLI's bypass mode" 'teamctl capture lead -n 8 | grep -q "flags=--dangerously-bypass-approvals-and-sandbox" && teamctl capture backend -n 8 | grep -q "flags=--dangerously-skip-permissions"'
 check "hierarchy: the CLI's own agent-teams feature is switched off inside workers" 'teamctl capture backend -n 8 | grep -q "settings={\"teams\":\"0\",\"mode\":\"in-process\",\"hook\":false}"'
 check "hierarchy: the lead's own settings are left alone" 'teamctl capture lead -n 8 | grep -q "settings=none"'
@@ -525,8 +525,11 @@ wait_for() {
 }
 check "browser-writes: defaults to ask on a fresh team, and teamctl policy shows it" \
   'teamctl policy --team browserwrites | grep -q "browser-writes      ask"'
-check "browser-writes: at the default (ask) the settings document is unchanged from before this policy existed — no permissions key, for lead or worker" \
-  '! jq -e "has(\"permissions\")" "$(bw_settings lead)" && ! jq -e "has(\"permissions\")" "$(bw_settings bwworker)" && jq -e ".env and .hooks" "$(bw_settings bwworker)"'
+# v1.25.0: a trimmed worker's permissions hold the deny list of worker-context (lib/policy.sh), and
+# nothing else. Every exact comparison below keeps its exactness with that list in it.
+BW_DENY='["Artifact","AskUserQuestion","SendFeedback","ScheduleWakeup","Workflow","ReportFindings","ListAgents"]'
+check "browser-writes: at the default (ask) the settings document is unchanged from before this policy existed: no permissions key for the lead, no allow rule for the worker (only worker-context's deny list)" \
+  '! jq -e "has(\"permissions\")" "$(bw_settings lead)" && jq -e --argjson deny "$BW_DENY" ".permissions == {deny: \$deny}" "$(bw_settings bwworker)" && jq -e ".env and .hooks" "$(bw_settings bwworker)"'
 LEAD_ASK_ENV_HOOKS="$(env_hooks "$(bw_settings lead)")"
 WORKER_ASK_ENV_HOOKS="$(env_hooks "$(bw_settings bwworker)")"
 check "browser-writes: set to allow, read back, and back to ask again" \
@@ -539,7 +542,7 @@ sleep 2
 check "browser-writes: allow writes exactly permissions.allow == [\"mcp__claude-in-chrome__*\"] into the lead's settings; env and hooks untouched" \
   'wait_for "$(bw_settings lead)" "has(\"permissions\")" && jq -e ".permissions == {allow: [\"mcp__claude-in-chrome__*\"]}" "$(bw_settings lead)" && [ "$(env_hooks "$(bw_settings lead)")" = "$LEAD_ASK_ENV_HOOKS" ]'
 check "browser-writes: a worker of that team gets the exact same rule as the lead; env and hooks untouched" \
-  'wait_for "$(bw_settings bwworker)" "has(\"permissions\")" && jq -e ".permissions == {allow: [\"mcp__claude-in-chrome__*\"]}" "$(bw_settings bwworker)" && [ "$(env_hooks "$(bw_settings bwworker)")" = "$WORKER_ASK_ENV_HOOKS" ] && [ "$(jq -c ".permissions" "$(bw_settings lead)")" = "$(jq -c ".permissions" "$(bw_settings bwworker)")" ]'
+  'wait_for "$(bw_settings bwworker)" ".permissions.allow != null" && jq -e --argjson deny "$BW_DENY" ".permissions == {allow: [\"mcp__claude-in-chrome__*\"], deny: \$deny}" "$(bw_settings bwworker)" && [ "$(env_hooks "$(bw_settings bwworker)")" = "$WORKER_ASK_ENV_HOOKS" ] && [ "$(jq -c ".permissions.allow" "$(bw_settings lead)")" = "$(jq -c ".permissions.allow" "$(bw_settings bwworker)")" ]'
 # Two near-identically-named jq arms in write_agent_settings, gated on different things
 # ($mode == "lead" for the role-level PermissionRequest hook; $browser_allow == "allow" for
 # the team-level grant): a merge that treats them as duplicates can hoist one out of its guard
@@ -549,16 +552,16 @@ echo "-- the 4-row cross-product: role x worker-permissions mode x team browser-
 teamctl policy worker-permissions lead --team browserwrites >/dev/null 2>&1
 teamctl restart bwworker --team browserwrites >/dev/null 2>&1
 check "browser-writes row 1: worker, permissions mode lead, team allow -> PermissionRequest hook present AND permissions.allow exact" \
-  'wait_for "$(bw_settings bwworker)" ".hooks.PermissionRequest != null" && jq -e ".permissions == {allow: [\"mcp__claude-in-chrome__*\"]}" "$(bw_settings bwworker)"'
+  'wait_for "$(bw_settings bwworker)" ".hooks.PermissionRequest != null" && jq -e --argjson deny "$BW_DENY" ".permissions == {allow: [\"mcp__claude-in-chrome__*\"], deny: \$deny}" "$(bw_settings bwworker)"'
 teamctl policy worker-permissions skip --team browserwrites >/dev/null 2>&1
 teamctl restart bwworker --team browserwrites >/dev/null 2>&1
 check "browser-writes row 2: worker, permissions mode skip, team allow -> permissions.allow exact AND no PermissionRequest hook" \
-  'wait_for "$(bw_settings bwworker)" ".hooks.PermissionRequest == null" && jq -e ".permissions == {allow: [\"mcp__claude-in-chrome__*\"]}" "$(bw_settings bwworker)"'
+  'wait_for "$(bw_settings bwworker)" ".hooks.PermissionRequest == null" && jq -e --argjson deny "$BW_DENY" ".permissions == {allow: [\"mcp__claude-in-chrome__*\"], deny: \$deny}" "$(bw_settings bwworker)"'
 teamctl policy worker-permissions lead --team browserwrites >/dev/null 2>&1
 teamctl policy browser-writes ask --team browserwrites >/dev/null 2>&1
 teamctl restart bwworker --team browserwrites >/dev/null 2>&1
-check "browser-writes row 3: worker, permissions mode lead, team default (ask) -> PermissionRequest hook present AND no permissions key at all" \
-  'wait_for "$(bw_settings bwworker)" "has(\"permissions\") | not" && jq -e ".hooks.PermissionRequest != null" "$(bw_settings bwworker)" && ! jq -e "has(\"permissions\")" "$(bw_settings bwworker)"'
+check "browser-writes row 3: worker, permissions mode lead, team default (ask) -> PermissionRequest hook present AND no allow rule at all (permissions is worker-context's deny list, exactly)" \
+  'wait_for "$(bw_settings bwworker)" ".permissions | has(\"allow\") | not" && jq -e ".hooks.PermissionRequest != null" "$(bw_settings bwworker)" && jq -e --argjson deny "$BW_DENY" ".permissions == {deny: \$deny}" "$(bw_settings bwworker)"'
 teamctl restart lead --team browserwrites >/dev/null 2>&1
 check "browser-writes row 4: lead, team default (ask) -> neither the hook nor a permissions key" \
   'wait_for "$(bw_settings lead)" "has(\"permissions\") | not" && jq -e ".hooks.PermissionRequest == null" "$(bw_settings lead)" && ! jq -e "has(\"permissions\")" "$(bw_settings lead)"'
