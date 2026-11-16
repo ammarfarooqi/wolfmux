@@ -1,5 +1,5 @@
 #!/bin/bash
-# offload.sh — a long command output stays out of the agent's context window (v1.25.0, ADR-0036).
+# offload.sh: a long command output stays out of the agent's context window (v1.25.0, ADR-0036).
 #
 # Measured on 2026-11-16: Bash output is a third of everything a worker adds to its context, and
 # Claude Code never clears an old tool result, so one test log read once rides along in every
@@ -31,25 +31,25 @@ WOLFMUX_OFFLOAD_PATTERN='FAIL|[Ee]rror|panic|not ok'
 # (run_in_background, exec). Above it the CLI keeps the whole output in a file and shows 2 KB.
 WOLFMUX_OFFLOAD_BACKSTOP="${WOLFMUX_OFFLOAD_BACKSTOP:-16000}"
 
-# offload_wanted — 0 when this team's agents get the feature: the output-offload policy (needs
+# offload_wanted: 0 when this team's agents get the feature: the output-offload policy (needs
 # lib/policy.sh, loaded by teamctl) and WOLFMUX_OFFLOAD both say on
 offload_wanted() {
   offload_enabled || return 1
   [ "$(policy_get output-offload 2>/dev/null || printf on)" != "off" ]
 }
 
-# offload_enabled — 0 when outputs are to be shortened
+# offload_enabled: 0 when outputs are to be shortened
 offload_enabled() {
   case "$WOLFMUX_OFFLOAD" in off | OFF | 0 | no | false) return 1 ;; esac
   return 0
 }
 
-# offload_min — the limit as a number (a bad value falls back to the default)
+# offload_min: the limit as a number (a bad value falls back to the default)
 offload_min() {
   case "$WOLFMUX_OFFLOAD_MIN" in "" | *[!0-9]*) printf '4000\n' ;; *) printf '%s\n' "$WOLFMUX_OFFLOAD_MIN" ;; esac
 }
 
-# offload_new_log <run-dir> — prints the path of a new, empty log file; fails when it cannot
+# offload_new_log <run-dir>: prints the path of a new, empty log file; fails when it cannot
 offload_new_log() {
   local dir="$1/out" n=0
   /bin/mkdir -p "$dir" 2>/dev/null || return 1
@@ -63,14 +63,14 @@ offload_new_log() {
   printf '%s\n' "$dir/$n.log"
 }
 
-# offload_prune <out-dir> — keeps the newest WOLFMUX_OFFLOAD_KEEP logs
+# offload_prune <out-dir>: keeps the newest WOLFMUX_OFFLOAD_KEEP logs
 offload_prune() {
   local dir="$1"
   (cd "$dir" 2>/dev/null && /bin/ls -t | /usr/bin/grep -E '^[0-9]+\.log$' | /usr/bin/tail -n "+$((WOLFMUX_OFFLOAD_KEEP + 1))" |
     while IFS= read -r f; do /bin/rm -f "./$f"; done) 2>/dev/null || true
 }
 
-# offload_summary <log> [<exit-code>] — the shortened form of the text in <log>, to stdout.
+# offload_summary <log> [<exit-code>]: the shortened form of the text in <log>, to stdout.
 # One awk pass: it keeps the head, a ring of the last lines, and the matching lines between.
 offload_summary() {
   local log="$1" rc="${2:-}" chars
@@ -130,14 +130,14 @@ offload_summary() {
 
 WOLFMUX_OFFLOAD_MARK="__wm_fin" # the function the line defines; also how a wrapped command is recognised
 
-# offload_next_log <run-dir> — the path of the next log; the file is created by the wrapped
+# offload_next_log <run-dir>: the path of the next log; the file is created by the wrapped
 # shell itself, so a call that is not wrapped leaves nothing behind
 offload_next_log() {
   offload_alloc_log "$1" || return 1
   printf '%s\n' "$OFFLOAD_LOG"
 }
 
-# offload_alloc_log <run-dir> — the same into OFFLOAD_LOG, without a fork (the PreToolUse path)
+# offload_alloc_log <run-dir>: the same into OFFLOAD_LOG, without a fork (the PreToolUse path)
 offload_alloc_log() {
   local dir="$1/out" n=0
   [ -d "$dir" ] || /bin/mkdir -p "$dir" 2>/dev/null || return 1
@@ -149,28 +149,28 @@ offload_alloc_log() {
   OFFLOAD_LOG="$dir/$n.log"
 }
 
-# offload_wrap_line <log> <show-script> — the line put in front of a command. Plain sh, so a
+# offload_wrap_line <log> <show-script>: the line put in front of a command. Plain sh, so a
 # lead whose shell is zsh runs it too. Paths with a single quote are refused (prints nothing).
 offload_wrap_line() {
   offload_make_line "$1" "$2" || return 1
   printf '%s' "$OFFLOAD_LINE"
 }
 
-# offload_make_line <log> <show-script> — the same into OFFLOAD_LINE, without a fork
+# offload_make_line <log> <show-script>: the same into OFFLOAD_LINE, without a fork
 offload_make_line() {
   local log="$1" show="$2"
   case "$log$show" in *"'"*) return 1 ;; esac
   OFFLOAD_LINE="__wm_fin() { trap - EXIT TERM INT; exec 1>&7 2>&8 7>&- 8>&-; /bin/bash '$show' '$log' \"\$1\" || /bin/cat '$log'; }; if [ -r '$show' ] && exec 7>&1 8>&2 >'$log' 2>&1; then trap '__wm_rc=\$?; __wm_fin \$__wm_rc; exit \$__wm_rc' EXIT; trap '__wm_fin 143; exit 143' TERM; trap '__wm_fin 130; exit 130' INT; fi; "
 }
 
-# offload_should_wrap <command> — 0 when the command may be wrapped
+# offload_should_wrap <command>: 0 when the command may be wrapped
 offload_should_wrap() {
   case "$1" in *"$WOLFMUX_OFFLOAD_MARK"*) return 1 ;; esac
   printf '%s' "$1" | /usr/bin/grep -Eq '(^|[^A-Za-z0-9_-])exec([^A-Za-z0-9_-]|$)' && return 1
   return 0
 }
 
-# offload_wrap_command <command> <log> <show-script> — the rewritten command, to stdout
+# offload_wrap_command <command> <log> <show-script>: the rewritten command, to stdout
 offload_wrap_command() {
   local line
   line="$(offload_wrap_line "$2" "$3")" || {
@@ -180,7 +180,7 @@ offload_wrap_command() {
   printf '%s%s' "$line" "$1"
 }
 
-# offload_finish <log> <exit-code> — what the model sees at the end of a wrapped command: the
+# offload_finish <log> <exit-code>: what the model sees at the end of a wrapped command: the
 # whole text when it is short (and the log goes), the shortened form when it is long.
 offload_finish() {
   local log="$1" rc="${2:-}" chars
@@ -195,7 +195,7 @@ offload_finish() {
   fi
 }
 
-# offload_pre_hook — `teamctl _offload-pre`, a PreToolUse hook for Bash: the CLI's JSON on stdin,
+# offload_pre_hook: `teamctl _offload-pre`, a PreToolUse hook for Bash: the CLI's JSON on stdin,
 # an updatedInput on stdout, or nothing. Run from the fast path at the top of bin/teamctl, so it
 # costs one bash start and one jq. No permissionDecision: whether the call may run is still
 # decided by the CLI and the other hooks (the worktree guard).
@@ -227,7 +227,7 @@ offload_pre_hook() {
 # the full output (stdout and stderr, in the order written) to the log, the result to stdout,
 # whole when short and shortened when long, and the command's own exit code.
 
-# offload_run_dir — the agent's run directory, or a private one for a human at a terminal
+# offload_run_dir: the agent's run directory, or a private one for a human at a terminal
 offload_run_dir() {
   if [ -n "${WOLFMUX_RUN_DIR:-}" ] && [ -d "$WOLFMUX_RUN_DIR" ]; then
     printf '%s\n' "$WOLFMUX_RUN_DIR"
@@ -259,7 +259,7 @@ cmd_run() {
 # (run_in_background read back later, a command with exec in it). Above ~30,000 characters the CLI
 # has kept the full text itself (tool_response.persistedOutputPath), which is used instead.
 
-# offload_post <the CLI's JSON> — prints the PostToolUse answer, or nothing
+# offload_post <the CLI's JSON>: prints the PostToolUse answer, or nothing
 offload_post() {
   local input="$1" jq log run
   offload_enabled || return 0

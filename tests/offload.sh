@@ -1,5 +1,5 @@
 #!/bin/bash
-# offload.sh — tests for lib/offload.sh: a long command output stays out of the agent's context.
+# offload.sh: tests for lib/offload.sh: a long command output stays out of the agent's context.
 # No tmux, no CLI: every command runs under real /bin/bash the way Claude Code runs it (eval of
 # the command text, stdin from /dev/null, then pwd), once plain and once as the PreToolUse hook
 # rewrites it, and the two are compared.
@@ -28,20 +28,20 @@ check() { # <description> <command string>
   fi
 }
 
-# hook_json <command> [run_in_background] — the CLI's PreToolUse JSON for a Bash call
+# hook_json <command> [run_in_background]: the CLI's PreToolUse JSON for a Bash call
 hook_json() {
   jq -cn --arg c "$1" --arg bg "${2:-false}" \
     '{hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: ({command: $c, timeout: 120000, description: "d"} + (if $bg == "true" then {run_in_background: true} else {} end))}'
 }
 
-# rewritten <command> — the command the CLI would run after the hook (the original when the hook says nothing)
+# rewritten <command>: the command the CLI would run after the hook (the original when the hook says nothing)
 rewritten() {
   local out
   out="$(hook_json "$1" | "$REPO/bin/teamctl" _offload-pre)"
   if [ -n "$out" ]; then printf '%s' "$out" | jq -j '.hookSpecificOutput.updatedInput.command'; else printf '%s' "$1"; fi
 }
 
-# run_as_cli <dir> <command> — runs it as Claude Code does; leaves out, rc, cwd, env in <dir>
+# run_as_cli <dir> <command>: runs it as Claude Code does; leaves out, rc, cwd, env in <dir>
 run_as_cli() {
   local dir="$1"
   mkdir -p "$dir"
@@ -49,11 +49,11 @@ run_as_cli() {
   printf '%s' "$?" >"$dir/rc"
 }
 
-# same_file <a> <b> — equal, or both absent (the shell ended before it could write them)
+# same_file <a> <b>: equal, or both absent (the shell ended before it could write them)
 same_file() { if [ -e "$1" ] || [ -e "$2" ]; then cmp -s "$1" "$2"; fi; }
 
 n=0
-# same <description> <command> — plain and wrapped agree on output, exit code, cwd and exports
+# same <description> <command>: plain and wrapped agree on output, exit code, cwd and exports
 same() {
   n=$((n + 1))
   run_as_cli "$WORK/p$n" "$2"
@@ -170,7 +170,7 @@ check "every 20th log prunes on its own" "[ \$(ls $WORK/prune/out | grep -c '^[0
 
 echo "== the agent's settings (write_agent_settings)"
 cat >"$WORK/settings.sh" <<'HARNESS'
-# settings_for <kind> <isolation> <offload-policy> — prints write_agent_settings' JSON, modules loaded as teamctl does
+# settings_for <kind> <isolation> <offload-policy>: prints write_agent_settings' JSON, modules loaded as teamctl does
 set +eu
 REPO="$1"; T_KIND="$2"; T_ISO="$3"; T_OFF="$4"
 export WOLFMUX_HOME="$REPO/config/wolfmux"
@@ -214,7 +214,7 @@ check "a wrapped command's result is not shortened twice" "[ -z \"\$(post_json \
 check "safety net off (not in the settings): no answer, nothing read" "[ -z \"\$(post_json 'cat x' \"\$(cat $WORK/big.txt)\" | $REPO/bin/teamctl _hook PostToolUse)\" ]"
 
 echo "== cost (measured, not checked against a bound)"
-ms() { # <n> <command string> — mean milliseconds of one run
+ms() { # <n> <command string>: mean milliseconds of one run
   local t0 t1 i
   t0=$(perl -MTime::HiRes=time -e 'printf "%d", time*1000')
   for i in $(seq 1 "$1"); do eval "$2" >/dev/null 2>&1; done
