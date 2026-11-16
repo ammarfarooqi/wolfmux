@@ -61,6 +61,7 @@ unset WOLFMUX_LEAD_MODEL WOLFMUX_ORPHAN_STEWARD WOLFMUX_HUMAN_PANE_TYPING WOLFMU
 # or found "no Beads workspace" and kept it: the project below has a .beads of its own instead, and the fake bd answers.
 unset BEADS_DIR
 export WOLFMUX_NOTIFY=off WOLFMUX_SPLASH=off WOLFMUX_INBOX_WATCHED=""
+export WOLFMUX_STORE=beads # this project models Beads (the fake bd above); v1.24.0 would start it native (D5)
 export WOLFMUX_NOTIFY_TTY="$WORK/tty" # a notice for you lands in this file, not on a screen
 
 # The fake skeleton: bin/mem finds its folder from its own place (MEM_ROOT wins), as the real one does.

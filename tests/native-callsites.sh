@@ -105,6 +105,12 @@ check "restart probes Beads only on a beads store" 'grep -q "\"\$(store_kind)\" 
 check "the --repo BEADS_DIR export is beads only" 'grep -q "BEADS_DIR:-}\" \] && \[ \"\$(store_kind)\" = \"beads\" \]" "$WOLFMUX_HOME/lib/agents.sh"'
 check "the spawn refusal names teamctl send" 'grep -q "Ask it: teamctl send" "$WOLFMUX_HOME/lib/agents.sh"'
 
+echo "== the handover a founded team's lead starts with"
+printf '{"role":"%s","kind":"lead","handover":"demo-abc1","spawned_by":"lead"}\n' "$WOLFMUX_LEAD_ROLE" | reg_put "$WOLFMUX_LEAD_ROLE"
+HANDOVER="$(handover_text)"
+check "a native lead's handover prompt says teamctl show <id>" 'printf "%s" "$HANDOVER" | grep -qF "teamctl show demo-abc1"'
+check "  ... and never names bd" '! printf "%s" "$HANDOVER" | grep -qw bd'
+
 check "no bd call was made on the native project" 'no_bd'
 [ -e "$BD_MARK" ] && sed 's/^/    bd: /' "$BD_MARK"
 # Last: doctor reports bd's version when it is installed, and only that, on a native project.
