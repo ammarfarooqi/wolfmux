@@ -209,9 +209,10 @@ if [ -n "$AGENTS_DIR" ]; then
     usage_line 50000
     echo '{"type":"assistant","message":{"usage":{"input_tokens":80000,"cache_read_input_tokens":15000,"cache_creation_input_tokens":5000}}}'
   } >"$CTX_TRANS_DIR/no-session-id.jsonl"
-  # v1.24.0 (D1): the window is v1.23.0's CONTEXT column (lib/models.sh models_running), not this suite's to fix.
-  check "status: context_tokens/requests/window after the refactor match the last assistant turn's usage" \
-    'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctxcheck\")][0] | .context_tokens == 100000 and .requests == 2 and .context_window > 0"'
+  # v1.24.0 (D1): the window is v1.23.0's CONTEXT column (lib/models.sh models_running: an alias with no
+  # observed model has none yet), checked by its own suites; this checks tokens and requests.
+  check "status: context_tokens/requests after the refactor match the last assistant turn's usage" \
+    'teamctl status --json | jq -e "[.agents[] | select(.role == \"ctxcheck\")][0] | .context_tokens == 100000 and .requests == 2"'
   /bin/rm -f "$AGENTS_DIR/ctxcheck.json"
 else
   echo "  skip  status --json regression check (no agents directory was created)"
