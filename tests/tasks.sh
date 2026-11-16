@@ -184,6 +184,28 @@ check "kickoff (Codex): names teamctl mail instead of bd list + bd show" \
   'printf "%s" "$KICKOFF_CODEX" | grep -q "run \`teamctl mail\`" && ! printf "%s" "$KICKOFF_CODEX" | grep -q "bd list --assignee" && ! printf "%s" "$KICKOFF_CODEX" | grep -q "bd show"'
 check "kickoff (Codex): still says not to start over if restarted mid-task" 'printf "%s" "$KICKOFF_CODEX" | grep -q "do not start over"'
 
+echo "== native store: done and blocked"
+# A second project, on the native store (a new project with no --init-beads), with its own
+# lead and two workers. Every read goes through teamctl show --json or the store file.
+NPROJECT="$WORK/nproject"
+/bin/mkdir -p "$NPROJECT"
+(cd "$NPROJECT" && git init -q -b main && echo hello >README.md && git add -A &&
+  git -c user.name=t -c user.email=t@example.invalid commit -qm "initial commit")
+cd "$NPROJECT" || exit 1
+teamctl start astra --no-attach >/dev/null 2>&1
+teamctl spawn nworker glm53 --no-kickoff >/dev/null 2>&1
+sleep 1
+NDB="$(teamctl store | sed -n 's/^store: native  (\(.*\))$/\1/p')"
+nstatus() { teamctl show "$1" --json | jq -r '.status'; }
+lead_reports() { sqlite3 "$NDB" "SELECT COUNT(*) FROM msg WHERE recipient='lead' AND subject LIKE '$1%';"; }
+check "native: the second project is on the native store" '[ -f "$NDB" ]'
+
+N_MSG="$(teamctl send nworker "a note" "not a task" 2>/dev/null | tail -1)"
+N_BEFORE="$(lead_reports "Done:")"
+check "native done: a message id is refused, and the lead gets no Done report for it" \
+  '! TEAM_ROLE=nworker teamctl done "$N_MSG" "not a task" --allow-dirty && [ "$(lead_reports "Done:")" = "$N_BEFORE" ]'
+cd "$PROJECT" || exit 1
+
 echo "== named team"
 # A second team: once it exists, every teamctl call below needs --team (ambiguous
 # otherwise), so this stays last.

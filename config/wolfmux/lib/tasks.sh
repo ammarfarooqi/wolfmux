@@ -221,12 +221,15 @@ $stat_line"
 $extra"
   fi
 
+  # Close first, report after: a close that fails must not leave the lead holding a "Done"
+  # report for a task that is still open.
+  _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" || die "could not close $id"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
-    _tasks_reply "$me" "$lead_id" "Done: $title" "$report" "$id" || die "could not send the report message to $lead_id"
+    _tasks_reply "$me" "$lead_id" "Done: $title" "$report" "$id" ||
+      die "closed $id, but could not send the report message to $lead_id; tell the lead: teamctl send $WOLFMUX_LEAD_ROLE \"Done: $title\" --body-file <file>"
     say "sent: Done: $title -> $lead_id"
   fi
-  _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" || die "could not close $id"
   say "closed: $id"
 }
 
