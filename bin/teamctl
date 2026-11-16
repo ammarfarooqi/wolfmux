@@ -162,6 +162,9 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       settings) · worker-spawn ·
                                                       worker-isolation (the worktree guard) · worker-context full|trim|lean
                                                       (what of ~/.claude a worker's conversation starts with; default trim) ·
+                                                      lead-context full|trim (the same reductions for the lead; default full) ·
+                                                      context-exclude '<glob>'...|none (instruction files a trimmed agent
+                                                      does not load; teamctl doctor suggests one) ·
                                                       lead-teams (may the lead found teams) ·
                                                       disk-guard refuse|warn|off · disk-min-gb <number> · link-node-modules on|off
                                                       auto-prune on|off (sweep a lane's build output as soon as it is parked)

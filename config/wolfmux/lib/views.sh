@@ -219,6 +219,7 @@ _status_team_json() {
   _status_rows | "$JQ_BIN" -s --arg team "$TEAM" --arg root "$ROOT" --arg session "$SESSION" \
     --arg running "${SESSION_LIVE:-0}" --arg founder "$(team_founder)" --arg orphaned "$orphaned" --arg lp "$(policy_get lead-permissions)" \
     --arg wp "$(policy_get worker-permissions)" --arg ws "$(policy_get worker-spawn)" --arg wi "$(policy_get worker-isolation)" --arg wc "$(policy_get worker-context)" --arg lt "$(policy_get lead-teams)" \
+    --arg lc "$(policy_get lead-context)" --arg cx "$(policy_get context-exclude)" \
     --arg pending "$(approvals_pending_count)" \
     --arg dg "$(policy_get disk-guard)" --arg dmin "$(policy_get disk-min-gb)" --arg lnm "$(policy_get link-node-modules)" \
     --arg ap "$(policy_get auto-prune)" --arg ar "$(policy_get auto-reclaim)" \
@@ -226,6 +227,7 @@ _status_team_json() {
     '{team: $team, root: $root, session: $session, session_running: ($running == "1"), manager: "lead",
       founder: $founder, orphaned: ($orphaned == "1"),
       policy: {lead_permissions: $lp, worker_permissions: $wp, worker_spawn: $ws, worker_isolation: $wi, worker_context: $wc, lead_teams: $lt,
+               lead_context: $lc, context_exclude: ($cx | split(" ") | map(select(length > 0))),
                disk_guard: $dg, disk_min_gb: ($dmin | tonumber), link_node_modules: $lnm, auto_prune: $ap, auto_reclaim: $ar},
       disk: {free_kb: (if $free == "" then null else ($free | tonumber) end),
              worktrees_kb: (if $trees == "" then null else ($trees | tonumber) end),
