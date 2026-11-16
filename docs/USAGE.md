@@ -14,6 +14,36 @@ settings, every plugin off) and is told, as it fills up, to commit and checkpoin
 start nothing new (`WOLFMUX_CONTEXT_WARN` / `WOLFMUX_CONTEXT_ROTATE`); `teamctl restart
 <role>` picks the work back up from that checkpoint.
 
+## Upgrading from v1.23.0
+
+Installing v1.24.0 changes nothing in a project that is already running.
+
+- **A project that already has agent state and no `store` file stays on Beads.** Its tasks,
+  messages and notes are where they were, and `bd` keeps working underneath the `teamctl`
+  verbs. A project with nothing on disk yet, one you start for the first time, is native.
+- **To see which a project uses**, run `teamctl store` in it: `store: native (<file>)` or
+  `store: beads (<directory>)`, then the open tasks, unread messages and notes it holds. The
+  answer is kept in the file `~/.wolfmux/state/<project>/store`. `WOLFMUX_STORE=native|beads`
+  decides when that file is absent.
+- **To move to the native store**, run `teamctl store native --migrate`: it copies open tasks,
+  their dependencies, unread messages and notes into the native file and switches, and deletes
+  nothing from Beads. `teamctl store native` alone switches without copying;
+  `teamctl store beads` switches back (it needs `bd` and a Beads workspace in the project).
+  After either switch, restart the agents (`teamctl restart <role> --continue`): one that
+  started before it was taught the other store's commands.
+- **What an agent's `bd` commands become** on a native store, where `bd` does not see the work:
+  `bd list --assignee <me> …` is `teamctl mail` (it also marks messages read), `bd show <id>`
+  is `teamctl show <id>`, `bd create "…" -t message -a <role>` is `teamctl send <role> "…"`,
+  `bd create "…" -t task -a <role>` is `teamctl task <role> "…"`, `bd update <id> --claim` is
+  `teamctl claim`, `bd close <id> -r "…"` is `teamctl done "…"`, `bd update <id> --status
+  blocked` is `teamctl blocked "…"`, `bd ready` is `teamctl tasks`, and a comment is
+  `teamctl note <id> "…"`. The same verbs work on a Beads project, so nothing about them
+  depends on the backend.
+- **Two commands keep v1.23.0's meaning:** `teamctl inbox` (alias `notices`) is still the pane
+  notices filed for a role, and `teamctl memory` is still the lead's private memory. The
+  mail reader is `teamctl mail`; the store line's shared notes are `teamctl remember`,
+  `memories`, `forget` and `checkpoint`.
+
 ## A complete session
 
 ```bash

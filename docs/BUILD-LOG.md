@@ -2324,7 +2324,12 @@ did one job was settled by a decision.
   project and never runs `bd` there. On Beads the handover prompt is v1.23.0's `bd` text.
 - **D10, an alias means the newest model.** `fable` is `claude-fable-5-2`, `opus` is
   `claude-opus-5-5`, `sonnet` is `claude-sonnet-5-5`, `haiku` is `claude-haiku-5-5`.
-- D4 and D9: see the lead's report for this release; they are not restated here.
+- **D4, the ADRs were renumbered.** The store line's four records were 0028 to 0031 on its own
+  branch; v1.23.0 had already used those numbers, so they are 0032 to 0035 here, with an
+  "Amended in v1.24.0" note where D7 changed what they said.
+- **D9, the docs are read as one release in a separate pass.** The merge itself resolved only
+  the conflicts in them; making them read as one release (this section among them) came after
+  the code.
 
 What the merge removed: the wake line typed to wake an idle agent, the watchdog that typed it
 after 90 s, `WOLFMUX_MAIL_WAKE_AFTER`, the hook's close of a bead through `bd`, and

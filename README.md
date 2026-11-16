@@ -56,7 +56,7 @@ project, add `--team <name>` to any command (before or after it); with one team 
 need it. Tasks, messages and shared team notes are also teamctl's: `teamctl send`, `teamctl task`
 and the rest below, kept in a native sqlite store by default, or in Beads for a team already
 on it ([Mail, tasks and memory](#mail-tasks-and-memory); `bd` cheat sheet for a Beads-backed
-team: [docs/USAGE.md](docs/USAGE.md#beads-cheat-sheet)). A message or task reaches a Claude
+team: [docs/USAGE.md](docs/USAGE.md#beads-cheat-sheet)). Coming from v1.23.0, a running project stays on Beads and a new one is native: [Upgrading from v1.23.0](docs/USAGE.md#upgrading-from-v1230). A message or task reaches a Claude
 Code agent through its CLI's hooks, with the body, at the agent's next tool call; a Codex
 agent has no such hook and gets the one-line notice, typed only where the typing gates allow.
 
