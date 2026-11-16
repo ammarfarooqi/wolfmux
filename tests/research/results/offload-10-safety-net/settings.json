@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/bin/teamctl\" _offload-pre",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/bin/teamctl\" _hook PostToolUse",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "BASH_MAX_OUTPUT_LENGTH": "16000",
+    "WOLFMUX_OFFLOAD_SAFETY": "on"
+  },
+  "bashOutputMaxChars": 16000
+}

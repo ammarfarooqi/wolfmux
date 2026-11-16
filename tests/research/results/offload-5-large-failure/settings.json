@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PROBE_EVENT=PostToolUse PROBE_MODE=object PROBE_OUT='/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/../results/offload-5-large-failure' '/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/hook.sh'"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PROBE_EVENT=PostToolUseFailure PROBE_MODE=object PROBE_OUT='/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/../results/offload-5-large-failure' '/Users/ammar/.wolfmux/worktrees/wolfmux-a0542d/teams/memory-management/offload-20261116-115024/tests/research/offload-probe/hook.sh'"
+          }
+        ]
+      }
+    ]
+  }
+}

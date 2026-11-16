@@ -890,6 +890,7 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | `teamctl reopen <id> "<why>"` (lead) | send a closed task back: open, the reason noted, the assignee told |
 | `teamctl close <id> -r "<reason>" [--failed]` (lead) | close or reject any task of this team |
 | `teamctl checkpoint "<text>"\|--body-file <file>\|-\|--show [<role>]` | save where you left off, or print a role's stored checkpoint; shown again at the next `SessionStart` |
+| `teamctl run -- <command> [args...]` | runs it; a long output goes to a log and you get its head, tail, failure lines and the path, with the command's own exit code (Codex agents; Claude Code agents get this by hook, policy `output-offload`, on by default) |
 | `teamctl remember "<fact>" [--key <slug>]` | add to shared team notes, shown to every agent at session start (a note is at most 1500 characters; one that does not fit the 4000-character block is skipped, the others still show; control characters are removed and a line starting `[wolfmux` is quoted) |
 | `teamctl memories [<query>] [--json]` | search shared team notes |
 | `teamctl forget <key>` | remove one memory |

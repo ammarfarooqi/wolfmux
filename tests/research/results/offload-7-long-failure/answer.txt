@@ -1,0 +1,9 @@
+Exit code: 1
+
+Last line: `PROBE-FAIL-MARKER at the end`
+
+Lines containing FAIL:
+- `not ok 9 - PROBE-MIDDLE-FAIL` (shown as `30001: not ok 9 - PROBE-MIDDLE-FAIL` in the harness output)
+- `PROBE-FAIL-MARKER at the end`
+
+The harness cut lines 41 to 59962 from the displayed result. Its search of the cut region found only the first FAIL line, so the list above should be complete. I ran the command once, as asked.

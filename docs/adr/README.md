@@ -40,3 +40,4 @@ build; superseded decisions will link to their replacement.
 | [0033](0033-shared-team-notes-context-watch-and-checkpoints.md) | Shared team notes at session start, a context watch, and checkpoints | accepted | 2026-11-13 |
 | [0034](0034-what-a-worker-starts-with.md) | What a worker's conversation starts with is a policy (`worker-context`) | accepted | 2026-11-13 |
 | [0035](0035-a-store-of-our-own.md) | A store of our own: native SQLite by default, Beads kept as the second | accepted | 2026-11-13 |
+| [0036](0036-long-output-stays-out-of-the-context.md) | A long command output stays out of the context window | accepted | 2026-11-16 |

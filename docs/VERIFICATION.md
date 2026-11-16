@@ -61,6 +61,7 @@ tests/reclaim.sh               # 10 to 14 minutes, 142 checks, its own tmux serv
 tests/inbox.sh                 # ~4 minutes, 220 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while they work in it, and the hooks hand mail over with its body
 tests/nudge-typing.sh          # ~2 minutes, 62 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/human-inbox-keys.sh      # ~35 seconds, 73 checks, its own tmux server (HOME emptied) and pty: prefix N/O open their popups
+tests/offload.sh               # ~40 seconds, 220 checks: lib/offload.sh, a long Bash output kept in a log
 tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/providers.sh             # the provider table and the config allowlist, 147 checks
 tests/models.sh                # ~2.5 minutes, 34 checks, its own tmux server, HOME and state: the newest model of an alias, the drift check
@@ -292,6 +293,7 @@ directory and throwaway repository; stub agents instead of real CLIs), run separ
 | `tests/tasks.sh` | 41 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
 | `tests/recall.sh` | 34 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), and that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports |
 | `tests/native-callsites.sh` | 34 | the v1.23.0 code that asked `bd` directly works on a native-store project and never runs `bd` there (a stub `bd` records any call), D8 |
+| `tests/offload.sh` | 220 | `lib/offload.sh` (ADR-0036): the PreToolUse rewrite, an equivalence corpus run plain and wrapped under real bash and under zsh as the CLI starts it (exit code, output, cwd and exports agree: heredoc, `exit 3`, `set -e`, pipelines, `&` and `wait`, `exec`, the command's own traps, an unmatched glob, a syntax error, stdin, binary output), a 5 MB log with a failure in the cut middle (bash and zsh), fail open, a timeout kill (bash and zsh), parallel calls never sharing a log, pruning, the settings entries and the policy switch, `teamctl run --`, the PostToolUse safety net, and the measured hook times |
 
 ## Live checks with the real CLIs
 

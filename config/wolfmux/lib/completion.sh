@@ -193,6 +193,7 @@ complete_first_word() {
   complete_emit "$prefix" reopen "<id> \"<why>\": (lead) send a closed task back"
   complete_emit "$prefix" close "<id> -r \"<reason>\": (lead) close or reject a task"
   complete_emit "$prefix" checkpoint "\"<text>\": save where you left off"
+  complete_emit "$prefix" run "-- <command>: a long output to a log, you get the short form"
   complete_emit "$prefix" remember "\"<fact>\": add to the shared team notes"
   complete_emit "$prefix" memories "[<query>]: search the shared team notes"
   complete_emit "$prefix" forget "<key>: remove one shared team note"
