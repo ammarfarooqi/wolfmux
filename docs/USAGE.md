@@ -29,6 +29,54 @@ watch looks at every tool call instead of every tenth, so the warning comes befo
 CLI compacts. Two compactions within 10 tool calls send the lead one message with the
 numbers. The watch says nothing inside an in-process subagent.
 
+## Upgrading from v1.24
+
+`./install.sh` changes nothing in a running agent's settings: an agent's settings file is written
+when its pane starts. What reaches a running team at the install, and what waits for a restart:
+
+- **At once, with no restart:** the hooks run the installed library, so the context watch (its
+  `used/limit share` figure, the warning before a compaction, silence inside a subagent, the
+  "compacted twice" message) and the stalled-agent look (`teamctl status`, the lead's tenth tool
+  call, the idle lead's wake waiter once it re-arms) work from the next call.
+- **After `teamctl restart <role> --continue`** (and `teamctl start` for a new session): the long-output
+  rewrite and its lower `bashOutputMaxChars`, the denied tools, the connector switch,
+  `context-exclude`, and a worker's computed compact window. They are part of the settings the pane
+  writes at start. Restart the lead too if you want it to benefit from `output-offload`.
+- **Workers under the default `worker-context trim` no longer load the claude.ai connectors**
+  (`ENABLE_CLAUDEAI_MCP_SERVERS=false`), nor seven tools a pane agent cannot use (Artifact,
+  AskUserQuestion, SendFeedback, ScheduleWakeup, Workflow, ReportFindings, ListAgents). A worker that
+  used a connector (Gmail, Slack) or a denied tool loses it. To keep them:
+  `teamctl policy worker-context full`, then restart the workers. A rule of yours that tells an
+  agent to use a denied tool cannot be followed by a worker. The lead is untouched unless you set
+  `teamctl policy lead-context trim`.
+- **Three new policies** ([what an agent starts with](#what-an-agent-starts-with)):
+  `output-offload` (`on` by default: a Bash call's long output goes to a log and the agent sees the head,
+  tail, failure lines and the path; `off` writes none of its hook entries), `context-exclude` (globs
+  of instruction files a trimmed agent leaves out; empty by default) and `lead-context` (`full` by
+  default). Nothing of yours is left out unless you name it. For a rules folder that repeats another in
+  a second language, `teamctl doctor` prints the one line to run and what it saves, for example
+  `teamctl policy context-exclude '**/rules/ecc/zh/**'`; it is a note, not a warning.
+- **The CONTEXT column reads `used/limit share`**, for example `142k/167k 85%`: the limit is the
+  window the agent's CLI compacts at, minus 33,000. A model whose window nobody declared shows tokens
+  alone. `status --json` has `context_limit`; anything that read `memory/ctx`'s `tokens` reads `used`.
+- **A worker's compact window is now computed** (first request + kept part + 33,000 +
+  `WOLFMUX_CONTEXT_ROOM`), not the model's. On a 1M model that means compactions come earlier than
+  under v1.24.0, on purpose. A window given on `spawn`, `task --spawn` or `restart` now reaches the worker.
+- **Two new notices a lead can get:**
+  - `<role>: compacted twice within <n> tool calls`: that agent is about to thrash. The message holds
+    the tokens before the second compaction, the limit, the first request, what the compaction kept and
+    the room left. Act on it with the line it prints:
+    `WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl restart <role>` (a new conversation from its checkpoint,
+    with a larger window). Said once per conversation.
+  - `<role>: stalled on an error since <time>`: its last turn ended on an API error (a 529, a usage
+    limit, the CLI's own "Autocompact is thrashing" stop) and no hook of it runs again. It arrives after
+    `WOLFMUX_STALL_AFTER` seconds (300) of quiet and once per error. Act on it with
+    `teamctl restart <role> --continue`, then `teamctl send <role> "go on with <task>"`: a restart leaves
+    an idle agent idle. It is found only while somebody looks (the lead's hooks, its idle waiter, or any
+    `teamctl status`); a stalled lead, a hung tool or a dialog is not seen.
+  - The existing `<role>: context at N%` message (default at 60% and 80% of the limit) now arrives before the
+    CLI compacts, not after.
+
 ## Upgrading from v1.23.0
 
 Installing v1.24.0 changes nothing in a project that is already running.
@@ -869,7 +917,7 @@ team's lead runs Codex; move it back with `teamctl model lead opus --team <team>
 | `teamctl policy team-memory <team>\|off` | project-wide, default `off`: the same as `memory enable` / `memory disable` |
 | `teamctl nudge <role>\|--all [--id <bead>] [--quiet]` | re-send the one-line notification. `--quiet`: nobody to notify is not an error (what the Beads hook passes). A pane somebody is typing in is never typed into: the notice waits for that pane to go idle and arrives by itself (`deferred: …`, exit 3). Notices that pile up while it waits arrive as one line. Your own lead pane holds a notice back for longer than a worker's: with a client attached it has to have had no keystroke for `WOLFMUX_NUDGE_LEAD_IDLE` (300 s) first. `filed: …` with exit 4 now means only that nothing is ever typed into that pane (`WOLFMUX_NUDGE_TYPE=off` or `workers`) |
 | `teamctl inbox [<role>] [--all] [--json] [--keep]` (alias `notices`) | for debugging: the pane notices filed for a role, oldest first. Default: the lead of this team. They are not counted in the status bar (the `📨` number is your unread Beads messages); reading them does not change whether the agent has had them. `--all`: every role of the team. `--json`: one object per notice. `--keep`: print them and leave them marked new ([quiet notices](#quiet-notices-nothing-is-typed-into-your-conversation)) |
-| `teamctl status [--json]` (alias `workers`) | team by team: role, model (the one it runs, as `teamctl models` says it; `*` = its last answer names that model and its record does not vouch for it, `?` = nobody can name it), running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (tokens in use, and the share of the window when the model's window is known — tokens alone otherwise, never a guessed share — read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
+| `teamctl status [--json]` (alias `workers`) | team by team: role, model (the one it runs, as `teamctl models` says it; `*` = its last answer names that model and its record does not vouch for it, `?` = nobody can name it), running / exited(N) / stopped, pane, branch, commits ahead, dirty files, CONTEXT (`used/limit share`, e.g. `142k/167k 85%`: tokens in use, the limit its CLI compacts at and the share; tokens alone when the model's window is not known, never a guessed share; read from the transcript of the agent's own conversation; `-` when there is none), plus free disk and what the team's lanes take |
 | `teamctl teams [--json]` | the short list per team: state (`running` or `orphaned`), lead, number of agents, the disk its teammates' worktrees take, who founded it, session. This is the command that measures that disk. `--json` and `status --json` carry `founder` and `orphaned`; an orphaned team says who may act on it ([when the lead of a founded team is gone](#when-the-lead-of-a-founded-team-is-gone)) |
 | `teamctl dashboard [--json] [--once] [--interval <seconds>] [--full]` | every team on this machine, across every project, read-only; `prefix O` opens it as a popup and `q` closes it. See [The dashboard](#the-dashboard-every-team-on-the-machine). `--once` prints it and exits, `--interval` sets the redraw (default 5 s), `--full` also reads context and the transcript time for agents that are not running, `--socket <path>` asks that tmux server instead of the default |
 | `teamctl panes` | tmux's view: command, pid, cwd |
