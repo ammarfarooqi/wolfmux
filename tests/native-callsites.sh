@@ -101,7 +101,7 @@ check "restore_read_hint names teamctl mail" '[ "$(restore_read_hint "$dir" "$TE
 check "restore_tell sends through teamctl send and prints its id" '[ "$(restore_tell "$dir" "$TEAM" "T" "B")" = m42 ] && grep -q "send $WOLFMUX_LEAD_ROLE T B" "$STUB_LOG"'
 
 echo "== doctor and agents"
-check "restart probes Beads only on a beads store" 'grep -q "\"\$(store_kind)\" = \"beads\" \] && \[ -n \"\$BD_BIN\" \] && ! beads_dir" "$WOLFMUX_HOME/lib/agents.sh"'
+check "restart probes Beads only on a beads store" 'grep -qF "\"\$(store_kind 2>/dev/null || printf beads)\" = \"beads\" ] && [ -n \"\$BD_BIN\" ] && ! beads_dir" "$WOLFMUX_HOME/lib/agents.sh"'
 check "the --repo BEADS_DIR export is beads only" 'grep -q "BEADS_DIR:-}\" \] && \[ \"\$(store_kind)\" = \"beads\" \]" "$WOLFMUX_HOME/lib/agents.sh"'
 check "the spawn refusal names teamctl send" 'grep -q "Ask it: teamctl send" "$WOLFMUX_HOME/lib/agents.sh"'
 

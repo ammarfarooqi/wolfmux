@@ -1288,7 +1288,7 @@ restart_without_session() {
   # A team that ran without Beads is not asked about Beads again: a project with no Beads workspace is started with
   # --skip-beads. A bd that is not installed is not that: start dies about it, as a manual start does.
   # A native-store project never asks bd at all (v1.24.0): `bd where` alone can take seconds.
-  if [ "$(store_kind)" = "beads" ] && [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
+  if [ "$(store_kind 2>/dev/null || printf beads)" = "beads" ] && [ -n "$BD_BIN" ] && ! beads_dir >/dev/null 2>&1; then start_args+=(--skip-beads); fi
   WOLFMUX_TEAM_ARG="$TEAM" # the team this restart resolved, also when it was not named
   LEAD_RESTART=1           # this start is `teamctl restart lead`, which the orphan steward may run (start_permitted)
   cmd_start "${start_args[@]}"
