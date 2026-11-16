@@ -72,11 +72,13 @@ agent_compact_resolve() {
   worker_compact_plan "$(reg_field "$role" model)" "$(agent_compact_override "$role")"
   was="$(reg_field "$role" compact_window 2>/dev/null || true)"
   if [ "$was" != "${WCP_WINDOW:-off}" ] || [ "$(reg_field "$role" compact_note 2>/dev/null || true)" != "$WCP_NOTE" ]; then
-    reg_set "$role" compact_window "${WCP_WINDOW:-off}" compact_first "$WCP_FIRST" compact_kept "$WCP_KEPT" compact_note "$WCP_NOTE" 2>/dev/null || true
+    # In a subshell: reg_set dies on a record it cannot read, and a record that cannot be written
+    # must never keep an agent from starting.
+    (reg_set "$role" compact_window "${WCP_WINDOW:-off}" compact_first "$WCP_FIRST" compact_kept "$WCP_KEPT" compact_note "$WCP_NOTE") >/dev/null 2>&1 || true
   fi
   if [ -n "$WCP_NOTE" ]; then
     printf '[wolfmux] %s: %s\n' "$role" "$WCP_NOTE" >&2
-    event_log compact-window "$role" "$WCP_NOTE" 2>/dev/null || true
+    (event_log compact-window "$role" "$WCP_NOTE") >/dev/null 2>&1 || true
   fi
 }
 
