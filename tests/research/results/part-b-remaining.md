@@ -40,7 +40,7 @@ Unknown 1 of the hand-over is answered by one print-mode Haiku probe (not a pane
    when SessionStart:compact fires (else `memory/kept` holds the previous compaction's value),
    and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from the settings file's `env` is in the hook's
    environment (it is in the Bash tool's; the watch depends on it).
-3. **Item 6, the rest**: `docs/ARCHITECTURE.md` has no word of this yet. `teamctl help` names the
+3. **Item 6, the rest**: `docs/ARCHITECTURE.md` has a section "The context number" without the stall part. `teamctl help` names the
    figure but not `WOLFMUX_CONTEXT_ROOM`. Environment-only knobs named only in ADR-0038 and
    `lib/policy.sh` / `lib/recall.sh`: `WOLFMUX_COMPACT_RESERVE`, `WOLFMUX_CONTEXT_FIRST`,
    `WOLFMUX_CONTEXT_KEPT`, `WOLFMUX_CONTEXT_MIN_ROOM`, `WOLFMUX_CONTEXT_NEAR`,

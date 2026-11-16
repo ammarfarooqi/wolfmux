@@ -604,6 +604,30 @@ before this existed): it is a team-wide opt-in, not a blanket exemption for ever
 agent, because the rule also removes the External System Writes check for every Chrome write
 that team's agents make, which is the trade being made.
 
+## The context number
+
+One figure per agent, `used/limit share` (ADR-0038). `used` is the last request of the agent's
+transcript (`models_transcript_tail`). `limit` comes from one function, `context_limit_for`
+(`lib/policy.sh`): the smaller of the window the agent's CLI was told to compact at and its
+model's window, minus the 33,000 tokens Claude Code keeps in reserve.
+
+```
+teamctl spawn / restart      WOLFMUX_WORKER_COMPACT_WINDOW of that command -> record.compact_override
+  pane: teamctl _run-agent   worker_compact_plan: override, else F + K + 33000 + room; raised when it
+                             would thrash; capped by the model -> settings env CLAUDE_CODE_AUTO_COMPACT_WINDOW
+                             and record.compact_window
+the agent's hooks            PostToolUse (every 10th call; every call while run/<role>/near exists):
+                             used and limit -> run/<role>/memory/ctx, warn and rotate once each
+                             first request F -> $STATE_DIR/context/<kind>, for the next worker's window
+                             SessionStart source=compact: kept part K, memory/compactions; two within
+                             10 tool calls -> one message to the lead
+teamctl status, dashboard    agent_context: transcript tail + record.compact_window -> CTX_LIMIT
+```
+
+The watch returns at once when the hook input carries `agent_id` (an in-process subagent). The
+lead gets no compact window; its limit is its model's window minus the reserve. Codex is counted
+against the window its rollout states.
+
 ## Teams
 
 A project has one or more teams ([ADR-0018](adr/0018-several-teams-per-project.md)).
