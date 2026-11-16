@@ -81,7 +81,7 @@ When a worker finishes it commits, reports and closes:
 
 ```bash
 git commit -am "feat: password reset API"
-teamctl done <api-task> "Reset API" --tests "pytest: 38 passed"   # Done: message to the lead, then closes it
+teamctl done <api-task> "Reset API" --tests "pytest: 38 passed"   # closes it, then a Done: message to the lead
 ```
 
 The lead is notified, reviews and integrates:
@@ -877,8 +877,8 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | `teamctl mail [<role>] [--peek] [--json]` | your (or that role's) unread mail and open tasks; `--peek` leaves it unread |
 | `teamctl task <role> "<title>" [-d "<text>"\|--body-file <file>\|-] [-p <0-4>] [--after <bead-id>]… [--spawn <model>]` | assign work; `--after` adds a dependency, `--spawn` starts the role if it is not already running |
 | `teamctl claim [<id>]` | claim your only open task, or the one you name; refuses one still waiting on an unclosed blocker |
-| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | report and close a task: a `Done:` message to the lead (summary, tests, branch, commit log), then closes it |
-| `teamctl blocked [<id>] "<why>"` | mark a task blocked and tell the lead why |
+| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | close a task, then report it: a `Done:` message to the lead (summary, tests, branch, commit log). Only the task's assignee (or the lead) may; a message id, a closed task and a task still waiting on a blocker are refused |
+| `teamctl blocked [<id>] "<why>"` | mark a task blocked and tell the lead why; only the task's assignee (or the lead) may |
 | `teamctl tasks [<role>\|--all] [--status <list>] [--json]` | a list of tasks; default is your own team, not closed |
 | `teamctl show <id> [--json]` | one task (body, notes, blockers), or a message with its whole thread |
 | `teamctl note <id> "<text>"` | a durable note on a task; notifies nobody |

@@ -75,7 +75,7 @@ run_contract() { # <label>
   store_task_dep_add "$tid" "$bid"
   check "tasks_json includes blocked_by for an open blocker" \
     '[ "$(store_tasks_json "" "" | "$JQ_BIN" -r --arg id "$tid" ".[] | select(.id==\$id) | .blocked_by | length")" = 1 ]'
-  store_task_close "$bid" "done with it"
+  store_task_close "$bid" "done with it" "" carol
   check "tasks_json: blocked_by drops a closed blocker" \
     '[ "$(store_tasks_json "" "" | "$JQ_BIN" -r --arg id "$tid" ".[] | select(.id==\$id) | .blocked_by | length")" = 0 ]'
 
@@ -90,7 +90,7 @@ run_contract() { # <label>
   store_task_note "$tid" dave "waiting on design"
   check "task_note: appended, carries author and text" \
     'printf %s "$(store_item_json "$tid" | "$JQ_BIN" -r .notes)" | grep -q "dave.*waiting on design"'
-  store_task_close "$tid" "shipped" failed
+  store_task_close "$tid" "shipped" failed bob
   check "task_close failed: status closed" '[ "$(store_item_json "$tid" | "$JQ_BIN" -r .status)" = closed ]'
 
   echo "== $label: messages"
@@ -134,6 +134,15 @@ run_contract "native"
 if [ "$HAVE_BD" -eq 1 ]; then
   new_beads_repo beads-contract
   run_contract "beads"
+  echo "== beads: close carries the actor, no --force (Riley 1)"
+  gid_b="$(store_task_create lead bob 2 "Guarded" "x")"
+  check "beads task_close: a non-assignee actor is refused by bd, the task stays open" \
+    '! store_task_close "$gid_b" "not mine" "" mallory && [ "$(store_item_json "$gid_b" | "$JQ_BIN" -r .status)" = open ]'
+  check "beads task_close: the assignee closes it without force" \
+    'store_task_close "$gid_b" "mine" "" bob && [ "$(store_item_json "$gid_b" | "$JQ_BIN" -r .status)" = closed ]'
+  gid_c="$(store_task_create lead bob 2 "Lead closes" "x")"
+  check "beads task_close: force (the lead) closes another's task" \
+    'store_task_close "$gid_c" "lead" "" lead force && [ "$(store_item_json "$gid_c" | "$JQ_BIN" -r .status)" = closed ]'
 else
   skip "beads contract: bd is not installed"
 fi

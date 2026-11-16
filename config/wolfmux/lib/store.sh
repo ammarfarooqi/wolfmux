@@ -112,8 +112,12 @@ store_task_status() {
   "store_$(store_kind)_task_status" "$@"
 }
 
+# store_task_close <id> <reason> [failed] [actor-identity] [force] — the actor is recorded
+# (native) or checked by bd against the assignee (beads); "force" overrides that check and
+# bd's blocker check, and only the lead's paths pass it.
 store_task_close() {
   case "${3:-}" in "" | failed) ;; *) return 1 ;; esac
+  case "${5:-}" in "" | force) ;; *) return 1 ;; esac
   "store_$(store_kind)_task_close" "$@"
 }
 
@@ -366,8 +370,8 @@ store_native_task_close() {
   [ "${3:-}" = "failed" ] && failed=1
   _sqx "
 UPDATE task SET status='closed', close_reason=(SELECT j->>'reason' FROM p), failed=(SELECT CAST(j->>'failed' AS INTEGER) FROM p), updated_at=(SELECT j->>'now' FROM p) WHERE id=(SELECT CAST(j->>'num' AS INTEGER) FROM p);
-INSERT INTO event(at,actor,kind,ref,detail) SELECT (SELECT j->>'now' FROM p), '', 'task_close', 't'||(SELECT j->>'num' FROM p), (SELECT j->>'reason' FROM p) FROM p WHERE changes()=1;" \
-    "$("$JQ_BIN" -cn --arg num "$num" --arg reason "$2" --arg failed "$failed" --arg now "$(now_iso)" '{num:$num,reason:$reason,failed:$failed,now:$now}')" >/dev/null
+INSERT INTO event(at,actor,kind,ref,detail) SELECT (SELECT j->>'now' FROM p), (SELECT j->>'actor' FROM p), 'task_close', 't'||(SELECT j->>'num' FROM p), (SELECT j->>'reason' FROM p) FROM p WHERE changes()=1;" \
+    "$("$JQ_BIN" -cn --arg num "$num" --arg reason "$2" --arg failed "$failed" --arg actor "${4:-}" --arg now "$(now_iso)" '{num:$num,reason:$reason,failed:$failed,actor:$actor,now:$now}')" >/dev/null
 }
 
 # store_native_task_note <id> <author> <text> — appended with author and time, in one TEXT
@@ -542,13 +546,21 @@ store_beads_tasks_json() {
 store_beads_task_claim() { _store_bd update "$1" --claim --actor "$2" --json >/dev/null 2>&1; }
 store_beads_task_status() { _store_bd update "$1" --status "$2" --json >/dev/null 2>&1; }
 
-# store_beads_task_close — no identity travels with this call, so a close whose actor is
-# not the assignee (bd's own guard, independent of claim) needs --force to go through;
-# the interface gives the caller no way to supply the assignee's identity instead.
+# store_beads_task_close <id> <reason> [failed] [actor] [force] — the actor reaches bd, so
+# bd's own guards apply as they did in v1.23.0: a close by someone other than the assignee,
+# or of a task with an unclosed blocker, is refused. Only "force" (the lead) overrides them.
 store_beads_task_close() {
-  local id="$1" reason="$2"
+  local id="$1" reason="$2" actor="${4:-}" force="${5:-}"
   if [ "${3:-}" = "failed" ]; then _store_bd update "$id" --add-label failed --json >/dev/null 2>&1 || return 1; fi
-  _store_bd close "$id" -r "$reason" --force --json >/dev/null 2>&1
+  if [ -n "$actor" ] && [ "$force" = "force" ]; then
+    _store_bd close "$id" -r "$reason" --actor "$actor" --force --json >/dev/null 2>&1
+  elif [ -n "$actor" ]; then
+    _store_bd close "$id" -r "$reason" --actor "$actor" --json >/dev/null 2>&1
+  elif [ "$force" = "force" ]; then
+    _store_bd close "$id" -r "$reason" --force --json >/dev/null 2>&1
+  else
+    _store_bd close "$id" -r "$reason" --json >/dev/null 2>&1
+  fi
 }
 
 store_beads_task_note() {

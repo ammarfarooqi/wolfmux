@@ -17,10 +17,12 @@ tasks_store_add_dependency() { store_task_dep_add "$1" "$2"; }
 # tasks_store_title <id> — empty when there is no such task.
 tasks_store_title() { store_item_json "$1" 2>/dev/null | "$JQ_BIN" -r '.title // empty' 2>/dev/null; }
 
-# _tasks_close <id> <reason> <actor-identity> [failed] — closes the task and announces it.
+# _tasks_close <id> <reason> <actor-identity> [failed] [force] — closes the task and announces
+# it. The actor travels to the store, so Beads' own assignee guard applies to a worker's
+# close; "force" is for the lead only, who closes any task of its team.
 _tasks_close() {
-  local id="$1" reason="$2" actor="$3" failed="${4:-}"
-  store_task_close "$id" "$reason" "$failed" || return 1
+  local id="$1" reason="$2" actor="$3" failed="${4:-}" force="${5:-}"
+  store_task_close "$id" "$reason" "$failed" "$actor" "$force" || return 1
   mail_announce close "$(store_item_json "$id")" "$actor"
 }
 
@@ -52,6 +54,24 @@ _tasks_hook_list() {
     native) store_tasks_json "$1" "$2" ;;
     beads) _bd_bounded 5 store_tasks_json "$1" "$2" ;;
   esac
+}
+
+# _tasks_own_item <id> <identity> <role> <verb> — the task's ITEM JSON, or dies: no such
+# task, a message rather than a task, already closed, or (for anyone but the lead) a task
+# assigned to someone else. done and blocked are the assignee's; teamctl close is the lead's.
+_tasks_own_item() {
+  local id="$1" me="$2" role="$3" verb="$4" item kind status assignee
+  item="$(store_item_json "$id" 2>/dev/null)" || item=""
+  [ -n "$item" ] || die "no such task: $id"
+  kind="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // empty')"
+  [ "$kind" = "task" ] || die "$id is a ${kind:-item}, not a task; teamctl $verb takes a task id"
+  status="$(printf '%s' "$item" | "$JQ_BIN" -r '.status // empty')"
+  [ "$status" != "closed" ] || die "$id is already closed; nothing to report. The lead reopens it if more is needed: teamctl reopen $id \"<why>\""
+  assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.assignee // empty')"
+  if [ "$role" != "$WOLFMUX_LEAD_ROLE" ] && [ "$assignee" != "$me" ]; then
+    die "$id is assigned to ${assignee:-nobody}, not to you ($me); only its assignee runs teamctl $verb on it. Check the id: teamctl tasks $role"
+  fi
+  printf '%s\n' "$item"
 }
 
 # _tasks_default_id <identity> — the caller's only in_progress task, when no bead id was
@@ -158,7 +178,7 @@ cmd_task() {
 # teamctl done [<bead-id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]
 cmd_done() {
   local id="" summary="" tests="" body_file="" allow_dirty=0 args=()
-  local role me path branch base_commit title tests_line commits_block stat_line short_sha report extra lead_id
+  local role me path branch base_commit title tests_line commits_block stat_line short_sha report extra lead_id item blocked_by force=""
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --tests)
@@ -195,6 +215,9 @@ cmd_done() {
   else
     id="$(_tasks_default_id "$me")" || exit $?
   fi
+  item="$(_tasks_own_item "$id" "$me" "$role" done)" || exit $?
+  blocked_by="$(printf '%s' "$item" | "$JQ_BIN" -r '[.blocked_by[]?] | join(", ")' 2>/dev/null)"
+  [ -z "$blocked_by" ] || die "$id is waiting on unclosed blockers: $blocked_by; it cannot be done before they are closed"
   path="$(reg_field "$role" workdir)"
   [ -d "$path" ] || die "working directory is gone: $path"
   if [ "$allow_dirty" -eq 0 ] && [ -n "$("$GIT_BIN" -C "$path" status --porcelain 2>/dev/null)" ]; then
@@ -202,8 +225,7 @@ cmd_done() {
   fi
   branch="$(reg_field "$role" branch)"
   base_commit="$(reg_field "$role" base_commit)"
-  title="$(tasks_store_title "$id")"
-  [ -n "$title" ] || die "no such task: $id"
+  title="$(printf '%s' "$item" | "$JQ_BIN" -r '.title // empty')"
 
   if [ -n "$tests" ]; then tests_line="tests: $tests"; else tests_line="tests: not stated"; fi
   commits_block="$(_tasks_commit_report "$path" "$base_commit")"
@@ -223,7 +245,8 @@ $extra"
 
   # Close first, report after: a close that fails must not leave the lead holding a "Done"
   # report for a task that is still open.
-  _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" || die "could not close $id"
+  [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && force="force"
+  _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" "" "$force" || die "could not close $id"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
     _tasks_reply "$me" "$lead_id" "Done: $title" "$report" "$id" ||
@@ -235,7 +258,7 @@ $extra"
 
 # teamctl blocked [<bead-id>] "<why>"
 cmd_blocked() {
-  local id="" why="" args=() role me title lead_id
+  local id="" why="" args=() role me title lead_id item
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -*) die_usage "unknown option for blocked: $1" ;;
@@ -260,8 +283,8 @@ cmd_blocked() {
   else
     id="$(_tasks_default_id "$me")" || exit $?
   fi
-  title="$(tasks_store_title "$id")"
-  [ -n "$title" ] || die "no such task: $id"
+  item="$(_tasks_own_item "$id" "$me" "$role" blocked)" || exit $?
+  title="$(printf '%s' "$item" | "$JQ_BIN" -r '.title // empty')"
   _tasks_block "$id" "$me" "$why" || die "could not mark $id blocked"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
@@ -511,7 +534,7 @@ cmd_close() {
   me="${BEADS_ACTOR:-$(caller_role)}"
   title="$(tasks_store_title "$id")"
   [ -n "$title" ] || die "no such task: $id"
-  _tasks_close "$id" "$reason" "$me" "$failed" || die "could not close $id"
+  _tasks_close "$id" "$reason" "$me" "$failed" force || die "could not close $id"
   say "closed: $id"
 }
 
