@@ -101,9 +101,43 @@ check "restore_read_hint names teamctl mail" '[ "$(restore_read_hint "$dir" "$TE
 check "restore_tell sends through teamctl send and prints its id" '[ "$(restore_tell "$dir" "$TEAM" "T" "B")" = m42 ] && grep -q "send $WOLFMUX_LEAD_ROLE T B" "$STUB_LOG"'
 
 echo "== doctor and agents"
-check "restart probes Beads only on a beads store" 'grep -q "\"\$(store_kind)\" = \"beads\" \] && \[ -n \"\$BD_BIN\" \] && ! beads_dir" "$WOLFMUX_HOME/lib/agents.sh"'
+check "restart probes Beads only on a beads store" 'grep -qF "\"\$(store_kind 2>/dev/null || printf beads)\" = \"beads\" ] && [ -n \"\$BD_BIN\" ] && ! beads_dir" "$WOLFMUX_HOME/lib/agents.sh"'
 check "the --repo BEADS_DIR export is beads only" 'grep -q "BEADS_DIR:-}\" \] && \[ \"\$(store_kind)\" = \"beads\" \]" "$WOLFMUX_HOME/lib/agents.sh"'
 check "the spawn refusal names teamctl send" 'grep -q "Ask it: teamctl send" "$WOLFMUX_HOME/lib/agents.sh"'
+
+echo "== the handover a founded team's lead starts with"
+printf '{"role":"%s","kind":"lead","handover":"demo-abc1","spawned_by":"lead"}\n' "$WOLFMUX_LEAD_ROLE" | reg_put "$WOLFMUX_LEAD_ROLE"
+HANDOVER="$(handover_text)"
+check "a native lead's handover prompt says teamctl show <id>" 'printf "%s" "$HANDOVER" | grep -qF "teamctl show demo-abc1"'
+check "  ... and never names bd" '! printf "%s" "$HANDOVER" | grep -qw bd'
+check "  ... and points at teamctl mail for the rest (D2), not teamctl inbox" 'printf "%s" "$HANDOVER" | grep -qF "teamctl mail" && ! printf "%s" "$HANDOVER" | grep -qF "teamctl inbox"'
+
+echo "== the human: a target and a sender of teamctl send"
+check "the human is a send target although no agent has that role" \
+  '( _mail_send_target "$WOLFMUX_HUMAN" && [ "$MAIL_SEND_ROLE" = "$WOLFMUX_HUMAN" ] )'
+: >"$(human_inbox_file)"
+HMID="$( (BEADS_ACTOR=lead TEAM_ROLE=lead cmd_send "$WOLFMUX_HUMAN" "Status" "all green") 2>/dev/null | tail -n 1)"
+check "teamctl send human stores a message assigned to the human" \
+  '[ -n "$HMID" ] && [ "$(store_item_json "$HMID" | "$JQ_BIN" -r .assignee)" = "$WOLFMUX_HUMAN" ]'
+check "  ... and feeds v1.23.0's human inbox (the badge count, the prefix N popup)" '[ "$(human_inbox_count)" = 1 ]'
+FROM_HUMAN="$( (unset BEADS_ACTOR TEAM_ROLE WOLFMUX_IDENTITY; cmd_send "$WOLFMUX_LEAD_ROLE" "From me" "hello") 2>/dev/null | tail -n 1)"
+check "a message the human sends from a plain terminal carries the human's name as sender" \
+  '[ -n "$FROM_HUMAN" ] && [ "$(store_item_json "$FROM_HUMAN" | "$JQ_BIN" -r .created_by)" = "$WOLFMUX_HUMAN" ]'
+check "  ... and the lead sees it from the human, with a reply hint to the human" \
+  'out="$(_mail_render_bead "$(store_item_json "$FROM_HUMAN")")"; printf "%s" "$out" | grep -qF "from $WOLFMUX_HUMAN:" && printf "%s" "$out" | grep -qF "teamctl send $WOLFMUX_HUMAN "'
+check "a message with no sender recorded never renders \"from ?\" or \"teamctl send ?\"" \
+  'out="$(_mail_render_bead "{\"id\":\"m9\",\"issue_type\":\"message\",\"title\":\"T\",\"created_by\":\"\"}")"; [ -n "$out" ] && ! printf "%s" "$out" | grep -qF "from ?" && ! printf "%s" "$out" | grep -qF "send ?"'
+check "the protocol names the command that writes to the human" 'grep -qF "teamctl send human" "$WOLFMUX_HOME/TEAM_PROTOCOL.md"'
+
+echo "== teamctl done: one notice for the lead, not two"
+TARGETS="$WORK/announce-targets"
+ct="$(store_task_create lead w1 2 "Close me" "x")"
+store_task_close "$ct" "finished" >/dev/null 2>&1 || true
+check "a worker's close is announced to the lead" \
+  '( mail_quiet_route() { printf "%s\n" "$1" >>"$TARGETS"; return 1; }; mail_announce close "$(store_item_json "$ct")" w1 ); grep -qx "$WOLFMUX_LEAD_ROLE" "$TARGETS"'
+: >"$TARGETS"
+check "  ... but not when teamctl done already sent the lead its Done report (WOLFMUX_MAIL_CLOSE_REPORTED)" \
+  '( mail_quiet_route() { printf "%s\n" "$1" >>"$TARGETS"; return 1; }; WOLFMUX_MAIL_CLOSE_REPORTED=1 mail_announce close "$(store_item_json "$ct")" w1 ); [ ! -s "$TARGETS" ]'
 
 check "no bd call was made on the native project" 'no_bd'
 [ -e "$BD_MARK" ] && sed 's/^/    bd: /' "$BD_MARK"

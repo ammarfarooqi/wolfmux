@@ -184,6 +184,67 @@ check "kickoff (Codex): names teamctl mail instead of bd list + bd show" \
   'printf "%s" "$KICKOFF_CODEX" | grep -q "run \`teamctl mail\`" && ! printf "%s" "$KICKOFF_CODEX" | grep -q "bd list --assignee" && ! printf "%s" "$KICKOFF_CODEX" | grep -q "bd show"'
 check "kickoff (Codex): still says not to start over if restarted mid-task" 'printf "%s" "$KICKOFF_CODEX" | grep -q "do not start over"'
 
+echo "== native store: done and blocked"
+# A second project, on the native store (a new project with no --init-beads), with its own
+# lead and two workers. Every read goes through teamctl show --json or the store file.
+NPROJECT="$WORK/nproject"
+/bin/mkdir -p "$NPROJECT"
+(cd "$NPROJECT" && git init -q -b main && echo hello >README.md && git add -A &&
+  git -c user.name=t -c user.email=t@example.invalid commit -qm "initial commit")
+cd "$NPROJECT" || exit 1
+teamctl start astra --no-attach >/dev/null 2>&1
+teamctl spawn nworker glm53 --no-kickoff >/dev/null 2>&1
+sleep 1
+NDB="$(teamctl store | sed -n 's/^store: native  (\(.*\))$/\1/p')"
+nstatus() { teamctl show "$1" --json | jq -r '.status'; }
+lead_reports() { sqlite3 "$NDB" "SELECT COUNT(*) FROM msg WHERE recipient='lead' AND subject LIKE '$1%';"; }
+check "native: the second project is on the native store" '[ -f "$NDB" ]'
+
+N_MSG="$(teamctl send nworker "a note" "not a task" 2>/dev/null | tail -1)"
+N_BEFORE="$(lead_reports "Done:")"
+check "native done: a message id is refused, and the lead gets no Done report for it" \
+  '! TEAM_ROLE=nworker teamctl done "$N_MSG" "not a task" --allow-dirty && [ "$(lead_reports "Done:")" = "$N_BEFORE" ]'
+
+# Riley 1: done and blocked belong to the task's assignee.
+teamctl spawn nqa glm53 --no-kickoff >/dev/null 2>&1
+sleep 1
+NQA_ID="$(teamctl task nqa "QA task" -d x | last_task_id)"
+TEAM_ROLE=nqa BEADS_ACTOR=nqa teamctl claim "$NQA_ID" >/dev/null 2>&1
+N_BEFORE="$(lead_reports "Done:")"
+STEAL_OUT="$(TEAM_ROLE=nworker teamctl done "$NQA_ID" "stolen" --allow-dirty 2>&1)"
+check "native done: another agent's task is refused, stays in_progress, and no report goes out" \
+  '! printf "%s" "$STEAL_OUT" | grep -q "^closed:" && [ "$(nstatus "$NQA_ID")" = in_progress ] && [ "$(lead_reports "Done:")" = "$N_BEFORE" ] && printf "%s" "$STEAL_OUT" | grep -q "assigned to nqa"'
+check "native blocked: another agent's task is refused and its status stays" \
+  '! TEAM_ROLE=nworker teamctl blocked "$NQA_ID" "not mine" && [ "$(nstatus "$NQA_ID")" = in_progress ] && [ "$(lead_reports "Blocked:")" = 0 ]'
+NW_WAIT="$(teamctl task nworker "Waiting task" -d x --after "$NQA_ID" | last_task_id)"
+WAIT_OUT="$(TEAM_ROLE=nworker teamctl done "$NW_WAIT" "too early" --allow-dirty 2>&1)"
+check "native done: a task still waiting on a blocker is refused, naming the blocker" \
+  '[ "$(nstatus "$NW_WAIT")" = open ] && printf "%s" "$WAIT_OUT" | grep -q "waiting on unclosed blockers: $NQA_ID"'
+NW_ONE="$(teamctl task nworker "Once only" -d x | last_task_id)"
+TEAM_ROLE=nworker BEADS_ACTOR=nworker teamctl claim "$NW_ONE" >/dev/null 2>&1
+TEAM_ROLE=nworker teamctl done "$NW_ONE" "first" --allow-dirty >/dev/null 2>&1
+N_AFTER_ONE="$(lead_reports "Done: Once only")"
+AGAIN2_OUT="$(TEAM_ROLE=nworker teamctl done "$NW_ONE" "second" --allow-dirty 2>&1)"
+check "native done: a closed task is refused the second time, no second report" \
+  '[ "$N_AFTER_ONE" = 1 ] && [ "$(lead_reports "Done: Once only")" = 1 ] && printf "%s" "$AGAIN2_OUT" | grep -q "already closed"'
+check "native done: the lead may still close a worker's task with done" \
+  'TEAM_ROLE=lead teamctl done "$NQA_ID" "lead closes it" --allow-dirty && [ "$(nstatus "$NQA_ID")" = closed ]'
+cd "$PROJECT" || exit 1
+
+echo "== beads store: done and blocked belong to the assignee"
+teamctl spawn qa glm53 --no-kickoff >/dev/null 2>&1
+sleep 1
+QA_ID="$(teamctl task qa "QA task" -d x | last_task_id)"
+BEADS_ACTOR=qa TEAM_ROLE=qa bd update "$QA_ID" --claim >/dev/null 2>&1
+BSTEAL_OUT="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl done "$QA_ID" "stolen" --allow-dirty 2>&1)"
+check "beads done: another agent's task is refused and stays in_progress" \
+  '! printf "%s" "$BSTEAL_OUT" | grep -q "^closed:" && bd show "$QA_ID" --json | jq -e ".[0].status == \"in_progress\""'
+check "beads blocked: another agent's task is refused" \
+  '! BEADS_ACTOR=backend TEAM_ROLE=backend teamctl blocked "$QA_ID" "not mine" && bd show "$QA_ID" --json | jq -e ".[0].status == \"in_progress\""'
+BW_ID="$(teamctl task backend "Beads waiting" -d x --after "$QA_ID" | last_task_id)"
+check "beads done: a task waiting on a blocker is refused and stays open" \
+  '! BEADS_ACTOR=backend TEAM_ROLE=backend teamctl done "$BW_ID" "too early" --allow-dirty && bd show "$BW_ID" --json | jq -e ".[0].status != \"closed\""'
+
 echo "== named team"
 # A second team: once it exists, every teamctl call below needs --team (ambiguous
 # otherwise), so this stays last.

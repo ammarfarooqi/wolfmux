@@ -112,8 +112,12 @@ store_task_status() {
   "store_$(store_kind)_task_status" "$@"
 }
 
+# store_task_close <id> <reason> [failed] [actor-identity] [force] — the actor is recorded
+# (native) or checked by bd against the assignee (beads); "force" overrides that check and
+# bd's blocker check, and only the lead's paths pass it.
 store_task_close() {
   case "${3:-}" in "" | failed) ;; *) return 1 ;; esac
+  case "${5:-}" in "" | force) ;; *) return 1 ;; esac
   "store_$(store_kind)_task_close" "$@"
 }
 
@@ -366,8 +370,8 @@ store_native_task_close() {
   [ "${3:-}" = "failed" ] && failed=1
   _sqx "
 UPDATE task SET status='closed', close_reason=(SELECT j->>'reason' FROM p), failed=(SELECT CAST(j->>'failed' AS INTEGER) FROM p), updated_at=(SELECT j->>'now' FROM p) WHERE id=(SELECT CAST(j->>'num' AS INTEGER) FROM p);
-INSERT INTO event(at,actor,kind,ref,detail) SELECT (SELECT j->>'now' FROM p), '', 'task_close', 't'||(SELECT j->>'num' FROM p), (SELECT j->>'reason' FROM p) FROM p WHERE changes()=1;" \
-    "$("$JQ_BIN" -cn --arg num "$num" --arg reason "$2" --arg failed "$failed" --arg now "$(now_iso)" '{num:$num,reason:$reason,failed:$failed,now:$now}')" >/dev/null
+INSERT INTO event(at,actor,kind,ref,detail) SELECT (SELECT j->>'now' FROM p), (SELECT j->>'actor' FROM p), 'task_close', 't'||(SELECT j->>'num' FROM p), (SELECT j->>'reason' FROM p) FROM p WHERE changes()=1;" \
+    "$("$JQ_BIN" -cn --arg num "$num" --arg reason "$2" --arg failed "$failed" --arg actor "${4:-}" --arg now "$(now_iso)" '{num:$num,reason:$reason,failed:$failed,actor:$actor,now:$now}')" >/dev/null
 }
 
 # store_native_task_note <id> <author> <text> — appended with author and time, in one TEXT
@@ -460,17 +464,19 @@ store_native_memory_list_json() {
   printf '%s\n' "${out:-[]}"
 }
 
-# store_native_memory_text <max-chars> — whole memories only, newest first, stop (do not
-# truncate) at the first one that would not fit.
+# _STORE_MEMORY_TEXT_JQ — whole memories only, in the order given, each one that would not
+# fit skipped (never truncated): one oversized note can no longer blank the whole block, as
+# stopping at the first misfit did (Riley 6). Both backends' memory_text use it.
+_STORE_MEMORY_TEXT_JQ='reduce .[] as $m ("";
+  (. + (if .=="" then "" else "\n\n" end) + "### " + $m.key + "\n" + $m.text) as $cand |
+  if ($cand|length) <= $max then $cand else . end)'
+
+# store_native_memory_text <max-chars> — whole memories only, newest first, a note that would
+# not fit skipped (see _STORE_MEMORY_TEXT_JQ).
 store_native_memory_text() {
   local rows
   rows="$(store_native_memory_list_json)"
-  printf '%s' "${rows:-[]}" | "$JQ_BIN" -r --argjson max "$1" '
-    reduce .[] as $m ({out:"", stop:false};
-      if .stop then . else
-        (.out + (if .out=="" then "" else "\n\n" end) + "### " + $m.key + "\n" + $m.text) as $cand |
-        (if ($cand|length) <= $max then {out:$cand, stop:false} else {out:.out, stop:true} end)
-      end) | .out'
+  printf '%s' "${rows:-[]}" | "$JQ_BIN" -r --argjson max "$1" "$_STORE_MEMORY_TEXT_JQ"
 }
 
 store_native_memory_forget() {
@@ -498,9 +504,11 @@ _STORE_ITEM_JQ='{id, issue_type, title, description: (.description // ""), statu
 
 store_beads_ensure() { :; } # lib/beads.sh (beads_ensure) makes the workspace; nothing else to do
 
+# A title travels as --title=<text>, never positional: bd would read one that starts with
+# "-" as a flag (Riley 11). The same holds for a message subject below.
 store_beads_task_create() {
   local creator="$1" assignee="$2" priority="$3" title="$4" body="$5" id
-  id="$(_store_bd create "$title" -t task -p "$priority" -a "$assignee" --actor "$creator" --description "$body" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
+  id="$(_store_bd create --title="$title" -t task -p "$priority" -a "$assignee" --actor "$creator" --description "$body" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
   [ -n "$id" ] || return 1
   printf '%s\n' "$id"
 }
@@ -542,13 +550,21 @@ store_beads_tasks_json() {
 store_beads_task_claim() { _store_bd update "$1" --claim --actor "$2" --json >/dev/null 2>&1; }
 store_beads_task_status() { _store_bd update "$1" --status "$2" --json >/dev/null 2>&1; }
 
-# store_beads_task_close — no identity travels with this call, so a close whose actor is
-# not the assignee (bd's own guard, independent of claim) needs --force to go through;
-# the interface gives the caller no way to supply the assignee's identity instead.
+# store_beads_task_close <id> <reason> [failed] [actor] [force] — the actor reaches bd, so
+# bd's own guards apply as they did in v1.23.0: a close by someone other than the assignee,
+# or of a task with an unclosed blocker, is refused. Only "force" (the lead) overrides them.
 store_beads_task_close() {
-  local id="$1" reason="$2"
+  local id="$1" reason="$2" actor="${4:-}" force="${5:-}"
   if [ "${3:-}" = "failed" ]; then _store_bd update "$id" --add-label failed --json >/dev/null 2>&1 || return 1; fi
-  _store_bd close "$id" -r "$reason" --force --json >/dev/null 2>&1
+  if [ -n "$actor" ] && [ "$force" = "force" ]; then
+    _store_bd close "$id" -r "$reason" --actor "$actor" --force --json >/dev/null 2>&1
+  elif [ -n "$actor" ]; then
+    _store_bd close "$id" -r "$reason" --actor "$actor" --json >/dev/null 2>&1
+  elif [ "$force" = "force" ]; then
+    _store_bd close "$id" -r "$reason" --force --json >/dev/null 2>&1
+  else
+    _store_bd close "$id" -r "$reason" --json >/dev/null 2>&1
+  fi
 }
 
 store_beads_task_note() {
@@ -560,9 +576,9 @@ store_beads_msg_create() {
   # bash 3.2: "${arr[@]}" on a still-empty array raises "unbound variable" under set -u,
   # so the reply dependency is a plain conditional call, not an optional array element.
   if [ -n "$reply_to" ]; then
-    id="$(_store_bd create "$subject" -t message -a "$recipient" --actor "$sender" --description "$body" --deps "replies-to:$reply_to" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
+    id="$(_store_bd create --title="$subject" -t message -a "$recipient" --actor "$sender" --description "$body" --deps "replies-to:$reply_to" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
   else
-    id="$(_store_bd create "$subject" -t message -a "$recipient" --actor "$sender" --description "$body" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
+    id="$(_store_bd create --title="$subject" -t message -a "$recipient" --actor "$sender" --description "$body" --json 2>/dev/null | "$JQ_BIN" -r '.id // empty')"
   fi
   [ -n "$id" ] || return 1
   printf '%s\n' "$id"
@@ -618,12 +634,7 @@ store_beads_memory_list_json() {
 store_beads_memory_text() {
   local rows
   rows="$(store_beads_memory_list_json)"
-  printf '%s' "${rows:-[]}" | "$JQ_BIN" -r --argjson max "$1" '
-    reduce .[] as $m ({out:"", stop:false};
-      if .stop then . else
-        (.out + (if .out=="" then "" else "\n\n" end) + "### " + $m.key + "\n" + $m.text) as $cand |
-        (if ($cand|length) <= $max then {out:$cand, stop:false} else {out:.out, stop:true} end)
-      end) | .out'
+  printf '%s' "${rows:-[]}" | "$JQ_BIN" -r --argjson max "$1" "$_STORE_MEMORY_TEXT_JQ"
 }
 
 store_beads_memory_forget() { _store_bd forget "$1" --json >/dev/null 2>&1; }
@@ -644,33 +655,87 @@ _store_migrate_record() {
     "$("$JQ_BIN" -cn --arg old "$1" --arg new "$2" --arg kind "$3" --arg now "$(now_iso)" '{old:$old,new:$new,kind:$kind,now:$now}')" >/dev/null
 }
 
-# _store_migrate_tasks — pass 1: every non-closed task, new ids recorded in `migrated`
+# The migration counts what it saw in Beads against what it wrote (or had already written on
+# an earlier run) per kind, and collects every item it could not read or write in
+# _MIG_FAILED. _store_cmd_migrate switches the store only when that list is empty (Riley 5).
+_MIG_FAILED=""
+_mig_fail() { _MIG_FAILED="${_MIG_FAILED}  $1"$'\n'; }
+
+# _store_migrate_tasks — pass 1: every non-closed task with its status (open, in_progress,
+# blocked), assignee, creator, priority and notes; new ids recorded in `migrated`.
 _store_migrate_tasks() {
-  local old_id item title desc assignee prio created_by new_id
-  for old_id in $(_store_bd list --type task --all --include-infra --json --limit 0 2>/dev/null | "$JQ_BIN" -r 'map(select(.status != "closed")) | .[].id'); do
-    [ -n "$(_store_migrated_new_id "$old_id")" ] && continue
-    item="$(_store_bd show "$old_id" --json 2>/dev/null)" || continue
-    title="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].title')"
+  local list ids old_id item title desc assignee prio created_by status notes new_id
+  _MIG_TASKS_SEEN=0
+  _MIG_TASKS_WRITTEN=0
+  list="$(_store_bd list --type task --all --include-infra --json --limit 0 2>/dev/null)" &&
+    ids="$(printf '%s' "$list" | "$JQ_BIN" -r 'map(select(.status != "closed")) | .[].id' 2>/dev/null)" || {
+    _mig_fail "tasks: bd list failed"
+    return 0
+  }
+  for old_id in $ids; do
+    _MIG_TASKS_SEEN=$((_MIG_TASKS_SEEN + 1))
+    if [ -n "$(_store_migrated_new_id "$old_id")" ]; then
+      _MIG_TASKS_WRITTEN=$((_MIG_TASKS_WRITTEN + 1))
+      continue
+    fi
+    item="$(_store_bd show "$old_id" --json --long 2>/dev/null)" &&
+      title="$(printf '%s' "$item" | "$JQ_BIN" -er '.[0].title')" || {
+      _mig_fail "task $old_id: bd show failed"
+      continue
+    }
     desc="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].description // ""')"
     assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].assignee // ""')"
     prio="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].priority')"
     created_by="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].created_by // ""')"
-    new_id="$(store_native_task_create "$created_by" "$assignee" "$prio" "$title" "$desc")" || continue
+    status="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].status // "open"')"
+    notes="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].notes // ""')"
+    new_id="$(store_native_task_create "$created_by" "$assignee" "$prio" "$title" "$desc")" && [ -n "$new_id" ] || {
+      _mig_fail "task $old_id: could not write it to the native store"
+      continue
+    }
+    case "$status" in
+      open) ;;
+      in_progress | blocked)
+        store_native_task_status "$new_id" "$status" || {
+          _mig_fail "task $old_id: written as $new_id, but its status $status could not be set"
+          continue
+        }
+        ;;
+      *) store_native_task_note "$new_id" migrate "status in Beads was $status; it is open here" ;;
+    esac
+    [ -z "$notes" ] || store_native_task_note "$new_id" migrate "notes from Beads: $notes"
     store_native_task_note "$new_id" migrate "migrated from $old_id"
-    _store_migrate_record "$old_id" "$new_id" task
+    _store_migrate_record "$old_id" "$new_id" task || {
+      _mig_fail "task $old_id: written as $new_id, but the mapping could not be recorded"
+      continue
+    }
+    _MIG_TASKS_WRITTEN=$((_MIG_TASKS_WRITTEN + 1))
   done
 }
 
 # _store_migrate_task_deps — pass 2: dependencies between migrated tasks (a blocker that
 # was not migrated, because it was closed, is dropped: its block is already moot)
 _store_migrate_task_deps() {
-  local old_id new_id old_blocker new_blocker
+  local old_id new_id deps old_blocker new_blocker
+  _MIG_DEPS_SEEN=0
+  _MIG_DEPS_WRITTEN=0
   for old_id in $(_sq "SELECT COALESCE((SELECT json_group_array(old_id) FROM migrated WHERE kind='task'), '[]');" '{}' | "$JQ_BIN" -r '.[]'); do
     new_id="$(_store_migrated_new_id "$old_id")"
     [ -n "$new_id" ] || continue
-    for old_blocker in $(_store_bd dep list "$old_id" --direction=down --type blocks --json 2>/dev/null | "$JQ_BIN" -r '.[].id' 2>/dev/null); do
+    deps="$(_store_bd dep list "$old_id" --direction=down --type blocks --json 2>/dev/null)" &&
+      deps="$(printf '%s' "$deps" | "$JQ_BIN" -r '.[].id' 2>/dev/null)" || {
+      _mig_fail "task $old_id: its dependencies could not be read"
+      continue
+    }
+    for old_blocker in $deps; do
       new_blocker="$(_store_migrated_new_id "$old_blocker")"
-      [ -n "$new_blocker" ] && store_native_task_dep_add "$new_id" "$new_blocker"
+      [ -n "$new_blocker" ] || continue
+      _MIG_DEPS_SEEN=$((_MIG_DEPS_SEEN + 1))
+      if store_native_task_dep_add "$new_id" "$new_blocker"; then
+        _MIG_DEPS_WRITTEN=$((_MIG_DEPS_WRITTEN + 1))
+      else
+        _mig_fail "dependency $old_id -> $old_blocker could not be written"
+      fi
     done
   done
 }
@@ -678,35 +743,80 @@ _store_migrate_task_deps() {
 # _store_migrate_messages — every unread message; no per-message note mechanism exists, so
 # the "migrated from <old-id>" line goes at the top of the body instead
 _store_migrate_messages() {
-  local old_id item sender recipient subject body
-  for old_id in $(_store_bd list --type message --status open,in_progress,blocked --include-infra --json --limit 0 2>/dev/null | "$JQ_BIN" -r '.[].id'); do
-    [ -n "$(_store_migrated_new_id "$old_id")" ] && continue
-    item="$(_store_bd show "$old_id" --json 2>/dev/null)" || continue
+  local list ids old_id item sender recipient subject body new_id
+  _MIG_MSGS_SEEN=0
+  _MIG_MSGS_WRITTEN=0
+  list="$(_store_bd list --type message --status open,in_progress,blocked --include-infra --json --limit 0 2>/dev/null)" &&
+    ids="$(printf '%s' "$list" | "$JQ_BIN" -r '.[].id' 2>/dev/null)" || {
+    _mig_fail "messages: bd list failed"
+    return 0
+  }
+  for old_id in $ids; do
+    _MIG_MSGS_SEEN=$((_MIG_MSGS_SEEN + 1))
+    if [ -n "$(_store_migrated_new_id "$old_id")" ]; then
+      _MIG_MSGS_WRITTEN=$((_MIG_MSGS_WRITTEN + 1))
+      continue
+    fi
+    item="$(_store_bd show "$old_id" --json 2>/dev/null)" &&
+      subject="$(printf '%s' "$item" | "$JQ_BIN" -er '.[0].title')" || {
+      _mig_fail "message $old_id: bd show failed"
+      continue
+    }
     sender="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].created_by // ""')"
     recipient="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].assignee // ""')"
-    subject="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].title')"
     body="$(printf '%s' "$item" | "$JQ_BIN" -r '.[0].description // ""')"
-    new_id="$(store_native_msg_create "$sender" "$recipient" "$subject" "$(printf 'migrated from %s\n\n%s' "$old_id" "$body")")" || continue
-    _store_migrate_record "$old_id" "$new_id" message
+    new_id="$(store_native_msg_create "$sender" "$recipient" "$subject" "$(printf 'migrated from %s\n\n%s' "$old_id" "$body")")" && [ -n "$new_id" ] || {
+      _mig_fail "message $old_id: could not write it to the native store"
+      continue
+    }
+    _store_migrate_record "$old_id" "$new_id" message || {
+      _mig_fail "message $old_id: written as $new_id, but the mapping could not be recorded"
+      continue
+    }
+    _MIG_MSGS_WRITTEN=$((_MIG_MSGS_WRITTEN + 1))
   done
 }
 
 _store_migrate_memories() {
-  local raw key text
-  raw="$(_store_bd memories --json 2>/dev/null)" || return 0
-  for key in $(printf '%s' "$raw" | "$JQ_BIN" -r 'to_entries | map(select(.key != "schema_version")) | .[].key'); do
+  local raw keys key text
+  _MIG_MEMS_SEEN=0
+  _MIG_MEMS_WRITTEN=0
+  raw="$(_store_bd memories --json 2>/dev/null)" &&
+    keys="$(printf '%s' "$raw" | "$JQ_BIN" -r 'to_entries | map(select(.key != "schema_version")) | .[].key' 2>/dev/null)" || {
+    _mig_fail "memories: bd memories failed"
+    return 0
+  }
+  for key in $keys; do
+    _MIG_MEMS_SEEN=$((_MIG_MEMS_SEEN + 1))
     text="$(printf '%s' "$raw" | "$JQ_BIN" -r --arg k "$key" '.[$k]')"
-    store_native_memory_set "$key" "$text" migrate 2>/dev/null || true
+    if store_native_memory_set "$key" "$text" migrate 2>/dev/null; then
+      _MIG_MEMS_WRITTEN=$((_MIG_MEMS_WRITTEN + 1))
+    else
+      _mig_fail "memory $key: could not write it to the native store"
+    fi
   done
 }
 
+# _store_cmd_migrate — all or nothing as far as the switch goes: every item that could not
+# be read or written is named, the command exits 1, and the store stays on Beads. What was
+# written is kept and recorded, so a rerun picks up where this one stopped without duplicates.
 _store_cmd_migrate() {
   [ -n "$BD_BIN" ] || die "store: cannot migrate: bd is not installed"
   store_native_ensure || die "store: cannot migrate: native store is not usable"
+  _MIG_FAILED=""
   _store_migrate_tasks
   _store_migrate_task_deps
   _store_migrate_messages
   _store_migrate_memories
+  say "store: migrate from Beads (open tasks, unread messages, notes; closed tasks and read messages stay in Beads)"
+  say "  tasks: $_MIG_TASKS_SEEN seen, $_MIG_TASKS_WRITTEN written"
+  say "  dependencies: $_MIG_DEPS_SEEN seen, $_MIG_DEPS_WRITTEN written"
+  say "  messages: $_MIG_MSGS_SEEN seen, $_MIG_MSGS_WRITTEN written"
+  say "  memories: $_MIG_MEMS_SEEN seen, $_MIG_MEMS_WRITTEN written"
+  if [ -n "$_MIG_FAILED" ]; then
+    printf '%s' "$_MIG_FAILED" >&2
+    die "store: migration incomplete; NOT switched, the store stays beads. Fix the items above and run it again (what was written is kept, nothing is duplicated)."
+  fi
   store_set_kind native
   say "store: migrated into the native store ($(store_db)); switched. Nothing was deleted from Beads."
 }
@@ -722,24 +832,46 @@ _store_cmd_status() {
   say "  open tasks: $(store_tasks_json "" "open,in_progress,blocked" 2>/dev/null | "$JQ_BIN" 'length' 2>/dev/null || printf 0)   unread messages: $("store_${kind}_unread_count" 2>/dev/null || printf 0)   memories: $(store_memory_list_json 2>/dev/null | "$JQ_BIN" 'length' 2>/dev/null || printf 0)"
 }
 
+# _store_left_behind <new-kind> — before a switch without --migrate: one line naming the
+# open tasks and unread messages the current store still holds, which the agents stop seeing
+# once the switch is made. Silent when the current store is <new-kind> or holds nothing.
+_store_left_behind() {
+  local new="$1" old tasks msgs hint=""
+  old="$(store_kind)"
+  [ "$old" != "$new" ] || return 0
+  "store_${old}_ensure" >/dev/null 2>&1 || true
+  tasks="$(store_tasks_json "" "open,in_progress,blocked" 2>/dev/null | "$JQ_BIN" 'length' 2>/dev/null)"
+  msgs="$("store_${old}_unread_count" 2>/dev/null)"
+  case "$tasks" in '' | *[!0-9]*) tasks=0 ;; esac
+  case "$msgs" in '' | *[!0-9]*) msgs=0 ;; esac
+  [ "$((tasks + msgs))" -gt 0 ] || return 0
+  [ "$old" = beads ] && hint="; to bring them along: teamctl store native --migrate"
+  say "store: $tasks open task(s) and $msgs unread message(s) stay behind in the $old store and are not moved$hint"
+}
+
 # cmd_store [native|beads [--migrate]] — teamctl store (lib/beads.sh owns the workspace
-# bootstrap itself; this only switches which backend wolfmux reads and writes)
+# bootstrap itself; this only switches which backend wolfmux reads and writes). Reading the
+# status is open to everyone; switching is the lead's or the human's (Riley 7).
 cmd_store() {
   load_project
   case "${1:-}" in
     "") _store_cmd_status ;;
     native)
+      require_manager store
       if [ "${2:-}" = "--migrate" ]; then
         _store_cmd_migrate
       else
         store_native_ensure || die "store: native store is not usable"
+        _store_left_behind native
         store_set_kind native
         say "store: switched to native ($(store_db)). Agents started before the switch were taught the other store's commands and should be restarted."
       fi
       ;;
     beads)
+      require_manager store
       [ -n "$BD_BIN" ] || die "store: cannot switch to beads: bd is not installed"
       beads_dir >/dev/null 2>&1 || die "store: cannot switch to beads: no Beads workspace in $(short_path "$ROOT") (teamctl start --init-beads)"
+      _store_left_behind beads
       store_set_kind beads
       say "store: switched to beads. Agents started before the switch were taught the other store's commands and should be restarted."
       ;;

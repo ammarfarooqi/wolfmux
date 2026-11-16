@@ -109,7 +109,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
                                                       (ids: teamctl status --json | jq -r '.agents[].session_id')
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
-  Messages for you  agents write to you in Beads: bd create "Subject" -t message -a human -d "..."
+  Messages for you  agents write to you with teamctl send human "<subject>" "<body>" (on a Beads
+         project, bd create "<subject>" -t message -a human -d "<body>" does the same).
          The status bar shows 📨 and how many are unread (🔔: a permission request is waiting).
          prefix N, or a click on the number, opens them: Enter reads one, r marks it read.
   Notices  nothing is typed into a pane YOU are using (policy human-pane-typing): one your client
@@ -119,7 +120,8 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
          attached to is not told at its turn end (that text would print in full in your pane):
          its waiter wakes it within ~15 s once you are not using its pane (policy lead-wake),
          and the pane shows one line, "wolfmux: team notice".
-         This is NOT an agent's Beads inbox — the work itself is always bd list --assignee <role>
+         This is NOT an agent's mail: the work itself is teamctl tasks <role> and teamctl mail <role>
+         (on a Beads project also bd list --assignee <role>).
     teamctl inbox [<role>] [--all] [--json] [--keep]       (alias: notices)
                                                       for debugging: the PANE notices filed for a
                                                       role (default: the lead), newest last. Not
@@ -281,7 +283,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
   Mail  reaches a Claude Code agent through its CLI's hooks, with the body, at its next tool
         call (a Codex agent still gets the typed notice). Backend: native sqlite (default
         for a new project) or Beads, kept for a team already on it; teamctl store shows which.
-    teamctl send <role>|<team>.<role>|--all "<subject>" ["<body>"] [--body-file <file>|-] [--re <bead-id>]
+    teamctl send <role>|<team>.<role>|human|--all "<subject>" ["<body>"] [--body-file <file>|-] [--re <bead-id>]
     teamctl mail [<role>] [--peek] [--json]           unread mail + open tasks; marks messages
                                                       read for you, unless --peek
   Tasks

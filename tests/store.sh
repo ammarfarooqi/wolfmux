@@ -75,7 +75,7 @@ run_contract() { # <label>
   store_task_dep_add "$tid" "$bid"
   check "tasks_json includes blocked_by for an open blocker" \
     '[ "$(store_tasks_json "" "" | "$JQ_BIN" -r --arg id "$tid" ".[] | select(.id==\$id) | .blocked_by | length")" = 1 ]'
-  store_task_close "$bid" "done with it"
+  store_task_close "$bid" "done with it" "" carol
   check "tasks_json: blocked_by drops a closed blocker" \
     '[ "$(store_tasks_json "" "" | "$JQ_BIN" -r --arg id "$tid" ".[] | select(.id==\$id) | .blocked_by | length")" = 0 ]'
 
@@ -90,7 +90,7 @@ run_contract() { # <label>
   store_task_note "$tid" dave "waiting on design"
   check "task_note: appended, carries author and text" \
     'printf %s "$(store_item_json "$tid" | "$JQ_BIN" -r .notes)" | grep -q "dave.*waiting on design"'
-  store_task_close "$tid" "shipped" failed
+  store_task_close "$tid" "shipped" failed bob
   check "task_close failed: status closed" '[ "$(store_item_json "$tid" | "$JQ_BIN" -r .status)" = closed ]'
 
   echo "== $label: messages"
@@ -122,6 +122,12 @@ run_contract() { # <label>
     'store_memory_text 10000 | grep -q "### release-notes" && store_memory_text 10000 | grep -q "second draft, replaced"'
   check "memory_text respects a tiny budget (nothing, or well under it)" \
     '[ "$(store_memory_text 1 | wc -c | tr -d " ")" -le 1 ]'
+  store_memory_set small-note "tiny" alice
+  store_memory_set big-note "$(printf 'z%.0s' $(seq 1 300))" alice
+  check "memory_text skips a note that does not fit and still shows the others (Riley 6)" \
+    'store_memory_text 100 | grep -q "tiny" && ! store_memory_text 100 | grep -q zzzz'
+  store_memory_forget small-note
+  store_memory_forget big-note
   store_memory_forget release-notes
   check "memory_forget removes the key" \
     '[ "$(store_memory_list_json | "$JQ_BIN" -r "[.[] | select(.key==\"release-notes\")] | length")" = 0 ]'
@@ -134,6 +140,25 @@ run_contract "native"
 if [ "$HAVE_BD" -eq 1 ]; then
   new_beads_repo beads-contract
   run_contract "beads"
+  echo "== beads: a title that starts with a dash (Riley 11)"
+  dtid="$(store_task_create lead bob 2 "-p" "x")"
+  check "beads task_create: a title \"-p\" is a title, not a flag" \
+    'valid_bead_id "$dtid" && [ "$(store_item_json "$dtid" | "$JQ_BIN" -r .title)" = "-p" ]'
+  dmid="$(store_msg_create lead bob "--help" "x")"
+  check "beads msg_create: a subject \"--help\" is a subject, not a flag" \
+    'valid_bead_id "$dmid" && [ "$(store_item_json "$dmid" | "$JQ_BIN" -r .title)" = "--help" ]'
+  drid="$(store_msg_create bob lead "-r reply" "x" "$dmid")"
+  check "beads msg_create (reply): a subject starting with a dash works" \
+    'valid_bead_id "$drid" && [ "$(store_item_json "$drid" | "$JQ_BIN" -r .title)" = "-r reply" ]'
+  echo "== beads: close carries the actor, no --force (Riley 1)"
+  gid_b="$(store_task_create lead bob 2 "Guarded" "x")"
+  check "beads task_close: a non-assignee actor is refused by bd, the task stays open" \
+    '! store_task_close "$gid_b" "not mine" "" mallory && [ "$(store_item_json "$gid_b" | "$JQ_BIN" -r .status)" = open ]'
+  check "beads task_close: the assignee closes it without force" \
+    'store_task_close "$gid_b" "mine" "" bob && [ "$(store_item_json "$gid_b" | "$JQ_BIN" -r .status)" = closed ]'
+  gid_c="$(store_task_create lead bob 2 "Lead closes" "x")"
+  check "beads task_close: force (the lead) closes another's task" \
+    'store_task_close "$gid_c" "lead" "" lead force && [ "$(store_item_json "$gid_c" | "$JQ_BIN" -r .status)" = closed ]'
 else
   skip "beads contract: bd is not installed"
 fi
@@ -218,6 +243,33 @@ check "store_kind: an old agent record on disk means beads" '[ "$(store_kind)" =
 store_set_kind native
 check "store_kind: the file wins over the old-record rule" '[ "$(store_kind)" = native ]'
 
+echo "== teamctl store: switching is the lead's (Riley 7)"
+new_repo switch-gate
+store_set_kind beads
+gate_out="$( (TEAM_ROLE=backend BEADS_ACTOR=backend cmd_store native) 2>&1)"
+gate_rc=$?
+check "store native from a worker is refused (77), the store stays beads" \
+  '[ "$gate_rc" -eq 77 ] && [ "$(store_kind)" = beads ]'
+check "store beads from a worker is refused (77) before any workspace check" \
+  'out="$( (TEAM_ROLE=backend BEADS_ACTOR=backend cmd_store beads) 2>&1)"; [ $? -eq 77 ] && ! printf "%s" "$out" | grep -q "no Beads workspace"'
+store_set_kind native
+store_native_ensure
+store_task_create lead bob 2 "Left behind" "x" >/dev/null
+check "store status from a worker still reads" \
+  '(TEAM_ROLE=backend BEADS_ACTOR=backend cmd_store) | grep -q "^store: native"'
+if [ "$HAVE_BD" -eq 1 ]; then
+  beads_ensure yes >/dev/null 2>&1
+  behind_out="$( (cmd_store beads) 2>&1)"
+  check "switching away from a store that holds work says how much stays behind" \
+    'printf "%s" "$behind_out" | grep -q "1 open task.* stay behind in the native store"'
+  store_task_create lead bob 2 "Beads work" "x" >/dev/null
+  behind_out2="$( (cmd_store native) 2>&1)"
+  check "store native without --migrate names --migrate for the Beads work left behind" \
+    'printf "%s" "$behind_out2" | grep -q "stay behind in the beads store" && printf "%s" "$behind_out2" | grep -q -- "--migrate"'
+else
+  skip "store switch: stay-behind counts (bd is not installed)"
+fi
+
 new_repo kind-migrate
 if [ "$HAVE_BD" -eq 1 ]; then
   beads_ensure yes >/dev/null 2>&1
@@ -233,6 +285,45 @@ if [ "$HAVE_BD" -eq 1 ]; then
   cmd_store native --migrate >/dev/null 2>&1
   check "migrate: idempotent, a second run does not duplicate" \
     '[ "$(store_tasks_json "" "" | "$JQ_BIN" -r "[.[] | select(.title==\"Migrate me\")] | length")" = 1 ]'
+
+  echo "== migrate: status, blockers and assignee survive; counts; all or nothing (Riley 5)"
+  new_repo migrate-lossless
+  beads_ensure yes >/dev/null 2>&1
+  store_set_kind beads
+  m_blocker="$(store_task_create lead qa 1 "M blocker" "b")"
+  store_task_claim "$m_blocker" qa
+  m_wait="$(store_task_create lead backend 2 "M waiting" "w")"
+  store_task_dep_add "$m_wait" "$m_blocker"
+  m_blk="$(store_task_create lead backend 2 "M blocked" "x")"
+  store_task_status "$m_blk" blocked
+  store_msg_create lead backend "M msg one" "1" >/dev/null
+  store_msg_create lead qa "M msg two" "2" >/dev/null
+  # a failing bd show for one task: nothing switches, the command fails and names the item
+  _store_bd_real="$(declare -f _store_bd)"
+  eval "_store_bd() { if [ \"\$1\" = show ] && [ \"\$2\" = \"$m_blk\" ]; then return 1; fi; (cd \"\$ROOT\" && \"\$BD_BIN\" \"\$@\"); }"
+  fail_out="$( (cmd_store native --migrate) 2>&1)"
+  fail_rc=$?
+  eval "$_store_bd_real"
+  check "migrate: one unreadable item -> non-zero exit, the store is NOT switched" '[ "$fail_rc" -ne 0 ] && [ "$(store_kind)" = beads ]'
+  check "migrate: the failure names the item" 'printf "%s" "$fail_out" | grep -q "$m_blk"'
+  eval "_store_bd() { if [ \"\$1\" = list ]; then return 1; fi; (cd \"\$ROOT\" && \"\$BD_BIN\" \"\$@\"); }"
+  list_out="$( (cmd_store native --migrate) 2>&1)"
+  list_rc=$?
+  eval "$_store_bd_real"
+  check "migrate: a failed bd list is a failure, not zero rows; not switched" '[ "$list_rc" -ne 0 ] && [ "$(store_kind)" = beads ]'
+  ok_out="$( (cmd_store native --migrate) 2>&1)"
+  ok_rc=$?
+  check "migrate: the clean rerun succeeds and switches" '[ "$ok_rc" -eq 0 ] && [ "$(store_kind)" = native ]'
+  check "migrate: prints seen and written counts per kind" \
+    'printf "%s" "$ok_out" | grep -q "tasks: 3 seen, 3 written" && printf "%s" "$ok_out" | grep -q "messages: 2 seen, 2 written"'
+  mrow() { store_tasks_json "" "" | "$JQ_BIN" -c --arg t "$1" '.[] | select(.title==$t)'; }
+  check "migrate: an in_progress task stays in_progress, with its assignee" \
+    '[ "$(mrow "M blocker" | "$JQ_BIN" -r "[.status,.assignee]|join(\" \")")" = "in_progress qa" ]'
+  check "migrate: a blocked task stays blocked" '[ "$(mrow "M blocked" | "$JQ_BIN" -r .status)" = blocked ]'
+  check "migrate: a waiting task still waits on its (new) blocker" \
+    '[ "$(mrow "M waiting" | "$JQ_BIN" -r ".blocked_by[0]")" = "$(mrow "M blocker" | "$JQ_BIN" -r .id)" ]'
+  check "migrate: both unread messages arrived" \
+    '[ "$(store_inbox_json backend | "$JQ_BIN" "[.[]|select(.title==\"M msg one\")]|length")" = 1 ] && [ "$(store_inbox_json qa | "$JQ_BIN" "[.[]|select(.title==\"M msg two\")]|length")" = 1 ]'
 else
   skip "migrate: bd is not installed"
 fi

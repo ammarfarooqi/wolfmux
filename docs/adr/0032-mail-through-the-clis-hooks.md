@@ -21,7 +21,10 @@ Since v1.0 a message or a task reached an agent as one fixed line typed into its
 The CLI has a better channel. Verified against the real CLI, not a stub: the answer of a
 SessionStart, UserPromptSubmit or PostToolUse hook may carry `additionalContext`, which the CLI
 puts into the conversation, and a Stop hook that answers `{"decision":"block","reason":…}` makes
-the agent go on with that text. Every provider that runs through Claude Code (GLM, Kimi, MiniMax,
+the agent go on with that text. **Amended in v1.24.0**: the Stop hook answers
+`{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":…}}` instead, v1.22.1's form
+(lib/inbox.sh cmd_inbox_stop, lib/hooks.sh _hook_emit): the agent goes on the same way, and the
+transcript labels it "Stop hook feedback", not "Stop hook error". Every provider that runs through Claude Code (GLM, Kimi, MiniMax,
 Qwen, Moonshot, DeepSeek) has the same hooks.
 
 ## Decision

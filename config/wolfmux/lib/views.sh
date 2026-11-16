@@ -364,7 +364,7 @@ cmd_status() {
   # The footer names the store this project actually uses: pointing a native project at bd
   # sends its reader to a database that is not there.
   if [ "$(store_kind)" = "native" ]; then
-    say "tasks and messages live in the native store:  teamctl tasks · teamctl inbox <role> · teamctl show <id> · teamctl store"
+    say "tasks and messages live in the native store:  teamctl tasks · teamctl mail · teamctl show <id> · teamctl store"
   else
     say "tasks and messages live in Beads:  bd ready · bd list --status in_progress · bd list --assignee <role> --status open,in_progress,blocked --include-infra"
   fi

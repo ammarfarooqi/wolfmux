@@ -102,28 +102,6 @@ run_dir_ensure() {
   printf '%s\n' "$dir"
 }
 
-# agent_turn_state <role> — busy | idle | unknown (never started under hooks, or a Codex agent)
-agent_turn_state() {
-  local state=""
-  if [ -r "$(run_dir "$1")/state" ]; then IFS= read -r state <"$(run_dir "$1")/state" || true; fi
-  case "$state" in busy | idle) printf '%s\n' "$state" ;; *) printf 'unknown\n' ;; esac
-}
-
-# agent_quiet_seconds <role> — seconds since the agent's CLI last ran a hook (a tool call, a
-# prompt, a stop); empty when it never did. A busy agent that has been quiet for long is
-# thinking, inside one long command, or was interrupted: its state file cannot tell which.
-agent_quiet_seconds() {
-  local dir newest=0 m f
-  dir="$(run_dir "$1")"
-  for f in "$dir/calls" "$dir/state"; do
-    [ -e "$f" ] || continue
-    m="$(/usr/bin/stat -f %m "$f" 2>/dev/null || printf 0)"
-    if [ "$m" -gt "$newest" ]; then newest="$m"; fi
-  done
-  [ "$newest" -gt 0 ] || return 0
-  printf '%s\n' "$(($(now_epoch) - newest))"
-}
-
 # agent_attention <role> — ask for the agent's next tool call to come through the full hook
 agent_attention() {
   local dir

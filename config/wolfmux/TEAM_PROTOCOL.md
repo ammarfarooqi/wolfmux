@@ -94,8 +94,10 @@ teamctl checkpoint "<done so far / next / watch out>"    where you left off, for
 ```
 
 **The human** has a name in the store too: `human` (the setting `WOLFMUX_HUMAN` can change it).
-A message to `human` is what the number next to the wolf in the status bar counts, and
-the human reads it with `prefix N` or a click on that number. Only the
+A message to `human` (`teamctl send human "<subject>" "<body>"`) is what the number next to
+the wolf in the status bar counts, and the human reads it with `prefix N` or a click on that
+number. A message the human sends from a plain terminal carries the name `human`, so you
+answer it with `teamctl send human ...` too. Only the
 communication-management lead (`communication-management.lead`) writes messages to
 `human`; any other team that needs the human sends its message to that lead. This is a
 rule of the protocol: nothing in the code enforces it.

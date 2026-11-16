@@ -109,6 +109,12 @@ cmd_deliver() {
   case " create update close " in *" $event "*) ;; *) return 0 ;; esac
   payload="$(/bin/cat 2>/dev/null || true)"
   printf '%s' "$payload" | "$JQ_BIN" -e 'type == "object"' >/dev/null 2>&1 || return 0
+  # the close of a task `teamctl done` already reported (mail_announce says why); bd hands its
+  # hook the environment of the command that wrote, so the flag reaches here as well
+  if [ "$event" = "close" ] && [ -n "${WOLFMUX_MAIL_CLOSE_REPORTED:-}" ] &&
+    [ "$(printf '%s' "$payload" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)" != "message" ]; then
+    return 0
+  fi
   mail_quiet_route "$identity" || return 0
   _mail_deliver_to "$MAIL_ROLE" "$event" "$payload" "$identity"
 }
@@ -148,7 +154,9 @@ mail_announce() {
       fi
       ;;
     close)
-      if [ "$type" != "message" ] && [ -n "$actor" ] && [ "$actor" != "$lead" ]; then
+      # WOLFMUX_MAIL_CLOSE_REPORTED: `teamctl done` already sent the lead its "Done:" report for
+      # this close; a second notice for the same event would be a second hand-over (D7).
+      if [ "$type" != "message" ] && [ -n "$actor" ] && [ "$actor" != "$lead" ] && [ -z "${WOLFMUX_MAIL_CLOSE_REPORTED:-}" ]; then
         target="$lead"
       fi
       ;;
@@ -194,7 +202,6 @@ _mail_render_bead() {
   id="$(printf '%s' "$json" | "$JQ_BIN" -r '.id // "?"' 2>/dev/null)"
   type="$(printf '%s' "$json" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
   from="$(printf '%s' "$json" | "$JQ_BIN" -r '.created_by // ""' 2>/dev/null)"
-  [ -n "$from" ] || from="?"
   title="$(_hook_title "$(printf '%s' "$json" | "$JQ_BIN" -r '.title // ""' 2>/dev/null)")"
   prio="$(printf '%s' "$json" | "$JQ_BIN" -r '.priority // 3' 2>/dev/null)"
   status="$(printf '%s' "$json" | "$JQ_BIN" -r '.status // "open"' 2>/dev/null)"
@@ -203,22 +210,28 @@ _mail_render_bead() {
   blocked_by="$(printf '%s' "$json" | "$JQ_BIN" -r '[.blocked_by[]?] | join(", ")' 2>/dev/null)"
   if [ "$event" = "close" ] && [ "$type" != "message" ]; then
     local who role
-    who="$from"
+    who="${from:-someone}"
     role="$(printf '%s' "$json" | "$JQ_BIN" -r '.assignee // "?"' 2>/dev/null)"
     printf '[wolfmux mail] %s closed %s: %s. Review: teamctl diff %s --stat' "$who" "$id" "$title" "$role"
     return 0
   fi
   if [ "$type" = "message" ]; then
-    heading="[wolfmux mail] MESSAGE $id from $from: $title"
-    hint="Marked read. Reply: teamctl send $from \"Re: $title\" \"<text>\""
+    if [ -n "$from" ]; then
+      heading="[wolfmux mail] MESSAGE $id from $from: $title"
+      hint="Marked read. Reply: teamctl send $from \"Re: $title\" \"<text>\""
+    else
+      # no sender recorded (a message written before v1.24.0 fixed the human's name): no "?"
+      heading="[wolfmux mail] MESSAGE $id, sender not recorded: $title"
+      hint="Marked read. Its sender is not recorded, so there is no one to reply to."
+    fi
   else
     # Waiting on an unclosed blocker shows that instead of its own status, so it is never
     # mistaken for ready work (teamctl claim refuses it too, for the same reason).
     [ -z "$blocked_by" ] || status="waiting"
     if [ "$event" = "update" ]; then
-      heading="[wolfmux mail] TASK UPDATED $id from $from, priority P$prio, $status: $title"
+      heading="[wolfmux mail] TASK UPDATED $id from ${from:-someone}, priority P$prio, $status: $title"
     else
-      heading="[wolfmux mail] TASK $id from $from, priority P$prio, $status: $title"
+      heading="[wolfmux mail] TASK $id from ${from:-someone}, priority P$prio, $status: $title"
     fi
     hint=""
     if [ -n "$blocked_by" ]; then
@@ -245,15 +258,19 @@ _mail_prune_seen() {
   done
 }
 
-# _mail_mark_shown <file> <seen-dir> <identity> — moves a shown spool file into seen/, prunes
-# seen/ to the newest 50, and for a message marks it read for this agent, detached (so the
-# agent does not spend a turn doing that itself, and a hook never blocks on the store).
+# _mail_mark_shown <file> <seen-dir> <identity> — moves a spool file about to be shown into
+# seen/, prunes seen/ to the newest 50, and for a message marks it read for this agent, detached
+# (so the agent does not spend a turn doing that itself, and a hook never blocks on the store).
 # Native store only: on Beads a hook makes no bd call at all (v1.20.0, tests/beads-hotpath.sh),
 # so there the message stays open until the agent or `teamctl mail` closes it, as in v1.23.0.
+# 1 when the move failed: another reader (`teamctl mail`, the Stop hook) took the file first, or
+# seen/ is not writable. The caller then does NOT show the item: the move is the claim, so two
+# readers racing for one file show it once, never twice.
 _mail_mark_shown() {
   local file="$1" seen="$2" identity="$3" dest type id
   dest="$seen/$(basename "$file")"
-  /bin/mv -f "$file" "$dest" 2>/dev/null || return 0
+  /bin/mv -f "$file" "$dest" 2>/dev/null || return 1
+  [ -f "$dest" ] || return 1
   type="$("$JQ_BIN" -r '.issue_type // "task"' "$dest" 2>/dev/null)"
   id="$("$JQ_BIN" -r '.id // empty' "$dest" 2>/dev/null)"
   if [ "$type" = "message" ] && valid_bead_id "$id" && [ -n "$identity" ] && [ "$(store_kind)" = "native" ]; then
@@ -262,13 +279,19 @@ _mail_mark_shown() {
   _mail_prune_seen "$seen"
 }
 
-# inbox_read <identity> — this agent's open work as JSON: tasks first by priority, then unread
-# messages by time. 1 when the store is unreachable or answers something that is not JSON;
-# the caller decides what that means (a hook says nothing, `teamctl mail` reports it).
+# inbox_read <identity> [<seconds>] — this agent's open work as JSON: tasks first by priority,
+# then unread messages by time. 1 when the store is unreachable, answers something that is not
+# JSON, or (with <seconds>, on Beads) does not answer within that bound: a hook passes the bound
+# every hook uses (_bd_bounded 5, lib/store.sh), because a wedged bd (Beads issue #6039) must
+# never hold an agent's hook past the CLI's own timeout. The native store answers at once.
 inbox_read() {
-  local identity="$1" json
+  local identity="$1" bound="${2:-}" json
   [ -n "$JQ_BIN" ] || return 1
-  json="$(store_inbox_json "$identity" 2>/dev/null)" || return 1
+  if [ -n "$bound" ] && [ "$(store_kind 2>/dev/null)" = "beads" ]; then
+    json="$(_bd_bounded "$bound" store_inbox_json "$identity")" || return 1
+  else
+    json="$(store_inbox_json "$identity" 2>/dev/null)" || return 1
+  fi
   printf '%s' "$json" | "$JQ_BIN" -e 'type == "array"' >/dev/null 2>&1 || return 1
   printf '%s' "$json"
 }
@@ -336,24 +359,56 @@ mail_bodies_for() {
       agent_attention "$role"
       break
     fi
+    # moved first, printed only once moved: the move is the claim (_mail_mark_shown)
+    _mail_mark_shown "$file" "$dir/mail/seen" "$identity" || continue
     printf '%s\n\n' "$block"
     budget=$((budget + ${#block}))
     shown=$((shown + 1))
-    _mail_mark_shown "$file" "$dir/mail/seen" "$identity"
   done
   return 0
 }
 
-_mail_hook_drain() {
-  # The inbox file is $STATE_DIR/inbox/<role>, and the run directory is $STATE_DIR/run/<role>:
-  # the team's state directory without a tmux call (hook_load_project would make one).
-  if [ -z "${STATE_DIR:-}" ]; then
-    STATE_DIR="${HOOK_RUN%/}"
-    STATE_DIR="${STATE_DIR%/*}"
-    STATE_DIR="${STATE_DIR%/*}"
+# _mail_hook_state_dir — the inbox file is $STATE_DIR/inbox/<role>, and the run directory is
+# $STATE_DIR/run/<role>: the team's state directory without a tmux call (hook_load_project
+# would make one).
+_mail_hook_state_dir() {
+  [ -z "${STATE_DIR:-}" ] || return 0
+  STATE_DIR="${HOOK_RUN%/}"
+  STATE_DIR="${STATE_DIR%/*}"
+  STATE_DIR="${STATE_DIR%/*}"
+}
+
+# mail_item_shown <role> <identity> <id> — <id> was just shown to its addressee by a channel
+# other than the hooks (`teamctl mail`, `teamctl show <id>`, the SessionStart briefing): its
+# inbox line is marked delivered and its spooled body moved to mail/seen, so no other channel
+# hands the same item over again (D7). awk and mv only.
+mail_item_shown() {
+  local role="$1" identity="$2" id="$3" dir file
+  [ -n "$role" ] && [ -n "$id" ] || return 0
+  dir="$STATE_DIR/run/$role"
+  if file="$(_mail_spooled "$dir" "$id")"; then
+    /bin/mkdir -p "$dir/mail/seen" 2>/dev/null || true
+    _mail_mark_shown "$file" "$dir/mail/seen" "$identity" || true
   fi
-  local dir="$HOOK_RUN/mail" identity="${BEADS_ACTOR:-$HOOK_ROLE}" base file json block budget=0 shown=0 more=0
+  inbox_mark_item_delivered "$role" "$id"
+}
+
+_mail_hook_drain() {
+  _mail_hook_state_dir
+  local dir="$HOOK_RUN/mail" identity="${BEADS_ACTOR:-$HOOK_ROLE}" base file json block budget=0 shown=0 more=0 queued
   [ -d "$dir/new" ] || return 0
+  # v1.21.1's pane proof, as the Stop and prompt hooks ask it (_inbox_hook_ready): only the agent
+  # in its own pane is handed its mail. A chat that merely inherited this environment gets nothing,
+  # and the mail stays spooled with its inbox line undelivered. Asked only when there is mail: the
+  # proof costs tmux calls, and a tool call with nothing queued never gets this far (bin/teamctl).
+  queued="$(/bin/ls -1 "$dir/new" 2>/dev/null | /usr/bin/head -1)"
+  [ -n "$queued" ] || return 0
+  if ! _inbox_hook_ready; then
+    # Not handed over, so still queued: the attention that cmd_hook cleared is set again, or the
+    # agent's own next tool call would take the hot path and leave its mail waiting.
+    : >"$HOOK_RUN/attention" 2>/dev/null || true
+    return 0
+  fi
   for base in $(/bin/ls -1 "$dir/new" 2>/dev/null | /usr/bin/sort); do
     file="$dir/new/$base"
     [ -f "$file" ] || continue
@@ -363,10 +418,15 @@ _mail_hook_drain() {
       more=1
       break
     fi
+    # Moved first, shown only once moved: the move is the claim (_mail_mark_shown). One that
+    # could not be moved stays queued, and attention is set again so the next call retries it.
+    if ! _mail_mark_shown "$file" "$dir/seen" "$identity"; then
+      [ ! -f "$file" ] || more=1
+      continue
+    fi
     hook_context "$block"
     budget=$((budget + ${#block}))
     shown=$((shown + 1))
-    _mail_mark_shown "$file" "$dir/seen" "$identity"
     # handed over here: the inbox line that announced it is delivered too, so the Stop and
     # prompt hooks do not hand the same item over a second time
     inbox_mark_item_delivered "$HOOK_ROLE" "$(_mail_spool_id "$base")"
@@ -375,18 +435,27 @@ _mail_hook_drain() {
 }
 
 # _mail_hook_session_start — the store is the truth here, not the spool: a task assigned
-# before the worker existed was never spooled. One read, rendered as the agent's briefing;
-# whatever already sat in mail/new/ is already in that briefing, so it moves to seen/ too.
-# The store unreachable or failing: say nothing, leave the spool alone.
+# before the worker existed was never spooled. One read, rendered as the agent's briefing.
+# Every item the briefing shows is handed over (D7): its inbox line is marked delivered and its
+# spooled body moves to seen/, so the first Stop does not hand it over again. A spooled item
+# the briefing did not show (cut by the budget, or not an inbox row, such as a closed task the
+# lead is told about) stays queued for the next tool call.
+# The store unreachable, failing or slower than the bound: one line that sends the agent to
+# `teamctl mail` (never "nothing is assigned", which the kickoff turns into "wait"), and the
+# spool is left alone.
 _mail_hook_session_start() {
-  local identity="${BEADS_ACTOR:-$HOOK_ROLE}" rows count heading json block budget=0 shown=0 base
-  rows="$(inbox_read "$identity")" || return 0
-  count="$(printf '%s' "$rows" | "$JQ_BIN" -r 'length' 2>/dev/null)"
-  case "$count" in '' | *[!0-9]*) count=0 ;; esac
+  local identity="${BEADS_ACTOR:-$HOOK_ROLE}" rows count heading json block budget=0 shown=0 id ids=""
+  _mail_hook_state_dir
   case "$HOOK_SOURCE" in
     compact | resume) heading="[wolfmux mail] your inbox as it stands now, $identity:" ;;
     *) heading="[wolfmux mail] your assignment, $identity:" ;;
   esac
+  if ! rows="$(inbox_read "$identity" 5)"; then
+    hook_context "$heading the store did not answer in time, so it is not shown here. Read it now: teamctl mail"
+    return 0
+  fi
+  count="$(printf '%s' "$rows" | "$JQ_BIN" -r 'length' 2>/dev/null)"
+  case "$count" in '' | *[!0-9]*) count=0 ;; esac
   if [ "$count" -eq 0 ]; then
     hook_context "$heading nothing is assigned yet. Wait for mail, or run: teamctl mail"
   else
@@ -398,12 +467,15 @@ _mail_hook_session_start() {
       hook_context "$block"
       budget=$((budget + ${#block}))
       shown=$((shown + 1))
+      id="$(printf '%s' "$json" | "$JQ_BIN" -r '.id // empty' 2>/dev/null)"
+      ids="$ids $id"
     done < <(printf '%s' "$rows" | "$JQ_BIN" -c '.[]' 2>/dev/null)
   fi
-  for base in $(/bin/ls -1 "$HOOK_RUN/mail/new" 2>/dev/null); do
-    [ -f "$HOOK_RUN/mail/new/$base" ] || continue
-    _mail_mark_shown "$HOOK_RUN/mail/new/$base" "$HOOK_RUN/mail/seen" "$identity"
+  for id in $ids; do
+    valid_bead_id "$id" || continue
+    mail_item_shown "$HOOK_ROLE" "$identity" "$id"
   done
+  [ -z "$(/bin/ls -1 "$HOOK_RUN/mail/new" 2>/dev/null | /usr/bin/head -1)" ] || agent_attention "$HOOK_ROLE"
 }
 
 # mail_hook <Event> — the contract is lib/hooks.sh's header.
@@ -417,10 +489,16 @@ mail_hook() {
   esac
 }
 
-# _mail_send_target <role>|<team>.<role> — sets MAIL_SEND_TEAM and MAIL_SEND_ROLE, or dies
-# (exit 64) naming the roles that do exist.
+# _mail_send_target <role>|<team>.<role>|<human> — sets MAIL_SEND_TEAM and MAIL_SEND_ROLE, or
+# dies (exit 64) naming the roles that do exist. The human ($WOLFMUX_HUMAN, default "human") is
+# a target too, though no agent has that role: one name for every team, as v1.23.0's human
+# inbox (badge, prefix N) reads it.
 _mail_send_target() {
   local word="$1" team role known
+  if [ "$word" = "$WOLFMUX_HUMAN" ]; then
+    MAIL_SEND_TEAM="$TEAM" MAIL_SEND_ROLE="$WOLFMUX_HUMAN"
+    return 0
+  fi
   case "$word" in
     *.*)
       identity_split "$word"
@@ -448,6 +526,7 @@ _mail_send_target() {
 _mail_send_one() {
   local team="$1" role="$2" subject="$3" body="$4" re="$5" sender="$6" identity id
   identity="$(team_identity "$team" "$role")"
+  [ "$role" != "$WOLFMUX_HUMAN" ] || identity="$WOLFMUX_HUMAN" # the human has no team prefix
   id="$(store_msg_create "$sender" "$identity" "$subject" "$body" "$re")" || return 1
   mail_announce create "$(store_item_json "$id")" "$sender"
   printf '%s\n' "$id"
@@ -498,7 +577,9 @@ cmd_send() {
   require_tools
   load_project
   store_backend_ready
-  self="${BEADS_ACTOR:-${TEAM_ROLE:-}}"
+  # A shell with no agent identity is the human's own terminal: its messages carry the human's
+  # name, so the reader sees who wrote and can reply (never "from ?").
+  self="${BEADS_ACTOR:-${TEAM_ROLE:-$WOLFMUX_HUMAN}}"
   if [ "$all" -eq 1 ]; then
     for r in $(reg_list); do
       [ "$r" != "${TEAM_ROLE:-}" ] || continue
@@ -570,14 +651,19 @@ cmd_mail() {
 }
 
 # _mail_inbox_mark_read <identity> <role> <rows-json> — every message row shown is marked
-# read (detached, one store call), and the caller's own mail/new/ is emptied into seen/.
+# read (detached, one store call), every row shown has its inbox line marked delivered (D7: the
+# Stop hook does not hand it over again), and the caller's own mail/new/ is emptied into seen/.
 _mail_inbox_mark_read() {
-  local identity="$1" role="$2" rows="$3" mids seen new base
+  local identity="$1" role="$2" rows="$3" mids seen new base id
   mids="$(printf '%s' "$rows" | "$JQ_BIN" -r '[.[] | select((.issue_type // "task") == "message") | .id] | join(" ")' 2>/dev/null)"
   if [ -n "$mids" ]; then
     # shellcheck disable=SC2086
     (store_msg_read "$identity" $mids >/dev/null 2>&1 &)
   fi
+  for id in $(printf '%s' "$rows" | "$JQ_BIN" -r '.[].id // empty' 2>/dev/null); do
+    valid_bead_id "$id" || continue
+    inbox_mark_item_delivered "$role" "$id"
+  done
   seen="$(run_dir_ensure "$role")/mail/seen"
   new="$(run_dir "$role")/mail/new"
   for base in $(/bin/ls -1 "$new" 2>/dev/null); do

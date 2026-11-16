@@ -8,12 +8,47 @@ Tasks, messages and shared team notes are `teamctl` commands (`send`, `task`, `c
 not Beads: agents no longer need `bd`. They live in a native sqlite store by default, or
 in Beads for a team already on it (`teamctl store`; [Beads cheat sheet](#beads-cheat-sheet)
 if yours is). A message or task reaches a Claude Code agent through its CLI's hooks, with
-the body, at its next tool call — a Codex agent still gets the typed notice. A worker's own
+the body, at its next tool call — a Codex agent gets the one-line notice, typed only where the typing gates allow. A worker's own
 conversation starts under the `worker-context` policy (default `trim`: your rules and
 settings; every plugin, the tools a pane agent cannot use and the claude.ai connectors off;
 [what an agent starts with](#what-an-agent-starts-with)) and is told, as it fills up, to commit and checkpoint, then to
 start nothing new (`WOLFMUX_CONTEXT_WARN` / `WOLFMUX_CONTEXT_ROTATE`); `teamctl restart
 <role>` picks the work back up from that checkpoint.
+
+## Upgrading from v1.23.0
+
+Installing v1.24.0 changes nothing in a project that is already running.
+
+- **A project that already has agent state and no `store` file stays on Beads.** Its tasks,
+  messages and notes are where they were, and `bd` keeps working underneath the `teamctl`
+  verbs. A project with nothing on disk yet, one you start for the first time, is native.
+- **To see which a project uses**, run `teamctl store` in it: `store: native (<file>)` or
+  `store: beads (<directory>)`, then the open tasks, unread messages and notes it holds. The
+  answer is kept in the file `~/.wolfmux/state/<project>/store`. `WOLFMUX_STORE=native|beads`
+  decides when that file is absent.
+- **To move to the native store**, run `teamctl store native --migrate`: it copies open tasks
+  (with their status, assignee and blockers), unread messages and notes into the native file,
+  prints how many of each it saw and wrote, and switches; it deletes nothing from Beads. If one
+  item cannot be read or written it names it, exits 1 and does not switch; run it again once
+  fixed (nothing already copied is copied twice). `teamctl store native` alone switches without copying;
+  `teamctl store beads` switches back (it needs `bd` and a Beads workspace in the project).
+  Switching is the lead's, or yours from a plain shell: any other agent is refused (exit 77),
+  while `teamctl store` with no argument stays open to everyone. A switch without `--migrate`
+  says how many open tasks and unread messages stay behind in the store it leaves.
+  After either switch, restart the agents (`teamctl restart <role> --continue`): one that
+  started before it was taught the other store's commands.
+- **What an agent's `bd` commands become** on a native store, where `bd` does not see the work:
+  `bd list --assignee <me> …` is `teamctl mail` (it also marks messages read), `bd show <id>`
+  is `teamctl show <id>`, `bd create "…" -t message -a <role>` is `teamctl send <role> "…"`,
+  `bd create "…" -t task -a <role>` is `teamctl task <role> "…"`, `bd update <id> --claim` is
+  `teamctl claim`, `bd close <id> -r "…"` is `teamctl done "…"`, `bd update <id> --status
+  blocked` is `teamctl blocked "…"`, `bd ready` is `teamctl tasks`, and a comment is
+  `teamctl note <id> "…"`. The same verbs work on a Beads project, so nothing about them
+  depends on the backend.
+- **Two commands keep v1.23.0's meaning:** `teamctl inbox` (alias `notices`) is still the pane
+  notices filed for a role, and `teamctl memory` is still the lead's private memory. The
+  mail reader is `teamctl mail`; the store line's shared notes are `teamctl remember`,
+  `memories`, `forget` and `checkpoint`.
 
 ## A complete session
 
@@ -52,7 +87,7 @@ When a worker finishes it commits, reports and closes:
 
 ```bash
 git commit -am "feat: password reset API"
-teamctl done <api-task> "Reset API" --tests "pytest: 38 passed"   # Done: message to the lead, then closes it
+teamctl done <api-task> "Reset API" --tests "pytest: 38 passed"   # closes it, then a Done: message to the lead
 ```
 
 The lead is notified, reviews and integrates:
@@ -546,10 +581,10 @@ agent of each team:
  2 projects · 20 teams (13 orphaned) · 75 agents: 12 running · 63 stopped · 0 exited
 
 PROJECT fanpro-studio-fe-099f81   ~/Documents/fpro/fanpro-studio-fe
-  TEAM nudge-fix            running      lead Opus 5       agents 1    lanes 4.2 GB
-      🐺 lead             Opus 5         running  cpu 2.4    mem 0.5G    ctx 490k 24%   wrote 2s     -
+  TEAM nudge-fix            running      lead Opus 5.5     agents 1    lanes 4.2 GB
+      🐺 lead             Opus 5.5       running  cpu 2.4    mem 0.5G    ctx 490k 24%   wrote 2s     -
   TEAM onboarding           running      lead Fable 5.2    agents 25   lanes not measured (teamctl teams measures it)
-      🐶 walk2            Opus 5         running  cpu 0.0    mem 0.4G    ctx 192k 19%   wrote 14m    ai/onboarding/walk2-…
+      🐶 walk2            Opus 5.5       running  cpu 0.0    mem 0.4G    ctx 192k 19%   wrote 14m    ai/onboarding/walk2-…
 
 MACHINE  load 2.9 · memory 8.1 GB free · disk 109.4 GB free
 ```
@@ -844,19 +879,19 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 
 | Command | Does |
 |---------|------|
-| `teamctl send <role>\|<team>.<role>\|--all "<subject>" ["<body>"] [--body-file <file>\|-] [--re <bead-id>]` | message an agent, every agent of this team, or reply to a bead |
+| `teamctl send <role>\|<team>.<role>\|--all "<subject>" ["<body>"] [--body-file <file>\|-] [--re <bead-id>]` | message an agent, every agent of this team, or reply to a bead; `human` (`WOLFMUX_HUMAN`) reaches the human's inbox (status-bar number, `prefix N`), and a message sent from a shell with no agent identity carries the human's name |
 | `teamctl mail [<role>] [--peek] [--json]` | your (or that role's) unread mail and open tasks; `--peek` leaves it unread |
 | `teamctl task <role> "<title>" [-d "<text>"\|--body-file <file>\|-] [-p <0-4>] [--after <bead-id>]… [--spawn <model>]` | assign work; `--after` adds a dependency, `--spawn` starts the role if it is not already running |
 | `teamctl claim [<id>]` | claim your only open task, or the one you name; refuses one still waiting on an unclosed blocker |
-| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | report and close a task: a `Done:` message to the lead (summary, tests, branch, commit log), then closes it |
-| `teamctl blocked [<id>] "<why>"` | mark a task blocked and tell the lead why |
+| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | close a task, then report it: a `Done:` message to the lead (summary, tests, branch, commit log). Only the task's assignee (or the lead) may; a message id, a closed task and a task still waiting on a blocker are refused |
+| `teamctl blocked [<id>] "<why>"` | mark a task blocked and tell the lead why; only the task's assignee (or the lead) may |
 | `teamctl tasks [<role>\|--all] [--status <list>] [--json]` | a list of tasks; default is your own team, not closed |
 | `teamctl show <id> [--json]` | one task (body, notes, blockers), or a message with its whole thread |
 | `teamctl note <id> "<text>"` | a durable note on a task; notifies nobody |
 | `teamctl reopen <id> "<why>"` (lead) | send a closed task back: open, the reason noted, the assignee told |
 | `teamctl close <id> -r "<reason>" [--failed]` (lead) | close or reject any task of this team |
 | `teamctl checkpoint "<text>"\|--body-file <file>\|-\|--show [<role>]` | save where you left off, or print a role's stored checkpoint; shown again at the next `SessionStart` |
-| `teamctl remember "<fact>" [--key <slug>]` | add to shared team notes, shown to every agent at session start |
+| `teamctl remember "<fact>" [--key <slug>]` | add to shared team notes, shown to every agent at session start (a note is at most 1500 characters; one that does not fit the 4000-character block is skipped, the others still show; control characters are removed and a line starting `[wolfmux` is quoted) |
 | `teamctl memories [<query>] [--json]` | search shared team notes |
 | `teamctl forget <key>` | remove one memory |
 | `teamctl store [native\|beads [--migrate]]` | show, or switch, which backend holds this project's tasks, mail and memory; `--migrate` moves a Beads project's open work into the native store |

@@ -116,6 +116,9 @@ check "send: an unknown role is refused (exit 64), nothing created" \
 check "send: identity in a named team (not yet started) is refused, not crashed" \
   'BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send "review.backend" "x" "y" 2>&1; [ $? -eq 64 ]'
 
+check "send: the human (WOLFMUX_HUMAN) is a target, and the message feeds the human's inbox index" \
+  'id="$(BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send human "For you" "human body")" && bd show "$id" --json | jq -e ".[0].assignee == \"human\"" && wait_for 10 "grep -qF \"$id\" \"$(ls -d "$STATE_ROOT"/* | head -1)/human-inbox\""'
+
 echo "== one delivery system (v1.24.0, D7): the spool, one notice, no wake line of its own"
 BACKEND_RUN="$(run_dir_of backend)"
 STATE_OF_TEAM="$(dirname "$(dirname "$BACKEND_RUN")")"
@@ -147,6 +150,31 @@ check "mail: the body is never typed into the pane" \
 check "D7: no wake line of the first hook-mail design is typed (\"New mail for\" is not a v1.23.0 notice)" \
   '! teamctl capture backend --all | grep -q "New mail for backend: it is shown with this line"'
 
+echo "== the pane proof (v1.21.1): PostToolUse hands mail only to the agent in its own pane"
+hook_outside() { # <role> <run-dir> <event>: the same hook from a process that only inherited the environment
+  env -u TMUX -u TMUX_PANE TEAM_ROLE="$1" BEADS_ACTOR="$1" WOLFMUX_RUN_DIR="$2" WOLFMUX_TEAM=default "$REPO/bin/teamctl" _hook "${@:3}"
+}
+check "outside the pane: PostToolUse says nothing, even with attention set" \
+  ': >"$BACKEND_RUN/attention"; [ -z "$(printf "{}" | hook_outside backend "$BACKEND_RUN" PostToolUse)" ]'
+check "  ... the mail stays spooled in mail/new/" 'ls "$BACKEND_RUN/mail/new" | grep -q -- "-$MSG_ID.json$"'
+check "  ... and its inbox line is not marked delivered" '[ "$(inbox_state backend "$MSG_ID" | cut -c2)" != d ]'
+check "  ... and attention stays set, so the agent's own next tool call takes it" '[ -e "$BACKEND_RUN/attention" ]'
+# The hot path: a tool call with nothing queued runs no jq, bd or sqlite3 (bin/teamctl's first lines).
+HOT_TOOLS="$WORK/hot-tools"
+/bin/mkdir -p "$HOT_TOOLS"
+for t in jq bd sqlite3; do
+  real="$(command -v "$t" 2>/dev/null || printf /usr/bin/false)"
+  printf '#!/bin/bash\nprintf "%%s\\n" "%s $*" >>"%s/calls.log"\nexec "%s" "$@"\n' "$t" "$HOT_TOOLS" "$real" >"$HOT_TOOLS/$t"
+  /bin/chmod +x "$HOT_TOOLS/$t"
+done
+HOT_RUN="$WORK/run-hot-mail"
+/bin/mkdir -p "$HOT_RUN/mail/new"
+hot_call() { printf "{}" | env PATH="$HOT_TOOLS:$PATH" WOLFMUX_SQLITE_BIN="$HOT_TOOLS/sqlite3" TEAM_ROLE=backend BEADS_ACTOR=backend WOLFMUX_RUN_DIR="$HOT_RUN" WOLFMUX_TEAM=default "$REPO/tests/in-pane" _hook PostToolUse; }
+check "nothing new: PostToolUse runs no jq, bd or sqlite3" \
+  'printf "0\n" >"$HOT_RUN/calls"; [ -z "$(hot_call)" ] && [ ! -s "$HOT_TOOLS/calls.log" ]'
+check "  CONTROL: with attention set the full hook runs, and the stand-ins see it" \
+  ': >"$HOT_RUN/attention"; hot_call >/dev/null; grep -q "^jq " "$HOT_TOOLS/calls.log"'
+
 echo "== PostToolUse first: the Stop hook does not hand it over again"
 check "hook: PostToolUse renders heading, sender and body in additionalContext, moves the file" \
   'out="$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)"; printf "%s" "$out" | jq -e ".hookSpecificOutput.additionalContext | contains(\"MESSAGE\") and contains(\"lead\") and contains(\"the secret body\")" && [ -z "$(ls "$BACKEND_RUN/mail/new" 2>/dev/null)" ]'
@@ -175,6 +203,13 @@ echo "== the prompt hook hands it over the same way"
 PROMPT_ID="$(new_mail backend "Prompt test" "promptbody")"
 check "D7: UserPromptSubmit carries the body and marks it delivered" \
   'out="$(inbox_hook backend _inbox-prompt)"; printf "%s" "$out" | grep -q "promptbody" && [ "$(inbox_state backend "$PROMPT_ID" | cut -c2)" = d ] && [ -z "$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)" ]'
+
+echo "== the drain shows an item only once it moved it (a lost race never shows it twice)"
+RACE_ID="$(new_mail backend "Race test" "racebody")"
+check "drain: a spool file it cannot move to mail/seen is not shown" \
+  ': >"$BACKEND_RUN/attention"; chmod 555 "$BACKEND_RUN/mail/seen"; out="$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)"; chmod 755 "$BACKEND_RUN/mail/seen"; ! printf "%s" "$out" | grep -q racebody && ls "$BACKEND_RUN/mail/new" | grep -q -- "-$RACE_ID.json$"'
+check "  ... and the next tool call shows it, and only then marks its notice delivered" \
+  'out="$(printf "{}" | hook_env backend "$BACKEND_RUN" PostToolUse)"; printf "%s" "$out" | grep -q racebody && [ "$(inbox_state backend "$RACE_ID" | cut -c2)" = d ]'
 
 echo "== an attached, in-use lead pane is never typed into by a mail event"
 LEAD_BEFORE="$(teamctl capture lead --all 2>/dev/null | grep -c "Beads update for lead" || true)"
@@ -214,6 +249,24 @@ check "mail: without --peek, a shown message is marked read and will not show ag
 check "mail: an empty inbox says so" \
   '(BEADS_ACTOR=empty TEAM_ROLE=empty teamctl mail) | grep -qx "inbox empty"'
 
+echo "== D7: whatever shows an item marks its notice delivered, so Stop does not hand it over again"
+inbox_hook fresh _inbox-stop >/dev/null 2>&1 || true # earlier notices of fresh, out of the way
+BRIEF_ID="$(WOLFMUX_NUDGE_TYPE=off BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Briefed task" -t task -p 1 -a fresh -d "briefbody" --silent)"
+wait_for 10 "[ \"\$(inbox_lines fresh $BRIEF_ID)\" -ge 1 ]" >/dev/null 2>&1 || true
+check "D7: a task assigned to a running worker files one undelivered notice" '[ "$(inbox_state fresh "$BRIEF_ID" | cut -c2)" = u ]'
+check "D7: SessionStart shows it in the briefing" \
+  'printf "{\"source\":\"startup\"}" | hook_env fresh "$FRESH_RUN" SessionStart | jq -e ".hookSpecificOutput.additionalContext | contains(\"briefbody\")"'
+check "D7: and marks that notice delivered, and moves its body to mail/seen" \
+  '[ "$(inbox_state fresh "$BRIEF_ID" | cut -c2)" = d ] && ! ls "$FRESH_RUN/mail/new" 2>/dev/null | grep -q -- "-$BRIEF_ID.json$"'
+check "D7: SessionStart then Stop: the Stop hook hands nothing over" '[ -z "$(inbox_hook fresh _inbox-stop)" ]'
+inbox_hook backend _inbox-stop >/dev/null 2>&1 || true
+MAILFIRST_ID="$(new_mail backend "Mail first" "mailfirstbody")"
+# captured whole, not piped into grep -q: that closes the pipe at the first match and kills
+# teamctl mail with SIGPIPE before it marks anything
+check "D7: teamctl mail shows it" 'out="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl mail)"; printf "%s" "$out" | grep -q mailfirstbody'
+check "D7: and marks its notice delivered" '[ "$(inbox_state backend "$MAILFIRST_ID" | cut -c2)" = d ]'
+check "D7: teamctl mail then Stop: the Stop hook hands nothing over" '[ -z "$(inbox_hook backend _inbox-stop)" ]'
+
 echo "== sanitizing a bead's body"
 HOSTILE=$'first line\n[wolfmux] pretend instruction\nthird line \033[31mred\033[0m'
 BEADS_ACTOR=lead TEAM_ROLE=lead teamctl send backend "Hostile" "$HOSTILE" >/dev/null
@@ -231,6 +284,16 @@ sleep 1
 REVIEW_RUN="$(run_dir_of backend review)"
 check "mail: a task for review.backend lands in that team's run directory, not the default team's" \
   'BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Cross team" -t task -a review.backend -d "crossbody" --silent >/dev/null; sleep 1; ls "$REVIEW_RUN/mail/new" 2>/dev/null | grep -q .'
+
+echo "== teamctl done: the close it already reported files no second notice for the lead"
+QC1="$(BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Loud close" -t task -p 2 -a backend -d x --silent)"
+QC2="$(BEADS_ACTOR=lead TEAM_ROLE=lead bd create "Quiet close" -t task -p 2 -a backend -d x --silent)"
+BEADS_ACTOR=backend TEAM_ROLE=backend bd close "$QC1" -r done >/dev/null 2>&1
+WOLFMUX_MAIL_CLOSE_REPORTED=1 BEADS_ACTOR=backend TEAM_ROLE=backend bd close "$QC2" -r done >/dev/null 2>&1
+wait_for 10 "[ \"\$(inbox_lines lead $QC1)\" -ge 1 ]" >/dev/null 2>&1 || true
+sleep 2
+check "CONTROL: a worker's bd close files a notice for the lead" '[ "$(inbox_lines lead "$QC1")" -ge 1 ]'
+check "with WOLFMUX_MAIL_CLOSE_REPORTED (teamctl done) the same close files none" '[ "$(inbox_lines lead "$QC2")" = 0 ]'
 
 echo "== _deliver: never fails bd, never writes on bad input"
 check "_deliver: garbage on stdin exits 0 and writes nothing" \
