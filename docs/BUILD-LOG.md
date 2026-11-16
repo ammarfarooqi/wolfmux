@@ -2513,6 +2513,26 @@ way (a hung tool, a dialog), a Codex agent and a team with no lead and nobody ca
 seen; Codex keeps the window its rollout states, unreduced. The lead's tenth-call and status
 lookers of a stall are covered by stub checks only.
 
+## 46. Two review findings closed, and one run on the release (v1.25.0)
+
+The v1.24.0 review left two findings open, both closed before the release.
+
+The lead's right to close any task with `teamctl done` or `teamctl blocked` was a bare
+`TEAM_ROLE=lead`: any process that set that variable outside the lead's pane had it (N1). It now goes
+through `is_manager`, the check `require_manager` makes, so a process that claims the lead and does not
+run in its pane is refused with exit 77 (`_tasks_lead_exempt`, `lib/tasks.sh`).
+
+A hook run waited on Beads once per read, 5 s each, so a wedged `bd` made SessionStart take 11 s (N2).
+One hook run now has one budget for its bounded reads, `WOLFMUX_HOOK_BD_BUDGET` (5 s): `cmd_hook` sets a
+deadline once (`lib/hooks.sh`), `_bd_bounded` (`lib/store.sh`) takes what is left of it and starts no
+read when nothing is. SessionStart with a wedged `bd` is about 5 s, inside the CLI's 20.
+
+One real-CLI run on the release commit (Haiku 5.5 lead and worker, native store, default `trim`, no
+`context-exclude`): a failing command of 12,001 lines (60,922 characters) reached the worker as the
+shortened form with exit code 1, the last line, and the failure line 6001 from the cut middle, the full text
+in `run/w1/out`. The worker's first request was 62,106 tokens in a pane. Status showed `68k/285k 23%` for
+the worker and `122k/967k 12%` for the lead, and the lead got one notice for one `done`.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

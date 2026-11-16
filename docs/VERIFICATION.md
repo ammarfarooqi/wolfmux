@@ -47,12 +47,12 @@ number.)
 
 ## Re-run it
 
-The suites at v1.25.0, with the check count each one holds at the release commit afec957 (v1.24.1 plus offload, the smaller start and the context number). A count marked n/a is not yet measured at that commit and is kept at its v1.24.1 figure only where noted. Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
+The suites at v1.25.0, with the check count each one holds at the release commit afec957 (v1.24.1 plus offload, the smaller start and the context number).  All 27 suites passed with 0 failures, run one after the other in a clean environment (tasks and beads-hotpath on the release plus the two review fixes of wolfmux-bb9's period: 47 and 17 checks). Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
 `BEADS_ACTOR`, `TMUX` and `TMUX_PANE` variable unset, so an agent's own environment cannot
 leak into a suite, and `smoke.sh` alone, since its timing checks fail under parallel load.
 
 ```bash
-tests/smoke.sh                 # over 10 minutes, 388 checks, isolated from any running team
+tests/smoke.sh                 # over 10 minutes, 389 checks, isolated from any running team
                                # (how many PASS depends on the launch: one skip per signal it
                                #  leaves ignored, see smoke.sh below)
 tests/disk.sh                  # ~3 minutes, 175 checks, its own tmux server and state
@@ -67,7 +67,7 @@ tests/providers.sh             # the provider table and the config allowlist, 14
 tests/models.sh                # ~2.5 minutes, 34 checks, its own tmux server, HOME and state: the newest model of an alias, the drift check
 tests/store.sh                 # under 60 s, 95 checks: lib/store.sh, both backends
 tests/mail.sh                  # 62 checks: lib/mail.sh, one delivery system through the CLI's hooks and v1.23.0's inbox
-tests/tasks.sh                 # 41 checks: teamctl task/done/blocked, the Stop reminder
+tests/tasks.sh                 # 47 checks: teamctl task/done/blocked, the Stop reminder
 tests/recall.sh                # 69 checks: shared team notes, the context watch, the one context figure, compaction counting, checkpoints
 tests/native-callsites.sh      # 34 checks: the v1.23.0 code that asked bd directly works on a native store and never runs bd there
 tests/memory.sh                # 130 checks: team memory (teamctl memory), the lead's private folder
@@ -75,7 +75,7 @@ tests/memory-skeleton.sh       # 283 checks: the memory skeleton and its tool, b
 tests/finish.sh                # 59 checks: teamctl finish
 tests/restore.sh               # 41 checks: teamctl restore
 tests/lead-model.sh            # 48 checks: the lead-model policy, teamctl model, restart --model
-tests/beads-hotpath.sh         # 16 checks: what runs on every notice and status-bar redraw never calls bd
+tests/beads-hotpath.sh         # 17 checks: what runs on every notice and status-bar redraw never calls bd
 tests/docs.sh                  # ~3 seconds, 36 checks, starts nothing
 tests/commands.sh              # ~20 seconds, 22 checks, in a throwaway WOLFMUX_INSTALL_HOME: the Claude Code slash commands install.sh writes
 tests/migration.sh             # ~40 seconds, 36 checks, in a throwaway HOME
@@ -290,7 +290,7 @@ directory and throwaway repository; stub agents instead of real CLIs), run separ
 |------|--------|------|
 | `tests/store.sh` | 95 | `lib/store.sh`'s contract, the same checks run against both backends (the Beads half skipped and reported, not failed, when `bd` is not installed), then native-only hostile-input, concurrency and `store_kind` checks |
 | `tests/mail.sh` | 62 | `lib/mail.sh`: one delivery system (ADR-0032 as amended): an item is spooled for a Claude Code agent and files one notice through v1.23.0's inbox, the hooks hand it over with its body, a Codex-family agent gets the notice alone, nothing is typed outside the typing gates, `_deliver`'s refusal of garbage, an unknown identity or no session, and (v1.24.1) that a hook call of an in-process subagent (`agent_id` in its input) hands nothing over and leaves the mail for the agent's own next call |
-| `tests/tasks.sh` | 41 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
+| `tests/tasks.sh` | 47 | `teamctl task` / `done` / `blocked`, the Stop-hook reminder for work left open under an agent's name, the new kickoff text, and a named team's `<team>.role` assignee |
 | `tests/recall.sh` | 69 | shared team notes at `SessionStart`, the context watch and its two thresholds, checkpoints (write, show, `PreCompact`'s own note, the max-age mention), that the `_ctx_of_transcript` refactor changes nothing `teamctl status` reports, and (v1.24.1) that a subagent's call neither says nor uses up a threshold |
 | `tests/native-callsites.sh` | 34 | the v1.23.0 code that asked `bd` directly works on a native-store project and never runs `bd` there (a stub `bd` records any call), D8 |
 | `tests/context.sh` | 33 | what a trimmed agent starts with (ADR-0037): the denied tools, `ENABLE_CLAUDEAI_MCP_SERVERS`, `claudeMdExcludes`, `lead-context`, the doctor line |
