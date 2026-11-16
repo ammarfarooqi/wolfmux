@@ -56,11 +56,21 @@ _tasks_hook_list() {
   esac
 }
 
-# _tasks_own_item <id> <identity> <role> <verb> — the task's ITEM JSON, or dies: no such
-# task, a message rather than a task, already closed, or (for anyone but the lead) a task
-# assigned to someone else. done and blocked are the assignee's; teamctl close is the lead's.
+# _tasks_lead_exempt <role>: 0 when the caller is this team's lead and may act on any task.
+# A bare TEAM_ROLE=lead is a claim, not the lead: it goes through is_manager (lib/policy.sh), the
+# check require_manager makes, which refuses (exit 77) a process that claims the lead and does not
+# run in the lead's pane. Call it in the command's own shell, never in a $(...).
+_tasks_lead_exempt() {
+  [ "$1" = "$WOLFMUX_LEAD_ROLE" ] || return 1
+  is_manager
+}
+
+# _tasks_own_item <id> <identity> <role> <verb> <lead 0|1>: the task's ITEM JSON, or dies: no
+# such task, a message rather than a task, already closed, or (for anyone but the proven lead,
+# _tasks_lead_exempt) a task assigned to someone else. done and blocked are the assignee's;
+# teamctl close is the lead's.
 _tasks_own_item() {
-  local id="$1" me="$2" role="$3" verb="$4" item kind status assignee
+  local id="$1" me="$2" role="$3" verb="$4" lead="$5" item kind status assignee
   item="$(store_item_json "$id" 2>/dev/null)" || item=""
   [ -n "$item" ] || die "no such task: $id"
   kind="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // empty')"
@@ -68,7 +78,7 @@ _tasks_own_item() {
   status="$(printf '%s' "$item" | "$JQ_BIN" -r '.status // empty')"
   [ "$status" != "closed" ] || die "$id is already closed; nothing to report. The lead reopens it if more is needed: teamctl reopen $id \"<why>\""
   assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.assignee // empty')"
-  if [ "$role" != "$WOLFMUX_LEAD_ROLE" ] && [ "$assignee" != "$me" ]; then
+  if [ "$lead" != 1 ] && [ "$assignee" != "$me" ]; then
     die "$id is assigned to ${assignee:-nobody}, not to you ($me); only its assignee runs teamctl $verb on it. Check the id: teamctl tasks $role"
   fi
   printf '%s\n' "$item"
@@ -178,7 +188,7 @@ cmd_task() {
 # teamctl done [<bead-id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]
 cmd_done() {
   local id="" summary="" tests="" body_file="" allow_dirty=0 args=()
-  local role me path branch base_commit title tests_line commits_block stat_line short_sha report extra lead_id item blocked_by force=""
+  local role me path branch base_commit title tests_line commits_block stat_line short_sha report extra lead_id item blocked_by force="" lead=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --tests)
@@ -215,7 +225,8 @@ cmd_done() {
   else
     id="$(_tasks_default_id "$me")" || exit $?
   fi
-  item="$(_tasks_own_item "$id" "$me" "$role" done)" || exit $?
+  if _tasks_lead_exempt "$role"; then lead=1; fi
+  item="$(_tasks_own_item "$id" "$me" "$role" done "$lead")" || exit $?
   blocked_by="$(printf '%s' "$item" | "$JQ_BIN" -r '[.blocked_by[]?] | join(", ")' 2>/dev/null)"
   [ -z "$blocked_by" ] || die "$id is waiting on unclosed blockers: $blocked_by; it cannot be done before they are closed"
   path="$(reg_field "$role" workdir)"
@@ -245,13 +256,13 @@ $extra"
 
   # Close first, report after: a close that fails must not leave the lead holding a "Done"
   # report for a task that is still open.
-  [ "$role" = "$WOLFMUX_LEAD_ROLE" ] && force="force"
+  [ "$lead" = 1 ] && force="force"
   # The worker's Done: report below already tells the lead; the close is not announced to it
   # a second time (D7, one notice per event; lib/mail.sh reads WOLFMUX_MAIL_CLOSE_REPORTED).
-  WOLFMUX_MAIL_CLOSE_REPORTED="$([ "$role" != "$WOLFMUX_LEAD_ROLE" ] && printf 1)" \
+  WOLFMUX_MAIL_CLOSE_REPORTED="$([ "$lead" != 1 ] && printf 1)" \
     _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" "" "$force" || die "could not close $id"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
-  if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
+  if [ "$lead" != 1 ]; then
     _tasks_reply "$me" "$lead_id" "Done: $title" "$report" "$id" ||
       die "closed $id, but could not send the report message to $lead_id; tell the lead: teamctl send $WOLFMUX_LEAD_ROLE \"Done: $title\" --body-file <file>"
     say "sent: Done: $title -> $lead_id"
@@ -261,7 +272,7 @@ $extra"
 
 # teamctl blocked [<bead-id>] "<why>"
 cmd_blocked() {
-  local id="" why="" args=() role me title lead_id item
+  local id="" why="" args=() role me title lead_id item lead=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -*) die_usage "unknown option for blocked: $1" ;;
@@ -286,11 +297,12 @@ cmd_blocked() {
   else
     id="$(_tasks_default_id "$me")" || exit $?
   fi
-  item="$(_tasks_own_item "$id" "$me" "$role" blocked)" || exit $?
+  if _tasks_lead_exempt "$role"; then lead=1; fi
+  item="$(_tasks_own_item "$id" "$me" "$role" blocked "$lead")" || exit $?
   title="$(printf '%s' "$item" | "$JQ_BIN" -r '.title // empty')"
   _tasks_block "$id" "$me" "$why" || die "could not mark $id blocked"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
-  if [ "$role" != "$WOLFMUX_LEAD_ROLE" ]; then
+  if [ "$lead" != 1 ]; then
     _tasks_reply "$me" "$lead_id" "Blocked: $title" "$why" "$id" || die "could not send the blocked message to $lead_id"
     say "sent: Blocked: $title -> $lead_id"
   fi
