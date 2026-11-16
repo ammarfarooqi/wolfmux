@@ -69,6 +69,8 @@ check "the rewrite asks no permission (no permissionDecision)" "hook_json 'echo 
 check "the rewrite is one prefix on the command's first line" "[ \"\$(rewritten 'echo hi' | wc -l | tr -d ' ')\" = 0 ]"
 check "never wrapped: run_in_background" "[ -z \"\$(hook_json 'sleep 1' true | $REPO/bin/teamctl _offload-pre)\" ]"
 check "never wrapped: a command with exec in it" "[ -z \"\$(hook_json 'exec echo hi' | $REPO/bin/teamctl _offload-pre)\" ]"
+check "never wrapped: a command with trap in it (its trap would replace ours)" "[ -z \"\$(hook_json 'trap \"echo x\" EXIT; echo y' | $REPO/bin/teamctl _offload-pre)\" ]"
+check "wrapped: a word that only contains trap (bootstrap.sh)" "[ -n \"\$(hook_json './bootstrap.sh' | $REPO/bin/teamctl _offload-pre)\" ]"
 check "wrapped: a word that only contains exec (execute.sh)" "[ -n \"\$(hook_json './execute.sh' | $REPO/bin/teamctl _offload-pre)\" ]"
 check "never wrapped twice" "c=\$(rewritten 'echo hi'); [ -z \"\$(hook_json \"\$c\" | $REPO/bin/teamctl _offload-pre)\" ]"
 check "never wrapped: another tool" "[ -z \"\$(jq -cn '{tool_name:\"Read\",tool_input:{file_path:\"/x\"}}' | $REPO/bin/teamctl _offload-pre)\" ]"
@@ -101,6 +103,9 @@ same "a command that defines a function and calls it" 'f() { echo "in f $1"; }; 
 same "a command starting with a comment line" '# comment
 echo after'
 same "an empty output" 'true'
+same "the command's own EXIT trap" 'trap "echo cleanup" EXIT; echo REAL-OUTPUT-LINE; false'
+same "the command resets the EXIT trap (trap - EXIT)" 'trap - EXIT; echo after-reset; cd /tmp; export FOO=r; exit 2'
+same "the command's own TERM trap" 'trap "echo term" TERM; echo with-term-trap; cd /tmp; export FOO=t'
 check "short output: no path line and no log left behind" "! grep -q 'wolfmux' $WORK/w1/out && [ -z \"\$(ls $WOLFMUX_RUN_DIR/out | grep '\\.log$')\" ]"
 
 echo "== a long output"

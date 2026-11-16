@@ -28,7 +28,7 @@ WOLFMUX_OFFLOAD_KEEP=200    # logs kept per role
 WOLFMUX_OFFLOAD_PATTERN='FAIL|[Ee]rror|panic|not ok'
 # The CLI's own cap on a Bash result (bashOutputMaxChars / BASH_MAX_OUTPUT_LENGTH, default 30000),
 # lowered for every agent with this feature on: a backstop for a call that was not rewritten
-# (run_in_background, exec). Above it the CLI keeps the whole output in a file and shows 2 KB.
+# (run_in_background, exec, trap). Above it the CLI keeps the whole output in a file and shows 2 KB.
 WOLFMUX_OFFLOAD_BACKSTOP="${WOLFMUX_OFFLOAD_BACKSTOP:-16000}"
 
 # offload_wanted: 0 when this team's agents get the feature: the output-offload policy (needs
@@ -112,9 +112,15 @@ offload_summary() {
 # as it would have. A command is never run twice: the line only redirects and sets traps.
 #
 # Never wrapped: run_in_background calls, a command with the word `exec` in it (an exec'd
-# program would replace the shell and its trap), a command already wrapped.
+# program would replace the shell and its trap), a command with the word `trap` in it (its own
+# EXIT trap, or `trap - EXIT`, would replace ours, and its whole output would stay in a log the
+# model was never told about), a command already wrapped. Those are left to the safety net and
+# the backstop. Keeping both traps (a `trap` function that chains them) was not tried: the
+# semantics differ between bash and zsh, and a word match is plain and safe.
 
 WOLFMUX_OFFLOAD_MARK="__wm_fin" # the function the line defines; also how a wrapped command is recognised
+# a command matching this (ERE, also used by jq) is never wrapped
+WOLFMUX_OFFLOAD_SKIP='(^|[^A-Za-z0-9_-])(exec|trap)([^A-Za-z0-9_-]|$)'
 
 # offload_next_log <run-dir>: the path of the next log; the file is created by the wrapped
 # shell itself, so a call that is not wrapped leaves nothing behind
@@ -152,13 +158,6 @@ offload_make_line() {
   local log="$1" show="$2"
   case "$log$show" in *"'"*) return 1 ;; esac
   OFFLOAD_LINE="__wm_fin() { trap - EXIT TERM INT; exec 1>&7 2>&8 7>&- 8>&-; /bin/bash '$show' '$log' \"\$1\" || /bin/cat '$log'; }; if [ -r '$show' ] && exec 7>&1 8>&2 >'$log' 2>&1; then trap '__wm_rc=\$?; __wm_fin \$__wm_rc; exit \$__wm_rc' EXIT; trap '__wm_fin 143; exit 143' TERM; trap '__wm_fin 130; exit 130' INT; fi; "
-}
-
-# offload_should_wrap <command>: 0 when the command may be wrapped
-offload_should_wrap() {
-  case "$1" in *"$WOLFMUX_OFFLOAD_MARK"*) return 1 ;; esac
-  printf '%s' "$1" | /usr/bin/grep -Eq '(^|[^A-Za-z0-9_-])exec([^A-Za-z0-9_-]|$)' && return 1
-  return 0
 }
 
 # offload_wrap_command <command> <log> <show-script>: the rewritten command, to stdout
@@ -202,10 +201,10 @@ offload_pre_hook() {
   [ -n "$jq" ] || return 0
   offload_alloc_log "$WOLFMUX_RUN_DIR" || return 0
   offload_make_line "$OFFLOAD_LOG" "${WOLFMUX_HOME:-$HOME/.config/wolfmux}/lib/offload-show.sh" || return 0
-  "$jq" -c --arg line "$OFFLOAD_LINE" --arg mark "$WOLFMUX_OFFLOAD_MARK" '
+  "$jq" -c --arg line "$OFFLOAD_LINE" --arg mark "$WOLFMUX_OFFLOAD_MARK" --arg skip "$WOLFMUX_OFFLOAD_SKIP" '
     .tool_input as $in
     | if .tool_name == "Bash" and ($in.command | type) == "string" and ($in.run_in_background != true)
-         and ($in.command | test("(^|[^A-Za-z0-9_-])exec([^A-Za-z0-9_-]|$)") | not)
+         and ($in.command | test($skip) | not)
          and ($in.command | contains($mark) | not)
       then {hookSpecificOutput: {hookEventName: "PreToolUse",
                                  updatedInput: ($in + {command: ($line + $in.command)})}}
@@ -247,7 +246,7 @@ cmd_run() {
 #
 # A Bash call that exits 0 fires PostToolUse, whose answer may replace the result, as the Bash
 # result OBJECT (a string is refused: probe 1). This covers a call the rewrite left alone
-# (run_in_background read back later, a command with exec in it). Above ~30,000 characters the CLI
+# (run_in_background read back later, a command with exec or trap in it). Above ~30,000 characters the CLI
 # has kept the full text itself (tool_response.persistedOutputPath), which is used instead.
 
 # offload_post <the CLI's JSON>: prints the PostToolUse answer, or nothing

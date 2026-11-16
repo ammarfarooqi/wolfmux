@@ -32,7 +32,9 @@ against the real CLI (`tests/research/results/offload-probes.md`) showed where t
    runs once, unchanged, in the same shell: cd, export and its exit status stay as they were. No
    permission decision is made; a call another hook denies stays denied.
 2. **Never wrapped**: `run_in_background`, a command with the word `exec` (it would replace the
-   shell and its trap), a command already wrapped. When the prefix cannot set itself up (helper
+   shell and its trap), a command with the word `trap` (its own EXIT trap, or `trap - EXIT`,
+   replaced ours: the output stayed in a log the model was never told about), a command already
+   wrapped. When the prefix cannot set itself up (helper
    missing, log not writable) it does nothing; when the helper fails at the end, the log is printed
    whole.
 3. **Safety net (PostToolUse)**: a long exit-0 result the rewrite did not cover is replaced by the
@@ -54,8 +56,8 @@ against the real CLI (`tests/research/results/offload-probes.md`) showed where t
 - stderr is merged into stdout in the order written (it was stdout first, then stderr).
 - Cost per Bash call, measured on the owner's Mac: PreToolUse 6 ms (3 ms with the feature off; jq
   alone 3 ms). PostToolUse for a short result unchanged (no fork); a long one 34 ms.
-- A command that `exec`s, or runs in the background, is covered only by the safety net and the
-  backstop.
+- A command that `exec`s, sets or resets a trap (any command with the word `trap`, `grep trap`
+  too), or runs in the background, is covered only by the safety net and the backstop.
 - An agent can still `cat` the log; the protocol says not to, and the shortened form says so.
 - The prefix is visible in the CLI's own record of the call only as the hook's rewrite; the
   transcript keeps the agent's command (probe 6).
