@@ -58,7 +58,7 @@ tests/human-inbox-keys.sh      # ~35 seconds, 73 checks, its own tmux server (HO
 tests/providers.sh             # the provider table and the config allowlist, 141 checks
 tests/smoke.sh                 # 5 to 7 minutes, 339 checks, isolated from any running team
 tests/store.sh                 # under 60s, 73 checks: lib/store.sh, both backends
-tests/native-callsites.sh      # 21 checks: v1.23.0 bd call sites on a native store (D8)
+tests/native-callsites.sh      # 22 checks: v1.23.0 bd call sites on a native store (D8)
 tests/mail.sh                  # 30 checks: lib/mail.sh, delivery through the CLI's hooks
 tests/tasks.sh                 # 31 checks: teamctl task/done/blocked, the Stop reminder
 tests/memory.sh                # 31 checks: shared team notes, the context watch, checkpoints

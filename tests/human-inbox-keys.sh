@@ -42,6 +42,8 @@ export WOLFMUX_DATA="$WORK/data"
 export WOLFMUX_TMUX_SOCKET="wolfmux-test-hikeys-$$"
 export WOLFMUX_HI_HOLD=2
 unset WOLFMUX_ROOT TEAM_ROLE BEADS_ACTOR TMUX TMUX_PANE WOLFMUX_TEAM WOLFMUX_TEAM_ARG WOLFMUX_HUMAN
+# v1.24.0 (D5): a new project gets the native store; this suite models Beads (a fake bd).
+export WOLFMUX_STORE=beads
 tmx() { tmux -L "$WOLFMUX_TMUX_SOCKET" "$@"; }
 
 passed=0

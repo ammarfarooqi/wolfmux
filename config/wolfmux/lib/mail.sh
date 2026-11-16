@@ -248,13 +248,15 @@ _mail_prune_seen() {
 # _mail_mark_shown <file> <seen-dir> <identity> — moves a shown spool file into seen/, prunes
 # seen/ to the newest 50, and for a message marks it read for this agent, detached (so the
 # agent does not spend a turn doing that itself, and a hook never blocks on the store).
+# Native store only: on Beads a hook makes no bd call at all (v1.20.0, tests/beads-hotpath.sh),
+# so there the message stays open until the agent or `teamctl mail` closes it, as in v1.23.0.
 _mail_mark_shown() {
   local file="$1" seen="$2" identity="$3" dest type id
   dest="$seen/$(basename "$file")"
   /bin/mv -f "$file" "$dest" 2>/dev/null || return 0
   type="$("$JQ_BIN" -r '.issue_type // "task"' "$dest" 2>/dev/null)"
   id="$("$JQ_BIN" -r '.id // empty' "$dest" 2>/dev/null)"
-  if [ "$type" = "message" ] && valid_bead_id "$id" && [ -n "$identity" ]; then
+  if [ "$type" = "message" ] && valid_bead_id "$id" && [ -n "$identity" ] && [ "$(store_kind)" = "native" ]; then
     (store_msg_read "$identity" "$id" >/dev/null 2>&1 &)
   fi
   _mail_prune_seen "$seen"

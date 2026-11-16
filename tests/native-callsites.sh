@@ -63,6 +63,14 @@ check "_hi_close marks it read in the store" '_hi_close "$mid" && [ "$(store_ite
 check "_hi_close empties the index" '[ "$(human_inbox_count)" = 0 ]'
 check "the notices footer names teamctl mail, not bd" 'grep -q "Tasks and messages themselves: teamctl mail" "$WOLFMUX_HOME/lib/inbox.sh"'
 
+echo "== a message shown by a hook"
+m2="$(store_msg_create lead w9 "Hi" "b")"
+/bin/mkdir -p "$WORK/spool/seen"
+store_item_json "$m2" >"$WORK/spool/1.json"
+_mail_mark_shown "$WORK/spool/1.json" "$WORK/spool/seen" w9
+check "native: a shown message is marked read in the store (detached)" \
+  'for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(store_item_json "$m2" | "$JQ_BIN" -r .status)" = closed ] && break; sleep 0.5; done; [ "$(store_item_json "$m2" | "$JQ_BIN" -r .status)" = closed ]'
+
 echo "== reclaim and finish"
 printf '{"role":"w1","kind":"worker"}\n' | reg_put w1
 t1="$(store_task_create lead "$(team_identity "$TEAM" w1)" 2 "Do it" "x")"
