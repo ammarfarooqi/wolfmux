@@ -98,6 +98,11 @@ Measured on 2026-11-16 with Claude Code 2.1.325 (`tests/research/results/v1.25-r
 ## Not built
 
 - No rotation: nothing gives a task a fresh conversation by itself.
-- Not confirmed against the real CLI: that the `compact_boundary` row is already in the transcript
-  when SessionStart:compact fires (if it is not, K is the previous compaction's), and the three
-  pane checks of the hand-over.
+- Confirmed against the real CLI (`tests/research/results/part-b-real-cli.md`, four pane runs): the
+  hook's environment carries `CLAUDE_CODE_AUTO_COMPACT_WINDOW`; status counts the same tokens as the
+  CLI's statusLine; two compactions close together give one message; a stalled agent is told once and
+  the lead acts on it. Found there and fixed: SessionStart:compact fires BEFORE the `compact_boundary`
+  row is written, so the row's numbers are read by a background job once it appears.
+- A tool result that jumps the conversation over the limit within ONE request (two parallel 23k reads at
+  59% in run 2) is compacted with no warning first: the watch only sees the last answer's usage. The
+  PreCompact checkpoint is what remains.

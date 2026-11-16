@@ -22,36 +22,21 @@ Unknown 1 of the hand-over is answered by one print-mode Haiku probe (not a pane
 `tests/research/results/subagent-hook-probe.jsonl`. Unknown 2 is answered by reading the code
 (the settings file is written in the pane) and fixed. Unknowns 3 and 4 were not looked at.
 
+## Done in the second conversation (ctx2, task wolfmux-cj3)
+
+1. **Each new check fails on the base.** All 31 new or edited checks of `tests/recall.sh` fail against the
+   libraries of 5b41a79; five that passed there were merged into a check that does not, or sharpened
+   (29% nothing said, warn=20 at 29%, the near file gone at 62%, one compaction tells nobody, astra with an
+   asked window). The three smoke "compaction:" checks fail on the base (a copy of `tests/smoke.sh` cut
+   after them: 103 passed, exactly those 3 failed).
+2. **Real CLI, 4 pane runs**: `tests/research/results/part-b-real-cli.md`. Found and fixed: K at
+   SessionStart:compact was the previous compaction's (e029b1e).
+3. **Item 5, the stalled agent**: `lib/stall.sh`, ADR-0038 decision 7, a staged run on the real CLI.
+4. **Item 6, the docs**: every new knob in `teamctl help` or the manual's settings table,
+   `WOLFMUX_STALL_AFTER` a config key, ARCHITECTURE's stall section, the ROADMAP and TROUBLESHOOTING rows.
+
 ## Left
 
-1. **Item 5, the stalled agent. Nothing is built and nothing was investigated**: I did not read
-   what `WOLFMUX_INBOX_STALL_NOTIFY`, the wake waiter or `teamctl status` already do. The facts
-   the task and the first hand-over give: the stop is an assistant row with
-   `isApiErrorMessage: true` (model `<synthetic>` for the thrash stop, text starting "Autocompact
-   is thrashing"), followed by `turn_duration`; no hook fires. `models_turn_idle`
-   (`lib/models.sh`) already reads the tail of a transcript for "the turn ended", and
-   `run/<role>/calls` has the agent's last sign of life as its mtime. A second `near`-like file
-   is NOT a way in: the stalled agent runs no hook.
-2. **Real CLI: no pane run was made (0 of 6).** Checks (a), (b), (c) of the first hand-over are
-   open. For one compaction in check (a) the floor has to be lowered as well as the room:
-   `ISO_ENV="WOLFMUX_CONTEXT_ROOM=0 WOLFMUX_CONTEXT_MIN_ROOM=0"` on `teamctl start` gives the
-   132k window the hand-over describes; with the default floor the window is raised to 163k and
-   the 97k task never compacts. To confirm there: the `compact_boundary` row is in the transcript
-   when SessionStart:compact fires (else `memory/kept` holds the previous compaction's value),
-   and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` from the settings file's `env` is in the hook's
-   environment (it is in the Bash tool's; the watch depends on it).
-3. **Item 6, the rest**: `docs/ARCHITECTURE.md` has a section "The context number" without the stall part. `teamctl help` names the
-   figure but not `WOLFMUX_CONTEXT_ROOM`. Environment-only knobs named only in ADR-0038 and
-   `lib/policy.sh` / `lib/recall.sh`: `WOLFMUX_COMPACT_RESERVE`, `WOLFMUX_CONTEXT_FIRST`,
-   `WOLFMUX_CONTEXT_KEPT`, `WOLFMUX_CONTEXT_MIN_ROOM`, `WOLFMUX_CONTEXT_NEAR`,
-   `WOLFMUX_THRASH_CALLS`. `WOLFMUX_STALL_AFTER` does not exist yet.
-4. **Not proven**: that each new check fails on the base. They exercise functions and a format
-   that did not exist, but nobody ran the new `tests/recall.sh` against 5b41a79.
-5. **Things I decided that the task did not say**, for the lead to overrule:
-   - K never counts under 45000 and the team keeps the LARGEST kept part (the hand-over said
-     "K = 45000 until a compaction happened").
-   - A window that would thrash is raised, not refused, so `task --spawn` never fails on it.
-   - A model with no declared window has no limit even when its record carries a compact window
-     (the CLI caps the window at the model's, so the record is only an upper bound).
-   - The figure is `142k/167k 85%`; the status CONTEXT column grew from 9 to 14 characters.
-   - Mail and task hooks still speak inside subagents; only the watch was changed.
+- The lead's tenth-call looker and the status looker of a stall were not seen on the real CLI (stub checks).
+- A jump over the limit within one request cannot be warned (ADR-0038, "Not built").
+- Codex: nothing measured, as before.
