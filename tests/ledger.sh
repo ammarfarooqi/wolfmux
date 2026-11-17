@@ -1,5 +1,5 @@
 #!/bin/bash
-# ledger.sh — a lead that stays small (ADR-0040): `teamctl done` keeps the whole report as a file
+# ledger.sh: a lead that stays small (ADR-0040): `teamctl done` keeps the whole report as a file
 # and the lead's mail is a short notice; `teamctl show <id> --report`; `teamctl decide`;
 # `teamctl ledger`, and the lead's SessionStart after a compaction or a resume. No model is called.
 #
@@ -41,7 +41,7 @@ check() { # <description> <command string>
   fi
 }
 
-# wait_for <seconds> <command string> — polls a bounded condition (a Beads hook delivers detached)
+# wait_for <seconds> <command string>: polls a bounded condition (a Beads hook delivers detached)
 wait_for() {
   local t="$1" i=0
   while [ "$i" -lt "$((t * 4))" ]; do
@@ -65,18 +65,18 @@ trap cleanup EXIT
 
 last_task_id() { tail -1 | sed -E 's/^task ([^ ]+) ->.*/\1/'; }
 
-# hook <role> <event> <json> — the CLI's call of that agent's hook, from its own pane
+# hook <role> <event> <json>: the CLI's call of that agent's hook, from its own pane
 hook() {
   printf '%s' "$3" | BEADS_ACTOR="$1" TEAM_ROLE="$1" WOLFMUX_RUN_DIR="$STATE/run/$1" "$REPO/tests/in-pane" _hook "$2"
 }
 context_of() { "$JQ" -r '.hookSpecificOutput.additionalContext // empty' 2>/dev/null; }
 
-# commit_in <dir> <file> — one commit in a worker's worktree
+# commit_in <dir> <file>: one commit in a worker's worktree
 commit_in() {
   (cd "$1" && echo "$RANDOM" >>"$2" && git add -A && git -c user.name=w -c user.email=w@example.invalid commit -qm "work on $2")
 }
 
-# body_of_size <n> <file> — n characters of report text: many lines, quotes, $(...), a tab
+# body_of_size <n> <file>: n characters of report text: many lines, quotes, $(...), a tab
 body_of_size() {
   python3 -c '
 import sys
@@ -221,7 +221,7 @@ run_store() {
   check "$kind: a worker never gets it, on compact or resume" \
     '! hook backend SessionStart "{\"source\":\"compact\"}" | context_of | grep -q "wolfmux ledger" && ! hook backend SessionStart "{\"source\":\"resume\"}" | context_of | grep -q "wolfmux ledger"'
   check "$kind: hook input with agent_id (a subagent) attaches nothing" \
-    '[ -z "$(hook lead SessionStart "{\"source\":\"compact\",\"agent_id\":\"a1\",\"agent_type\":\"Explore\"}")" ]'
+    'o="$(hook lead SessionStart "{\"source\":\"compact\",\"agent_id\":\"a1\",\"agent_type\":\"Explore\"}" 2>&1)"; printf "%s" "$o" >"${LEDGER_DEBUG:-/dev/null}"; [ -z "$o" ]'
 
   echo "== $kind: the ledger cap with 200 tasks"
   (

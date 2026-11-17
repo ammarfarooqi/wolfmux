@@ -132,7 +132,7 @@ cmd_deliver() {
   _mail_deliver_to "$MAIL_ROLE" "$event" "$payload" "$identity"
 }
 
-# _mail_had_message <role> <payload-json> — 0 when the payload is a message whose id this role's
+# _mail_had_message <role> <payload-json>: 0 when the payload is a message whose id this role's
 # spool already holds, waiting (mail/new) or shown (mail/seen)
 _mail_had_message() {
   local dir id f

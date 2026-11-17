@@ -1,5 +1,5 @@
 #!/bin/bash
-# ledger.sh — a lead that stays small (ADR-0040).
+# ledger.sh: a lead that stays small (ADR-0040).
 #
 # Three things, each for the one conversation that cannot be thrown away, the lead's:
 #
@@ -23,14 +23,14 @@ WOLFMUX_LEDGER_DONE_HOURS=24   # done tasks of at least this many hours back are
 
 # --- reports ------------------------------------------------------------------------------
 
-# ledger_reports_dir — where the report files live; needs PROJECT_STATE (load_project or
+# ledger_reports_dir: where the report files live; needs PROJECT_STATE (load_project or
 # store_ensure_project)
 ledger_reports_dir() { printf '%s/reports\n' "$PROJECT_STATE"; }
 
-# ledger_report_path <task-id> — the newest report of that task (it may not exist)
+# ledger_report_path <task-id>: the newest report of that task (it may not exist)
 ledger_report_path() { printf '%s/%s.md\n' "$(ledger_reports_dir)" "$1"; }
 
-# ledger_report_save <task-id> <text> — writes the report, atomically. An earlier report of the
+# ledger_report_save <task-id> <text>: writes the report, atomically. An earlier report of the
 # same task moves to the first free <task-id>.<n>.md first, so nothing of it is lost. Prints the
 # path. 1 when the directory cannot be written or the id is not one.
 ledger_report_save() {
@@ -52,7 +52,7 @@ ledger_report_save() {
   printf '%s\n' "$file"
 }
 
-# ledger_report_older <task-id> — the earlier reports of that task, oldest first, one path a line
+# ledger_report_older <task-id>: the earlier reports of that task, oldest first, one path a line
 ledger_report_older() {
   local dir n=1
   dir="$(ledger_reports_dir)"
@@ -62,7 +62,7 @@ ledger_report_older() {
   done
 }
 
-# _ledger_cut <max> <text> — the text, or its first <max> characters followed by " [cut]"
+# _ledger_cut <max> <text>: the text, or its first <max> characters followed by " [cut]"
 # (the marker counts inside <max>). Characters, not bytes: bash substrings under a UTF-8 locale.
 _ledger_cut() {
   local max="$1" text="$2"
@@ -76,7 +76,7 @@ _ledger_cut() {
 }
 
 # ledger_report_notice <task-id> <identity> <title> <summary> <tests-line> <branch> <sha> <stat-line> <path>
-# — the text the lead gets for one `teamctl done`, the body of the "Done:" message. Together with
+# The text the lead gets for one `teamctl done`, the body of the "Done:" message. Together with
 # the "[wolfmux mail] " _mail_render_bead puts before it, at most WOLFMUX_REPORT_NOTICE_MAX
 # characters: every fixed line is capped first, and the summary gets what is left, cut with a
 # marker that names where the rest is.
@@ -107,7 +107,7 @@ This item is already marked read and needs no reply."
 
 ledger_decisions_file() { printf '%s/decisions\n' "$STATE_DIR"; }
 
-# _ledger_decisions_write <content> — the whole file, atomically; "" removes every decision
+# _ledger_decisions_write <content>: the whole file, atomically; "" removes every decision
 _ledger_decisions_write() {
   local file tmp
   file="$(ledger_decisions_file)"
@@ -120,7 +120,7 @@ _ledger_decisions_write() {
   /bin/mv -f "$tmp" "$file"
 }
 
-# ledger_decisions_text — "1. <date> <text>" per decision, oldest first (newest last)
+# ledger_decisions_text: "1. <date> <text>" per decision, oldest first (newest last)
 ledger_decisions_text() {
   local file
   file="$(ledger_decisions_file)"
@@ -128,7 +128,7 @@ ledger_decisions_text() {
   /usr/bin/awk -F'\t' 'NF >= 2 { n++; t = $2; for (i = 3; i <= NF; i++) t = t " " $i; printf "%d. %s %s\n", n, substr($1, 1, 10), t }' "$file"
 }
 
-# teamctl decide "<text>" | --list | --drop <n> — the lead's decisions, kept for the ledger
+# teamctl decide "<text>" | --list | --drop <n>: the lead's decisions, kept for the ledger
 cmd_decide() {
   local mode="add" text="" drop="" file kept count
   case "${1:-}" in
@@ -181,7 +181,7 @@ cmd_decide() {
 
 # --- the ledger ---------------------------------------------------------------------------
 
-# _ledger_team_rows <rows-json> — only the tasks of the loaded team: the default team's are those
+# _ledger_team_rows <rows-json>: only the tasks of the loaded team: the default team's are those
 # whose assignee has no team prefix, a named team's those that start with "<team>." (as
 # `teamctl tasks` shows them)
 _ledger_team_rows() {
@@ -192,10 +192,10 @@ _ledger_team_rows() {
     )]'
 }
 
-# _ledger_began_file — where the lead's SessionStart wrote when its conversation began
+# _ledger_began_file: where the lead's SessionStart wrote when its conversation began
 _ledger_began_file() { printf '%s/run/%s/ledger-began\n' "$STATE_DIR" "$WOLFMUX_LEAD_ROLE"; }
 
-# _ledger_cutoff — the epoch from which done tasks are listed: the start of the lead's
+# _ledger_cutoff: the epoch from which done tasks are listed: the start of the lead's
 # conversation or 24 hours back, whichever is earlier (so more is listed)
 _ledger_cutoff() {
   local now began=""
@@ -207,7 +207,7 @@ _ledger_cutoff() {
   printf '%s\n' "$began"
 }
 
-# _ledger_lines <budget> <more-text> — stdin lines while they fit in <budget> characters; the
+# _ledger_lines <budget> <more-text>: stdin lines while they fit in <budget> characters; the
 # lines that do not fit become one "(N more: <more-text>)" line, which the budget allows for.
 # <keep>: "first" keeps the first lines, "last" the last ones (decisions: the newest).
 _ledger_lines() {
@@ -243,7 +243,7 @@ $out}"
   printf '%s\n' "$out"
 }
 
-# ledger_text <all-tasks-json> — the ledger of the loaded team (TEAM, STATE_DIR, PROJECT_STATE),
+# ledger_text <all-tasks-json>: the ledger of the loaded team (TEAM, STATE_DIR, PROJECT_STATE),
 # at most WOLFMUX_LEDGER_MAX characters. Empty when there is nothing in it at all.
 ledger_text() {
   local rows="$1" cutoff open done_rows decisions open_t done_t dec_t head budget open_b done_b dec_b out
@@ -300,7 +300,7 @@ ${decisions:-(none)}"
   printf '%s\n' "$out" | _hook_cap "$WOLFMUX_LEDGER_MAX"
 }
 
-# teamctl ledger — the team's ledger, as the lead's SessionStart attaches it after a compaction
+# teamctl ledger: the team's ledger, as the lead's SessionStart attaches it after a compaction
 cmd_ledger() {
   local rows text
   [ "$#" -eq 0 ] || die_usage "usage: teamctl ledger"
@@ -315,7 +315,7 @@ cmd_ledger() {
 
 # --- the lead's SessionStart ----------------------------------------------------------------
 
-# _ledger_hook_team — TEAM, STATE_DIR and PROJECT_STATE from the run directory, without the tmux
+# _ledger_hook_team: TEAM, STATE_DIR and PROJECT_STATE from the run directory, without the tmux
 # call load_project would make. STATE_DIR is $PROJECT_STATE or $PROJECT_STATE/teams/<team>.
 _ledger_hook_team() {
   STATE_DIR="${HOOK_RUN%/run/*}"
@@ -332,7 +332,7 @@ _ledger_hook_team() {
   valid_team_name "$TEAM"
 }
 
-# ledger_session_start — the lead's part of SessionStart (ADR-0040): a new conversation records
+# ledger_session_start: the lead's part of SessionStart (ADR-0040): a new conversation records
 # when it began; one that was compacted or resumed gets the ledger back. Never a worker, never at
 # a fresh start, never with nothing in it. One Beads read, inside the hook run's one budget.
 ledger_session_start() {
@@ -359,7 +359,7 @@ ledger_session_start() {
   [ -z "$text" ] || hook_context "$text"
 }
 
-# ledger_hook <Event> — the contract is lib/hooks.sh's header
+# ledger_hook <Event>: the contract is lib/hooks.sh's header
 ledger_hook() {
   case "$1" in
     SessionStart) ledger_session_start ;;

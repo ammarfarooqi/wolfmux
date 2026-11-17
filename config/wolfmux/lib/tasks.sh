@@ -284,7 +284,7 @@ $extra"
   say "closed: $id"
 }
 
-# _tasks_report_send <sender> <lead> <subject> <notice> <task-id> — the short Done notice as a
+# _tasks_report_send <sender> <lead> <subject> <notice> <task-id>: the short Done notice as a
 # message that replies to the task, announced, and then marked read for the lead at once: the
 # notice says so, on both stores, and a lead that is compacted is not handed it again (its
 # ledger names the report). Prints the message id.
@@ -520,7 +520,7 @@ cmd_show() {
   _show_mark_shown "$item" "$id"
 }
 
-# _show_report_lines <task-id> — where its report is, when it has one, and its earlier ones
+# _show_report_lines <task-id>: where its report is, when it has one, and its earlier ones
 _show_report_lines() {
   local path older
   path="$(ledger_report_path "$1")"
