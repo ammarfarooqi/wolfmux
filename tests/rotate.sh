@@ -359,6 +359,16 @@ check "lead path, the restart fails: refused, the same three files gone, no mess
   '! teamctl rotate w1 --now >/dev/null 2>&1 && [ ! -e "$R1/memory/handover.pending" ] && ! grep -qx "$AUTO" "$R1/memory/rotated" 2>/dev/null && [ ! -e "$R1/rotate.lock" ] && sleep 1 && [ "$(lcount "w1: rotation failed")" = $((FAILED_BEFORE + 1)) ]'
 /bin/cp "$WORK/w1.json.saved" "$REC1"
 
+echo "== release review LOW 4: a rotation that ends removes its own lock only, never one taken over since =="
+AUTO="$(record w1 session_id)"
+printf 'busy\n' >"$R1/state"
+TEAM_ROLE=w1 WOLFMUX_ROTATE_WAIT=4 "$REPO/tests/in-pane" rotate w1 >/dev/null 2>&1
+sleep 1.5 # the detached process is past its entry check and waits for the turn end
+printf 'rotate %s other.1\n' "$(date +%s)" >"$R1/rotate.lock/by" # a second rotation took the lock over meanwhile
+check "the first one gives up (its wait runs out) and leaves the second one's lock in place" \
+  'poll "grep -q \"did not end its turn\" \"$R1/rotate.log\"" && sleep 1 && [ -d "$R1/rotate.lock" ] && grep -q "other.1" "$R1/rotate.lock/by" && [ "$(record w1 session_id)" = "$AUTO" ]'
+/bin/rm -rf "$R1/rotate.lock" "$R1/memory/rotate-due"
+
 echo "== A3 finding 5: the rotating process outlives the pane it was started from =="
 PANE_OUT="$WORK/pane"
 /bin/mkdir -p "$PANE_OUT"

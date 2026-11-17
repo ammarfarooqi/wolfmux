@@ -215,6 +215,13 @@ _rotate_lock_token() {
   printf '%s' "$token"
 }
 
+# _rotate_lock_release <lock-dir> <token> - remove the lock only while it is still this rotation's: one
+# that outlived WOLFMUX_ROTATE_LOCK_STALE may have been taken over by a second rotation since.
+_rotate_lock_release() {
+  [ -n "${2:-}" ] && [ "$(_rotate_lock_token "$1")" = "$2" ] || return 0
+  /bin/rm -rf "$1" 2>/dev/null || true
+}
+
 # _rotate_internal_gate <role> <token> - the entry of _rotate-run and _rotate-auto, before anything is
 # written. They are started detached by a rotation of <role> that took run/<role>/rotate.lock (a Stop
 # hook of that agent, or its own teamctl rotate), and inherit its TEAM_ROLE and TMUX_PANE: the caller
@@ -370,7 +377,7 @@ cmd_rotate() {
   fi
   # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
   (ROTATE_HAVE_LOCK=1 rotate_run "$role" "${reason:-asked by $by}" "$by" "$now" "") || rc=$?
-  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+  _rotate_lock_release "$dir/rotate.lock" "$ROTATE_LOCK_TOKEN"
   return "$rc"
 }
 
@@ -385,7 +392,7 @@ cmd_rotate_detached() {
   dir="$(run_dir "$role")"
   (ROTATE_HAVE_LOCK=1 rotate_run "$role" "$2" "$3" "$4" "") || rc=$?
   [ "$rc" -eq 0 ] || _rotate_failed "$role" "$dir" "$2"
-  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+  _rotate_lock_release "$dir/rotate.lock" "${5:-}"
   return "$rc"
 }
 
@@ -429,7 +436,7 @@ cmd_rotate_auto() {
   dir="$(run_dir "$role")"
   # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
   (_rotate_auto_body "$role" "$reason") || _rotate_failed "$role" "$dir" "$reason"
-  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+  _rotate_lock_release "$dir/rotate.lock" "${4:-}"
 }
 
 _rotate_auto_body() {
