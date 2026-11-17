@@ -2533,6 +2533,59 @@ shortened form with exit code 1, the last line, and the failure line 6001 from t
 in `run/w1/out`. The worker's first request was 62,106 tokens in a pane. Status showed `68k/285k 23%` for
 the worker and `122k/967k 12%` for the lead, and the lead got one notice for one `done`.
 
+## 47. Rotation: a fresh conversation with a hand-over wolfmux writes (v1.26.0, ADR-0039)
+
+v1.25.0 told the lead when a worker was nearly full or compacting twice in a row, and the answer was a
+restart by hand that nobody had tried with uncommitted work, starting from a checkpoint no agent had
+written. `teamctl rotate <role>` (`lib/rotate.sh`) does that restart with a hand-over wolfmux writes
+itself: the task with its notes, the agent's own checkpoint text, the commits, the status and the
+uncommitted diff itself,
+its last five answers, the paths and the reason, each part capped so a 50,000-character task body cannot
+push the git part out (12,000 characters in all). The new conversation sees it first at its start, once,
+under a line saying its task is already claimed and the tree state is current.
+The lead may rotate any worker; a worker only itself; the lead role and Codex agents are refused.
+
+Policy `worker-rotation` (default `auto`) does it at a worker's turn end when it is past its rotate
+threshold or has thrashed, from a detached process the Stop hook starts under a lock, at most once per
+conversation, and never again for a conversation a rotation started (the lead gets the context message
+instead). `ask` sends the lead the command; `off` is v1.25.0. By default a rotation waits for the turn to
+end (`WOLFMUX_ROTATE_WAIT`, 120 s) and refuses when it does not, naming `--now`.
+
+`teamctl restart <role> --continue` now files one "continue task <id>" notice for an agent with a task in
+progress, which an idle agent used to wait for. The worker protocol gains two lines: keep a step log in
+the task, and after a rotation read the hand-over and go on.
+
+Found while testing: the lock was first removed by an EXIT trap, and another module sets its own EXIT
+trap later, so a failed rotation left the lock behind. The rotation now runs in a subshell and the lock
+goes after it, whatever ends it.
+
+Tests: `tests/rotate.sh` 35 checks, native store and Beads (`bd` stub); `tests/recall.sh` 69 (the thrash
+notice names `teamctl rotate`). Every suite in `tests/` (28) in a clean environment
+(`tests/research/run-suite.sh`, `env -i`): 2,658 checks passed, 0 failed, credential-routing exit 0;
+`tests/beads-hotpath.sh` 17 of 17 (the PostToolUse hot path still forks nothing when nothing is queued).
+
+One real-CLI run (the lead, Haiku 5.5, `tests/research/rotate-run.sh`): the calc task with no step log,
+rotated with `--now` after one commit and with the next helper's checks uncommitted. The new conversation
+edited `lib/calc.sh` 21.5 s and 4 requests after the rotation, 273,875 input tokens for those requests; it
+redid nothing, kept the uncommitted checks and committed them with their helper, and closed the task 61 s
+after the rotation. That does NOT beat the research restart (9.6 s, 2 requests, 117k), which had a step
+log: three of the four requests were the task's own demand to read the spec again, each about 63k of
+fixed start, and its first command re-derived the tree state the hand-over held. From that run: the
+hand-over now carries the uncommitted diff, and its first line says the task is claimed and the tree
+state current (stub checks; not measured again on the real CLI).
+
+A3, review findings on the automatic rotation. A worker on a task runs one long turn, so a rotation at its
+Stop waited for a turn end nobody asked for: under `auto`, at the rotate threshold and at the thrash
+event, the agent is now told to commit, not start the next step and END ITS TURN, and the lead's context
+message waits for the case where no rotation follows. A conversation a rotation started is rotated again
+once the watch has seen it under the threshold (`memory/below-seen`), not never. No task in progress
+clears `rotate-fired`. A lock older than 600 s is taken over and a refusal names its age. The rotating
+process is started in its own session with SIGHUP ignored (`/usr/bin/perl`, POSIX `setsid`; macOS has no
+`setsid` binary), what must outlive the restart is written before it, and a worker's own
+`teamctl rotate` hands the rotation to such a process and prints "rotation started: end your turn".
+Checks: `tests/rotate.sh` 53 (16 new A3 checks red on 7d6812e, the control green), `tests/recall.sh` 70.
+Two real-CLI scripts for the lead: `tests/research/rotate-auto-run.sh`, `rotate-self-run.sh`.
+
 ## 49. Four low findings of the v1.25.0 review (v1.26.0, part C)
 
 1. **The wrapper line** (ADR-0036). The 700 character prefix became a sourced file, `lib/offload-wrap.sh`;

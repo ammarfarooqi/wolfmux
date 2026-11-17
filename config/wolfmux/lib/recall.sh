@@ -92,6 +92,7 @@ recall_hook() {
       _recall_stall_look
       ;;
     PreCompact) _memory_precompact ;;
+    Stop) rotate_at_stop ;;
   esac
   return 0
 }
@@ -120,9 +121,11 @@ _memory_session_start() {
   [ "$unwarned" = 1 ] && _memory_unwarned_mark
   case "$HOOK_SOURCE" in
     # A new conversation: what the last one measured is not this one's.
-    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/unwarned" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" 2>/dev/null || true ;;
+    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/unwarned" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" "$HOOK_RUN/memory/rotate-fired" "$HOOK_RUN/memory/ctx" "$HOOK_RUN/memory/below-seen" "$HOOK_RUN/memory/rotate-declined" 2>/dev/null || true ;;
     compact) _memory_compacted || true ;;
   esac
+  # A rotation's hand-over comes first, before the notes and the mail briefing (ADR-0039)
+  rotate_session_handover
   local body
   if body="$(memory_store_memories_text)" && body="$(printf '%s\n' "$body" | _memory_quote_notes)" && [ -n "$body" ]; then
     hook_context "[wolfmux memory] What this project's teams have learned (teamctl memories <word> to search, teamctl remember \"<fact>\" to add):
@@ -279,17 +282,29 @@ _memory_check_thresholds() {
   warn="$(_memory_threshold "${WOLFMUX_CONTEXT_WARN:-}" 60)"
   rotate="$(_memory_threshold "${WOLFMUX_CONTEXT_ROTATE:-}" 80)"
   if [ "$warn" -gt 0 ] && [ "$rotate" -gt 0 ] && [ "$warn" -ge "$rotate" ]; then warn=60 rotate=80; fi
+  # The loop guard of ADR-0039: seen under the rotate threshold once, a conversation a rotation
+  # started may be rotated again. An existence test on every later look, no fork.
+  if [ "$rotate" -gt 0 ] && [ "$percent" -lt "$rotate" ] && [ ! -e "$HOOK_RUN/memory/below-seen" ]; then
+    : >"$HOOK_RUN/memory/below-seen" 2>/dev/null || true
+  fi
   if [ "$rotate" -gt 0 ] && [ "$percent" -ge "$rotate" ] && ! _memory_warned rotate; then
     _memory_mark_warned rotate
     figure="$(_memory_figure "$used" "$limit")"
-    hook_context "[wolfmux] Your conversation holds $figure of the limit its CLI compacts at. Do not start anything new: commit, run
+    if rotate_will_follow; then
+      # The rotation's own notice tells the lead; this agent only has to end its turn.
+      hook_context "[wolfmux] Your conversation holds $figure of the limit its CLI compacts at. Do not start anything new.
+$ROTATE_END_TURN"
+    else
+      hook_context "[wolfmux] Your conversation holds $figure of the limit its CLI compacts at. Do not start anything new: commit, run
 teamctl checkpoint \"<done so far / what is next / what to watch out for>\", and finish or hand back the current step. The lead has been told and may
 give this task a fresh conversation."
-    [ "$HOOK_ROLE" = "lead" ] || _memory_tell_lead "$percent" "$figure"
+      [ "$HOOK_ROLE" = "lead" ] || _memory_tell_lead "$percent" "$figure"
+    fi
   fi
   if [ "$warn" -gt 0 ] && [ "$percent" -ge "$warn" ] && ! _memory_warned warn; then
     _memory_mark_warned warn
-    hook_context "[wolfmux] Your conversation holds ${figure:-$(_memory_figure "$used" "$limit")} of the limit its CLI compacts at. Commit what works now. Then record where you
+    # Crossed together with the rotate threshold: the rotate text above says what to do.
+    [ -z "$figure" ] && hook_context "[wolfmux] Your conversation holds ${figure:-$(_memory_figure "$used" "$limit")} of the limit its CLI compacts at. Commit what works now. Then record where you
 stand, so nothing is lost if this conversation is compacted or replaced:
 teamctl checkpoint \"<done so far / what is next / what to watch out for>\""
   fi
@@ -322,7 +337,7 @@ _memory_tell_lead() {
   body="context: $2 of the limit its CLI compacts at
 $(_memory_numbers)
 checkpoint: $HOOK_RUN/memory/checkpoint.md
-teamctl restart $HOOK_ROLE : a new conversation in the same worktree and branch; it starts from the checkpoint"
+teamctl rotate $HOOK_ROLE : a fresh conversation in the same worktree and branch, with a hand-over wolfmux writes (policy worker-rotation auto does this at its next turn end)"
   (
     memory_store_lead_message "$lead" "$sender" "$HOOK_ROLE: context at $1%" "$body" &
   ) >/dev/null 2>&1
@@ -379,6 +394,13 @@ EOF
   if [ -n "$gap" ] && [ "$gap" -ge 0 ] && [ "$gap" -le "$max" ] && [ ! -e "$HOOK_RUN/memory/thrash-told" ]; then
     : >"$HOOK_RUN/memory/thrash-told" 2>/dev/null || true
     thrash=1
+    if rotate_will_follow; then
+      # A rotation follows this turn end (rotate_at_stop): the agent ends its turn, and the rotation's
+      # own notice tells the lead, not the thrash message.
+      hook_context "[wolfmux] This conversation was compacted twice within $gap tool calls: it has no room left to work in.
+$ROTATE_END_TURN"
+      thrash=0
+    fi
   fi
   # Claude Code 2.1.325 runs this hook BEFORE it writes the compaction's compact_boundary row (run 2
   # of tests/research/results/part-b-real-cli.md): the row's numbers are read once it is there.
@@ -468,8 +490,8 @@ _memory_tell_thrash() {
 before the second: ${4:-(not written yet)} tokens${limit:+ of a limit of $limit} (window ${window:-unset}, limit = window - $WOLFMUX_COMPACT_RESERVE)
 first request (sent again every time): ${first:-not measured}; kept by this compaction: ${5:-(not written yet)}
 room left to work in: about $room tokens. It will compact again soon, and each time it stands still.
-A new conversation with a larger window: WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl restart $HOOK_ROLE
-(it starts from its checkpoint: $HOOK_RUN/memory/checkpoint.md). Said once per conversation.${MEM_JUMP:+
+A fresh conversation with a hand-over: teamctl rotate $HOOK_ROLE (policy worker-rotation auto does this at its next turn end);
+with a larger window: WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl rotate $HOOK_ROLE. Said once per conversation.${MEM_JUMP:+
 compacted without a warning: the last request added $MEM_JUMP tokens}"
   if [ "$HOOK_ROLE" = "${WOLFMUX_LEAD_ROLE:-lead}" ]; then
     hook_context "[wolfmux] This conversation was compacted twice within $1 tool calls.

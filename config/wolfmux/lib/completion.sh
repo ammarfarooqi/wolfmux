@@ -193,6 +193,7 @@ complete_first_word() {
   complete_emit "$prefix" reopen "<id> \"<why>\": (lead) send a closed task back"
   complete_emit "$prefix" close "<id> -r \"<reason>\": (lead) close or reject a task"
   complete_emit "$prefix" checkpoint "\"<text>\": save where you left off"
+  complete_emit "$prefix" rotate "<role>: a fresh conversation with a hand-over"
   complete_emit "$prefix" run "-- <command>: a long output to a log, you get the short form"
   complete_emit "$prefix" remember "\"<fact>\": add to the shared team notes"
   complete_emit "$prefix" memories "[<query>]: search the shared team notes"
@@ -233,6 +234,7 @@ complete_options() {
     send) options="--all --body-file --re" ;;
     mail) options="--peek --json" ;;
     checkpoint) options="--body-file --show" ;;
+    rotate) options="--reason --now" ;;
     task) options="--after --body-file --spawn" ;;
     done) options="--tests --body-file --allow-dirty" ;;
     tasks) options="--all --status --json" ;;
@@ -272,6 +274,7 @@ complete_options() {
       --status) complete_emit "$prefix" "$option" "<list>: statuses to include" ;;
       --key) complete_emit "$prefix" "$option" "<slug>: this note's key (shared team notes)" ;;
       --show) complete_emit "$prefix" "$option" "[<role>]: print a role's stored checkpoint" ;;
+      --now) complete_emit "$prefix" "$option" "do not wait for the turn to end" ;;
       *) complete_emit "$prefix" "$option" ;;
     esac
   done
@@ -430,7 +433,7 @@ cmd_complete() {
             1) complete_models "$cur" ;;
           esac
           ;;
-        stop | restart | capture | log | focus | diff | nudge | inbox | notices)
+        stop | restart | rotate | capture | log | focus | diff | nudge | inbox | notices)
           [ "$position" -eq 0 ] && complete_roles "$cur"
           ;;
         model)

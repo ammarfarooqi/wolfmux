@@ -43,3 +43,4 @@ build; superseded decisions will link to their replacement.
 | [0036](0036-long-output-stays-out-of-the-context.md) | A long command output stays out of the context window | accepted | 2026-11-16 |
 | [0037](0037-what-a-trimmed-agent-starts-with.md) | A trimmed agent also starts without unusable tools, connectors and named instruction files; the lead may opt in | accepted | 2026-11-16 |
 | [0038](0038-one-context-number.md) | One context number per agent (used against the limit its CLI compacts at), and a worker window made from what was measured | accepted in part | 2026-11-16 |
+| [0039](0039-rotation.md) | Rotation: a nearly full worker gets a fresh conversation in the same worktree, with a hand-over wolfmux writes (teamctl rotate, policy worker-rotation) | accepted | 2026-11-17 |

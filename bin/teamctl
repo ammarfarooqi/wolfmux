@@ -56,7 +56,7 @@ if [ "${1:-}" = "_offload-pre" ]; then
 fi
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall stall tasks offload; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall rotate stall tasks offload; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -138,6 +138,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl restart <role> [--continue] [--resume <session-id>] [--model <model>]    its own conversation, or the one you name;
                                                       on its recorded model, or the one --model records
                                                       (ids: teamctl status --json | jq -r '.agents[].session_id')
+    teamctl rotate <role> [--reason <text>] [--now]   a worker's fresh conversation in the same worktree and branch,
+                                                      with a hand-over wolfmux writes (run/<role>/memory/handover.md);
+                                                      waits for its turn end up to WOLFMUX_ROTATE_WAIT s (--now: not).
+                                                      A worker may rotate itself. Policy worker-rotation (ADR-0039)
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
   Messages for you  agents write to you with teamctl send human "<subject>" "<body>" (on a Beads
@@ -452,6 +456,9 @@ main() {
     send) cmd_send "$@" ;;
     mail) cmd_mail "$@" ;;
     checkpoint) cmd_checkpoint "$@" ;;
+    rotate) cmd_rotate "$@" ;;
+    _rotate-auto) cmd_rotate_auto "$@" ;;
+    _rotate-run) cmd_rotate_detached "$@" ;;
     run) cmd_run "$@" ;;
     task) cmd_task "$@" ;;
     done) cmd_done "$@" ;;
