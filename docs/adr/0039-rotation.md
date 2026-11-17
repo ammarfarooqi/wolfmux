@@ -167,12 +167,14 @@ own `teamctl rotate`. While it exists, `_inbox-stop` says nothing (Claude Code r
 parallel, so only a file written before the Stop is seen by all of them), and `_hook Stop` runs no module
 after recall once a rotation is started or under way. That means no task reminder, and no mail is marked
 delivered and then dropped. After its wait, the automatic path asks the store again, and with no task in
-progress any more it does not rotate (rotate.log says so, and rotate-fired is cleared).
+progress any more it does not rotate (rotate.log says so, and rotate-fired is cleared). In `rotate_run`,
+a wait that runs out removes `memory/rotate-due` before the process dies, so a rotation that gave up
+does not leave the other Stop entries silent for good.
 
-To be measured by the lead with `tests/research/rotate-auto-run.sh` (the automatic rotation: Haiku,
-policy defaults, the calc task without a step log, `WOLFMUX_WORKER_COMPACT_WINDOW=200000` for a limit of
-167,000 and the rotate threshold at 55%, crossed after one or two of the four helpers) and
-`tests/research/rotate-self-run.sh` (the worker runs `teamctl rotate w1` after its second commit). 
+Measured by the lead with `tests/research/rotate-auto-run.sh` (the automatic rotation: Haiku, policy
+defaults, the calc task without a step log, `WOLFMUX_WORKER_COMPACT_WINDOW=200000` for a limit of 167,000
+and the rotate threshold at 55%, crossed after one or two of the four helpers) and
+`tests/research/rotate-self-run.sh` (the worker runs `teamctl rotate w1` after its second commit).
 
 **Auto run, first (e9f4f77, Haiku, CLI 2.1.326).** The message came at 94k/167k (56%). The agent
 committed div, ran `teamctl checkpoint` and ended its turn 6 s and 1 tool call later. The detached process
@@ -182,7 +184,8 @@ context, which continues the turn. The agent finished mod and pow in the OLD con
 task, and only then was it rotated, 31 s after its first turn end. The rotation saved nothing. Why the
 first idle was not seen: cmd_hook writes `state` at the end of the Stop hook, and it writes `busy` when the
 hook said something, so the waiting process saw `busy` until the next quiet Stop. Fixed in 028b66d:
-`memory/rotate-due` (see "The turn end"), and the task is asked again after the wait. To be measured again.
+`memory/rotate-due` (see "The turn end"), and the task is asked again after the wait. Measured again
+below, "The automatic run after the Stop fix".
 
 **Self run (e9f4f77).** Second commit at 10:48:54; `teamctl rotate w1` printed "rotation started: end your
 turn" at 10:48:56; the agent ran `teamctl checkpoint` and ended its turn at 10:49:03 (7 s, 1 tool call).
@@ -194,6 +197,37 @@ committed mod and pow and closed the task 63 s after the rotation. Nothing was r
 helper), nothing was uncommitted at the rotation, and the tests showed 1212 passed, 0 failed. The context
 was 94,718 at the end of the old conversation and 83,519 at the end of the new one. It tried to write its
 test log into `run/w1/out/` (named in part e) and the guard refused it: part e now says "to read, not to write".
+
+## The automatic run after the Stop fix
+
+Measured by the lead on 2026-11-17 with `tests/research/rotate-auto-run.sh` at 028b66d (Haiku 5.5, Claude
+Code 2.1.326).
+
+**Run 2 (rotate 55%, warn 50%).** The worker crossed the threshold only at the end of its task (92,001 of
+167,000, 55%), and finished and closed the task in the same turn. At that Stop wolfmux did not rotate: no
+task in progress. The lead got one message ("context at 55% ... not rotated: no task in progress"),
+`memory/rotate-declined` was written, and there was no hand-over and no restart. So the declined path works
+on the real CLI.
+
+**Run 3 (`ROT_ROTATE=47`, `ROT_WARN=43`).** The message came at 11:38:34.8 UTC with three helpers
+committed (mul, div, mod) and nothing uncommitted. The agent ended its turn 5.3 s and 1 tool call later
+with one line ("mul, div and mod are committed ... pow is not started"). After that turn end the old
+conversation made 0 tool calls and 0 commits (it ended at 80,897 tokens of context). The rotation followed
+0.7 s after the turn end (the wait polls every 0.5 s). The lead got exactly one notice ("w1: rotated
+(context at 47% of its limit (rotate threshold 47%))") and no "context at" message. The hand-over held the
+reason and "asked by: wolfmux (policy worker-rotation auto)". `rotated_from` was set, `memory/rotated` held
+the old id and one `new <id>` line, the lock was gone, and there was no second rotation.
+
+The fresh conversation: SessionStart 11:38:42, first command 11:38:45 (`git status --short && git log
+--oneline -4 && cat lib/calc.sh && cat tests/run.sh && cat docs/spec.md`: it read the tree state and the
+spec again in one call, in spite of the hand-over's first line), first edit of `lib/calc.sh` at 11:38:53,
+12 s and 2 requests after the rotation (research 1.5: 9.6 s and 2 requests, with a step log; this run had
+none). It committed pow and ran `teamctl done`; the task closed 42 s after the rotation. One commit and one
+definition per helper, tests 1213 passed, 0 failed.
+
+What this is: one run, Haiku, a toy task, with the thresholds lowered through the environment so that the
+crossing landed in the middle of the task. Not measured on Opus or Fable. The thrash path and policy `ask`
+were not measured on the real CLI.
 
 ## Consequences
 
@@ -217,7 +251,8 @@ test log into `run/w1/out/` (named in part e) and the guard refused it: part e n
   the tree. The step log in the task (protocol) is what covers that.
 - The wait reads the Stop hook's `idle`; an agent stuck in a dialog or a hung tool never gets there, so
   only `--now` rotates it.
-- One real-CLI run, Haiku, a toy task. Not measured on Opus or Fable, not measured under `ask`.
+- Real-CLI runs: Haiku, a toy task (the `--now` run, the self run, and one automatic run with lowered
+  thresholds). Not measured on Opus or Fable; the thrash path and policy `ask` not measured on the real CLI.
 - Whether an agent obeys "END YOUR TURN" is up to the model. One that works on runs until the CLI
   compacts, as in v1.25.0, and is rotated at the turn end after that.
 - The hook's "can follow" does not see the task store: a worker with no task in progress is told to end

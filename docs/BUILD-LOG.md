@@ -2586,6 +2586,18 @@ process is started in its own session with SIGHUP ignored (`/usr/bin/perl`, POSI
 Checks: `tests/rotate.sh` 53 (16 new A3 checks red on 7d6812e, the control green), `tests/recall.sh` 70.
 Two real-CLI scripts for the lead: `tests/research/rotate-auto-run.sh`, `rotate-self-run.sh`.
 
+The first real-CLI auto run failed: wolfmux's own "You are stopping while ..." task reminder came at the
+same Stop as the rotation's wait and continued the turn, so the agent finished the task in the old
+conversation and was rotated only after it was closed. The Stop entries run in parallel, so one of them
+cannot see what another is about to do; the fix is a file written before the Stop, `memory/rotate-due`
+(at the crossing, and by a worker's own `teamctl rotate`): while it exists `_inbox-stop` says nothing and
+`_hook Stop` runs no module after recall, and the task is asked again after the wait. In the rerun at
+028b66d (Haiku, thresholds lowered to 47%) the agent ended its turn 5.3 s after the message with three
+helpers committed, the rotation followed 0.7 s later, the lead got one notice, and the new conversation
+edited `lib/calc.sh` 12 s and 2 requests after the rotation and closed the task 42 s after it (tests 1213
+passed, 0 failed). Another run at 55% crossed only at the task's end: no task in progress, one lead
+message, `memory/rotate-declined`, no rotation. One run each, Haiku, a toy task.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
