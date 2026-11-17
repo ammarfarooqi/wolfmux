@@ -2574,6 +2574,18 @@ fixed start, and its first command re-derived the tree state the hand-over held.
 hand-over now carries the uncommitted diff, and its first line says the task is claimed and the tree
 state current (stub checks; not measured again on the real CLI).
 
+A3, review findings on the automatic rotation. A worker on a task runs one long turn, so a rotation at its
+Stop waited for a turn end nobody asked for: under `auto`, at the rotate threshold and at the thrash
+event, the agent is now told to commit, not start the next step and END ITS TURN, and the lead's context
+message waits for the case where no rotation follows. A conversation a rotation started is rotated again
+once the watch has seen it under the threshold (`memory/below-seen`), not never. No task in progress
+clears `rotate-fired`. A lock older than 600 s is taken over and a refusal names its age. The rotating
+process is started in its own session with SIGHUP ignored (`/usr/bin/perl`, POSIX `setsid`; macOS has no
+`setsid` binary), what must outlive the restart is written before it, and a worker's own
+`teamctl rotate` hands the rotation to such a process and prints "rotation started: end your turn".
+Checks: `tests/rotate.sh` 53 (16 new A3 checks red on 7d6812e, the control green), `tests/recall.sh` 70.
+Two real-CLI scripts for the lead: `tests/research/rotate-auto-run.sh`, `rotate-self-run.sh`.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

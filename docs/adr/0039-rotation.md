@@ -2,7 +2,7 @@
 
 **Date**: 2026-11-17
 **Status**: accepted. Built: `teamctl rotate`, the hand-over, policy `worker-rotation`, `restart --continue` waking an agent with a task in progress.
-**Deciders**: the owner, the memory-management team's lead (scope), its rotate and rotate2 workers (code, tests, the real-CLI run)
+**Deciders**: the owner, the memory-management team's lead (scope), its rotate, rotate2 and rotate3 workers (code, tests, the real-CLI runs)
 
 ## Context
 
@@ -52,16 +52,55 @@ Measured with Claude Code 2.1.325 (`tests/research/results/v1.25-research.md`, 1
 2. **Policy `worker-rotation off|ask|auto`, default `auto`.** At a worker's Stop (`rotate_at_stop`, from
    `recall_hook`): at or past its rotate threshold (`WOLFMUX_CONTEXT_ROTATE`, a share of the limit,
    ADR-0038), or after the thrash event (two compactions within `WOLFMUX_THRASH_CALLS` tool calls),
-   - **auto**: it is rotated at that turn end. The agent is not asked.
+   - **auto**: it is rotated at that turn end. The agent is not asked to write anything, but it is told to
+     end its turn (see "The turn end" below).
    - **ask**: the lead gets one message with the exact command, `teamctl rotate <role>`.
    - **off**: v1.25.0's behaviour.
    The hook does only file tests and one jq; it takes the lock and starts `teamctl _rotate-auto` detached
-   (as `memory_store_lead_message` is started), which asks the policy, the family and the task store. It
-   fires at most once per conversation (`memory/rotate-fired`). A conversation a rotation started that is
-   itself past the threshold at a Stop is NOT rotated again: the lead gets v1.25.0's context message
-   instead, because a loop of rotations would be worse than the problem. Never in a subagent (input with
-   `agent_id`), never for the lead, never for Codex, never while the role has no task in progress. The
-   v1.25.0 notices (80%, thrash) now name `teamctl rotate` instead of `teamctl restart`.
+   (see "Surviving the restart"), which asks the policy, the family and the task store. It fires at most
+   once per conversation (`memory/rotate-fired`). Never in a subagent (input with `agent_id`), never for
+   the lead, never for Codex, never while the role has no task in progress. The v1.25.0 notices (80%,
+   thrash) now name `teamctl rotate` instead of `teamctl restart`.
+   - **The turn end.** A worker on a task runs one long turn; a rotation at Stop waits for a turn end that
+     the v1.25.0 text never asked for. So at the crossing of the rotate threshold (PostToolUse) and at the
+     thrash event (SessionStart, source `compact`), when a rotation can follow, the agent is told: if you
+     have a task in progress, commit what works, do not start its next step, then END YOUR TURN with one
+     line that says where you stand; wolfmux then replaces this conversation with a fresh one that gets a
+     hand-over and continues the task; do not close the task, do not hand it back, no message to the lead
+     is needed. "Can follow" is what a hook can know without the store: not the lead, policy `auto` (the
+     team's `meta.json`, else `WOLFMUX_WORKER_ROTATION`, else the default), not a Codex agent (its
+     record), not held back by the loop guard. One jq at the crossing, no `bd`; the PostToolUse hot path
+     is unchanged. Whether a task is in progress is still asked by the detached process, so the line
+     starts "if you have a task in progress". Under `ask` and `off` the v1.25.0 text stays. Under `auto`
+     the lead's "context at N%" message (and the thrash message) is not sent at the crossing: the
+     rotation's own notice follows. It is sent when the rotation does not happen: the loop guard (at the
+     Stop), no task in progress (by the detached process, once per conversation, `memory/rotate-declined`),
+     Codex (at the crossing, as before).
+   - **The loop guard.** The loop to prevent is a conversation that STARTS past the threshold. The watch
+     writes `memory/below-seen` the first time it sees the conversation under the rotate threshold (an
+     existence test on every later look, no fork; removed at `startup` and `clear`). A conversation a
+     rotation started (`new <id>` in `memory/rotated`) is rotated again only when that file exists; a
+     conversation that was rotated away and is resumed by hand is not rotated again. Otherwise the lead
+     gets v1.25.0's context message.
+   - **No task.** When the detached process finds no task in progress it removes `memory/rotate-fired`,
+     so the same conversation rotates at a later Stop once it has a task. Not under `ask`: one message per
+     conversation is right there.
+   - **The lock.** A `rotate.lock` older than `WOLFMUX_ROTATE_LOCK_STALE` (600) seconds, by the epoch in
+     its `by` file or else the directory's mtime, is taken over, at a Stop and by `teamctl rotate`; a
+     younger one is refused, and the refusal names its age. A detached process that never ran or was
+     killed no longer blocks every later rotation.
+   - **Surviving the restart.** The process that rotates is started from the conversation it ends: from
+     its Stop hook, or from its own Bash tool when a worker runs `teamctl rotate <own role>`.
+     `tmux respawn-pane -k` ends the pane, and with it its process group and session (SIGHUP). macOS has
+     no `setsid` binary; `_rotate_detach` uses `/usr/bin/perl` (shipped with macOS), whose POSIX module
+     has `setsid()`: it forks, so the child is no group leader, the child ignores SIGHUP (an ignored
+     signal stays ignored across exec), calls `setsid()` (a new session and process group, no controlling
+     terminal) and execs; without perl only SIGHUP is ignored, as `nohup` does. What must outlive the
+     restart is written before it: the old id in `memory/rotated`, `rotated_from`, the event. The new
+     conversation's own SessionStart writes `new <its id>`, so the loop guard does not depend on the
+     rotating process at all. A worker's own `teamctl rotate` takes the lock, hands the rotation to such a
+     process (`teamctl _rotate-run`), prints "rotation started: end your turn" and returns; the process
+     waits for the turn end as the default does (`--now`: it does not wait).
 3. **`teamctl restart <role> --continue` wakes an agent with a task in progress**: one notice through the
    inbox (`inbox_add`, the path every notice takes): "continue task <id>".
 4. **Protocol**, worker section, two lines: a task of more than one step keeps a short step log in the
@@ -81,6 +120,17 @@ event, `restart --continue` filing "continue task <id>" and not for an agent wit
 (7883db6) the first 29 of them gave 10 passed and 19 failed: the 10 are the refusals and no-ops. The
 diff in part c and the first line's wording were seen to fail before their code; the default-wait and
 thrash checks were added after the code existed and were not seen red.
+
+A3 added 18 checks (`tests/rotate.sh` 53 in all; `tests/recall.sh` 70): the agent's line under `auto`
+and under `ask`, no lead message at the crossing under `auto`, the thrash event under `auto`, a
+conversation a rotation started that was under the threshold once and is rotated again, `new <id>`
+written by the new conversation's SessionStart, rotate-fired cleared and one lead message when there is
+no task (native and Beads), a stale lock taken over by `teamctl rotate` and by a Stop (by file and by
+mtime), a young lock refused with its age, `_rotate_detach` outliving a SIGHUP to the pane's process
+group (with a control: a plain background child dies), and a worker's own `teamctl rotate` returning at
+once and rotating at its turn end. Against the code before A3 (7d6812e) the 16 checks of `tests/rotate.sh`
+that test A3 behaviour failed and the control passed. `tests/recall.sh`: four checks of the v1.25.0
+lead messages now run under policy `ask`.
 
 The real CLI: see "The real-CLI run" below.
 
@@ -110,13 +160,24 @@ Two changes followed from that, each with a stub check, not yet measured on the 
 the uncommitted diff itself, and the first line says the task is already claimed and the tree state is
 current.
 
+## The A3 real-CLI runs
+
+To be measured by the lead with `tests/research/rotate-auto-run.sh` (the automatic rotation: Haiku,
+policy defaults, the calc task without a step log, `WOLFMUX_WORKER_COMPACT_WINDOW=200000` for a limit of
+167,000 and the rotate threshold at 55%, crossed after one or two of the four helpers) and
+`tests/research/rotate-self-run.sh` (the worker runs `teamctl rotate w1` after its second commit). Not
+run yet: the numbers go here as they come.
+
 ## Consequences
 
 - A worker past its rotate threshold no longer compacts its way to the end: its next turn end gives it a
   fresh conversation of about its first request plus the hand-over (at most 12,000 characters, about 3k
   tokens), where a compaction kept 19k to 47k and stood still.
 - Records gain `rotated_from`; run directories gain `memory/handover.md`, `memory/handover.pending`,
-  `memory/rotated`, `memory/rotate-fired`, `rotate.lock`, `rotate.log`.
+  `memory/rotated`, `memory/rotate-fired`, `memory/below-seen`, `memory/rotate-declined`, `rotate.lock`,
+  `rotate.log`.
+- Under the default the agent, not the lead, gets the line at the crossing; the lead hears of the
+  rotation once, from the rotation itself.
 - A rotation at a Stop restarts the pane right after the turn ended. A turn that ended only to wait for a
   long background command loses the wait (the command's output is in the tree or in `run/<role>/out/`).
 
@@ -130,3 +191,11 @@ current.
 - The wait reads the Stop hook's `idle`; an agent stuck in a dialog or a hung tool never gets there, so
   only `--now` rotates it.
 - One real-CLI run, Haiku, a toy task. Not measured on Opus or Fable, not measured under `ask`.
+- Whether an agent obeys "END YOUR TURN" is up to the model. One that works on runs until the CLI
+  compacts, as in v1.25.0, and is rotated at the turn end after that.
+- The hook's "can follow" does not see the task store: a worker with no task in progress is told to end
+  its turn "if you have a task in progress", and the lead is told by the detached process at the Stop.
+  A worker with no task that never ends its turn is not reported at the crossing.
+- `rotated_from` is set before the restart; a restart that fails puts the session id back but leaves
+  `rotated_from` naming the conversation that was kept.
+- Without `/usr/bin/perl` the rotating process ignores SIGHUP but stays in the pane's session; not tested.
