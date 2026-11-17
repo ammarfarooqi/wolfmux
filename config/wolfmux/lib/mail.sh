@@ -215,6 +215,12 @@ _mail_render_bead() {
     printf '[wolfmux mail] %s closed %s: %s. Review: teamctl diff %s --stat' "$who" "$id" "$title" "$role"
     return 0
   fi
+  # A worker's Done report (lib/tasks.sh cmd_done, ADR-0040): the body is already the whole short
+  # notice, which names the report file and says it needs no reply; nothing is added around it.
+  if [ "$type" = "message" ] && [ "${title#Done: }" != "$title" ] && [ "${desc#DONE }" != "$desc" ]; then
+    printf '[wolfmux mail] %s' "$(_mail_sanitize_body "$desc" "$id")"
+    return 0
+  fi
   if [ "$type" = "message" ]; then
     if [ -n "$from" ]; then
       heading="[wolfmux mail] MESSAGE $id from $from: $title"

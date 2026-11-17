@@ -56,7 +56,7 @@ if [ "${1:-}" = "_offload-pre" ]; then
 fi
 TEAMCTL_SELF="$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0")"
 
-for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall stall tasks offload; do
+for module in provider-env common registry tmuxctl worktree disk reclaim finish beads policy approvals agents views dashboard restore doctor brand notify inbox layout guard memory completion hooks store mail recall stall tasks ledger offload; do
   if [ ! -r "$WOLFMUX_HOME/lib/$module.sh" ]; then
     echo "teamctl: missing $WOLFMUX_HOME/lib/$module.sh" >&2
     exit 78
@@ -331,9 +331,13 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl blocked [<id>] "<why>"                    marks it blocked, tells the lead
     teamctl tasks [<role>|--all] [--status <list>] [--json]      default status: open,in_progress,blocked
     teamctl show <id> [--json]                        one task (body, notes, blockers), or a message with its thread
+    teamctl show <id> --report                        the whole report teamctl done stored for that task (ADR-0040)
     teamctl note <id> "<text>"                        a durable note on a task; notifies nobody
     teamctl reopen <id> "<why>"      (lead)           send a closed task back, open, the assignee told
     teamctl close <id> -r "<reason>" [--failed]   (lead)    close or reject any task of this team
+    teamctl ledger                                    open work, what was done lately, the decisions (at most 4000
+                                                      characters); the lead gets it back after a compaction
+    teamctl decide "<text>" | --list | --drop <n>  (lead)    a decision that must outlive a compaction (300 characters, 30 kept)
   Long output  (ADR-0036)
     teamctl run -- <command> [args...]                runs it; a long output goes to a log and you get its head, tail,
                                                       failure lines and the path (Codex agents; Claude agents get this by hook)
@@ -459,6 +463,8 @@ main() {
     claim) cmd_claim "$@" ;;
     tasks) cmd_tasks "$@" ;;
     show) cmd_show "$@" ;;
+    ledger) cmd_ledger "$@" ;;
+    decide) cmd_decide "$@" ;;
     note) cmd_note "$@" ;;
     reopen) cmd_reopen "$@" ;;
     close) cmd_close "$@" ;;
