@@ -14,12 +14,15 @@
 # Settings (environment or ~/.config/wolfmux/config):
 #   WOLFMUX_OFFLOAD       on | off      off: every output reaches the model as it is
 #   WOLFMUX_OFFLOAD_MIN   characters    an output longer than this is shortened (default 4000)
+#   WOLFMUX_OFFLOAD_LOG_MAX bytes       a log longer than this keeps its head and its tail when the
+#                                       command ends, and says how much was left out (default 50 MB)
 #
 # Rule, as for every hook: nothing here may fail or delay an agent. When the log cannot be
 # written the output goes through unchanged.
 
 WOLFMUX_OFFLOAD="${WOLFMUX_OFFLOAD:-on}"
 WOLFMUX_OFFLOAD_MIN="${WOLFMUX_OFFLOAD_MIN:-4000}"
+WOLFMUX_OFFLOAD_LOG_MAX="${WOLFMUX_OFFLOAD_LOG_MAX:-52428800}" # bytes one log may keep (50 MB)
 WOLFMUX_OFFLOAD_HEAD=40     # lines kept from the start
 WOLFMUX_OFFLOAD_TAIL=40     # lines kept from the end
 WOLFMUX_OFFLOAD_MATCHES=60  # lines of the cut middle that match the pattern, at most
@@ -56,6 +59,38 @@ offload_prune() {
     while IFS= read -r f; do /bin/rm -f "./$f"; done) 2>/dev/null || true
 }
 
+# offload_log_max: the cap as a number (a bad value falls back to the default)
+offload_log_max() {
+  case "$WOLFMUX_OFFLOAD_LOG_MAX" in "" | *[!0-9]*) printf '52428800\n' ;; *) printf '%s\n' "$WOLFMUX_OFFLOAD_LOG_MAX" ;; esac
+}
+
+# offload_cap_log <log>: when the log is over the cap, keeps its first and last half-cap bytes
+# with a marker line between, and sets OFFLOAD_LEFT_OUT to the bytes dropped (0 when nothing was).
+# Runs when the command has ended (a log is plain data by then): the command writes straight to
+# the file, so it is neither slowed nor killed, and its exit code is untouched. The disk a runaway
+# command fills while it runs is not bounded by this, only what stays afterwards.
+offload_cap_log() {
+  local log="$1" max size half tmp
+  OFFLOAD_LEFT_OUT=0
+  max="$(offload_log_max)"
+  [ "$max" -gt 0 ] || return 0
+  size="$(/usr/bin/wc -c <"$log" 2>/dev/null | /usr/bin/tr -d ' ')"
+  case "$size" in "" | *[!0-9]*) return 0 ;; esac
+  [ "$size" -gt "$max" ] || return 0
+  half=$((max / 2))
+  tmp="$log.cap"
+  {
+    /usr/bin/head -c "$half" "$log"
+    printf '\n[wolfmux] ... %d bytes left out of the log here (WOLFMUX_OFFLOAD_LOG_MAX=%d); the last %d bytes follow:\n' \
+      $((size - 2 * half)) "$max" "$half"
+    /usr/bin/tail -c "$half" "$log"
+  } >"$tmp" 2>/dev/null && /bin/mv -f "$tmp" "$log" 2>/dev/null || {
+    /bin/rm -f "$tmp" 2>/dev/null
+    return 0
+  }
+  OFFLOAD_LEFT_OUT=$((size - 2 * half))
+}
+
 # offload_summary <log> [<exit-code>]: the shortened form of the text in <log>, to stdout.
 # One awk pass: it keeps the head, a ring of the last lines, and the matching lines between.
 offload_summary() {
@@ -63,7 +98,7 @@ offload_summary() {
   chars="$(LC_ALL=en_US.UTF-8 /usr/bin/wc -m <"$log" 2>/dev/null | /usr/bin/tr -d ' ')"
   LC_ALL=C /usr/bin/awk -v head="$WOLFMUX_OFFLOAD_HEAD" -v tail="$WOLFMUX_OFFLOAD_TAIL" \
     -v maxm="$WOLFMUX_OFFLOAD_MATCHES" -v linemax="$WOLFMUX_OFFLOAD_LINE_MAX" -v pat="$WOLFMUX_OFFLOAD_PATTERN" \
-    -v logpath="$log" -v chars="${chars:-?}" -v rc="$rc" '
+    -v logpath="$log" -v chars="${chars:-?}" -v rc="$rc" -v left="${OFFLOAD_LEFT_OUT:-0}" '
     function show(s) { if (length(s) > linemax) return substr(s, 1, linemax) " [line cut]"; return s }
     {
       if (NR <= head) { first[NR] = $0; next }
@@ -77,6 +112,7 @@ offload_summary() {
     END {
       n = NR
       printf "[wolfmux] long output shortened: %d lines, %s characters%s.\n", n, chars, (rc != "" ? ", exit code " rc : "")
+      if (left > 0) printf "[wolfmux] the log was over the size cap: %d bytes in the middle were left out of it (the counts above are of what is kept)\n", left
       printf "[wolfmux] full text: %s (search it with grep; do not cat it)\n", logpath
       for (i = 1; i <= n && i <= head; i++) print show(first[i])
       from = head + 1; to = n - tail
@@ -99,14 +135,20 @@ offload_summary() {
 # its first ~10,000 characters, so the FAIL lines at the end of a long log never reach the model
 # (tests/research/results/offload-probes.md, probes 3 and 5).
 #
-# The rewrite puts a prefix in front of the agent's command, on its first line (so bash's line
+# The rewrite puts a short line in front of the agent's command, on its first line (so bash's line
 # numbers in an error message stay what they were), and nothing after it:
-#   - it sends the shell's stdout and stderr to the log (one file, so the order is the order
+#   [ -r <lib>/offload-wrap.sh ] && . <lib>/offload-wrap.sh <log>;
+# The line only sources lib/offload-wrap.sh into the agent's own shell (it was a 700 character
+# prefix until v1.25.0: bash quotes the first line of a command in a syntax error message, so the
+# model read all of it). That file:
+#   - sends the shell's stdout and stderr to the log (one file, so the order is the order
 #     written) and keeps the originals on fds 7 and 8;
-#   - an EXIT trap puts them back and prints the result: whole when it is short, shortened when
-#     it is long (lib/offload-show.sh). The shell's exit status is kept. An `exit 3` in the
-#     command, `set -e`, and a syntax error (bash's message lands in the log) all end through it.
-#   - TERM and INT traps do the same for a command the CLI ends at its timeout, then exit 143/130.
+#   - sets an EXIT trap that puts them back and prints the result: whole when it is short,
+#     shortened when it is long (lib/offload-show.sh). The shell's exit status is kept. An
+#     `exit 3` in the command, `set -e`, and a syntax error (bash's message lands in the log)
+#     all end through it.
+#   - sets TERM and INT traps that do the same for a command the CLI ends at its timeout, then
+#     exit 143/130.
 # The command runs in the same shell, unchanged: cd and export persist as before. When the line
 # cannot set itself up (helper missing, log not writable) it does nothing and the command runs
 # as it would have. A command is never run twice: the line only redirects and sets traps.
@@ -118,7 +160,9 @@ offload_summary() {
 # the backstop. Keeping both traps (a `trap` function that chains them) was not tried: the
 # semantics differ between bash and zsh, and a word match is plain and safe.
 
-WOLFMUX_OFFLOAD_MARK="__wm_fin" # the function the line defines; also how a wrapped command is recognised
+# the fixed middle of the line offload_make_line writes (the sourcing form, not the file name, so a
+# command that merely names offload-wrap.sh is still wrapped); also how a wrapped command is recognised
+WOLFMUX_OFFLOAD_MARK="/offload-wrap.sh' ] && . '"
 # a command matching this (ERE, also used by jq) is never wrapped
 WOLFMUX_OFFLOAD_SKIP='(^|[^A-Za-z0-9_-])(exec|trap)([^A-Za-z0-9_-]|$)'
 
@@ -155,9 +199,10 @@ offload_wrap_line() {
 
 # offload_make_line <log> <show-script>: the same into OFFLOAD_LINE, without a fork
 offload_make_line() {
-  local log="$1" show="$2"
+  local log="$1" show="$2" wrap
   case "$log$show" in *"'"*) return 1 ;; esac
-  OFFLOAD_LINE="__wm_fin() { trap - EXIT TERM INT; exec 1>&7 2>&8 7>&- 8>&-; /bin/bash '$show' '$log' \"\$1\" || /bin/cat '$log'; }; if [ -r '$show' ] && exec 7>&1 8>&2 >'$log' 2>&1; then trap '__wm_rc=\$?; __wm_fin \$__wm_rc; exit \$__wm_rc' EXIT; trap '__wm_fin 143; exit 143' TERM; trap '__wm_fin 130; exit 130' INT; fi; "
+  wrap="${show%/*}/offload-wrap.sh"
+  OFFLOAD_LINE="[ -r '$wrap' ] && . '$wrap' '$log'; "
 }
 
 # offload_wrap_command <command> <log> <show-script>: the rewritten command, to stdout
@@ -181,6 +226,7 @@ offload_finish() {
     /bin/cat "$log"
     /bin/rm -f "$log"
   else
+    offload_cap_log "$log"
     offload_summary "$log" "$rc"
   fi
 }
@@ -271,6 +317,7 @@ offload_post() {
     persisted="$(/usr/bin/tail -c +2 "$log")"
     /bin/cp "$persisted" "$log" 2>/dev/null || return 0
   fi
+  offload_cap_log "$log"
   printf '%s' "$input" | "$jq" -c --arg text "$(offload_summary "$log")" '
     {hookSpecificOutput: {hookEventName: "PostToolUse",
                           updatedToolOutput: (.tool_response + {stdout: $text, stderr: ""}

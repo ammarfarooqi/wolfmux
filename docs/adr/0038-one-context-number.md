@@ -106,3 +106,15 @@ Measured on 2026-11-16 with Claude Code 2.1.325 (`tests/research/results/v1.25-r
 - A tool result that jumps the conversation over the limit within ONE request (two parallel 23k reads at
   59% in run 2) is compacted with no warning first: the watch only sees the last answer's usage. The
   PreCompact checkpoint is what remains.
+
+## Amended in v1.26.0
+
+Two findings of the v1.25.0 review. (1) The stall report's task lookup (`lib/stall.sh`) is bounded
+to 5 s on Beads (`_bd_bounded 5`). When `bd` does not answer, the lead still gets the report, without
+the task id ("the task store did not answer in time"); it is no longer lost. With a store that answered
+and no task in progress, an idle agent is still not reported. (2) The known limit above, a request
+that jumps past the limit and is compacted without a warning, is not predicted but said afterwards:
+when a compaction arrives with no near file and no threshold announced, the first tool call after it
+reaches the watch (a near file is set for that) and the agent is told once "compacted without a
+warning: the last request added N tokens", N being the compaction's `preTokens` minus the last figure
+the watch saw. The thrash message to the lead carries the same line when both apply.

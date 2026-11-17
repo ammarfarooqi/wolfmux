@@ -111,12 +111,16 @@ _recall_stall_look() {
 }
 
 _memory_session_start() {
+  local unwarned=0
+  # a compaction the watch gave no warning of: no near file, no threshold announced (read before they are reset)
+  if [ "$HOOK_SOURCE" = compact ] && [ ! -e "$HOOK_RUN/near" ] && ! _memory_warned warn && ! _memory_warned rotate; then unwarned=1; fi
   case "$HOOK_SOURCE" in
     startup | clear | compact) /bin/rm -f "$HOOK_RUN/memory/warned" "$HOOK_RUN/near" 2>/dev/null || true ;;
   esac
+  [ "$unwarned" = 1 ] && _memory_unwarned_mark
   case "$HOOK_SOURCE" in
     # A new conversation: what the last one measured is not this one's.
-    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" 2>/dev/null || true ;;
+    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/unwarned" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" 2>/dev/null || true ;;
     compact) _memory_compacted || true ;;
   esac
   local body
@@ -239,6 +243,7 @@ _memory_figure() { ctx_display "$1" "${2:-}"; }
 # tests/research/results/subagent-hook-probe.jsonl).
 _memory_context_watch() {
   [ -z "$(hook_input .agent_id)" ] || return 0
+  _memory_say_unwarned
   _ctx_of_transcript "$HOOK_TRANSCRIPT"
   [ -n "$CTX_TOKENS" ] || return 0
   local percent=""
@@ -323,6 +328,29 @@ teamctl restart $HOOK_ROLE : a new conversation in the same worktree and branch;
   ) >/dev/null 2>&1
 }
 
+# _memory_unwarned_mark - a compaction came with no warning: remembers the figure the watch saw last
+# (memory/ctx). _memory_compaction_numbers adds the compaction's preTokens (the CLI writes that row
+# after this hook), and the first watch after it says the difference, once. A near file makes the
+# very next tool call reach the watch (the hot path looks only every tenth call otherwise).
+_memory_unwarned_mark() {
+  local used
+  used="$("$JQ_BIN" -r '.used // empty' "$HOOK_RUN/memory/ctx" 2>/dev/null)" || used=""
+  _memory_number "$used" || return 0
+  printf '%s\n' "$used" >"$HOOK_RUN/memory/unwarned" 2>/dev/null || true
+  : >"$HOOK_RUN/near" 2>/dev/null || true
+}
+
+# _memory_say_unwarned - PostToolUse: once, "compacted without a warning: the last request added N tokens"
+_memory_say_unwarned() {
+  local used="" pre=""
+  [ -r "$HOOK_RUN/memory/unwarned" ] || return 0
+  IFS=' ' read -r used pre <"$HOOK_RUN/memory/unwarned" || true
+  _memory_number "$pre" || return 0
+  /bin/rm -f "$HOOK_RUN/memory/unwarned" 2>/dev/null || true
+  [ "$pre" -gt "$used" ] || return 0
+  hook_context "[wolfmux] compacted without a warning: the last request added $((pre - used)) tokens"
+}
+
 # _memory_compacted - SessionStart with source "compact": the CLI has just compacted this
 # conversation (the hook fires after every compaction; the CLI's own "Autocompact is thrashing"
 # stop fires no hook at all). Records what it kept, K, and counts it: the tool-call counter
@@ -402,7 +430,7 @@ _memory_await_boundary() {
 # compact_boundary row: K is its postTokens, kept for this conversation and for the team; the first
 # request is measured now if no look of the watch did it before; then the thrash message, if due.
 _memory_compaction_numbers() {
-  local row="" pre="" kept=""
+  local row="" pre="" kept="" jump=""
   printf '%s\n' "$1" >"$HOOK_RUN/memory/boundaries" 2>/dev/null || true
   row="$(/usr/bin/tail -n 400 "$HOOK_TRANSCRIPT" 2>/dev/null | "$JQ_BIN" -R -r '
     fromjson? | objects | select(.type == "system" and .subtype == "compact_boundary") | .compactMetadata | objects
@@ -418,6 +446,12 @@ EOF
     kept=""
   fi
   _memory_first
+  MEM_JUMP=""
+  if [ -r "$HOOK_RUN/memory/unwarned" ] && _memory_number "$pre"; then
+    IFS= read -r jump <"$HOOK_RUN/memory/unwarned" || true
+    _memory_number "$jump" && [ "$pre" -gt "$jump" ] && MEM_JUMP=$((pre - jump))
+    printf '%s %s\n' "$jump" "$pre" >"$HOOK_RUN/memory/unwarned" 2>/dev/null || true
+  fi
   [ "$2" = 1 ] || return 0
   _memory_tell_thrash "$3" "$4" "$5" "$pre" "$kept"
 }
@@ -435,7 +469,8 @@ before the second: ${4:-(not written yet)} tokens${limit:+ of a limit of $limit}
 first request (sent again every time): ${first:-not measured}; kept by this compaction: ${5:-(not written yet)}
 room left to work in: about $room tokens. It will compact again soon, and each time it stands still.
 A new conversation with a larger window: WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl restart $HOOK_ROLE
-(it starts from its checkpoint: $HOOK_RUN/memory/checkpoint.md). Said once per conversation."
+(it starts from its checkpoint: $HOOK_RUN/memory/checkpoint.md). Said once per conversation.${MEM_JUMP:+
+compacted without a warning: the last request added $MEM_JUMP tokens}"
   if [ "$HOOK_ROLE" = "${WOLFMUX_LEAD_ROLE:-lead}" ]; then
     hook_context "[wolfmux] This conversation was compacted twice within $1 tool calls.
 $body"

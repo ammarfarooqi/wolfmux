@@ -126,6 +126,16 @@ for CLI_SH in /bin/bash /bin/zsh; do
 done
 CLI_SH=/bin/bash
 
+echo "== a syntax error: the shell quotes the user's line, not a 700-character wrapper"
+syn="$(rewritten 'echo (bad')"
+syn_n=$((n + 1)); n=$((n + 1))
+run_as_cli "$WORK/syn" "$syn"
+run_as_cli "$WORK/synp" 'echo (bad'
+check "syntax error (bash): the message does not carry the wrapper's code" "! grep -q 'exec 7>&1' $WORK/syn/out && ! grep -q '__wm_fin' $WORK/syn/out"
+check "syntax error (bash): the whole message is short (under 600 characters)" "[ \$(wc -c <$WORK/syn/out) -lt 600 ]"
+check "syntax error (bash): the message still shows the user's command" "grep -q 'echo (bad' $WORK/syn/out"
+check "syntax error (bash): same exit code as unwrapped ($(cat $WORK/synp/rc))" "[ \"\$(cat $WORK/syn/rc)\" = \"\$(cat $WORK/synp/rc)\" ]"
+check "the line put in front of a command is short (under 400 characters with this path)" "[ \${#syn} -lt \$((400 + 5)) ]"
 echo "== a long output"
 long_cmd='seq 1 300000; echo "not ok 17 - the middle failure"; seq 300001 750000; echo "FAIL tests/x.sh" >&2; exit 1'
 run_as_cli "$WORK/pl" "$long_cmd"
@@ -155,19 +165,35 @@ run_as_cli "$WORK/wm" "$(rewritten "$many")"
 check "matching lines are capped at $WOLFMUX_OFFLOAD_MATCHES and say so" "grep -q 'the first $WOLFMUX_OFFLOAD_MATCHES follow' $WORK/wm/out && [ \$(grep -c '^[0-9]*: Error' $WORK/wm/out) = $WOLFMUX_OFFLOAD_MATCHES ]"
 check "one very long line is cut in what is shown" "run_as_cli $WORK/one \"\$(rewritten 'printf \"%090000d\\n\" 0')\"; [ \$(wc -c <$WORK/one/out) -lt 2000 ]"
 
+echo "== one log over WOLFMUX_OFFLOAD_LOG_MAX keeps its head and tail"
+WOLFMUX_OFFLOAD_LOG_MAX=1000000 run_as_cli "$WORK/cap" "$(rewritten "$long_cmd")"
+caplog="$(sed -n 's/^\[wolfmux\] full text: \(.*\) (search it with grep; do not cat it)$/\1/p' "$WORK/cap/out")"
+check "log cap: exit code kept (1)" "[ \"\$(cat $WORK/cap/rc)\" = 1 ]"
+check "log cap: the log is cut to about the cap (under cap + 300 bytes)" "[ -f \"$caplog\" ] && [ \$(wc -c <\"$caplog\") -lt 1000300 ]"
+check "log cap: the summary says how many bytes were left out" "grep -q 'over the size cap: [0-9]* bytes in the middle were left out' $WORK/cap/out"
+check "log cap: the log says it too, where the cut is" "grep -q '^\[wolfmux\] \.\.\. [0-9]* bytes left out of the log here' \"$caplog\""
+check "log cap: left-out bytes + what is kept (minus the marker line) = the full output" "l=\$(sed -n 's/.*over the size cap: \([0-9]*\) bytes.*/\1/p' $WORK/cap/out); m=\$(( \$(grep '^\[wolfmux\] \.\.\. [0-9]* bytes left out' \"$caplog\" | wc -c) + 1 )); [ \$((\$(wc -c <\"$caplog\") - m + l)) = \$(wc -c <$WORK/pl/out) ]"
+check "log cap: the head of the log is kept" "[ \"\$(head -1 \"$caplog\")\" = 1 ]"
+check "log cap: the last line is kept" "[ \"\$(tail -1 \"$caplog\")\" = 'FAIL tests/x.sh' ]"
+check "log cap: the summary is still short" "[ \$(wc -c <$WORK/cap/out) -lt 12000 ]"
+WOLFMUX_OFFLOAD_LOG_MAX=1000000 run_as_cli "$WORK/cap2" "$(rewritten 'seq 1 100000')"
+check "log cap: a log under the cap is untouched, no mention of it" "! grep -q 'size cap' $WORK/cap2/out"
 echo "== fail open"
 cnt="$WORK/count"
 once='echo x >>'"$cnt"'; echo ran'
 : >"$cnt"
-run_as_cli "$WORK/f1" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f1.log" "$WORK/missing-show.sh")"
+mkdir -p "$WORK/fl1"; cp "$WOLFMUX_HOME/lib/offload-wrap.sh" "$WORK/fl1/"
+run_as_cli "$WORK/f1" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f1.log" "$WORK/fl1/offload-show.sh")"
 check "helper missing: the command ran once and its output is shown" "[ \$(wc -l <$cnt) = 1 ] && grep -qx ran $WORK/f1/out"
 : >"$cnt"
-printf '#!/bin/bash\nexit 1\n' >"$WORK/broken-show.sh"
-run_as_cli "$WORK/f2" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f2.log" "$WORK/broken-show.sh")"
+mkdir -p "$WORK/fl2" "$WORK/fl3"
+cp "$WOLFMUX_HOME/lib/offload-wrap.sh" "$WORK/fl2/"; cp "$WOLFMUX_HOME/lib/offload-wrap.sh" "$WORK/fl3/"
+printf '#!/bin/bash\nexit 1\n' >"$WORK/fl2/offload-show.sh"
+run_as_cli "$WORK/f2" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f2.log" "$WORK/fl2/offload-show.sh")"
 check "helper fails: the command ran once and its output is shown" "[ \$(wc -l <$cnt) = 1 ] && grep -qx ran $WORK/f2/out"
 : >"$cnt"
-printf '#!/bin/bash\nkill -9 $$\n' >"$WORK/killed-show.sh"
-run_as_cli "$WORK/f3" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f3.log" "$WORK/killed-show.sh")"
+printf '#!/bin/bash\nkill -9 $$\n' >"$WORK/fl3/offload-show.sh"
+run_as_cli "$WORK/f3" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f3.log" "$WORK/fl3/offload-show.sh")"
 check "helper killed: the command ran once and its output is shown" "[ \$(wc -l <$cnt) = 1 ] && grep -qx ran $WORK/f3/out"
 : >"$cnt"
 run_as_cli "$WORK/f4" "$(offload_wrap_command "$once; exit 4" "/nonexistent-dir/f4.log" "$WOLFMUX_HOME/lib/offload-show.sh")"
@@ -193,7 +219,7 @@ done
 
 echo "== two Bash calls at the same time (the CLI runs independent calls in parallel)"
 # log_of <rewritten command>: the log path the prefix writes to
-log_of() { printf '%s' "$1" | sed -n "s/.* 8>&2 >'\([^']*\)' 2>&1; then.*/\1/p"; }
+log_of() { printf '%s' "$1" | sed -n "s/.*offload-wrap.sh' '\([^']*\)'; .*/\1/p"; }
 : >"$WORK/par.paths"
 for round in 1 2 3 4 5; do
   for i in 1 2 3 4 5 6 7 8; do
@@ -268,6 +294,8 @@ seq 1 3000 >"$WORK/big.txt"
 check "short result: no answer" "[ -z \"\$(post_json 'echo hi' hi | post)\" ]"
 check "long result: replaced by the Bash result OBJECT with the shortened form" "post_json 'cat x' \"\$(cat $WORK/big.txt)\" | post | jq -e '.hookSpecificOutput.updatedToolOutput | (.stdout | startswith(\"[wolfmux] long output shortened: 3000 lines\")) and .stderr == \"\" and .interrupted == false'"
 check "above 30k the CLI's persisted file is the full text" "seq 1 60000 >$WORK/persisted.txt; post_json 'seq' \"\$(head -c 30000 $WORK/persisted.txt)\" $WORK/persisted.txt | post | jq -e '(.hookSpecificOutput.updatedToolOutput | has(\"persistedOutputPath\") | not) and (.hookSpecificOutput.updatedToolOutput.stdout | contains(\"60000 lines\"))'"
+check "a command that only names offload-wrap.sh (grep -c . <path>) IS wrapped by PreToolUse" "[ -n \"\$(hook_json \"grep -c . $WOLFMUX_HOME/lib/offload-wrap.sh\" | $REPO/bin/teamctl _offload-pre)\" ]"
+check "a long result of a command that only names offload-wrap.sh IS shortened by PostToolUse" "post_json \"grep -c . $WOLFMUX_HOME/lib/offload-wrap.sh\" \"\$(cat $WORK/big.txt)\" | post | jq -e '.hookSpecificOutput.updatedToolOutput.stdout | startswith(\"[wolfmux] long output shortened\")'"
 check "a wrapped command's result is not shortened twice" "[ -z \"\$(post_json \"\$(rewritten 'cat x')\" \"\$(cat $WORK/big.txt)\" | post)\" ]"
 check "safety net off (not in the settings): no answer, nothing read" "[ -z \"\$(post_json 'cat x' \"\$(cat $WORK/big.txt)\" | $REPO/bin/teamctl _hook PostToolUse)\" ]"
 

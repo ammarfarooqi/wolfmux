@@ -64,19 +64,34 @@ EOF
   return 0
 }
 
-# _stall_task <identity> - the id of a task of it in progress, or nothing
+# _stall_task <identity> - the id of a task of it in progress, or nothing; exit 2 when the store
+# did not answer (Beads only: the read is bounded to 5 s, _bd_bounded, lib/store.sh, because a
+# wedged bd (Beads issue #6039) may not hold the lead's wake waiter or `teamctl status`)
 _stall_task() {
-  store_tasks_json "$1" in_progress 2>/dev/null | "$JQ_BIN" -r '[.[] | select(.status == "in_progress")][0].id // empty' 2>/dev/null
+  local json
+  if [ "$(store_kind 2>/dev/null)" = beads ]; then
+    json="$(_bd_bounded 5 store_tasks_json "$1" in_progress)" || return 2
+  else
+    json="$(store_tasks_json "$1" in_progress 2>/dev/null)"
+  fi
+  printf '%s' "$json" | "$JQ_BIN" -r '[.[] | select(.status == "in_progress")][0].id // empty' 2>/dev/null
 }
 
 # stall_tell <role> - after stall_of: ONE message to the lead per error row. The stamp directory
 # is made with mkdir, the atomic test-and-set: two lookers at the same moment send one message.
 stall_tell() {
-  local role="$1" team identity lead task dir key since mins body
+  local role="$1" team identity lead task dir key since mins body rc=0 with_task
   team="${TEAM:-${WOLFMUX_TEAM:-$WOLFMUX_DEFAULT_TEAM}}"
   identity="$(team_identity "$team" "$role")"
-  task="$(_stall_task "$identity")"
-  [ -n "$task" ] || return 1
+  task="$(_stall_task "$identity")" || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    # the store is wedged: whether a task is in progress is not known; the report goes without it
+    with_task="a task in progress (the task store did not answer in time, so which one is not known)"
+    task="unknown"
+  else
+    [ -n "$task" ] || return 1
+    with_task="task $task in progress"
+  fi
   dir="$STATE_DIR/stall"
   /bin/mkdir -p "$dir" 2>/dev/null || return 1
   key="$(printf '%s' "$STALL_AT" | /usr/bin/tr -cd '0-9')"
@@ -85,11 +100,11 @@ stall_tell() {
   since="${STALL_AT:-unknown}"
   mins=$((STALL_IDLE / 60))
   lead="$(team_identity "$team" "$WOLFMUX_LEAD_ROLE")"
-  body="$role has stopped: its last turn ended on an error and it has been idle for $mins min, with task $task in progress. No hook fires in an agent after that, so nothing else will tell you.
+  body="$role has stopped: its last turn ended on an error and it has been idle for $mins min, with $with_task. No hook fires in an agent after that, so nothing else will tell you.
 error: $STALL_TEXT
 since: $since
 To go on: teamctl restart $role --continue
-then:     teamctl send $role \"go on with $task\""
+then:     teamctl send $role \"go on with ${task/#unknown/your task}\""
   memory_store_lead_message "$lead" "$identity" "$role: stalled on an error since $since" "$body" >/dev/null 2>&1 || {
     /bin/rmdir "$dir/$role.$key" 2>/dev/null || true
     return 1

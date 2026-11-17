@@ -74,3 +74,19 @@ against the real CLI (`tests/research/results/offload-probes.md`) showed where t
 - An agent can still `cat` the log; the protocol says not to, and the shortened form says so.
 - The prefix is visible in the CLI's own record of the call only as the hook's rewrite; the
   transcript keeps the agent's command (probe 6).
+
+## Amended in v1.26.0
+
+Two findings of the v1.25.0 review. (1) The prefix was about 700 characters on the first line of
+the command, and bash quotes that line in a syntax error message, so the model read all of it. The
+line is now `[ -r <lib>/offload-wrap.sh ] && . <lib>/offload-wrap.sh <log>; ` (about 250 characters
+with real paths): the file, sourced into the agent's own shell, holds the redirections and the traps
+that were in the prefix. The mark that tells a wrapped command is now `offload-wrap.sh`. Exit codes and
+the equivalence corpus (bash and zsh) are unchanged; a syntax error's message is under 600 characters.
+(2) One log had no size cap, only the number of logs per role did. `WOLFMUX_OFFLOAD_LOG_MAX` (bytes,
+default 50 MB): when the command has ended and its log is over the cap, the log keeps its first and
+last half-cap bytes with a marker line between, and the summary says how many bytes were left out. It
+runs after the command, on the long path only, so the command is neither slowed nor killed and a
+short result costs nothing more. Known limit: the disk a runaway command fills while it runs is not
+bounded, only what stays afterwards. Cost of a wrapped `echo hi` end to end (bash start, source,
+traps, show script), 50 runs: 15 ms before, 16 to 18 ms after; the PreToolUse hook alone stays at 6 to 7 ms.
