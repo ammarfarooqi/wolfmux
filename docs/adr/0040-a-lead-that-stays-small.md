@@ -19,13 +19,22 @@ store again, one command at a time.
 1. **A report is a file; the lead's mail is a short notice.** `teamctl done` builds the report as
    before (summary, tests line, branch, commits, diff stat, `--body-file`) and writes it to
    `<state>/reports/<task-id>.md`, beside the store, one place for both stores. A task done again
-   after a reopen keeps its earlier reports as `<task-id>.1.md`, `<task-id>.2.md` (1 the oldest).
+   after a reopen keeps its earlier reports as `<task-id>~1.md`, `<task-id>~2.md` (1 the oldest;
+   `~` is in no task id, so a Beads child `X.1` is not X's first older report), numbered under a
+   lock.
    The "Done:" message to the lead carries only the notice, at most 600 characters with the
    `[wolfmux mail] ` it is shown with: `DONE <id> by <who>: <title, 60>`, the summary (cut with
    a marker that names the report when it does not fit), the tests line, the branch at the short
    sha, the diff stat line, the report's path, `read it: teamctl show <id> --report`, and "This
    item is already marked read and needs no reply." `teamctl done` marks it read in the store at
    once, on both stores, so the sentence is true and a compacted lead is not handed it again.
+   The 600 hold whatever the fields are: the summary keeps at least 120 characters; when the
+   fixed lines leave less, the report path goes first (`--report` reaches it), then the tests
+   line, diff stat and branch shrink, and a final cap holds the rest. Counting is in characters
+   (UTF-8) under any locale. If the notice cannot be built or sent, the lead gets a one-line
+   notice with the command; `done` never fails after the close without saying so. The short
+   form is shown only for a message carrying the mark `teamctl done` sets
+   (`WOLFMUX_DONE_NOTICE`, in the spooled item), never for text that merely looks like one.
    `teamctl show <id> --report` prints the file; `teamctl show <id>` names it (and the earlier
    ones). A lead without hooks (Codex) gets the one-line notice, which names the message id; the
    message names the command.
@@ -43,7 +52,9 @@ store again, one command at a time.
    share of the 4,000; what does not fit becomes one `(N more: <command>)` line, and for the
    decisions the oldest give way. `teamctl decide "<text>"` (the lead, through the pane proof; at
    most 300 characters, refused when empty) appends a dated line to `$STATE_DIR/decisions`, a file
-   on both stores; at most 30 are kept, the oldest leave first. `--list` and `--drop <n>`.
+   on both stores, under a lock; at most 30 are kept, the oldest leave first. `--list` and
+   `--drop <n>`; a text that starts with `-` is a text (alone, or after `--`). Decisions and done
+   rows take their room first; open work is the section that says how many more.
 4. **The lead's SessionStart.** `ledger_session_start` (lib/ledger.sh), a hook module of its own
    (`WOLFMUX_HOOK_MODULES`), returns at once for anyone but the lead. On `startup` and `clear` it
    writes when the conversation began; on `compact` and `resume` it attaches the ledger, unless it
@@ -98,6 +109,9 @@ task and 30 decisions of up to 300 characters: 3,928 (native) and 3,942 (Beads) 
 - A lead that wants the detail spends one tool call on `teamctl show <id> --report`.
 
 ### Not covered
+- On Beads, the second hook event of a reply message is dropped by looking at the recipient's
+  spool. A Codex lead, or a lead whose pane is not running, has no spool, and may still get the
+  one-line notice twice for one report.
 - How much the lead reads diffs itself: the protocol says what to do, nothing enforces it.
 - Mail other than a Done report (a worker's long `teamctl send --body-file`) still arrives whole,
   capped at 6,000 characters as before.

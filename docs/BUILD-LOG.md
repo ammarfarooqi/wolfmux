@@ -2540,7 +2540,7 @@ whole: summary, commit list and up to 6,000 characters of `--body-file`, at its 
 After a compaction it had lost the table of who does what.
 
 `teamctl done` now writes the whole report to `<state>/reports/<task-id>.md` (beside the store, the
-same place on both stores; a reopened task done again keeps the earlier one as `<task-id>.1.md`).
+same place on both stores; a reopened task done again keeps the earlier one as `<task-id>~1.md`; `~` is in no task id, so a Beads child `X.1` never collides).
 The lead's "Done:" message is a notice of at most 600 characters: task, summary (cut with a marker
 when long), tests line, branch at the short sha, diff stat, the report's path and
 `teamctl show <id> --report`, and it says it is already marked read and needs no reply; `done`
