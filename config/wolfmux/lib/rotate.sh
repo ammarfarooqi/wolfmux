@@ -173,19 +173,33 @@ that says where you stand. wolfmux then replaces this conversation with a fresh 
 commits, the uncommitted diff, your last answers) and continues the task. Do not close the task, do not hand it back; no
 message to the lead is needed."
 
+# _rotate_lock_age <lock-dir> - its age in seconds: the epoch in its "by" file, else the directory's
+# mtime. 1 when it is not there or its age is unknown.
+_rotate_lock_age() {
+  local who="" at="" rest
+  [ -d "$1" ] || return 1
+  if [ -r "$1/by" ]; then read -r who at rest <"$1/by" || true; fi
+  _rotate_num "$at" || at="$(/usr/bin/stat -f %m "$1" 2>/dev/null)" || at=""
+  _rotate_num "$at" || return 1
+  printf '%s\n' "$(($(now_epoch) - at))"
+}
+
+# rotate_lock_stale <lock-dir> - 0 when it is there and older than WOLFMUX_ROTATE_LOCK_STALE seconds: the
+# process that held it is gone (killed, the machine slept) and it no longer stands for a rotation.
+rotate_lock_stale() {
+  local age
+  age="$(_rotate_lock_age "$1")" || return 1
+  [ "$age" -gt "$WOLFMUX_ROTATE_LOCK_STALE" ]
+}
+
 # _rotate_lock_take <lock-dir> <who> - 0 with the lock taken; a lock older than
 # WOLFMUX_ROTATE_LOCK_STALE seconds (its "by" file, else the directory's mtime) is taken over. 1 when
 # it is held; ROTATE_LOCK_AGE is then its age in seconds ("" when unknown). Taken, ROTATE_LOCK_TOKEN
 # is the token written into its "by" file.
 _rotate_lock_take() {
-  local who="" at="" rest now
   ROTATE_LOCK_AGE="" ROTATE_LOCK_TOKEN="$$.$RANDOM$RANDOM"
   if ! /bin/mkdir "$1" 2>/dev/null; then
-    if [ -r "$1/by" ]; then read -r who at rest <"$1/by" || true; fi
-    _rotate_num "$at" || at="$(/usr/bin/stat -f %m "$1" 2>/dev/null)" || at=""
-    _rotate_num "$at" || return 1
-    now="$(now_epoch)"
-    ROTATE_LOCK_AGE=$((now - at))
+    ROTATE_LOCK_AGE="$(_rotate_lock_age "$1")" || return 1
     [ "$ROTATE_LOCK_AGE" -gt "$WOLFMUX_ROTATE_LOCK_STALE" ] || return 1
     /bin/rm -rf "$1" 2>/dev/null || true
     /bin/mkdir "$1" 2>/dev/null || return 1
@@ -249,10 +263,16 @@ rotate_at_stop() {
   [ "$HOOK_ROLE" != "${WOLFMUX_LEAD_ROLE:-lead}" ] || return 0
   [ "${WOLFMUX_WORKER_ROTATION:-}" != "off" ] || return 0
   if [ -e "$HOOK_RUN/memory/rotate-due" ] && [ -d "$HOOK_RUN/rotate.lock" ]; then
-    # A rotation is under way and waits for this turn end (a worker's own teamctl rotate, or an
-    # earlier Stop): nothing more to start, and no other module may continue the turn.
-    ROTATE_STARTED=1
-    return 0
+    if ! rotate_lock_stale "$HOOK_RUN/rotate.lock"; then
+      # A rotation is under way and waits for this turn end (a worker's own teamctl rotate, or an
+      # earlier Stop): nothing more to start, and no other module may continue the turn.
+      ROTATE_STARTED=1
+      return 0
+    fi
+    # A stale lock: the rotation that took it is gone. Kept, it and rotate-due would keep every Stop
+    # hook of this conversation quiet for ever; both go, and this Stop goes on as usual.
+    /bin/rm -rf "$HOOK_RUN/rotate.lock" 2>/dev/null || true
+    /bin/rm -f "$HOOK_RUN/memory/rotate-due" 2>/dev/null || true
   fi
   if [ -r "$HOOK_RUN/memory/ctx" ]; then percent="$("$JQ_BIN" -r '.percent // empty' "$HOOK_RUN/memory/ctx" 2>/dev/null)"; fi
   rotate="$(_memory_threshold "${WOLFMUX_CONTEXT_ROTATE:-}" 80)"

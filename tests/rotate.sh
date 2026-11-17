@@ -316,6 +316,30 @@ printf 'idle\n' >"$R2/state"
 check "the task closed while the rotation waited for the turn end: not rotated, rotate-fired cleared, said in rotate.log, no message to the lead" \
   'sleep 3; [ "$(record w2 session_id)" = "$CUR2" ] && [ ! -e "$R2/memory/rotate-fired" ] && [ ! -e "$R2/rotate.lock" ] && grep -q "no task in progress any more" "$R2/rotate.log" && [ "$(lcount "w2: rotated")" = "$ROTATED_BEFORE" ]'
 
+echo "== release review MEDIUM 2: a stale rotate.lock with a leftover rotate-due does not silence the Stop hooks =="
+AUTO="$(record w1 session_id)"
+/bin/rm -f "$R1"/tasks/reminded-* "$R1/memory/rotate-fired"
+/bin/mkdir -p "$R1/rotate.lock"
+printf 'stop 1 dead.1\n' >"$R1/rotate.lock/by"
+: >"$R1/memory/rotate-due"
+WOLFMUX_NUDGE_TYPE=off teamctl send w1 "a message past a dead rotation" "must arrive" >/dev/null 2>&1
+sleep 1
+check "_inbox-stop: rotate-due with a stale lock is not honoured; the notice is handed over" \
+  'inbox_stop w1 | grep -q "a message past a dead rotation"'
+"$JQ" -n '{used: 1, limit: 2, percent: 40}' >"$R1/memory/ctx"
+printf 'busy\n' >"$R1/state"
+SOUT3="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_TEAM=default WOLFMUX_INBOX_CLIENTS=0 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/tests/in-pane" _hook Stop)"
+check "the Stop hook: a stale lock and rotate-due are removed, and the turn end speaks again (the task reminder)" \
+  '[ ! -e "$R1/rotate.lock" ] && [ ! -e "$R1/memory/rotate-due" ] && printf "%s" "$SOUT3" | grep -q "You are stopping while" && [ "$(record w1 session_id)" = "$AUTO" ]'
+/bin/mkdir -p "$R1/rotate.lock"
+printf 'stop %s fresh.1\n' "$(date +%s)" >"$R1/rotate.lock/by"
+: >"$R1/memory/rotate-due"
+WOLFMUX_NUDGE_TYPE=off teamctl send w1 "a message during a live rotation" "waits" >/dev/null 2>&1
+sleep 1
+check "_inbox-stop: rotate-due with a fresh lock is still honoured (silent)" '[ -z "$(inbox_stop w1)" ]'
+/bin/rm -rf "$R1/rotate.lock" "$R1/memory/rotate-due"
+inbox_stop w1 >/dev/null
+
 echo "== A3 finding 5: the rotating process outlives the pane it was started from =="
 PANE_OUT="$WORK/pane"
 /bin/mkdir -p "$PANE_OUT"
