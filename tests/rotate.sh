@@ -69,6 +69,7 @@ hook() { # <role> <event> <json>
 }
 ctx_of() { "$JQ" -r '[.. | objects | .additionalContext? // empty] | join("\n")' 2>/dev/null; }
 lmail() { BEADS_ACTOR=lead WOLFMUX_IDENTITY=lead teamctl mail --peek 2>/dev/null; }
+lcount() { BEADS_ACTOR=lead WOLFMUX_IDENTITY=lead teamctl mail --peek --json 2>/dev/null | "$JQ" --arg t "$1" '[.[] | select((.title // .subject // "") == $t)] | length'; }
 
 echo "== the hand-over: order and caps (rotate_handover_write) =="
 HO="$WORK/ho"
@@ -175,10 +176,42 @@ AUTO="$(record w1 session_id)"
 stop_at w1 90 "$AUTO"
 check "the fresh conversation past the threshold at its first Stop is not rotated again; the lead gets the context message" \
   'sleep 2; [ "$(record w1 session_id)" = "$AUTO" ] && poll "lmail | grep -q \"w1: context at 90%\""'
+# A3 finding 2: the guard is for a conversation that STARTS past the threshold, not for one that
+# filled up with work. The watch marks the first look under the threshold (memory/below-seen).
+TR="$WORK/tr.jsonl"
+usage_line() { printf '{"type":"assistant","message":{"usage":{"input_tokens":%s,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}\n' "$1"; }
+post() { # <role> <session> [NAME=value...]: a PostToolUse look past the hot path
+  local r="$1" s="$2"
+  shift 2
+  : >"$(rundir "$r")/attention"
+  printf '{"session_id":"%s","transcript_path":"%s"}' "$s" "$TR" |
+    env "$@" TEAM_ROLE="$r" BEADS_ACTOR="$r" WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$(rundir "$r")" WOLFMUX_MODEL=glm53 "$REPO/bin/teamctl" _hook PostToolUse
+}
+usage_line 84000 >"$TR" # 50% of 167000
+post w1 "$AUTO" >/dev/null
+/bin/rm -f "$R1/memory/rotate-fired"
+stop_at w1 85 "$AUTO"
+check "a conversation a rotation started that was seen under the threshold once, then filled up, is rotated again" \
+  '[ -e "$R1/memory/below-seen" ] && poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]"'
+AUTO="$(record w1 session_id)"
+hook w1 SessionStart '{"source":"startup","session_id":"sid-from-the-hook"}' >/dev/null
+check "the new conversation's own SessionStart records it as started by a rotation (new <id>), and forgets below-seen" \
+  'grep -qx "new sid-from-the-hook" "$R1/memory/rotated" && [ ! -e "$R1/memory/below-seen" ]'
 R2="$(rundir w2)"
 CUR2="$(record w2 session_id)"
 stop_at w2 95 "$CUR2"
 check "no task in_progress: no rotation" 'sleep 2; [ "$(record w2 session_id)" = "$CUR2" ] && [ ! -e "$R2/rotate.lock" ]'
+check "no task: rotate-fired is cleared, and the lead gets the context message" \
+  'poll "[ ! -e \"$R2/memory/rotate-fired\" ]" && poll "lmail | grep -q \"w2: context at 95%\""'
+stop_at w2 95 "$CUR2"
+check "no task, the next Stop: no second message in the same conversation" 'sleep 2; [ "$(lcount "w2: context at 95%")" = 1 ]'
+T2="$(teamctl task w2 "Second thing" -d "one step" 2>/dev/null | tail -1 | sed -E 's/^task ([^ ]+) ->.*/\1/')"
+TEAM_ROLE=w2 BEADS_ACTOR=w2 teamctl claim "$T2" >/dev/null 2>&1
+printf 'idle\n' >"$R2/state"
+stop_at w2 95 "$CUR2"
+check "once it has a task, the same conversation is rotated at its next Stop" \
+  'poll "[ \"\$(record w2 session_id)\" != \"$CUR2\" ]" && poll "[ ! -e \"$R2/rotate.lock\" ]"'
+teamctl close "$T2" -r "test done" >/dev/null 2>&1
 /bin/mkdir -p "$R1/rotate.lock"
 /bin/rm -f "$R1/memory/rotate-fired" "$R1/memory/rotated"
 stop_at w1 95 "$AUTO"
@@ -189,6 +222,78 @@ check "the lock: a Stop while a rotation holds it starts no second one" 'sleep 2
 stop_at w1 40 "$AUTO"
 check "the thrash event (two compactions within the tool-call window) rotates at the turn end, under the threshold" \
   'poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]" && grep -q "reason: compacted twice" "$R1/memory/handover.md"'
+
+echo "== A3 finding 4: a lock nobody removes =="
+AUTO="$(record w1 session_id)"
+/bin/mkdir -p "$R1/rotate.lock"
+printf 'stop %s\n' "$(($(date +%s) - 700))" >"$R1/rotate.lock/by"
+check "teamctl rotate takes over a lock older than 600 s" 'teamctl rotate w1 --now | grep -q "rotated: w1" && [ ! -e "$R1/rotate.lock" ]'
+/bin/mkdir -p "$R1/rotate.lock"
+printf 'stop %s\n' "$(($(date +%s) - 30))" >"$R1/rotate.lock/by"
+check "a young lock is refused, and the refusal names its age" \
+  'out="$(teamctl rotate w1 --now 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -qE "(29|3[0-9]) s old"'
+/bin/rm -rf "$R1/rotate.lock"
+/bin/mkdir -p "$R1/rotate.lock"
+touch -t "$(date -v-1H +%Y%m%d%H%M.%S)" "$R1/rotate.lock"
+/bin/rm -f "$R1/memory/rotate-fired" "$R1/memory/rotated" "$R1/memory/thrash-told"
+AUTO="$(record w1 session_id)"
+printf 'idle\n' >"$R1/state"
+stop_at w1 95 "$AUTO"
+check "a Stop takes over a lock older than 600 s with no by file (the directory's mtime)" \
+  'poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]"'
+
+echo "== A3 finding 1: at the crossing the agent is told to end its turn when a rotation follows =="
+AUTO="$(record w1 session_id)"
+/bin/rm -f "$R1/memory/warned" "$R1/memory/rotate-fired" "$R1/memory/below-seen"
+usage_line 84000 >"$TR" # 50%: seen under the threshold, so the loop guard does not hold it back
+post w1 "$AUTO" >/dev/null
+usage_line 142000 >"$TR" # 85%
+OUT1="$(post w1 "$AUTO" | ctx_of)"
+check "policy auto, a worker: commit, do not start the next step, END YOUR TURN; wolfmux replaces the conversation and continues the task" \
+  'printf "%s" "$OUT1" | grep -q "END YOUR TURN" && printf "%s" "$OUT1" | grep -q "If you have a task in progress" && printf "%s" "$OUT1" | grep -q "hand-over" && printf "%s" "$OUT1" | grep -q "Do not close the task" && ! printf "%s" "$OUT1" | grep -q "The lead has been told"'
+check "policy auto: the lead gets no context message at the crossing (the rotation's notice follows)" \
+  'sleep 2; ! lmail | grep -q "w1: context at 85%"'
+check "the warn text is not added when both thresholds are crossed at once" '! printf "%s" "$OUT1" | grep -q "Commit what works now"'
+teamctl policy worker-rotation ask >/dev/null 2>&1
+/bin/rm -f "$R1/memory/warned"
+OUT2="$(post w1 "$AUTO" | ctx_of)"
+check "policy ask: the v1.25.0 wording, and the lead is told at the crossing with teamctl rotate named" \
+  'printf "%s" "$OUT2" | grep -q "finish or hand back the current step" && ! printf "%s" "$OUT2" | grep -q "END YOUR TURN" && poll "lmail | grep -q \"w1: context at 85%\"" && lmail | grep -q "teamctl rotate w1"'
+teamctl policy worker-rotation auto >/dev/null 2>&1
+/bin/rm -f "$R1/memory/thrash-told" "$R1/memory/compactions"
+compact() { printf '%s\n' "$1" >"$R1/calls"; printf '{"source":"compact","session_id":"%s","transcript_path":"%s"}' "$AUTO" "$TR" | WOLFMUX_COMPACT_WAIT=1 TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/bin/teamctl" _hook SessionStart; }
+compact 40 >/dev/null
+OUT3="$(compact 44 | ctx_of)"
+check "the thrash event under auto: the agent is told to end its turn; the lead gets no thrash message" \
+  'printf "%s" "$OUT3" | grep -q "compacted twice within 4 tool calls" && printf "%s" "$OUT3" | grep -q "END YOUR TURN" && sleep 3 && ! lmail | grep -q "w1: compacted twice"'
+/bin/rm -f "$R1/memory/thrash-told"
+
+echo "== A3 finding 5: the rotating process outlives the pane it was started from =="
+PANE_OUT="$WORK/pane"
+/bin/mkdir -p "$PANE_OUT"
+pane_hup() { # <alive-file> <how: detach|plain>: a stand-in pane in its own process group starts a child, then the group gets SIGHUP
+  /usr/bin/perl -e 'setpgrp(0, 0); exec @ARGV' /bin/bash -c '
+    for m in provider-env common registry hooks recall rotate; do . "$WOLFMUX_HOME/lib/$m.sh"; done
+    if [ "$2" = detach ]; then _rotate_detach "$3/log" /bin/bash -c "sleep 2; echo alive >$1"; else (/bin/bash -c "sleep 2; echo alive >$1" </dev/null >/dev/null 2>&1 &); fi
+    sleep 30' pane "$1" "$2" "$PANE_OUT" &
+  local pid=$!
+  sleep 0.8
+  kill -HUP -- "-$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  sleep 2.5
+}
+pane_hup "$PANE_OUT/plain" plain
+check "control: a plain background child of the pane dies with the pane's process group" '[ ! -e "$PANE_OUT/plain" ]'
+pane_hup "$PANE_OUT/detached" detach
+check "_rotate_detach: the child is in its own session and ignores SIGHUP; it outlives the pane" '[ -e "$PANE_OUT/detached" ]'
+AUTO="$(record w1 session_id)"
+printf 'busy\n' >"$R1/state"
+SELF="$(TEAM_ROLE=w1 WOLFMUX_ROTATE_WAIT=30 "$REPO/tests/in-pane" rotate w1 2>&1)"
+check "a worker rotating itself: it returns at once with 'rotation started: end your turn', nothing restarted yet" \
+  'printf "%s" "$SELF" | grep -q "rotation started: end your turn" && sleep 1 && [ "$(record w1 session_id)" = "$AUTO" ] && [ -d "$R1/rotate.lock" ]'
+printf 'idle\n' >"$R1/state"
+check "... and the detached process rotates it once its turn has ended; the lock goes" \
+  'poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]" && [ "$(record w1 rotated_from)" = "$AUTO" ]'
 
 echo "== restart --continue wakes an agent with a task in_progress =="
 check "a notice 'continue task <id>' is filed through the inbox" \
@@ -219,6 +324,11 @@ RB="$(find "$WOLFMUX_DATA" -type d -path "*/state/beads-*/run/w1" | head -1)" # 
 check "beads: rotate --now writes the task from bd (id, body, notes) into the hand-over" \
   'PATH="$FAKE:$PATH" WOLFMUX_STORE=beads teamctl rotate w1 --now >/dev/null 2>&1; grep -q "bd-7" "$RB/memory/handover.md" && grep -q "beads body" "$RB/memory/handover.md" && grep -q "bd note line" "$RB/memory/handover.md"'
 check "beads: the lead is told through bd create" 'poll "grep -q \"create.*w1: rotated\" \"$FAKE_LOG\""'
+RB2="$(find "$WOLFMUX_DATA" -type d -path "*/state/beads-*/run/w2" | head -1)"
+"$JQ" -n '{used: 1, limit: 2, percent: 95}' >"$RB2/memory/ctx"
+printf '{"session_id":"s-b2"}' | PATH="$FAKE:$PATH" WOLFMUX_STORE=beads TEAM_ROLE=w2 BEADS_ACTOR=w2 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$RB2" WOLFMUX_MODEL=glm53 teamctl _hook Stop >/dev/null
+check "beads: no task in bd: rotate-fired is cleared and the lead is told through bd create" \
+  'poll "[ ! -e \"$RB2/memory/rotate-fired\" ]" && poll "grep -q \"create.*w2: context at 95%\" \"$FAKE_LOG\""'
 
 echo
 echo "rotate.sh: $passed passed, $failed failed"
