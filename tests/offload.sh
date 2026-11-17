@@ -126,6 +126,16 @@ for CLI_SH in /bin/bash /bin/zsh; do
 done
 CLI_SH=/bin/bash
 
+echo "== a syntax error: the shell quotes the user's line, not a 700-character wrapper"
+syn="$(rewritten 'echo (bad')"
+syn_n=$((n + 1)); n=$((n + 1))
+run_as_cli "$WORK/syn" "$syn"
+run_as_cli "$WORK/synp" 'echo (bad'
+check "syntax error (bash): the message does not carry the wrapper's code" "! grep -q 'exec 7>&1' $WORK/syn/out && ! grep -q '__wm_fin' $WORK/syn/out"
+check "syntax error (bash): the whole message is short (under 600 characters)" "[ \$(wc -c <$WORK/syn/out) -lt 600 ]"
+check "syntax error (bash): the message still shows the user's command" "grep -q 'echo (bad' $WORK/syn/out"
+check "syntax error (bash): same exit code as unwrapped ($(cat $WORK/synp/rc))" "[ \"\$(cat $WORK/syn/rc)\" = \"\$(cat $WORK/synp/rc)\" ]"
+check "the line put in front of a command is short (under 400 characters with this path)" "[ \${#syn} -lt \$((400 + 5)) ]"
 echo "== a long output"
 long_cmd='seq 1 300000; echo "not ok 17 - the middle failure"; seq 300001 750000; echo "FAIL tests/x.sh" >&2; exit 1'
 run_as_cli "$WORK/pl" "$long_cmd"
@@ -159,15 +169,18 @@ echo "== fail open"
 cnt="$WORK/count"
 once='echo x >>'"$cnt"'; echo ran'
 : >"$cnt"
-run_as_cli "$WORK/f1" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f1.log" "$WORK/missing-show.sh")"
+mkdir -p "$WORK/fl1"; cp "$WOLFMUX_HOME/lib/offload-wrap.sh" "$WORK/fl1/"
+run_as_cli "$WORK/f1" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f1.log" "$WORK/fl1/offload-show.sh")"
 check "helper missing: the command ran once and its output is shown" "[ \$(wc -l <$cnt) = 1 ] && grep -qx ran $WORK/f1/out"
 : >"$cnt"
-printf '#!/bin/bash\nexit 1\n' >"$WORK/broken-show.sh"
-run_as_cli "$WORK/f2" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f2.log" "$WORK/broken-show.sh")"
+mkdir -p "$WORK/fl2" "$WORK/fl3"
+cp "$WOLFMUX_HOME/lib/offload-wrap.sh" "$WORK/fl2/"; cp "$WOLFMUX_HOME/lib/offload-wrap.sh" "$WORK/fl3/"
+printf '#!/bin/bash\nexit 1\n' >"$WORK/fl2/offload-show.sh"
+run_as_cli "$WORK/f2" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f2.log" "$WORK/fl2/offload-show.sh")"
 check "helper fails: the command ran once and its output is shown" "[ \$(wc -l <$cnt) = 1 ] && grep -qx ran $WORK/f2/out"
 : >"$cnt"
-printf '#!/bin/bash\nkill -9 $$\n' >"$WORK/killed-show.sh"
-run_as_cli "$WORK/f3" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f3.log" "$WORK/killed-show.sh")"
+printf '#!/bin/bash\nkill -9 $$\n' >"$WORK/fl3/offload-show.sh"
+run_as_cli "$WORK/f3" "$(offload_wrap_command "$once" "$WOLFMUX_RUN_DIR/out/f3.log" "$WORK/fl3/offload-show.sh")"
 check "helper killed: the command ran once and its output is shown" "[ \$(wc -l <$cnt) = 1 ] && grep -qx ran $WORK/f3/out"
 : >"$cnt"
 run_as_cli "$WORK/f4" "$(offload_wrap_command "$once; exit 4" "/nonexistent-dir/f4.log" "$WOLFMUX_HOME/lib/offload-show.sh")"
@@ -193,7 +206,7 @@ done
 
 echo "== two Bash calls at the same time (the CLI runs independent calls in parallel)"
 # log_of <rewritten command>: the log path the prefix writes to
-log_of() { printf '%s' "$1" | sed -n "s/.* 8>&2 >'\([^']*\)' 2>&1; then.*/\1/p"; }
+log_of() { printf '%s' "$1" | sed -n "s/.*offload-wrap.sh' '\([^']*\)'; .*/\1/p"; }
 : >"$WORK/par.paths"
 for round in 1 2 3 4 5; do
   for i in 1 2 3 4 5 6 7 8; do

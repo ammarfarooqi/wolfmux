@@ -99,14 +99,20 @@ offload_summary() {
 # its first ~10,000 characters, so the FAIL lines at the end of a long log never reach the model
 # (tests/research/results/offload-probes.md, probes 3 and 5).
 #
-# The rewrite puts a prefix in front of the agent's command, on its first line (so bash's line
+# The rewrite puts a short line in front of the agent's command, on its first line (so bash's line
 # numbers in an error message stay what they were), and nothing after it:
-#   - it sends the shell's stdout and stderr to the log (one file, so the order is the order
+#   [ -r <lib>/offload-wrap.sh ] && . <lib>/offload-wrap.sh <log>;
+# The line only sources lib/offload-wrap.sh into the agent's own shell (it was a 700 character
+# prefix until v1.25.0: bash quotes the first line of a command in a syntax error message, so the
+# model read all of it). That file:
+#   - sends the shell's stdout and stderr to the log (one file, so the order is the order
 #     written) and keeps the originals on fds 7 and 8;
-#   - an EXIT trap puts them back and prints the result: whole when it is short, shortened when
-#     it is long (lib/offload-show.sh). The shell's exit status is kept. An `exit 3` in the
-#     command, `set -e`, and a syntax error (bash's message lands in the log) all end through it.
-#   - TERM and INT traps do the same for a command the CLI ends at its timeout, then exit 143/130.
+#   - sets an EXIT trap that puts them back and prints the result: whole when it is short,
+#     shortened when it is long (lib/offload-show.sh). The shell's exit status is kept. An
+#     `exit 3` in the command, `set -e`, and a syntax error (bash's message lands in the log)
+#     all end through it.
+#   - sets TERM and INT traps that do the same for a command the CLI ends at its timeout, then
+#     exit 143/130.
 # The command runs in the same shell, unchanged: cd and export persist as before. When the line
 # cannot set itself up (helper missing, log not writable) it does nothing and the command runs
 # as it would have. A command is never run twice: the line only redirects and sets traps.
@@ -118,7 +124,7 @@ offload_summary() {
 # the backstop. Keeping both traps (a `trap` function that chains them) was not tried: the
 # semantics differ between bash and zsh, and a word match is plain and safe.
 
-WOLFMUX_OFFLOAD_MARK="__wm_fin" # the function the line defines; also how a wrapped command is recognised
+WOLFMUX_OFFLOAD_MARK="offload-wrap.sh" # the file the line sources; also how a wrapped command is recognised
 # a command matching this (ERE, also used by jq) is never wrapped
 WOLFMUX_OFFLOAD_SKIP='(^|[^A-Za-z0-9_-])(exec|trap)([^A-Za-z0-9_-]|$)'
 
@@ -155,9 +161,10 @@ offload_wrap_line() {
 
 # offload_make_line <log> <show-script>: the same into OFFLOAD_LINE, without a fork
 offload_make_line() {
-  local log="$1" show="$2"
+  local log="$1" show="$2" wrap
   case "$log$show" in *"'"*) return 1 ;; esac
-  OFFLOAD_LINE="__wm_fin() { trap - EXIT TERM INT; exec 1>&7 2>&8 7>&- 8>&-; /bin/bash '$show' '$log' \"\$1\" || /bin/cat '$log'; }; if [ -r '$show' ] && exec 7>&1 8>&2 >'$log' 2>&1; then trap '__wm_rc=\$?; __wm_fin \$__wm_rc; exit \$__wm_rc' EXIT; trap '__wm_fin 143; exit 143' TERM; trap '__wm_fin 130; exit 130' INT; fi; "
+  wrap="${show%/*}/offload-wrap.sh"
+  OFFLOAD_LINE="[ -r '$wrap' ] && . '$wrap' '$log'; "
 }
 
 # offload_wrap_command <command> <log> <show-script>: the rewritten command, to stdout
