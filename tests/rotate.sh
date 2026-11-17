@@ -121,6 +121,8 @@ check "release review HIGH 1: ROTATE_ACTING=1 from a worker does not let it rest
   'out="$(ROTATE_ACTING=1 TEAM_ROLE=w2 "$REPO/tests/in-pane" restart lead 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "reserved for the lead" && untouched'
 check "release review HIGH 1: ROTATE_ACTING=1 from a worker does not let it restart another worker" \
   'out="$(ROTATE_ACTING=1 TEAM_ROLE=w2 "$REPO/tests/in-pane" restart w1 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "reserved for the lead" && untouched'
+check "CALLER_RESOLVED=1 with an empty CALLER_ROLE from a worker does not make it the operator" \
+  'out="$(CALLER_RESOLVED=1 CALLER_ROLE= TEAM_ROLE=w2 "$REPO/tests/in-pane" restart lead 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "reserved for the lead" && untouched'
 check "the internal _rotate-run, typed by a worker for the lead: refused (77), nothing written" \
   'TEAM_ROLE=w2 "$REPO/tests/in-pane" _rotate-run lead x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
 check "the internal _rotate-run, typed by a worker for another worker: refused (77), nothing written" \

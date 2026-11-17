@@ -229,6 +229,42 @@ What this is: one run, Haiku, a toy task, with the thresholds lowered through th
 crossing landed in the middle of the task. Not measured on Opus or Fable. The thrash path and policy `ask`
 were not measured on the real CLI.
 
+## After the release review
+
+The release review (Riley, at 55af571) found one high, three medium and two low problems. Decided:
+
+1. **Who may restart.** `cmd_restart` skipped `require_manager` when `ROTATE_ACTING` was set, and it read
+   it from the environment: `ROTATE_ACTING=1 teamctl restart lead` from a worker restarted the lead. The
+   internal `teamctl _rotate-run` and `_rotate-auto` reached `rotate_run` without the checks of `teamctl
+   rotate`, so a worker could type them for any role. Now `main()` unsets, before anything else, every
+   variable wolfmux sets in one process as a permission or as who did what (`ROTATE_ACTING`,
+   `ROTATE_HAVE_LOCK`, `ROTATE_STARTED`, `ROTATE_LOCK_TOKEN`, `CALLER_RESOLVED`, `CALLER_ROLE`,
+   `CALLER_TEAM`, `CALLER_NOT_HERE`, `FOUNDER_ACTING`, `STEWARD_ACTING`, `STEWARD_RECORDED`,
+   `LEAD_RESTART`, `EVENT_BY`). The permission reaches `cmd_restart` as a plain variable of the subshell
+   that restarts, never exported, and `rotate_run` refuses the lead role whoever calls it. The internal
+   commands check at entry, before anything is written: the caller's role (the pane's, else `TEAM_ROLE`)
+   is the rotated role itself, never the lead, and `rotate.lock` exists and holds the token the rotation
+   that took it passed as the last argument. Anything else is refused with 77. The detached process has
+   left the pane, so the pid part of the pane proof cannot be asked of it; the role and the token are.
+2. **A stale lock.** A `rotate.lock` whose holder died, with `rotate-due` left behind, kept every Stop hook
+   quiet for ever. The lock now stands for a rotation under way only while it is fresh (the age test of
+   the takeover). At a Stop a stale lock and `rotate-due` are removed and the Stop goes on as usual;
+   `_inbox-stop` does not honour `rotate-due` beside a stale lock. A missing lock still counts there:
+   `_hook Stop` runs beside it and may be taking the lock at that moment.
+3. **A failed rotation.** When the restart failed, `handover.pending` and the `rotated` line stayed (the
+   next fresh start got an old hand-over, the old conversation was guarded for ever) and nobody was told.
+   The hand-over, the `rotated` line, `rotated_from`, `handover.pending` (last) and the restart now run in
+   one subshell; when it fails, `handover.pending`, `rotate-due` and that line go, `rotated_from` is put
+   back, and the error names the cause. On the automatic and the self path the lead gets one message
+   ("<role>: rotation failed", the last line of `rotate.log`, the context figure, `teamctl rotate <role>`
+   to retry) and `rotate-fired` is cleared, so the next crossing may try again.
+4. **Whose lock.** The lock's `by` file holds `<who> <epoch> <token>` (the taker's pid and a random
+   number). A rotation removes the lock at its end only while it still holds its token: one that outlived
+   the stale limit no longer removes the lock a second rotation took over.
+5. **A worker rotating itself.** The loop guard of the automatic path now holds for the self path too: a
+   conversation a rotation started that the watch never saw under the threshold is refused with a
+   sentence that says why. The lead can still rotate it.
+
 ## Consequences
 
 - A worker past its rotate threshold no longer compacts its way to the end: its next turn end gives it a
