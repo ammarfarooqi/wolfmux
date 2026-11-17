@@ -32,9 +32,14 @@ store again, one command at a time.
    fixed lines leave less, the report path goes first (`--report` reaches it), then the tests
    line, diff stat and branch shrink, and a final cap holds the rest. Counting is in characters
    (UTF-8) under any locale. If the notice cannot be built or sent, the lead gets a one-line
-   notice with the command; `done` never fails after the close without saying so. The short
-   form is shown only for a message carrying the mark `teamctl done` sets
-   (`WOLFMUX_DONE_NOTICE`, in the spooled item), never for text that merely looks like one.
+   notice with the command; `done` never fails after the close without saying so, and never
+   puts the whole report in the mail: a reports lock not had in 10 s writes the report under a
+   name of its own (`<task-id>~p<pid>.md`), an unwritable directory writes it to the temporary
+   directory, and the notice names where. The short form is judged from the store, never from
+   text or environment a worker can set: the stored message is already read (done marks it so
+   before announcing it; on Beads the detached delivery waits up to 2 s for that), it replies to
+   the task its body names, and that task has a report file. Anything else is shown with its
+   "from" heading and reply hint.
    `teamctl show <id> --report` prints the file; `teamctl show <id>` names it (and the earlier
    ones). A lead without hooks (Codex) gets the one-line notice, which names the message id; the
    message names the command.

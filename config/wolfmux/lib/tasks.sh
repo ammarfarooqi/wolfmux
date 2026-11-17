@@ -265,16 +265,22 @@ $extra"
   # a second time (D7, one notice per event; lib/mail.sh reads WOLFMUX_MAIL_CLOSE_REPORTED).
   WOLFMUX_MAIL_CLOSE_REPORTED="$([ "$lead" != 1 ] && printf 1)" \
     _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" "" "$force" || die "could not close $id"
-  # The whole report is a file (ADR-0040); the lead's mail is the short notice that names it. A
-  # report that cannot be written goes whole into the message instead, so nothing is lost.
-  if report_path="$(ledger_report_save "$id" "$report")"; then
-    notice="$(ledger_report_notice "$id" "$me" "$title" "$summary" "$tests_line" "$branch" "$short_sha" "$stat_line" "$report_path")" ||
-      notice=""
-  else
-    report_path=""
-    notice="$report"
-    say "could not write the report file under $(short_path "$(ledger_reports_dir)"); the whole report goes in the message"
+  # The whole report is a file (ADR-0040); the lead's mail is the short notice that names it.
+  # Where the reports directory cannot be written, the file goes to the temporary directory
+  # instead and the notice names that; the whole report never goes into the lead's mail.
+  if ! report_path="$(ledger_report_save "$id" "$report")"; then
+    report_path="${TMPDIR:-/tmp}/wolfmux-report-$id-$$.md"
+    if printf '%s\n' "$report" >"$report_path" 2>/dev/null; then
+      say "could not write the report under $(short_path "$(ledger_reports_dir)"); it is in $report_path"
+    else
+      report_path=""
+      say "could not write the report file anywhere; the lead gets a one-line notice"
+    fi
   fi
+  notice=""
+  [ -z "$report_path" ] ||
+    notice="$(ledger_report_notice "$id" "$me" "$title" "$summary" "$tests_line" "$branch" "$short_sha" "$stat_line" "$report_path")" ||
+    notice=""
   # The task is closed by now: whatever goes wrong with the notice, the lead still gets one line
   # that names the task and the command to its report, and done says what happened.
   [ -n "$notice" ] || notice="DONE $id by $me: $(_ledger_cut 60 "$title"). Read it: teamctl show $id --report"
@@ -295,13 +301,15 @@ $extra"
 # ledger names the report). Prints the message id.
 _tasks_report_send() {
   local sender="$1" to="$2" id
-  # WOLFMUX_DONE_NOTICE: the mark that this is the notice cmd_done builds, set only here and
-  # carried in the spooled item (native: mail_announce; Beads: bd hands its hook this
-  # environment, cmd_deliver). _mail_render_bead shows the short form only with it, never for a
-  # message whose text merely looks like one.
-  id="$(WOLFMUX_DONE_NOTICE=1 store_msg_create "$sender" "$to" "$3" "$4" "$5")" || return 1
-  WOLFMUX_DONE_NOTICE=1 mail_announce create "$(store_item_json "$id")" "$sender"
+  # Marked read before it is announced (native): the lead's hook judges the short form from the
+  # store, and finds it read (lib/mail.sh _mail_done_notice_genuine). The item announced is the
+  # one as written, still open, so mail_announce delivers it. On Beads bd's own hook delivers on
+  # the create, and waits for this read (cmd_deliver).
+  local item
+  id="$(store_msg_create "$sender" "$to" "$3" "$4" "$5")" || return 1
+  item="$(store_item_json "$id")"
   store_msg_read "$to" "$id" >/dev/null 2>&1 || true
+  mail_announce create "$item" "$sender"
   printf '%s\n' "$id"
 }
 

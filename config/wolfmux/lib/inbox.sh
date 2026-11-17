@@ -188,8 +188,12 @@ _inbox_lock_dir() {
       now_epoch >"$guard/ts" 2>/dev/null || true
       return 0
     fi
-    started="$(/bin/cat "$guard/ts" 2>/dev/null || printf '0')"
-    case "$started" in "" | *[!0-9]*) started=0 ;; esac
+    # The holder makes the directory first and writes its time after: a lock with no time yet
+    # is one just taken, so its age is the directory's own (never 0, which made it look stale
+    # and let a second writer in), and a lock whose age cannot be read is fresh.
+    started="$(/bin/cat "$guard/ts" 2>/dev/null || true)"
+    case "$started" in "" | *[!0-9]*) started="$(/usr/bin/stat -f %m "$guard" 2>/dev/null || /usr/bin/stat -c %Y "$guard" 2>/dev/null || now_epoch)" ;; esac
+    case "$started" in "" | *[!0-9]*) started="$(now_epoch)" ;; esac
     if [ $(($(now_epoch) - started)) -gt "$WOLFMUX_INBOX_LOCK_STALE" ]; then
       /bin/rm -rf "$guard" 2>/dev/null || true
       continue
