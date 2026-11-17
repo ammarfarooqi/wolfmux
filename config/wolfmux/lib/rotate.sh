@@ -16,7 +16,9 @@
 #                              of wolfmux stays quiet at that turn end (they run in parallel, so a file
 #                              written before the Stop is the one thing they all can see)
 #   rotate.lock                a directory: one rotation at a time per role; its "by" file holds
-#                              "<who> <epoch>"; older than WOLFMUX_ROTATE_LOCK_STALE seconds, it is taken over
+#                              "<who> <epoch> <token>"; older than WOLFMUX_ROTATE_LOCK_STALE seconds, it is
+#                              taken over. The token (pid and a random number of the taker) is handed to the
+#                              detached process, which proves with it that a rotation took the lock for it
 
 WOLFMUX_HANDOVER_CHARS="${WOLFMUX_HANDOVER_CHARS:-12000}"
 WOLFMUX_ROTATE_WAIT="${WOLFMUX_ROTATE_WAIT:-120}"
@@ -173,12 +175,13 @@ message to the lead is needed."
 
 # _rotate_lock_take <lock-dir> <who> - 0 with the lock taken; a lock older than
 # WOLFMUX_ROTATE_LOCK_STALE seconds (its "by" file, else the directory's mtime) is taken over. 1 when
-# it is held; ROTATE_LOCK_AGE is then its age in seconds ("" when unknown).
+# it is held; ROTATE_LOCK_AGE is then its age in seconds ("" when unknown). Taken, ROTATE_LOCK_TOKEN
+# is the token written into its "by" file.
 _rotate_lock_take() {
-  local who="" at="" now
-  ROTATE_LOCK_AGE=""
+  local who="" at="" rest now
+  ROTATE_LOCK_AGE="" ROTATE_LOCK_TOKEN="$$.$RANDOM$RANDOM"
   if ! /bin/mkdir "$1" 2>/dev/null; then
-    if [ -r "$1/by" ]; then read -r who at <"$1/by" || true; fi
+    if [ -r "$1/by" ]; then read -r who at rest <"$1/by" || true; fi
     _rotate_num "$at" || at="$(/usr/bin/stat -f %m "$1" 2>/dev/null)" || at=""
     _rotate_num "$at" || return 1
     now="$(now_epoch)"
@@ -187,8 +190,38 @@ _rotate_lock_take() {
     /bin/rm -rf "$1" 2>/dev/null || true
     /bin/mkdir "$1" 2>/dev/null || return 1
   fi
-  printf '%s %s\n' "$2" "$(now_epoch)" >"$1/by" 2>/dev/null || true
+  printf '%s %s %s\n' "$2" "$(now_epoch)" "$ROTATE_LOCK_TOKEN" >"$1/by" 2>/dev/null || true
   return 0
+}
+
+# _rotate_lock_token <lock-dir> - the token its "by" file holds, or nothing
+_rotate_lock_token() {
+  local who="" at="" token=""
+  if [ -r "$1/by" ]; then read -r who at token <"$1/by" || true; fi
+  printf '%s' "$token"
+}
+
+# _rotate_internal_gate <role> <token> - the entry of _rotate-run and _rotate-auto, before anything is
+# written. They are started detached by a rotation of <role> that took run/<role>/rotate.lock (a Stop
+# hook of that agent, or its own teamctl rotate), and inherit its TEAM_ROLE and TMUX_PANE: the caller
+# must be <role> itself, never the lead, and the lock must hold the token that rotation handed over.
+# Anyone else typing them (a worker for the lead or another worker, the lead for a worker: the lead
+# uses teamctl rotate) is refused with 77. The detached process has left the pane, so the pane proof
+# cannot be asked of it; the role it names and the token are.
+_rotate_internal_gate() {
+  local why=""
+  caller_resolve
+  if [ "$1" = "$WOLFMUX_LEAD_ROLE" ]; then
+    why="the lead is not rotated"
+  elif [ -z "$CALLER_ROLE" ] || [ "$CALLER_ROLE" != "$1" ]; then
+    why="it runs only as '$1' itself, started by a rotation of '$1' (you are ${CALLER_ROLE:-the operator})"
+  elif [ ! -d "$(run_dir "$1")/rotate.lock" ]; then
+    why="no rotation of '$1' holds its rotate.lock"
+  elif [ -z "${2:-}" ] || [ "$(_rotate_lock_token "$(run_dir "$1")/rotate.lock")" != "$2" ]; then
+    why="the rotate.lock of '$1' was not taken for this process"
+  fi
+  [ -n "$why" ] || return 0
+  die "teamctl ${TEAMCTL_ARGS:-_rotate} is internal and was not run: $why. To rotate a worker: teamctl rotate <role> (the lead, or a worker for itself)." 77
 }
 
 # _rotate_detach <log> <command...> - start <command> so that it outlives the pane it was started
@@ -244,7 +277,7 @@ rotate_at_stop() {
   fi
   lock="$HOOK_RUN/rotate.lock"
   _rotate_lock_take "$lock" stop || return 0
-  _rotate_detach "$HOOK_RUN/rotate.log" "$TEAMCTL_SELF" _rotate-auto "$HOOK_ROLE" "$reason" "$session"
+  _rotate_detach "$HOOK_RUN/rotate.log" "$TEAMCTL_SELF" _rotate-auto "$HOOK_ROLE" "$reason" "$session" "$ROTATE_LOCK_TOKEN"
   # cmd_hook runs no other module after this one at this Stop: no task reminder, no mail handed over,
   # nothing that would continue the turn the rotation waits for.
   ROTATE_STARTED=1
@@ -311,7 +344,7 @@ cmd_rotate() {
     # that runs it, and its turn cannot end while it waits. A detached process does it; it waits for
     # the turn end as the default does (or not, with --now).
     : >"$dir/memory/rotate-due" 2>/dev/null || true
-    _rotate_detach "$dir/rotate.log" "$TEAMCTL_SELF" _rotate-run "$role" "${reason:-asked by $by}" "$by" "$now"
+    _rotate_detach "$dir/rotate.log" "$TEAMCTL_SELF" _rotate-run "$role" "${reason:-asked by $by}" "$by" "$now" "$ROTATE_LOCK_TOKEN"
     say "rotation started: end your turn (wolfmux replaces this conversation once it has ended; log: $(short_path "$dir/rotate.log"))"
     return 0
   fi
@@ -321,12 +354,14 @@ cmd_rotate() {
   return "$rc"
 }
 
-# cmd_rotate_detached <role> <reason> <by> <now> - internal (`teamctl _rotate-run`), detached by a
-# worker's own `teamctl rotate`, which already holds run/<role>/rotate.lock.
+# cmd_rotate_detached <role> <reason> <by> <now> <token> - internal (`teamctl _rotate-run`), detached by
+# a worker's own `teamctl rotate`, which already holds run/<role>/rotate.lock.
 cmd_rotate_detached() {
-  local role="$1" dir rc=0
+  local role="${1:-}" dir rc=0
+  require_role_arg "$role"
   require_tools
   load_project
+  _rotate_internal_gate "$role" "${5:-}"
   dir="$(run_dir "$role")"
   (ROTATE_HAVE_LOCK=1 rotate_run "$role" "$2" "$3" "$4" "") || rc=$?
   /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
@@ -348,12 +383,14 @@ _rotate_declined() {
 teamctl rotate $1 : a fresh conversation in the same worktree and branch, with a hand-over wolfmux writes" >/dev/null 2>&1 || true
 }
 
-# cmd_rotate_auto <role> <reason> <session> - internal (`teamctl _rotate-auto`), detached from a
+# cmd_rotate_auto <role> <reason> <session> <token> - internal (`teamctl _rotate-auto`), detached from a
 # Stop hook that already holds run/<role>/rotate.lock. Policy, task and family are asked here.
 cmd_rotate_auto() {
-  local role="$1" reason="$2" dir policy task lead
+  local role="${1:-}" reason="${2:-}" dir
+  require_role_arg "$role"
   require_tools
   load_project
+  _rotate_internal_gate "$role" "${4:-}"
   dir="$(run_dir "$role")"
   # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
   (_rotate_auto_body "$role" "$reason")
@@ -390,6 +427,8 @@ teamctl rotate $role : wolfmux writes the hand-over, the task gets a fresh conve
 # rotate_run <role> <reason> <by> <now 0|1> [<task-json>] [<require-task 0|1>]
 rotate_run() {
   local role="$1" reason="$2" by="$3" now="$4" task="${5:-}" require="${6:-0}" dir workdir old_session transcript file old_fig new_fig lead
+  # Whoever calls it: the lead is never rotated (its restart is the lead's own, or the founder's, call).
+  [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die "the lead is not rotated (restart it: teamctl restart lead)" 77
   dir="$(run_dir_ensure "$role")"
   [ "$(reg_field "$role" family)" != "codex" ] || die "teamctl rotate is for Claude Code agents in this release; '$role' runs Codex (restart it: teamctl restart $role)"
   if [ "$now" -eq 0 ] && ! _rotate_wait_idle "$dir" "$WOLFMUX_ROTATE_WAIT"; then
@@ -417,7 +456,11 @@ rotate_run() {
   [ -z "$old_session" ] || printf '%s\n' "$old_session" >>"$dir/memory/rotated"
   reg_set "$role" rotated_from "$old_session"
   event_log rotate "$role" "from ${old_session:-?}: $reason"
-  ROTATE_ACTING=1 cmd_restart "$role" >/dev/null
+  # The permission to restart goes to cmd_restart in this process only: a local, never exported (main()
+  # drops any ROTATE_ACTING that comes in from the environment).
+  local ROTATE_ACTING=1
+  cmd_restart "$role" >/dev/null
+  ROTATE_ACTING=""
   _rotate_note_new "$dir" "$(reg_field "$role" session_id)"
   /bin/rm -f "$dir/memory/rotate-fired" 2>/dev/null || true
   context_measured "$STATE_DIR" worker

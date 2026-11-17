@@ -115,6 +115,22 @@ OLD="$(record w1 session_id)"
 check "the lead role is refused, and the refusal says why" 'out="$(teamctl rotate lead --now 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "not rotated"'
 check "a worker rotating another role is refused" \
   'out="$(TEAM_ROLE=w2 "$REPO/tests/in-pane" rotate w1 --now 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "may rotate only itself"'
+LEADS="$(record lead session_id)"
+untouched() { [ "$(record lead session_id)" = "$LEADS" ] && [ "$(record w1 session_id)" = "$OLD" ] && [ ! -e "$R1/memory/handover.pending" ]; }
+check "release review HIGH 1: ROTATE_ACTING=1 from a worker does not let it restart the lead" \
+  'out="$(ROTATE_ACTING=1 TEAM_ROLE=w2 "$REPO/tests/in-pane" restart lead 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "reserved for the lead" && untouched'
+check "release review HIGH 1: ROTATE_ACTING=1 from a worker does not let it restart another worker" \
+  'out="$(ROTATE_ACTING=1 TEAM_ROLE=w2 "$REPO/tests/in-pane" restart w1 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "reserved for the lead" && untouched'
+check "the internal _rotate-run, typed by a worker for the lead: refused (77), nothing written" \
+  'TEAM_ROLE=w2 "$REPO/tests/in-pane" _rotate-run lead x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
+check "the internal _rotate-run, typed by a worker for another worker: refused (77), nothing written" \
+  'TEAM_ROLE=w2 "$REPO/tests/in-pane" _rotate-run w1 x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
+check "the internal _rotate-auto, typed by a worker for another worker: refused (77), nothing written" \
+  'TEAM_ROLE=w2 "$REPO/tests/in-pane" _rotate-auto w1 x "$OLD" >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
+check "the internal _rotate-run, typed by the lead for a worker: refused (77); the lead uses teamctl rotate" \
+  'TEAM_ROLE=lead "$REPO/tests/in-pane" _rotate-run w1 x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
+check "the internal _rotate-run, typed by a worker for itself with no rotation lock taken: refused (77)" \
+  'TEAM_ROLE=w1 "$REPO/tests/in-pane" _rotate-run w1 x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched && [ ! -e "$R1/rotate.lock" ]'
 printf 'busy\n' >"$R1/state"
 check "the wait runs out: refused, it says so and names --now, nothing written" \
   'out="$(WOLFMUX_ROTATE_WAIT=1 teamctl rotate w1 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q -- "--now" && [ ! -e "$R1/memory/handover.md" ] && [ "$(record w1 session_id)" = "$OLD" ]'
