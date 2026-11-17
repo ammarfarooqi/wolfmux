@@ -268,15 +268,20 @@ $extra"
   # The whole report is a file (ADR-0040); the lead's mail is the short notice that names it. A
   # report that cannot be written goes whole into the message instead, so nothing is lost.
   if report_path="$(ledger_report_save "$id" "$report")"; then
-    notice="$(ledger_report_notice "$id" "$me" "$title" "$summary" "$tests_line" "$branch" "$short_sha" "$stat_line" "$report_path")"
+    notice="$(ledger_report_notice "$id" "$me" "$title" "$summary" "$tests_line" "$branch" "$short_sha" "$stat_line" "$report_path")" ||
+      notice=""
   else
     report_path=""
     notice="$report"
     say "could not write the report file under $(short_path "$(ledger_reports_dir)"); the whole report goes in the message"
   fi
+  # The task is closed by now: whatever goes wrong with the notice, the lead still gets one line
+  # that names the task and the command to its report, and done says what happened.
+  [ -n "$notice" ] || notice="DONE $id by $me: $(_ledger_cut 60 "$title"). Read it: teamctl show $id --report"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$lead" != 1 ]; then
     _tasks_report_send "$me" "$lead_id" "Done: $title" "$notice" "$id" >/dev/null ||
+      _tasks_report_send "$me" "$lead_id" "Done: $title" "DONE $id by $me. Read it: teamctl show $id --report" "$id" >/dev/null ||
       die "closed $id, but could not send the report message to $lead_id; tell the lead: teamctl send $WOLFMUX_LEAD_ROLE \"Done: $title\" --body-file ${report_path:-<file>}"
     say "sent: Done: $title -> $lead_id"
   fi

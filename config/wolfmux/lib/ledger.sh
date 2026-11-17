@@ -78,29 +78,65 @@ _ledger_cut() {
 # ledger_report_notice <task-id> <identity> <title> <summary> <tests-line> <branch> <sha> <stat-line> <path>
 # The text the lead gets for one `teamctl done`, the body of the "Done:" message. Together with
 # the "[wolfmux mail] " _mail_render_bead puts before it, at most WOLFMUX_REPORT_NOTICE_MAX
-# characters: every fixed line is capped first, and the summary gets what is left, cut with a
-# marker that names where the rest is.
+# characters, whatever the fields are. The summary keeps at least WOLFMUX_REPORT_SUMMARY_MIN
+# characters: when the fixed lines leave less, the report path goes first (`teamctl show <id>
+# --report` reaches it), then the tests line is cut, then the diff stat and the tests line go,
+# then the branch is cut. A final cap holds the bound in any case. Characters, not bytes: under a
+# locale that is not UTF-8 it switches to one for its own counting, so a cut never splits one.
+WOLFMUX_REPORT_SUMMARY_MIN=120
 ledger_report_notice() {
   local id="$1" who="$2" title="$3" summary="$4" tests="$5" branch="$6" sha="$7" stat="$8" path="$9"
-  local head tail room
-  title="$(_hook_title "$title")"
-  head="DONE $id by $(_ledger_cut 60 "$who"): $(_ledger_cut "$WOLFMUX_LEDGER_TITLE" "$title")"
-  tail="$(_ledger_cut 120 "$(printf '%s' "$tests" | LC_ALL=C tr '\n\r\t' '   ')")
-branch: $(_ledger_cut 80 "$branch") at ${sha:-?}"
-  [ -z "$stat" ] || tail="$tail
-$(_ledger_cut 90 "${stat# }")"
-  tail="$tail
-full report: $(_ledger_cut 140 "$path")
-read it: teamctl show $id --report
-This item is already marked read and needs no reply."
-  # 15 = "[wolfmux mail] ", 2 = the newlines around the summary
-  room=$((WOLFMUX_REPORT_NOTICE_MAX - 15 - ${#head} - ${#tail} - 2))
-  [ "$room" -ge 20 ] || room=20
-  summary="$(printf '%s' "$summary" | LC_ALL=C /usr/bin/tr -d '\000-\010\013-\037\177')"
-  if [ "${#summary}" -gt "$room" ]; then
-    summary="${summary:0:$((room - 34))} [cut: the rest is in the report]"
+  local LC_ALL="${LC_ALL:-}" probe loc head read_l note_l tests_l branch_l stat_l path_l step room want out max
+  probe="$(printf '\303\251')"
+  if [ "${#probe}" -ne 1 ]; then
+    for loc in C.UTF-8 en_US.UTF-8 C.utf8; do
+      LC_ALL="$loc"
+      [ "${#probe}" -ne 1 ] || break
+    done
   fi
-  printf '%s\n%s\n%s' "$head" "$summary" "$tail"
+  max=$((WOLFMUX_REPORT_NOTICE_MAX - 15)) # 15 = "[wolfmux mail] "
+  title="$(_hook_title "$title")"
+  tests="$(printf '%s' "$tests" | LC_ALL=C tr '\n\r\t' '   ')"
+  summary="$(printf '%s' "$summary" | LC_ALL=C /usr/bin/tr -d '\000-\010\013-\037\177')"
+  head="DONE $id by $(_ledger_cut 60 "$who"): $(_ledger_cut "$WOLFMUX_LEDGER_TITLE" "$title")"
+  read_l="read it: teamctl show $id --report"
+  note_l="This item is already marked read and needs no reply."
+  # a summary that will be cut needs room for its marker (34) as well
+  want="${#summary}"
+  [ "$want" -le "$WOLFMUX_REPORT_SUMMARY_MIN" ] || want=$((WOLFMUX_REPORT_SUMMARY_MIN + 34))
+  for step in 0 1 2 3 4 5; do
+    tests_l="$(_ledger_cut 120 "$tests")"
+    branch_l="branch: $(_ledger_cut 80 "$branch") at $(_ledger_cut 12 "${sha:-?}")"
+    stat_l="$(_ledger_cut 90 "${stat# }")"
+    path_l="full report: $path"
+    [ "$step" -lt 1 ] || path_l=""
+    [ "$step" -lt 2 ] || tests_l="$(_ledger_cut 50 "$tests")"
+    [ "$step" -lt 3 ] || stat_l=""
+    [ "$step" -lt 4 ] || tests_l=""
+    [ "$step" -lt 5 ] || branch_l="branch: $(_ledger_cut 30 "$branch") at $(_ledger_cut 12 "${sha:-?}")"
+    out="$tests_l${branch_l:+
+$branch_l}${stat_l:+
+$stat_l}${path_l:+
+$path_l}
+$read_l
+$note_l"
+    # the lines, plus the newline after the head and after the summary
+    room=$((max - ${#head} - ${#out} - 2))
+    [ "$room" -lt "$want" ] || break
+  done
+  [ "$room" -ge 0 ] || room=0
+  if [ "${#summary}" -gt "$room" ]; then
+    if [ "$room" -ge 54 ]; then
+      summary="${summary:0:$((room - 34))} [cut: the rest is in the report]"
+    else
+      summary="${summary:0:$room}"
+    fi
+  fi
+  out="$head
+$summary
+$out"
+  [ "${#out}" -le "$max" ] || out="${out:0:$max}"
+  printf '%s' "$out"
 }
 
 # --- decisions ----------------------------------------------------------------------------
