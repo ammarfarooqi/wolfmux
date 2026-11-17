@@ -161,5 +161,10 @@ check "doctor: once the configured context-exclude names it, the folder is repor
 teamctl doctor >"$DOC" 2>&1
 check "doctor: with no such folder it says so" 'grep -q "rules: no folder under .* repeats another one in a second language" "$DOC"'
 
+echo "== the stall report with a wedged bd (a task read that sleeps 30 s) =="
+wedged="$("$REPO/tests/stall-wedged.sh" 2>&1)"
+check "stall: the report arrives within 6 s of a wedged bd" 'set -- $wedged; [ "$1" -le 6 ]'
+check "stall: it was sent (one message), without a task id, and says the store did not answer" '[ "$(printf "%s\n" "$wedged" | head -1 | cut -d" " -f2-)" = "0 5" ] && printf "%s" "$wedged" | grep -q "task store did not answer in time"'
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
