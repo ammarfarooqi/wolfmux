@@ -251,6 +251,13 @@ _ledger_lines() {
   while IFS= read -r line; do lines+=("$line"); done
   total="${#lines[@]}"
   [ "$total" -gt 0 ] || return 0
+  # all of them when they fit; otherwise room for the "(N more: ...)" line as well
+  for line in "${lines[@]}"; do used=$((used + ${#line} + 1)); done
+  if [ "$used" -le "$budget" ]; then
+    printf '%s\n' "${lines[@]}"
+    return 0
+  fi
+  used=0
   budget=$((budget - ${#more} - 16))
   if [ "$keep" = "last" ]; then
     i=$((total - 1))
@@ -312,19 +319,17 @@ ledger_text() {
   open_t="open and in progress:"
   done_t="done since $(/bin/date -u -r "$cutoff" +%Y-%m-%dT%H:%MZ 2>/dev/null):"
   dec_t="decisions (oldest first):"
-  # Room: the header and the three section titles first. Decisions may take up to a third of
-  # what is left, done tasks a quarter, open work the rest (and whatever the others leave).
+  # Room: the header and the three section titles first. Decisions take what they need up to a
+  # third, done tasks what they need up to half of the rest; open work gets what is left and is
+  # the section that says "(N more: teamctl tasks)" (ADR-0040: the done rows and decisions are
+  # what a compacted lead cannot get back from one command).
   budget=$((WOLFMUX_LEDGER_MAX - ${#head} - ${#open_t} - ${#done_t} - ${#dec_t} - 12))
   dec_b=$((budget / 3))
-  [ "${#decisions}" -ge "$dec_b" ] || dec_b="${#decisions}"
-  done_b=$((budget / 4))
-  [ "${#done_rows}" -ge "$done_b" ] || done_b="${#done_rows}"
-  open_b=$((budget - dec_b - done_b))
-  open="$(printf '%s\n' "$open" | /usr/bin/awk 'NF' | _ledger_lines "$open_b" "teamctl tasks")"
-  done_b=$((budget - dec_b - ${#open}))
-  done_rows="$(printf '%s\n' "$done_rows" | /usr/bin/awk 'NF' | _ledger_lines "$done_b" "teamctl tasks --status closed")"
-  dec_b=$((budget - ${#open} - ${#done_rows}))
   decisions="$(printf '%s\n' "$decisions" | /usr/bin/awk 'NF' | _ledger_lines "$dec_b" "teamctl decide --list" last)"
+  done_b=$(((budget - ${#decisions} - 1) / 2))
+  done_rows="$(printf '%s\n' "$done_rows" | /usr/bin/awk 'NF' | _ledger_lines "$done_b" "teamctl tasks --status closed")"
+  open_b=$((budget - ${#decisions} - ${#done_rows} - 2))
+  open="$(printf '%s\n' "$open" | /usr/bin/awk 'NF' | _ledger_lines "$open_b" "teamctl tasks")"
   out="$head
 $open_t
 ${open:-(none)}
