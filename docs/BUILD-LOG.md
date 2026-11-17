@@ -2538,9 +2538,11 @@ the worker and `122k/967k 12%` for the lead, and the lead got one notice for one
 v1.25.0 told the lead when a worker was nearly full or compacting twice in a row, and the answer was a
 restart by hand that nobody had tried with uncommitted work, starting from a checkpoint no agent had
 written. `teamctl rotate <role>` (`lib/rotate.sh`) does that restart with a hand-over wolfmux writes
-itself: the task with its notes, the agent's own checkpoint text, the commits and the uncommitted state,
+itself: the task with its notes, the agent's own checkpoint text, the commits, the status and the
+uncommitted diff itself,
 its last five answers, the paths and the reason, each part capped so a 50,000-character task body cannot
-push the git part out (12,000 characters in all). The new conversation sees it first at its start, once.
+push the git part out (12,000 characters in all). The new conversation sees it first at its start, once,
+under a line saying its task is already claimed and the tree state is current.
 The lead may rotate any worker; a worker only itself; the lead role and Codex agents are refused.
 
 Policy `worker-rotation` (default `auto`) does it at a worker's turn end when it is past its rotate
@@ -2557,10 +2559,18 @@ Found while testing: the lock was first removed by an EXIT trap, and another mod
 trap later, so a failed rotation left the lock behind. The rotation now runs in a subshell and the lock
 goes after it, whatever ends it.
 
-Tests: `tests/rotate.sh` 32 checks, native store and Beads (`bd` stub); `tests/recall.sh` 69 (the thrash
+Tests: `tests/rotate.sh` 35 checks, native store and Beads (`bd` stub); `tests/recall.sh` 69 (the thrash
 notice names `teamctl rotate`). REGRESSION_LINE
 
-REAL_CLI_LINE
+One real-CLI run (the lead, Haiku 5.5, `tests/research/rotate-run.sh`): the calc task with no step log,
+rotated with `--now` after one commit and with the next helper's checks uncommitted. The new conversation
+edited `lib/calc.sh` 21.5 s and 4 requests after the rotation, 273,875 input tokens for those requests; it
+redid nothing, kept the uncommitted checks and committed them with their helper, and closed the task 61 s
+after the rotation. That does NOT beat the research restart (9.6 s, 2 requests, 117k), which had a step
+log: three of the four requests were the task's own demand to read the spec again, each about 63k of
+fixed start, and its first command re-derived the tree state the hand-over held. From that run: the
+hand-over now carries the uncommitted diff, and its first line says the task is claimed and the tree
+state current (stub checks; not measured again on the real CLI).
 
 ## Footprint on the machine
 

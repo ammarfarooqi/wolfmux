@@ -24,18 +24,21 @@ Measured with Claude Code 2.1.325 (`tests/research/results/v1.25-research.md`, 1
    - **wolfmux writes the hand-over**, nobody is asked: `run/<role>/memory/handover.md`, beside
      `checkpoint.md`, at most `WOLFMUX_HANDOVER_CHARS` (12,000) characters. Parts, in order, each with its
      own cap so none can push another out: a. the role's task in progress (id, title, body, notes; native
-     store or Beads), 3,200; b. the agent's own checkpoint text, without the automatic sections, 1,500;
-     c. the commits since the base, `git status --short`, `git diff --stat` staged and unstaged, 2,800;
-     d. the last five answers of the main conversation (text blocks only: no tool call, no thinking, no
-     subagent), each cut at 1,500, newest last, 3,200 in all; e. the paths (old transcript, `run/<role>/out/`,
-     the hand-over); f. the reason and who asked; e and f together 900.
+     store or Beads), 2,500; b. the agent's own checkpoint text, without the automatic sections, 1,200;
+     c. the commits since the base, `git status --short`, `git diff --stat` staged and unstaged, 1,800,
+     then the uncommitted diff itself (`git diff`, then `git diff --cached`), 3,000, so the new conversation
+     sees what was half done and not only that lines changed; d. the last five answers of the main
+     conversation (text blocks only: no tool call, no thinking, no subagent), each cut at 1,500, newest
+     last, 2,400 in all; e. the paths (old transcript, `run/<role>/out/`, the hand-over); f. the reason and
+     who asked; e and f together 700. A part that is cut says so.
    - Then `cmd_restart` gives the same role a fresh conversation in the same worktree, on the same branch,
      with the same model and settings; the compact window is worked out again as at a start. The old id is
      kept in the record (`rotated_from`) and in `memory/rotated`; `teamctl restart <role> --resume <id>`
      reopens it.
    - The new conversation's SessionStart (source `startup`) carries the hand-over first, before the notes
-     and the mail briefing, with one line: a fresh conversation for the same task, the work in the tree is
-     yours, do not start over. Once: a `handover.pending` file is removed when it is shown, so a later
+     and the mail briefing, with one line: a fresh conversation for the same task; the task is already
+     claimed and in progress; the tree state below is current as of the rotation and the work in it is
+     yours; continue from it, do not start over. Once: a `handover.pending` file is removed when it is shown, so a later
      compaction, resume or second start does not show it again.
    - The task stays in progress and assigned. Nothing in the tree is stashed, reset or cleaned.
    - **Timing**: by default it waits until the agent's turn has ended (its Stop hook writes `idle` to
@@ -66,21 +69,46 @@ Measured with Claude Code 2.1.325 (`tests/research/results/v1.25-research.md`, 1
 
 ## What was measured
 
-Stub checks (`tests/rotate.sh`, 32, native store and Beads with a `bd` stub): caps (a 50,000-character
-task body leaves the git part, the answers, the paths and the reason in place, whole file at most 12,000),
+Stub checks (`tests/rotate.sh`, 35, native store and Beads with a `bd` stub): caps (a 50,000-character
+task body leaves the git part, the answers, the paths and the reason in place, whole file at most 12,000;
+the uncommitted diff is there, and a long one is cut at 3,000 with a marker), the first line's wording,
 the order of the parts, own checkpoint text only, five answers without thinking or tool calls, the refusals
 (lead role, a worker rotating another, the wait running out, the lock), `--now`, the default wait that ends
 when the agent goes idle, a fresh id with the old one kept, the same worktree and the uncommitted file
 untouched, the task still in progress, one notice to the lead, delivery once, policy off, ask and auto,
 `agent_id` input, under the threshold, no task, no second automatic rotation, the lock at Stop, the thrash
 event, `restart --continue` filing "continue task <id>" and not for an agent without a task. On main
-(7883db6) the same file gives 10 passed and 19 failed of the first 29: the 10 are the refusals and no-ops.
+(7883db6) the first 29 of them gave 10 passed and 19 failed: the 10 are the refusals and no-ops. The
+diff in part c and the first line's wording were seen to fail before their code; the default-wait and
+thrash checks were added after the code existed and were not seen red.
 
 The real CLI: see "The real-CLI run" below.
 
 ## The real-CLI run
 
-REAL_CLI_RUN
+Run by the lead on 2026-11-17 with `tests/research/rotate-run.sh` (Haiku 5.5 lead and worker, isolated
+socket and data directory, native store, policy defaults). The task: the calc four-helpers task of the
+research, one commit per helper, with NO step log (the research run had one in NOTES.md). Rotated with
+`--now` 34 s after the task was given, with one helper committed (mul) and 18 lines of the next one's
+checks uncommitted in `tests/run.sh`. This was the code before the last two changes below.
+
+| | research 1.5 (restart, step log) | this run (rotate, no step log) |
+|---|---|---|
+| seconds until the first edit of the right file | 9.6 | 21.5 |
+| requests until then | 2 | 4 |
+| input tokens of those requests | 117k | 273,875 (63,164 / 67,401 / 71,038 / 72,272) |
+| redid a finished step | no | no: one commit and one definition per helper |
+| kept the uncommitted work | (none existed) | yes: the div checks went into the div commit; no checkout, stash, reset, restore or clean |
+| task closed | 49 s after the restart | 61 s after the rotation, tests 1213 passed, 0 failed |
+
+The research number is NOT beaten. As they are: the research run had a step log and this task has none,
+by design; requests 1 to 3 were the new conversation reading `docs/spec.md` again, which the task demands,
+not finding its place; the size of each request is the fixed start of a conversation (about 63k), not the
+hand-over (1,694 characters). Its first command re-derived what the hand-over already said (`echo
+$TEAM_ROLE; pwd; git status --short; git log --oneline -3; teamctl claim t1; cat docs/spec.md; ...`).
+Two changes followed from that, each with a stub check, not yet measured on the real CLI: part c carries
+the uncommitted diff itself, and the first line says the task is already claimed and the tree state is
+current.
 
 ## Consequences
 
