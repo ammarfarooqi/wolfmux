@@ -199,10 +199,14 @@ cmd_hook() {
   esac
   # Whatever was queued is this call's to say; a module that could not say all of it asks again.
   /bin/rm -f "$HOOK_RUN/attention" 2>/dev/null || true
+  ROTATE_STARTED=""
   for module in $WOLFMUX_HOOK_MODULES; do
     if declare -F "${module}_hook" >/dev/null 2>&1; then
       "${module}_hook" "$HOOK_EVENT" || true
     fi
+    # recall's Stop started a rotation (lib/rotate.sh rotate_at_stop): the turn must end here, so no
+    # later module may add context (a task reminder would continue it in the old conversation).
+    [ -z "$ROTATE_STARTED" ] || break
   done
   if [ "$HOOK_EVENT" = "Stop" ]; then
     # v1.20.0's rule, kept (D1): in a pane a human is watching, and in a Claude lead's pane

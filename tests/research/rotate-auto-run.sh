@@ -20,9 +20,15 @@
 # Needs: tmux, the real `claude`, jq, sqlite3, python3. It types two keys into its OWN lead pane (folder
 # trust), nothing else. A worker cannot run it (the guard keeps tmux from it): the lead or the owner does.
 set -u
-here="$(cd "$(dirname "$0")/../.." && pwd -P)"
+here="${ROT_HERE:-$(cd "$(dirname "$0")/../.." && pwd -P)}"
 scratch="${1:?usage: rotate-auto-run.sh <scratch-dir>}"
 scratch="$(/bin/mkdir -p "$scratch" && cd "$scratch" && pwd -P)"
+# Bash reads a script as it runs: run a copy in the scratch directory, so an edit of this file in the
+# worktree cannot break a run that is under way.
+if [ -z "${ROT_COPIED:-}" ]; then
+  /bin/cp -f "$0" "$scratch/rotate-auto-run.sh"
+  ROT_COPIED=1 ROT_HERE="$here" exec /bin/bash "$scratch/rotate-auto-run.sh" "$@"
+fi
 mode="${ROT_MODE:-auto}"
 sock="${ISO_SOCKET:-wolfmux-rot$mode}"
 export ISO_SOCKET="$sock"
@@ -78,8 +84,7 @@ rec() { "$JQ" -r --arg f "$1" '.[$f] // empty' "$(find "$scratch/data" -path '*/
 wt=""
 for _ in $(seq 1 60); do wt="$(rec workdir)"; [ -n "$wt" ] && [ -d "$wt" ] && break; sleep 1; done
 [ -n "$wt" ] || { log "no worker worktree"; exit 1; }
-run="$(find "$scratch/data" -type d -path '*/run/w1' | head -1)"
-log "worker worktree $wt, run dir $run"
+log "worker worktree $wt"
 old_sid="$(rec session_id)"
 
 # --- wait for the rotation, nobody asks for it; keep the last uncommitted diff before it ------------
@@ -93,6 +98,10 @@ done
 t_rot="$(python3 -c 'import time; print(time.time())')"
 new_sid="$(rec session_id)"
 if [ -z "$(rec rotated_from)" ]; then log "no rotation within ${ROT_MAX:-900} s"; else log "rotated: $old_sid -> $new_sid"; fi
+# The run directory exists once the worker's hooks have run; looked up now, not at the start.
+run=""
+for _ in $(seq 1 30); do run="$(find "$scratch/data" -type d -path '*/run/w1' | head -1)"; [ -n "$run" ] && break; sleep 1; done
+log "run dir: ${run:-NOT FOUND}"
 
 # --- wait for the task to close (or ROT_MAX), then 60 s for a second rotation ------------------------
 deadline=$(($(/bin/date +%s) + ${ROT_MAX:-900}))
@@ -119,22 +128,40 @@ def ts(r):
 try: rows = [json.loads(l) for l in open(path) if l.strip()]
 except Exception as e:
     print("old transcript unreadable: %s" % e); sys.exit(0)
-at = next((i for i, r in enumerate(rows) if marker in json.dumps(r)), None)
+# The marker is in several rows (hook attachments and others): the first one WITH a timestamp.
+at = next((i for i, r in enumerate(rows) if ts(r) is not None and marker in json.dumps(r)), None)
 if at is None:
     print("the message (%r) is not in the old transcript" % marker); sys.exit(0)
-t_msg = ts(rows[at]); calls = 0; end = None
-for r in rows[at + 1:]:
+t_msg = ts(rows[at])
+print("the message: %s" % rows[at].get("timestamp"))
+calls, ends, first_end, after_calls, after_commits = 0, 0, None, 0, 0
+for i in range(at + 1, len(rows)):
+    r = rows[i]
     if r.get("type") != "assistant" or r.get("isSidechain"): continue
     m = r.get("message", {})
-    calls += sum(1 for c in (m.get("content") or []) if c.get("type") == "tool_use")
-    if m.get("stop_reason") == "end_turn":
-        end = r; break
-if end is None:
-    print("ended its turn after the message: NO (%d tool calls after it, none ended the turn)" % calls)
+    uses = [c for c in (m.get("content") or []) if c.get("type") == "tool_use"]
+    if first_end is None:
+        calls += len(uses)
+    else:
+        after_calls += len(uses)
+        after_commits += sum(1 for c in uses if "git commit" in json.dumps(c.get("input", {})))
+    if m.get("stop_reason") != "end_turn": continue
+    ends += 1
+    if first_end is None: first_end = i
+    text = " ".join(c.get("text", "") for c in (m.get("content") or []) if c.get("type") == "text").strip()
+    rest = json.dumps(rows[i + 1:i + 8])
+    if i + 1 >= len(rows): what = "nothing: the end of this conversation (the rotation)"
+    elif "You are stopping while" in rest: what = "a wolfmux Stop notice (the task reminder), which continued the turn"
+    elif "hook_additional_context" in rest or "Stop hook feedback" in rest: what = "a Stop hook's context, which continued the turn"
+    else: what = "more rows (%s)" % ", ".join(sorted({str(x.get("type", "?")) for x in rows[i + 1:i + 8]}))
+    print("turn end %d: %s, %.1f s after the message; last line: %s" % (ends, r.get("timestamp"), ts(r) - t_msg, text[:200]))
+    print("  followed by: %s" % what)
+if first_end is None:
+    print("ended its turn after the message: NO (%d tool calls after it)" % calls)
 else:
-    text = " ".join(c.get("text", "") for c in (end["message"].get("content") or []) if c.get("type") == "text")
-    print("ended its turn after the message: yes, %.1f s and %d tool calls after it; its last line: %s" % (ts(end) - t_msg, calls, text.strip()[:300]))
-    print("rotation %.1f s after that turn end (as the run saw it, 0.5 s polling)" % (t_rot - ts(end)))
+    print("ended its turn after the message: yes, %.1f s and %d tool calls after it" % (ts(rows[first_end]) - t_msg, calls))
+    print("old conversation AFTER that first turn end: %d tool calls, %d commits (must be 0 and 0)" % (after_calls, after_commits))
+    print("rotation %.1f s after the first turn end (as the run saw it, 0.5 s polling)" % (t_rot - ts(rows[first_end])))
 PY
   printf 'rotated_from: %s (old id %s)\n' "$(rec rotated_from)" "$old_sid"
   printf 'asked by (hand-over): %s\n' "$(grep -m1 '^asked by:' "$run/memory/handover.md" 2>/dev/null)"

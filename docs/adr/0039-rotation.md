@@ -162,11 +162,38 @@ current.
 
 ## The A3 real-CLI runs
 
+`memory/rotate-due` (A3 review): written at the crossing when a rotation will follow, and by a worker's
+own `teamctl rotate`. While it exists, `_inbox-stop` says nothing (Claude Code runs the Stop entries in
+parallel, so only a file written before the Stop is seen by all of them), and `_hook Stop` runs no module
+after recall once a rotation is started or under way. That means no task reminder, and no mail is marked
+delivered and then dropped. After its wait, the automatic path asks the store again, and with no task in
+progress any more it does not rotate (rotate.log says so, and rotate-fired is cleared).
+
 To be measured by the lead with `tests/research/rotate-auto-run.sh` (the automatic rotation: Haiku,
 policy defaults, the calc task without a step log, `WOLFMUX_WORKER_COMPACT_WINDOW=200000` for a limit of
 167,000 and the rotate threshold at 55%, crossed after one or two of the four helpers) and
-`tests/research/rotate-self-run.sh` (the worker runs `teamctl rotate w1` after its second commit). Not
-run yet: the numbers go here as they come.
+`tests/research/rotate-self-run.sh` (the worker runs `teamctl rotate w1` after its second commit). 
+
+**Auto run, first (e9f4f77, Haiku, CLI 2.1.326).** The message came at 94k/167k (56%). The agent
+committed div, ran `teamctl checkpoint` and ended its turn 6 s and 1 tool call later. The detached process
+survived the restart: one "w1: rotated" notice and no "context at" notice, `rotated_from` set, the lock gone.
+But wolfmux's own task reminder ("You are stopping while ...") came at that same Stop, as additional
+context, which continues the turn. The agent finished mod and pow in the OLD conversation and closed the
+task, and only then was it rotated, 31 s after its first turn end. The rotation saved nothing. Why the
+first idle was not seen: cmd_hook writes `state` at the end of the Stop hook, and it writes `busy` when the
+hook said something, so the waiting process saw `busy` until the next quiet Stop. Fixed in 028b66d:
+`memory/rotate-due` (see "The turn end"), and the task is asked again after the wait. To be measured again.
+
+**Self run (e9f4f77).** Second commit at 10:48:54; `teamctl rotate w1` printed "rotation started: end your
+turn" at 10:48:56; the agent ran `teamctl checkpoint` and ended its turn at 10:49:03 (7 s, 1 tool call).
+The task reminder cost one more request, and the agent stopped again at 10:49:05. It was rotated at
+10:49:07, 2 s after that turn end. The lead got one notice, `rotated_from` was set and the lock was gone.
+The new conversation's first command (10:49:16) was a grep of the spec's mod section, with no git status
+and no claim again. Its first edit of lib/calc.sh came 24 s and 3 requests after the rotation. It
+committed mod and pow and closed the task 63 s after the rotation. Nothing was redone (one commit per
+helper), nothing was uncommitted at the rotation, and the tests showed 1212 passed, 0 failed. The context
+was 94,718 at the end of the old conversation and 83,519 at the end of the new one. It tried to write its
+test log into `run/w1/out/` (named in part e) and the guard refused it: part e now says "to read, not to write".
 
 ## Consequences
 
