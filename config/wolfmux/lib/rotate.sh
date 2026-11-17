@@ -144,7 +144,7 @@ rotate_will_follow() {
   state="${HOOK_RUN%/run/*}"
   [ ! -r "$state/meta.json" ] || files+=("$state/meta.json")
   [ ! -r "$state/agents/$HOOK_ROLE.json" ] || files+=("$state/agents/$HOOK_ROLE.json")
-  answer="auto "
+  answer=" "
   if [ "${#files[@]}" -gt 0 ]; then
     answer="$("$JQ_BIN" -rn 'reduce inputs as $o ({}; if (input_filename | endswith("/meta.json")) then .p = ($o.policy_worker_rotation // "") else .f = ($o.family // "") end) | "\(.p // "") \(.f // "")"' "${files[@]}" 2>/dev/null)" || answer=" "
   fi
