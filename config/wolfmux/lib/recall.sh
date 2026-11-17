@@ -117,7 +117,7 @@ _memory_session_start() {
   esac
   case "$HOOK_SOURCE" in
     # A new conversation: what the last one measured is not this one's.
-    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" "$HOOK_RUN/memory/rotate-fired" "$HOOK_RUN/memory/ctx" 2>/dev/null || true ;;
+    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" "$HOOK_RUN/memory/rotate-fired" "$HOOK_RUN/memory/ctx" "$HOOK_RUN/memory/below-seen" "$HOOK_RUN/memory/rotate-declined" 2>/dev/null || true ;;
     compact) _memory_compacted || true ;;
   esac
   # A rotation's hand-over comes first, before the notes and the mail briefing (ADR-0039)
@@ -277,17 +277,29 @@ _memory_check_thresholds() {
   warn="$(_memory_threshold "${WOLFMUX_CONTEXT_WARN:-}" 60)"
   rotate="$(_memory_threshold "${WOLFMUX_CONTEXT_ROTATE:-}" 80)"
   if [ "$warn" -gt 0 ] && [ "$rotate" -gt 0 ] && [ "$warn" -ge "$rotate" ]; then warn=60 rotate=80; fi
+  # The loop guard of ADR-0039: seen under the rotate threshold once, a conversation a rotation
+  # started may be rotated again. An existence test on every later look, no fork.
+  if [ "$rotate" -gt 0 ] && [ "$percent" -lt "$rotate" ] && [ ! -e "$HOOK_RUN/memory/below-seen" ]; then
+    : >"$HOOK_RUN/memory/below-seen" 2>/dev/null || true
+  fi
   if [ "$rotate" -gt 0 ] && [ "$percent" -ge "$rotate" ] && ! _memory_warned rotate; then
     _memory_mark_warned rotate
     figure="$(_memory_figure "$used" "$limit")"
-    hook_context "[wolfmux] Your conversation holds $figure of the limit its CLI compacts at. Do not start anything new: commit, run
+    if rotate_will_follow; then
+      # The rotation's own notice tells the lead; this agent only has to end its turn.
+      hook_context "[wolfmux] Your conversation holds $figure of the limit its CLI compacts at. Do not start anything new.
+$ROTATE_END_TURN"
+    else
+      hook_context "[wolfmux] Your conversation holds $figure of the limit its CLI compacts at. Do not start anything new: commit, run
 teamctl checkpoint \"<done so far / what is next / what to watch out for>\", and finish or hand back the current step. The lead has been told and may
 give this task a fresh conversation."
-    [ "$HOOK_ROLE" = "lead" ] || _memory_tell_lead "$percent" "$figure"
+      [ "$HOOK_ROLE" = "lead" ] || _memory_tell_lead "$percent" "$figure"
+    fi
   fi
   if [ "$warn" -gt 0 ] && [ "$percent" -ge "$warn" ] && ! _memory_warned warn; then
     _memory_mark_warned warn
-    hook_context "[wolfmux] Your conversation holds ${figure:-$(_memory_figure "$used" "$limit")} of the limit its CLI compacts at. Commit what works now. Then record where you
+    # Crossed together with the rotate threshold: the rotate text above says what to do.
+    [ -z "$figure" ] && hook_context "[wolfmux] Your conversation holds ${figure:-$(_memory_figure "$used" "$limit")} of the limit its CLI compacts at. Commit what works now. Then record where you
 stand, so nothing is lost if this conversation is compacted or replaced:
 teamctl checkpoint \"<done so far / what is next / what to watch out for>\""
   fi
@@ -354,6 +366,13 @@ EOF
   if [ -n "$gap" ] && [ "$gap" -ge 0 ] && [ "$gap" -le "$max" ] && [ ! -e "$HOOK_RUN/memory/thrash-told" ]; then
     : >"$HOOK_RUN/memory/thrash-told" 2>/dev/null || true
     thrash=1
+    if rotate_will_follow; then
+      # A rotation follows this turn end (rotate_at_stop): the agent ends its turn, and the rotation's
+      # own notice tells the lead, not the thrash message.
+      hook_context "[wolfmux] This conversation was compacted twice within $gap tool calls: it has no room left to work in.
+$ROTATE_END_TURN"
+      thrash=0
+    fi
   fi
   # Claude Code 2.1.325 runs this hook BEFORE it writes the compaction's compact_boundary row (run 2
   # of tests/research/results/part-b-real-cli.md): the row's numbers are read once it is there.

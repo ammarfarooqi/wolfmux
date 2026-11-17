@@ -458,6 +458,7 @@ main() {
     checkpoint) cmd_checkpoint "$@" ;;
     rotate) cmd_rotate "$@" ;;
     _rotate-auto) cmd_rotate_auto "$@" ;;
+    _rotate-run) cmd_rotate_detached "$@" ;;
     run) cmd_run "$@" ;;
     task) cmd_task "$@" ;;
     done) cmd_done "$@" ;;

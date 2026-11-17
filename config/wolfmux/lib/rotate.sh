@@ -9,10 +9,15 @@
 #   memory/handover.pending    exists = the next SessionStart(startup) shows it, once
 #   memory/rotated             the conversation ids that were rotated away (one per line), and
 #                              the ids of conversations a rotation started ("new <id>")
-#   rotate.lock                a directory: one rotation at a time per role
+#   memory/below-seen          exists = the watch saw this conversation under its rotate threshold
+#                              at least once (a conversation a rotation started may rotate again)
+#   memory/rotate-declined     exists = the lead was told this conversation was not rotated (no task)
+#   rotate.lock                a directory: one rotation at a time per role; its "by" file holds
+#                              "<who> <epoch>"; older than WOLFMUX_ROTATE_LOCK_STALE seconds, it is taken over
 
 WOLFMUX_HANDOVER_CHARS="${WOLFMUX_HANDOVER_CHARS:-12000}"
 WOLFMUX_ROTATE_WAIT="${WOLFMUX_ROTATE_WAIT:-120}"
+WOLFMUX_ROTATE_LOCK_STALE="${WOLFMUX_ROTATE_LOCK_STALE:-600}"
 # One cap per part, so no part can push another out. Their sum stays under the whole cap.
 _ROTATE_CAP_TASK=2500
 _ROTATE_CAP_CHECKPOINT=1200
@@ -107,14 +112,88 @@ rotate_session_handover() {
   local pending="$HOOK_RUN/memory/handover.pending" file="$HOOK_RUN/memory/handover.md"
   [ "$HOOK_SOURCE" = "startup" ] && [ -e "$pending" ] && [ -r "$file" ] || return 0
   /bin/rm -f "$pending" 2>/dev/null || true
+  # The new conversation names itself: the loop guard does not depend on the rotating process
+  # outliving the restart (it should; see _rotate_detach).
+  local sid
+  sid="$(hook_input .session_id)"
+  [ -z "$sid" ] || printf 'new %s\n' "$sid" >>"$HOOK_RUN/memory/rotated" 2>/dev/null || true
   hook_context "[wolfmux] This is a fresh conversation for the same task: wolfmux replaced the full one and wrote this hand-over ($file). Your task is already claimed and in progress: do not claim it again. The tree state below (commits, status, the uncommitted diff) is current as of the rotation and the work in it, committed or not, is yours: continue from it, do not start over and do not re-check what it already says.
 
 $(/bin/cat "$file" 2>/dev/null)"
 }
 
-# _rotate_session_rotated <session-id> - 0 when that conversation was rotated away or was started by a rotation
-_rotate_session_rotated() {
-  [ -n "$1" ] && /usr/bin/grep -q -e "^$1\$" -e "^new $1\$" "$HOOK_RUN/memory/rotated" 2>/dev/null
+# _rotate_guarded <run-dir> <session-id> - 0 when the loop guard holds this conversation back: it was
+# rotated away once and has been resumed by hand, or it was started by a rotation and the watch never
+# saw it under the rotate threshold (it STARTED past it). A conversation a rotation started that was
+# under the threshold once and filled up with work is rotated again.
+_rotate_guarded() {
+  [ -n "$2" ] && [ -r "$1/memory/rotated" ] || return 1
+  /usr/bin/grep -q -e "^$2\$" "$1/memory/rotated" 2>/dev/null && return 0
+  [ ! -e "$1/memory/below-seen" ] || return 1
+  /usr/bin/grep -q -e "^new $2\$" "$1/memory/rotated" 2>/dev/null
+}
+
+# rotate_will_follow - in a hook, at a crossing only (the rotate threshold, the thrash event): 0 when a
+# rotation will follow this conversation's next turn end, as far as a hook can tell without the store:
+# not the lead, policy worker-rotation auto (the team's meta.json, else the default), a Claude agent,
+# not held back by the loop guard. Whether a task is in progress is asked later, by _rotate-auto.
+# One jq for the policy and the family; no bd.
+rotate_will_follow() {
+  local state files=() answer policy family
+  [ "$HOOK_ROLE" != "${WOLFMUX_LEAD_ROLE:-lead}" ] || return 1
+  state="${HOOK_RUN%/run/*}"
+  [ ! -r "$state/meta.json" ] || files+=("$state/meta.json")
+  [ ! -r "$state/agents/$HOOK_ROLE.json" ] || files+=("$state/agents/$HOOK_ROLE.json")
+  answer="auto "
+  if [ "${#files[@]}" -gt 0 ]; then
+    answer="$("$JQ_BIN" -rn 'reduce inputs as $o ({}; if (input_filename | endswith("/meta.json")) then .p = ($o.policy_worker_rotation // "") else .f = ($o.family // "") end) | "\(.p // "") \(.f // "")"' "${files[@]}" 2>/dev/null)" || answer=" "
+  fi
+  policy="${answer%% *}" family="${answer#* }"
+  [ -n "$policy" ] || policy="${WOLFMUX_WORKER_ROTATION:-auto}"
+  [ "$policy" = "auto" ] && [ "$family" != "codex" ] || return 1
+  ! _rotate_guarded "$HOOK_RUN" "$(hook_input .session_id)"
+}
+
+# The agent's line at a crossing when a rotation will follow: end the turn, wolfmux does the rest.
+ROTATE_END_TURN="If you have a task in progress: commit what works, do not start its next step, then END YOUR TURN now with one line
+that says where you stand. wolfmux then replaces this conversation with a fresh one that gets a hand-over (your task, the
+commits, the uncommitted diff, your last answers) and continues the task. Do not close the task, do not hand it back; no
+message to the lead is needed."
+
+# _rotate_lock_take <lock-dir> <who> - 0 with the lock taken; a lock older than
+# WOLFMUX_ROTATE_LOCK_STALE seconds (its "by" file, else the directory's mtime) is taken over. 1 when
+# it is held; ROTATE_LOCK_AGE is then its age in seconds ("" when unknown).
+_rotate_lock_take() {
+  local who="" at="" now
+  ROTATE_LOCK_AGE=""
+  if ! /bin/mkdir "$1" 2>/dev/null; then
+    if [ -r "$1/by" ]; then read -r who at <"$1/by" || true; fi
+    _rotate_num "$at" || at="$(/usr/bin/stat -f %m "$1" 2>/dev/null)" || at=""
+    _rotate_num "$at" || return 1
+    now="$(now_epoch)"
+    ROTATE_LOCK_AGE=$((now - at))
+    [ "$ROTATE_LOCK_AGE" -gt "$WOLFMUX_ROTATE_LOCK_STALE" ] || return 1
+    /bin/rm -rf "$1" 2>/dev/null || true
+    /bin/mkdir "$1" 2>/dev/null || return 1
+  fi
+  printf '%s %s\n' "$2" "$(now_epoch)" >"$1/by" 2>/dev/null || true
+  return 0
+}
+
+# _rotate_detach <log> <command...> - start <command> so that it outlives the pane it was started
+# from: the restart it does ends that pane (tmux respawn-pane -k), and with it the pane's process
+# group and session (SIGHUP). macOS has no setsid binary; /usr/bin/perl ships with it and its POSIX
+# module has setsid(): it forks (so the child is no group leader), the child ignores SIGHUP (an
+# ignored signal stays ignored across exec) and calls setsid() (a new session and process group, no
+# controlling terminal), then execs. Without perl: SIGHUP ignored only, as nohup does.
+_rotate_detach() {
+  local log="$1"
+  shift
+  if [ -x /usr/bin/perl ]; then
+    (/usr/bin/perl -MPOSIX -e '$SIG{HUP} = "IGNORE"; my $p = fork; exit 0 if $p; exit 1 unless defined $p; POSIX::setsid(); exec @ARGV or exit 127' "$@" </dev/null >>"$log" 2>&1 &) >/dev/null 2>&1
+  else
+    (trap '' HUP; exec "$@" </dev/null >>"$log" 2>&1 &) >/dev/null 2>&1
+  fi
 }
 
 # rotate_at_stop - Stop, from recall_hook: a worker at or past its rotate threshold, or one
@@ -136,15 +215,14 @@ rotate_at_stop() {
   [ ! -e "$HOOK_RUN/memory/rotate-fired" ] || return 0
   : >"$HOOK_RUN/memory/rotate-fired" 2>/dev/null || true
   session="$(hook_input .session_id)"
-  if _rotate_session_rotated "$session"; then
-    # A conversation a rotation started, already past the threshold: no second rotation.
+  if _rotate_guarded "$HOOK_RUN" "$session"; then
+    # A conversation a rotation started that was never under the threshold: no second rotation.
     _memory_tell_lead "${percent:-?}" "$(_memory_ctx_line "$HOOK_RUN" | /usr/bin/sed 's/^context: //')"
     return 0
   fi
   lock="$HOOK_RUN/rotate.lock"
-  /bin/mkdir "$lock" 2>/dev/null || return 0
-  printf 'stop %s\n' "$(now_epoch)" >"$lock/by" 2>/dev/null || true
-  ("$TEAMCTL_SELF" _rotate-auto "$HOOK_ROLE" "$reason" "$session" </dev/null >>"$HOOK_RUN/rotate.log" 2>&1 &) >/dev/null 2>&1
+  _rotate_lock_take "$lock" stop || return 0
+  _rotate_detach "$HOOK_RUN/rotate.log" "$TEAMCTL_SELF" _rotate-auto "$HOOK_ROLE" "$reason" "$session"
   return 0
 }
 
@@ -201,11 +279,47 @@ cmd_rotate() {
   by="$(if [ -n "$CALLER_ROLE" ]; then team_identity "$TEAM" "$CALLER_ROLE"; else printf 'operator'; fi)"
   local dir rc=0
   dir="$(run_dir_ensure "$role")"
-  /bin/mkdir "$dir/rotate.lock" 2>/dev/null || die "a rotation of '$role' is already under way ($dir/rotate.lock)"
+  _rotate_lock_take "$dir/rotate.lock" rotate ||
+    die "a rotation of '$role' is already under way ($dir/rotate.lock, ${ROTATE_LOCK_AGE:-?} s old; taken over after ${WOLFMUX_ROTATE_LOCK_STALE} s)"
+  if [ -n "$CALLER_ROLE" ] && [ "$CALLER_ROLE" = "$role" ]; then
+    # A worker rotating itself runs this inside its own tool call: the restart would end the process
+    # that runs it, and its turn cannot end while it waits. A detached process does it; it waits for
+    # the turn end as the default does (or not, with --now).
+    _rotate_detach "$dir/rotate.log" "$TEAMCTL_SELF" _rotate-run "$role" "${reason:-asked by $by}" "$by" "$now"
+    say "rotation started: end your turn (wolfmux replaces this conversation once it has ended; log: $(short_path "$dir/rotate.log"))"
+    return 0
+  fi
   # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
   (ROTATE_HAVE_LOCK=1 rotate_run "$role" "${reason:-asked by $by}" "$by" "$now" "") || rc=$?
   /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
   return "$rc"
+}
+
+# cmd_rotate_detached <role> <reason> <by> <now> - internal (`teamctl _rotate-run`), detached by a
+# worker's own `teamctl rotate`, which already holds run/<role>/rotate.lock.
+cmd_rotate_detached() {
+  local role="$1" dir rc=0
+  require_tools
+  load_project
+  dir="$(run_dir "$role")"
+  (ROTATE_HAVE_LOCK=1 rotate_run "$role" "$2" "$3" "$4" "") || rc=$?
+  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+  return "$rc"
+}
+
+# _rotate_declined <role> <run-dir> <reason> - the auto path found no task: the conversation may
+# rotate later (rotate-fired goes), and the lead gets the context message the crossing held back,
+# once per conversation (rotate-declined; both go at startup and clear).
+_rotate_declined() {
+  local lead percent=""
+  /bin/rm -f "$2/memory/rotate-fired" 2>/dev/null || true
+  [ ! -e "$2/memory/rotate-declined" ] || return 0
+  : >"$2/memory/rotate-declined" 2>/dev/null || true
+  if [ -r "$2/memory/ctx" ]; then percent="$("$JQ_BIN" -r '.percent // empty' "$2/memory/ctx" 2>/dev/null)"; fi
+  lead="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
+  memory_store_lead_message "$lead" "$(team_identity "$TEAM" "$1")" "$1: context at ${percent:-?}%" \
+    "$3; not rotated: no task in progress. context: $(_rotate_figure "$2").
+teamctl rotate $1 : a fresh conversation in the same worktree and branch, with a hand-over wolfmux writes" >/dev/null 2>&1 || true
 }
 
 # cmd_rotate_auto <role> <reason> <session> - internal (`teamctl _rotate-auto`), detached from a
@@ -226,8 +340,13 @@ _rotate_auto_body() {
   reg_exists "$role" || return 0
   [ "$(reg_field "$role" family)" != "codex" ] || return 0
   task="$(memory_store_inprogress_task "$(team_identity "$TEAM" "$role")")" || task=""
-  [ -n "$task" ] || return 0
   policy="$(policy_get worker-rotation)"
+  [ "$policy" != "off" ] || return 0
+  if [ -z "$task" ]; then
+    # Under ask the lead was told at the crossing already; one message per conversation is right there.
+    [ "$policy" != "auto" ] || _rotate_declined "$role" "$dir" "$reason"
+    return 0
+  fi
   lead="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   case "$policy" in
     off) return 0 ;;
@@ -258,12 +377,13 @@ rotate_run() {
   rotate_handover_write "$file" "$task" "$dir/memory/checkpoint.md" "$workdir" "$(reg_field "$role" base_commit)" \
     "$transcript" "$dir/out/" "$reason" "$by"
   : >"$dir/memory/handover.pending"
+  # What must outlive the restart is written before it: the restart may end the pane this runs from.
   [ -z "$old_session" ] || printf '%s\n' "$old_session" >>"$dir/memory/rotated"
+  reg_set "$role" rotated_from "$old_session"
+  event_log rotate "$role" "from ${old_session:-?}: $reason"
   ROTATE_ACTING=1 cmd_restart "$role" >/dev/null
   printf 'new %s\n' "$(reg_field "$role" session_id)" >>"$dir/memory/rotated"
-  reg_set "$role" rotated_from "$old_session"
   /bin/rm -f "$dir/memory/rotate-fired" 2>/dev/null || true
-  event_log rotate "$role" "from ${old_session:-?}: $reason"
   context_measured "$STATE_DIR" worker
   new_fig="about ${CM_FIRST:-?} at its first request (measured for this team), limit $(reg_field "$role" compact_window 2>/dev/null)"
   say "rotated: $role   (hand-over: $(short_path "$file"); the old conversation: teamctl restart $role --resume ${old_session:-?})"
