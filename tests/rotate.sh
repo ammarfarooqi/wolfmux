@@ -398,6 +398,14 @@ check "... its turn end gets no task reminder from wolfmux while that rotation w
 check "... and the detached process rotates it once its turn has ended; the lock goes" \
   'poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]" && [ "$(record w1 rotated_from)" = "$AUTO" ]'
 
+echo "== release review LOW 5: the loop guard holds for a worker rotating itself =="
+AUTO="$(record w1 session_id)"
+/bin/rm -f "$R1/memory/below-seen"
+grep -qx "new $AUTO" "$R1/memory/rotated" 2>/dev/null || printf 'new %s\n' "$AUTO" >>"$R1/memory/rotated"
+check "a conversation a rotation started, never seen under the threshold: its own teamctl rotate is refused, says why and that the lead can" \
+  'out="$(TEAM_ROLE=w1 "$REPO/tests/in-pane" rotate w1 --now 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "started by a rotation" && printf "%s" "$out" | grep -q "the lead can still rotate it" && [ ! -e "$R1/rotate.lock" ] && sleep 1 && [ "$(record w1 session_id)" = "$AUTO" ]'
+check "... the lead still can" 'teamctl rotate w1 --now | grep -q "rotated: w1"'
+
 echo "== restart --continue wakes an agent with a task in_progress =="
 check "a notice 'continue task <id>' is filed through the inbox" \
   'teamctl restart w1 --continue >/dev/null 2>&1; grep -rq "continue task $TID" "$(dirname "$(dirname "$R1")")/inbox"'

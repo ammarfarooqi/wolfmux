@@ -364,6 +364,11 @@ cmd_rotate() {
   by="$(if [ -n "$CALLER_ROLE" ]; then team_identity "$TEAM" "$CALLER_ROLE"; else printf 'operator'; fi)"
   local dir rc=0
   dir="$(run_dir_ensure "$role")"
+  if [ "${CALLER_ROLE:-}" = "$role" ] && _rotate_guarded "$dir" "$(reg_field "$role" session_id)"; then
+    # The loop guard of the automatic path, for a worker rotating itself: without it, a confused worker
+    # could rotate every turn. The lead is not held back by it.
+    die "not rotated: this conversation was started by a rotation and has not been under its rotate threshold since, so a fresh one would start just as full and a rotation would not help. Commit, end your turn with where you stand, and tell your lead: the lead can still rotate it (teamctl rotate $role)."
+  fi
   _rotate_lock_take "$dir/rotate.lock" rotate ||
     die "a rotation of '$role' is already under way ($dir/rotate.lock, ${ROTATE_LOCK_AGE:-?} s old; taken over after ${WOLFMUX_ROTATE_LOCK_STALE} s)"
   if [ -n "$CALLER_ROLE" ] && [ "$CALLER_ROLE" = "$role" ]; then
