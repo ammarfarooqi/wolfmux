@@ -340,6 +340,25 @@ check "_inbox-stop: rotate-due with a fresh lock is still honoured (silent)" '[ 
 /bin/rm -rf "$R1/rotate.lock" "$R1/memory/rotate-due"
 inbox_stop w1 >/dev/null
 
+echo "== release review MEDIUM 3: a rotation whose restart fails leaves nothing behind and tells the lead =="
+# A record whose working directory is gone makes cmd_restart die after the hand-over is written.
+REC1="$(find "$WOLFMUX_DATA" -path "*/agents/w1.json" | head -1)"
+/bin/cp "$REC1" "$WORK/w1.json.saved"
+"$JQ" '.workdir = "/nonexistent/wolfmux-gone"' "$WORK/w1.json.saved" >"$REC1"
+AUTO="$(record w1 session_id)"
+/bin/rm -f "$R1/memory/rotate-fired" "$R1/memory/rotated" "$R1/memory/thrash-told" "$R1/memory/handover.pending"
+FAILED_BEFORE="$(lcount "w1: rotation failed")"
+printf 'idle\n' >"$R1/state"
+: >"$R1/memory/rotate-due"
+stop_at w1 95 "$AUTO"
+check "auto path, the restart fails: no handover.pending, no rotated line, no rotate-due, rotate-fired cleared, the lock gone" \
+  'poll "[ ! -e \"$R1/rotate.lock\" ]" && sleep 1 && [ ! -e "$R1/memory/handover.pending" ] && ! grep -qx "$AUTO" "$R1/memory/rotated" 2>/dev/null && [ ! -e "$R1/memory/rotate-due" ] && [ ! -e "$R1/memory/rotate-fired" ] && [ "$(record w1 session_id)" = "$AUTO" ]'
+check "auto path, the restart fails: one message at the lead with the log line, the context figure and the retry command" \
+  'poll "[ \"\$(lcount \"w1: rotation failed\")\" = $((FAILED_BEFORE + 1)) ]" && lmail | grep -q "working directory is gone" && lmail | grep -q "teamctl rotate w1" && lmail | grep -q "context: "'
+check "lead path, the restart fails: refused, the same three files gone, no message at the lead" \
+  '! teamctl rotate w1 --now >/dev/null 2>&1 && [ ! -e "$R1/memory/handover.pending" ] && ! grep -qx "$AUTO" "$R1/memory/rotated" 2>/dev/null && [ ! -e "$R1/rotate.lock" ] && sleep 1 && [ "$(lcount "w1: rotation failed")" = $((FAILED_BEFORE + 1)) ]'
+/bin/cp "$WORK/w1.json.saved" "$REC1"
+
 echo "== A3 finding 5: the rotating process outlives the pane it was started from =="
 PANE_OUT="$WORK/pane"
 /bin/mkdir -p "$PANE_OUT"

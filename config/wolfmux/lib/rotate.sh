@@ -384,8 +384,23 @@ cmd_rotate_detached() {
   _rotate_internal_gate "$role" "${5:-}"
   dir="$(run_dir "$role")"
   (ROTATE_HAVE_LOCK=1 rotate_run "$role" "$2" "$3" "$4" "") || rc=$?
+  [ "$rc" -eq 0 ] || _rotate_failed "$role" "$dir" "$2"
   /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
   return "$rc"
+}
+
+# _rotate_failed <role> <run-dir> <reason> - a rotation nobody watches (the automatic one, a worker's own)
+# ended without one: its output, the die included, is in rotate.log. rotate-fired and rotate-due go, so
+# the next crossing may try again and the Stop hooks speak, and the lead gets one message to act on.
+_rotate_failed() {
+  local last
+  /bin/rm -f "$2/memory/rotate-fired" "$2/memory/rotate-due" 2>/dev/null || true
+  last="$(/usr/bin/tail -n 1 "$2/rotate.log" 2>/dev/null)"
+  memory_store_lead_message "$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")" "$(team_identity "$TEAM" "$1")" "$1: rotation failed" \
+    "rotation failed ($3), the old conversation goes on: ${last:-nothing in the log}
+context: $(_rotate_figure "$2")
+log: $2/rotate.log
+teamctl rotate $1 : to retry" >/dev/null 2>&1 || true
 }
 
 # _rotate_declined <role> <run-dir> <reason> - the auto path found no task: the conversation may
@@ -413,7 +428,7 @@ cmd_rotate_auto() {
   _rotate_internal_gate "$role" "${4:-}"
   dir="$(run_dir "$role")"
   # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
-  (_rotate_auto_body "$role" "$reason")
+  (_rotate_auto_body "$role" "$reason") || _rotate_failed "$role" "$dir" "$reason"
   /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
 }
 
@@ -444,9 +459,34 @@ teamctl rotate $role : wolfmux writes the hand-over, the task gets a fresh conve
   rotate_run "$role" "$reason" "wolfmux (policy worker-rotation auto)" 0 "" 1
 }
 
+# _rotate_unrotated <rotated-file> <session-id> - drop the last line that is exactly <session-id>
+_rotate_unrotated() {
+  local tmp
+  [ -n "$2" ] && [ -r "$1" ] || return 0
+  tmp="$1.tmp.$$"
+  /usr/bin/awk -v id="$2" '{ line[NR] = $0; if ($0 == id) last = NR } END { for (i = 1; i <= NR; i++) if (i != last) print line[i] }' "$1" >"$tmp" 2>/dev/null &&
+    /bin/mv -f "$tmp" "$1" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null || true
+}
+
+# _rotate_switch <role> <run-dir> <file> <task> <workdir> <old-session> <transcript> <reason> <by> - the
+# hand-over, the marks the new conversation and the loop guard read, then the restart. Run in a subshell.
+_rotate_switch() {
+  rotate_handover_write "$3" "$4" "$2/memory/checkpoint.md" "$5" "$(reg_field "$1" base_commit)" \
+    "$7" "$2/out/" "$8" "$9"
+  # What must outlive the restart is written before it: the restart may end the pane this runs from.
+  [ -z "$6" ] || printf '%s\n' "$6" >>"$2/memory/rotated"
+  reg_set "$1" rotated_from "$6"
+  event_log rotate "$1" "from ${6:-?}: $8"
+  : >"$2/memory/handover.pending"
+  # The permission to restart goes to cmd_restart in this process only: a plain shell variable of this
+  # subshell, never exported (main() drops any ROTATE_ACTING that comes in from the environment).
+  ROTATE_ACTING=1
+  cmd_restart "$1" >/dev/null
+}
+
 # rotate_run <role> <reason> <by> <now 0|1> [<task-json>] [<require-task 0|1>]
 rotate_run() {
-  local role="$1" reason="$2" by="$3" now="$4" task="${5:-}" require="${6:-0}" dir workdir old_session transcript file old_fig new_fig lead
+  local role="$1" reason="$2" by="$3" now="$4" task="${5:-}" require="${6:-0}" dir workdir old_session transcript file old_fig new_fig lead was_from err
   # Whoever calls it: the lead is never rotated (its restart is the lead's own, or the founder's, call).
   [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die "the lead is not rotated (restart it: teamctl restart lead)" 77
   dir="$(run_dir_ensure "$role")"
@@ -469,18 +509,18 @@ rotate_run() {
   transcript="$(session_transcript "$old_session" "$workdir")"
   file="$dir/memory/handover.md"
   old_fig="$(_rotate_figure "$dir")"
-  rotate_handover_write "$file" "$task" "$dir/memory/checkpoint.md" "$workdir" "$(reg_field "$role" base_commit)" \
-    "$transcript" "$dir/out/" "$reason" "$by"
-  : >"$dir/memory/handover.pending"
-  # What must outlive the restart is written before it: the restart may end the pane this runs from.
-  [ -z "$old_session" ] || printf '%s\n' "$old_session" >>"$dir/memory/rotated"
-  reg_set "$role" rotated_from "$old_session"
-  event_log rotate "$role" "from ${old_session:-?}: $reason"
-  # The permission to restart goes to cmd_restart in this process only: a local, never exported (main()
-  # drops any ROTATE_ACTING that comes in from the environment).
-  local ROTATE_ACTING=1
-  cmd_restart "$role" >/dev/null
-  ROTATE_ACTING=""
+  was_from="$(reg_field "$role" rotated_from 2>/dev/null)" || was_from=""
+  # In a subshell: a die anywhere in it (the restart above all) is caught here, and what it wrote for
+  # the new conversation is taken back, so the old one, which goes on, is neither guarded nor handed over.
+  # Its error output is kept to name the cause in the one line that says it failed (rotate.log's last).
+  if ! err="$( (_rotate_switch "$role" "$dir" "$file" "$task" "$workdir" "$old_session" "$transcript" "$reason" "$by") 2>&1)"; then
+    /bin/rm -f "$dir/memory/handover.pending" "$dir/memory/rotate-due" 2>/dev/null || true
+    _rotate_unrotated "$dir/memory/rotated" "$old_session"
+    reg_set "$role" rotated_from "$was_from" 2>/dev/null || true
+    err="$(printf '%s\n' "$err" | /usr/bin/sed -e 's/^teamctl: //' -e '/^[[:space:]]*$/d' | /usr/bin/tail -n 1)"
+    die "the restart of '$role' failed (${err:-no message}): not rotated, the old conversation goes on (handover.pending and its rotated line taken back)"
+  fi
+  [ -z "$err" ] || printf '%s\n' "$err" >&2
   _rotate_note_new "$dir" "$(reg_field "$role" session_id)"
   /bin/rm -f "$dir/memory/rotate-fired" 2>/dev/null || true
   context_measured "$STATE_DIR" worker
