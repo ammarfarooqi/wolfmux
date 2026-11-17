@@ -116,7 +116,6 @@ cmd_deliver() {
     return 0
   fi
   mail_quiet_route "$identity" || return 0
-  payload="$(_mail_mark_done_notice "$payload")"
   # A message is never edited after it is written, but bd runs its update hook for the reply link
   # `--deps replies-to` adds right after the create, with the message still open: that is the
   # same message again (v1.25.0 handed every report twice, the second at the next tool call).
@@ -148,15 +147,31 @@ _mail_had_message() {
   return 1
 }
 
-# _mail_mark_done_notice <item-json>: the item with "wolfmux_done_notice": true when the command
-# that wrote it is cmd_done filing its notice (WOLFMUX_DONE_NOTICE, lib/tasks.sh); else as it is
-_mail_mark_done_notice() {
-  if [ -n "${WOLFMUX_DONE_NOTICE:-}" ]; then
-    printf '%s' "$1" | "$JQ_BIN" -c 'if (.issue_type // "") == "message" then . + {wolfmux_done_notice: true} else . end' 2>/dev/null ||
-      printf '%s' "$1"
-  else
-    printf '%s' "$1"
-  fi
+# _mail_done_notice_genuine <item-json>: 0 when this message is the notice `teamctl done` filed,
+# judged from the store, never from text or environment a worker can set: the stored message is
+# already read (done marks it so before announcing it), it replies to the task its body names
+# ("DONE <id> by"; Beads fills the link in, native does not), and that task has a report file. Called only for a message that looks like one. On Beads one
+# bounded read inside the hook run's budget; no answer is a "no", and the message is then shown
+# with its heading like any other.
+_mail_done_notice_genuine() {
+  local json="$1" id desc task stored
+  id="$(printf '%s' "$json" | "$JQ_BIN" -r '.id // empty' 2>/dev/null)"
+  desc="$(printf '%s' "$json" | "$JQ_BIN" -r '.description // ""' 2>/dev/null)"
+  task="${desc#DONE }"
+  task="${task%%[ $'\n']*}"
+  valid_bead_id "$id" && valid_bead_id "$task" || return 1
+  [ -n "${PROJECT_STATE:-}" ] || { [ -n "${HOOK_RUN:-}" ] && _ledger_hook_team; } || return 1
+  local f had=0
+  for f in "$PROJECT_STATE/reports/$task.md" "$PROJECT_STATE/reports/$task"~p*.md; do
+    [ ! -e "$f" ] || had=1
+  done
+  [ "$had" = 1 ] || return 1
+  case "$(store_kind 2>/dev/null)" in
+    beads) stored="$(_bd_bounded 3 store_item_json "$id")" || return 1 ;;
+    *) stored="$(store_item_json "$id" 2>/dev/null)" || return 1 ;;
+  esac
+  # read already; the reply link where the store fills it in (Beads; the native item has none)
+  printf '%s' "$stored" | "$JQ_BIN" -e --arg t "$task" '.status == "closed" and ((.reply_to // "") == "" or .reply_to == $t)' >/dev/null 2>&1
 }
 
 # mail_announce <event: create|update|close> <item-json> <actor-identity> — the native
@@ -169,7 +184,6 @@ mail_announce() {
   local event="$1" item="$2" actor="$3" assignee type status lead target
   [ "$(store_kind)" = "native" ] || return 0
   [ -n "$item" ] || return 0
-  item="$(_mail_mark_done_notice "$item")"
   assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.assignee // ""' 2>/dev/null)"
   type="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
   status="$(printf '%s' "$item" | "$JQ_BIN" -r '.status // ""' 2>/dev/null)"
@@ -258,10 +272,11 @@ _mail_render_bead() {
   fi
   # A worker's Done report (lib/tasks.sh cmd_done, ADR-0040): the body is already the whole short
   # notice, which names the report file and says it needs no reply; nothing is added around it.
-  # Only with the mark cmd_done sets (WOLFMUX_DONE_NOTICE), never on text alone: a message any
-  # worker writes as "Done: ..." / "DONE ..." gets its heading and reply hint like any other.
+  # Only when the store says it is the notice cmd_done filed (_mail_done_notice_genuine), never
+  # on text alone: a message a worker writes as "Done: ..." / "DONE ..." gets its heading and
+  # reply hint like any other.
   if [ "$type" = "message" ] && [ "${title#Done: }" != "$title" ] && [ "${desc#DONE }" != "$desc" ] &&
-    [ "$(printf '%s' "$json" | "$JQ_BIN" -r '.wolfmux_done_notice // false' 2>/dev/null)" = "true" ]; then
+    _mail_done_notice_genuine "$json"; then
     printf '[wolfmux mail] %s' "$(_mail_sanitize_body "$desc" "$id")"
     return 0
   fi
