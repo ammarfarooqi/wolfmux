@@ -326,6 +326,23 @@ run_store() {
     'UP="$(printf "%s" "$UOUT" | sed -n "s/^report: //p")"; [ "$URC" -eq 0 ] && [ -n "$UP" ] && grep -q "00000 detail line" "$UP"'
   check "$kind: unwritable reports: the lead's notice is at most 600 characters, without the body ($(chars "$NU"))" \
     '[ -n "$NU" ] && [ "$(chars "$NU")" -le 600 ] && ! printf "%s" "$NU" | grep -q "detail line"'
+  check "$kind: unwritable reports: show --report prints it from where it was written" \
+    'teamctl show "$TU" --report | grep -q "00000 detail line"'
+
+  echo "== $kind: the reports lock is held: the report gets its own name, and show still reads it"
+  TK="$(teamctl task backend "Lock held" -d x | last_task_id)"
+  as backend claim "$TK" >/dev/null 2>&1
+  commit_in "$BACKEND_DIR" lockheld.txt
+  /bin/mkdir -p "$STATE/reports/.lock"
+  date +%s >"$STATE/reports/.lock/ts"
+  as backend done "$TK" "summary with the lock held" --tests "t: 1 passed" >/dev/null 2>&1
+  KRC=$?
+  /bin/rm -rf "$STATE/reports/.lock"
+  check "$kind: lock held: done exits 0 and the report is <id>~p<pid>.md" \
+    '[ "$KRC" -eq 0 ] && ls "$STATE/reports/$TK"~p*.md'
+  check "$kind: lock held: show --report prints that report" \
+    'teamctl show "$TK" --report | grep -q "^summary with the lock held$"'
+  check "$kind: lock held: show names it" 'teamctl show "$TK" | grep -qF "report: $STATE/reports/$TK~p"'
 
   echo "== $kind: teamctl show <id> --report, and show on a done task"
   check "$kind: show --report prints the stored report, every character" \
