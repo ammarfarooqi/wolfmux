@@ -27,8 +27,26 @@ WOLFMUX_LEDGER_DONE_HOURS=24   # done tasks of at least this many hours back are
 # store_ensure_project)
 ledger_reports_dir() { printf '%s/reports\n' "$PROJECT_STATE"; }
 
-# ledger_report_path <task-id>: the newest report of that task (it may not exist)
-ledger_report_path() { printf '%s/%s.md\n' "$(ledger_reports_dir)" "$1"; }
+# ledger_report_path <task-id>: the newest report of that task: <task-id>.md, or else the newest
+# written under its fallback name <task-id>~p<pid>.md (the lock was not had in time). Prints
+# <task-id>.md when there is neither (it may not exist).
+ledger_report_path() {
+  local dir f newest=""
+  dir="$(ledger_reports_dir)"
+  if [ ! -e "$dir/$1.md" ]; then
+    for f in "$dir/$1"~p*.md; do
+      [ -e "$f" ] || continue
+      [ -n "$newest" ] && [ ! "$f" -nt "$newest" ] || newest="$f"
+    done
+  fi
+  printf '%s\n' "${newest:-$dir/$1.md}"
+}
+
+# ledger_report_noted <task-item-json>: the path a report was written to outside the reports
+# directory (it could not be written), as `teamctl done` noted it on the task; empty if none
+ledger_report_noted() {
+  printf '%s' "$1" | "$JQ_BIN" -r '(.notes // "") | [scan("report written to ([^ \n]+\\.md)")] | last // empty | .[0]' 2>/dev/null
+}
 
 # ledger_report_save <task-id> <text>: writes the report, atomically. An earlier report of the
 # same task moves to the first free <task-id>~<n>.md first, so nothing of it is lost ("~" is not

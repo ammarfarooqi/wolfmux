@@ -272,6 +272,8 @@ $extra"
     report_path="${TMPDIR:-/tmp}/wolfmux-report-$id-$$.md"
     if printf '%s\n' "$report" >"$report_path" 2>/dev/null; then
       say "could not write the report under $(short_path "$(ledger_reports_dir)"); it is in $report_path"
+      # recorded on the task, so teamctl show finds it (ledger_report_noted)
+      store_task_note "$id" "$me" "report written to $report_path" >/dev/null 2>&1 || true
     else
       report_path=""
       say "could not write the report file anywhere; the lead gets a one-line notice"
@@ -507,7 +509,13 @@ cmd_show() {
   if [ "$report" -eq 1 ]; then
     # the stored report as it was written, every character (ADR-0040); no store read needed
     path="$(ledger_report_path "$id")"
-    [ -r "$path" ] || die "no report for $id: only a task closed by teamctl done has one (looked in $(short_path "$(ledger_reports_dir)"))"
+    if [ ! -r "$path" ]; then
+      # written outside the reports directory: the place done noted on the task
+      item="$(store_item_json "$id" 2>/dev/null)" || item=""
+      path="$(ledger_report_noted "$item")"
+      [ -n "$path" ] || die "no report for $id: only a task closed by teamctl done has one (looked in $(short_path "$(ledger_reports_dir)"))"
+      [ -r "$path" ] || die "the report for $id was written to $path, which cannot be read now"
+    fi
     /bin/cat "$path"
     return 0
   fi
@@ -533,15 +541,16 @@ cmd_show() {
     return 0
   fi
   _show_render_task "$item"
-  _show_report_lines "$id"
+  _show_report_lines "$id" "$item"
   _show_mark_shown "$item" "$id"
 }
 
-# _show_report_lines <task-id>: where its report is, when it has one, and its earlier ones
+# _show_report_lines <task-id> <item-json>: where its report is, when it has one, and its earlier ones
 _show_report_lines() {
   local path older
   path="$(ledger_report_path "$1")"
-  [ -e "$path" ] || return 0
+  [ -e "$path" ] || path="$(ledger_report_noted "$2")"
+  [ -n "$path" ] && [ -e "$path" ] || return 0
   say ""
   say "report: $path   (teamctl show $1 --report)"
   older="$(ledger_report_older "$1")"
