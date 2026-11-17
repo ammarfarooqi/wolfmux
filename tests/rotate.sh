@@ -87,9 +87,17 @@ write_ho
 H="$HO/handover.md"
 check "a 50,000-character task body: the whole file stays at most 12,000 characters" '[ "$(wc -m <"$H" | tr -d " ")" -le 12001 ]'
 check "the body is cut and says so, and the git part, the answers, the paths and the reason are all still there" \
-  'grep -q "cut at 3200" "$H" && grep -q "step one done" "$H" && grep -q "^ M a" "$H" && grep -q "answer number 7" "$H" && grep -q "old transcript: $HO/t.jsonl" "$H" && grep -q "reason: a reason" "$H" && grep -q "asked by: the lead" "$H"'
+  'grep -q "cut at 2500" "$H" && grep -q "step one done" "$H" && grep -q "^ M a" "$H" && grep -q "answer number 7" "$H" && grep -q "old transcript: $HO/t.jsonl" "$H" && grep -q "reason: a reason" "$H" && grep -q "asked by: the lead" "$H"'
 check "parts in order a, b, c, d, e, f" \
   '[ "$(grep -o "^## [a-f]\." "$H" | tr -d "\n")" = "## a.## b.## c.## d.## e.## f." ]'
+check "part c carries the uncommitted diff itself, inside the 12,000" 'grep -q "^### the uncommitted diff" "$H" && grep -q "^+dirty" "$H"'
+BIGDIFF="$(printf 'line %s of a long change\n' $(seq 1 2000))"
+printf '%s\n' "$BIGDIFF" >"$HO/tree/b"
+write_ho
+check "a long diff is cut at 3,000 with a marker; the answers and the reason stay" \
+  'grep -q "cut at 3000" "$H" && grep -q "answer number 7" "$H" && grep -q "reason: a reason" "$H" && [ "$(wc -m <"$H" | tr -d " ")" -le 12001 ]'
+(cd "$HO/tree" && git checkout -q -- b)
+write_ho
 check "the agent own checkpoint text only, not the automatic section" 'grep -q "my own words" "$H" && ! grep -q "auto stuff" "$H"'
 check "the last five answers, newest last; no thinking, no tool call" \
   '! grep -q "answer number 2$" "$H" && grep -q "answer number 3" "$H" && [ "$(grep -n "answer number" "$H" | tail -1 | grep -c "number 7")" = 1 ] && ! grep -q "secret thought" "$H"'
@@ -101,6 +109,7 @@ R1="$(rundir w1)"
 TID="$(teamctl task w1 "Build the thing" -d "step 1, step 2, step 3" 2>/dev/null | tail -1 | sed -E 's/^task ([^ ]+) ->.*/\1/')"
 TEAM_ROLE=w1 BEADS_ACTOR=w1 teamctl claim "$TID" >/dev/null 2>&1
 echo "half done" >"$W1/work.txt"
+echo "edit in progress" >>"$W1/README.md"
 OLD="$(record w1 session_id)"
 check "the lead role is refused, and the refusal says why" 'out="$(teamctl rotate lead --now 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "not rotated"'
 check "a worker rotating another role is refused" \
@@ -124,6 +133,8 @@ check "one notice to the lead (the operator asked), with the hand-over path" \
 S1="$(hook w1 SessionStart '{"source":"startup"}' | ctx_of)"
 check "the new conversation's SessionStart carries it, with the one line, first" \
   'printf "%s" "$S1" | head -1 | grep -q "fresh conversation for the same task" && printf "%s" "$S1" | grep -q "Build the thing"'
+check "the line says the task is already claimed and the tree state is current; continue from it" \
+  'printf "%s" "$S1" | head -1 | grep -q "already claimed and in progress" && printf "%s" "$S1" | head -1 | grep -q "current as of the rotation" && printf "%s" "$S1" | grep -q "^+edit in progress"'
 check "delivered once: a second startup, a compaction and a resume do not show it again" \
   '! { hook w1 SessionStart "{\"source\":\"startup\"}"; hook w1 SessionStart "{\"source\":\"compact\"}"; hook w1 SessionStart "{\"source\":\"resume\"}"; } | ctx_of | grep -q "fresh conversation for the same task"'
 
@@ -204,7 +215,7 @@ cd "$WORK" || exit 1
 tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
 PATH="$FAKE:$PATH" WOLFMUX_STORE=beads project "$WORK/beads" beads
 /bin/mkdir -p .beads
-RB="$(rundir w1)"
+RB="$(find "$WOLFMUX_DATA" -type d -path "*/state/beads-*/run/w1" | head -1)" # not the native project's w1
 check "beads: rotate --now writes the task from bd (id, body, notes) into the hand-over" \
   'PATH="$FAKE:$PATH" WOLFMUX_STORE=beads teamctl rotate w1 --now >/dev/null 2>&1; grep -q "bd-7" "$RB/memory/handover.md" && grep -q "beads body" "$RB/memory/handover.md" && grep -q "bd note line" "$RB/memory/handover.md"'
 check "beads: the lead is told through bd create" 'poll "grep -q \"create.*w1: rotated\" \"$FAKE_LOG\""'

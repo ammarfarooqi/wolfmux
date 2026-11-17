@@ -14,12 +14,13 @@
 WOLFMUX_HANDOVER_CHARS="${WOLFMUX_HANDOVER_CHARS:-12000}"
 WOLFMUX_ROTATE_WAIT="${WOLFMUX_ROTATE_WAIT:-120}"
 # One cap per part, so no part can push another out. Their sum stays under the whole cap.
-_ROTATE_CAP_TASK=3200
-_ROTATE_CAP_CHECKPOINT=1500
-_ROTATE_CAP_GIT=2800
+_ROTATE_CAP_TASK=2500
+_ROTATE_CAP_CHECKPOINT=1200
+_ROTATE_CAP_GIT=1800
+_ROTATE_CAP_DIFF=3000
 _ROTATE_CAP_ANSWER=1500
-_ROTATE_CAP_ANSWERS=3200
-_ROTATE_CAP_TAIL=900
+_ROTATE_CAP_ANSWERS=2400
+_ROTATE_CAP_TAIL=700
 
 _rotate_num() { case "${1:-}" in "" | *[!0-9]*) return 1 ;; esac; }
 
@@ -59,6 +60,16 @@ _rotate_git() {
   printf 'git diff --cached --stat (staged):\n%s\n' "$("$GIT_BIN" -C "$1" diff --cached --stat 2>/dev/null | /usr/bin/tail -n 15)"
 }
 
+# _rotate_diff <workdir> - part c, second half: the uncommitted change itself, unstaged then staged
+_rotate_diff() {
+  local unstaged staged
+  unstaged="$("$GIT_BIN" -C "$1" diff 2>/dev/null)"
+  staged="$("$GIT_BIN" -C "$1" diff --cached 2>/dev/null)"
+  [ -n "$unstaged$staged" ] || { printf '(none)\n'; return 0; }
+  [ -z "$unstaged" ] || printf '%s\n' "$unstaged"
+  [ -z "$staged" ] || printf 'staged:\n%s\n' "$staged"
+}
+
 # _rotate_answers <transcript> - part d: the last five answers (text blocks of the main
 # conversation; no tool call, no thinking), each cut, newest last
 _rotate_answers() {
@@ -80,6 +91,8 @@ rotate_handover_write() {
     _rotate_own_checkpoint "$3" | _rotate_part "$_ROTATE_CAP_CHECKPOINT"
     printf '\n## c. the tree\n'
     _rotate_git "$4" "$5" | _rotate_part "$_ROTATE_CAP_GIT"
+    printf '\n### the uncommitted diff (git diff, then git diff --cached)\n'
+    _rotate_diff "$4" | _rotate_part "$_ROTATE_CAP_DIFF"
     printf '\n## d. your last answers, newest last\n'
     _rotate_answers "$6" | _hook_tail_cap "$_ROTATE_CAP_ANSWERS"
     printf '\n\n## e. paths\n'
@@ -94,7 +107,7 @@ rotate_session_handover() {
   local pending="$HOOK_RUN/memory/handover.pending" file="$HOOK_RUN/memory/handover.md"
   [ "$HOOK_SOURCE" = "startup" ] && [ -e "$pending" ] && [ -r "$file" ] || return 0
   /bin/rm -f "$pending" 2>/dev/null || true
-  hook_context "[wolfmux] This is a fresh conversation for the same task: wolfmux replaced the full one and wrote this hand-over ($file). The work in your tree, committed or not, is yours to continue. Read it, then go on from where it stops; do not start over.
+  hook_context "[wolfmux] This is a fresh conversation for the same task: wolfmux replaced the full one and wrote this hand-over ($file). Your task is already claimed and in progress: do not claim it again. The tree state below (commits, status, the uncommitted diff) is current as of the rotation and the work in it, committed or not, is yours: continue from it, do not start over and do not re-check what it already says.
 
 $(/bin/cat "$file" 2>/dev/null)"
 }
