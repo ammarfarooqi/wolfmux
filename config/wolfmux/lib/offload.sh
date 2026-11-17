@@ -14,12 +14,15 @@
 # Settings (environment or ~/.config/wolfmux/config):
 #   WOLFMUX_OFFLOAD       on | off      off: every output reaches the model as it is
 #   WOLFMUX_OFFLOAD_MIN   characters    an output longer than this is shortened (default 4000)
+#   WOLFMUX_OFFLOAD_LOG_MAX bytes       a log longer than this keeps its head and its tail when the
+#                                       command ends, and says how much was left out (default 50 MB)
 #
 # Rule, as for every hook: nothing here may fail or delay an agent. When the log cannot be
 # written the output goes through unchanged.
 
 WOLFMUX_OFFLOAD="${WOLFMUX_OFFLOAD:-on}"
 WOLFMUX_OFFLOAD_MIN="${WOLFMUX_OFFLOAD_MIN:-4000}"
+WOLFMUX_OFFLOAD_LOG_MAX="${WOLFMUX_OFFLOAD_LOG_MAX:-52428800}" # bytes one log may keep (50 MB)
 WOLFMUX_OFFLOAD_HEAD=40     # lines kept from the start
 WOLFMUX_OFFLOAD_TAIL=40     # lines kept from the end
 WOLFMUX_OFFLOAD_MATCHES=60  # lines of the cut middle that match the pattern, at most
@@ -56,6 +59,38 @@ offload_prune() {
     while IFS= read -r f; do /bin/rm -f "./$f"; done) 2>/dev/null || true
 }
 
+# offload_log_max: the cap as a number (a bad value falls back to the default)
+offload_log_max() {
+  case "$WOLFMUX_OFFLOAD_LOG_MAX" in "" | *[!0-9]*) printf '52428800\n' ;; *) printf '%s\n' "$WOLFMUX_OFFLOAD_LOG_MAX" ;; esac
+}
+
+# offload_cap_log <log>: when the log is over the cap, keeps its first and last half-cap bytes
+# with a marker line between, and sets OFFLOAD_LEFT_OUT to the bytes dropped (0 when nothing was).
+# Runs when the command has ended (a log is plain data by then): the command writes straight to
+# the file, so it is neither slowed nor killed, and its exit code is untouched. The disk a runaway
+# command fills while it runs is not bounded by this, only what stays afterwards.
+offload_cap_log() {
+  local log="$1" max size half tmp
+  OFFLOAD_LEFT_OUT=0
+  max="$(offload_log_max)"
+  [ "$max" -gt 0 ] || return 0
+  size="$(/usr/bin/wc -c <"$log" 2>/dev/null | /usr/bin/tr -d ' ')"
+  case "$size" in "" | *[!0-9]*) return 0 ;; esac
+  [ "$size" -gt "$max" ] || return 0
+  half=$((max / 2))
+  tmp="$log.cap"
+  {
+    /usr/bin/head -c "$half" "$log"
+    printf '\n[wolfmux] ... %d bytes left out of the log here (WOLFMUX_OFFLOAD_LOG_MAX=%d); the last %d bytes follow:\n' \
+      $((size - 2 * half)) "$max" "$half"
+    /usr/bin/tail -c "$half" "$log"
+  } >"$tmp" 2>/dev/null && /bin/mv -f "$tmp" "$log" 2>/dev/null || {
+    /bin/rm -f "$tmp" 2>/dev/null
+    return 0
+  }
+  OFFLOAD_LEFT_OUT=$((size - 2 * half))
+}
+
 # offload_summary <log> [<exit-code>]: the shortened form of the text in <log>, to stdout.
 # One awk pass: it keeps the head, a ring of the last lines, and the matching lines between.
 offload_summary() {
@@ -63,7 +98,7 @@ offload_summary() {
   chars="$(LC_ALL=en_US.UTF-8 /usr/bin/wc -m <"$log" 2>/dev/null | /usr/bin/tr -d ' ')"
   LC_ALL=C /usr/bin/awk -v head="$WOLFMUX_OFFLOAD_HEAD" -v tail="$WOLFMUX_OFFLOAD_TAIL" \
     -v maxm="$WOLFMUX_OFFLOAD_MATCHES" -v linemax="$WOLFMUX_OFFLOAD_LINE_MAX" -v pat="$WOLFMUX_OFFLOAD_PATTERN" \
-    -v logpath="$log" -v chars="${chars:-?}" -v rc="$rc" '
+    -v logpath="$log" -v chars="${chars:-?}" -v rc="$rc" -v left="${OFFLOAD_LEFT_OUT:-0}" '
     function show(s) { if (length(s) > linemax) return substr(s, 1, linemax) " [line cut]"; return s }
     {
       if (NR <= head) { first[NR] = $0; next }
@@ -77,6 +112,7 @@ offload_summary() {
     END {
       n = NR
       printf "[wolfmux] long output shortened: %d lines, %s characters%s.\n", n, chars, (rc != "" ? ", exit code " rc : "")
+      if (left > 0) printf "[wolfmux] the log was over the size cap: %d bytes in the middle were left out of it (the counts above are of what is kept)\n", left
       printf "[wolfmux] full text: %s (search it with grep; do not cat it)\n", logpath
       for (i = 1; i <= n && i <= head; i++) print show(first[i])
       from = head + 1; to = n - tail
@@ -188,6 +224,7 @@ offload_finish() {
     /bin/cat "$log"
     /bin/rm -f "$log"
   else
+    offload_cap_log "$log"
     offload_summary "$log" "$rc"
   fi
 }
@@ -278,6 +315,7 @@ offload_post() {
     persisted="$(/usr/bin/tail -c +2 "$log")"
     /bin/cp "$persisted" "$log" 2>/dev/null || return 0
   fi
+  offload_cap_log "$log"
   printf '%s' "$input" | "$jq" -c --arg text "$(offload_summary "$log")" '
     {hookSpecificOutput: {hookEventName: "PostToolUse",
                           updatedToolOutput: (.tool_response + {stdout: $text, stderr: ""}
