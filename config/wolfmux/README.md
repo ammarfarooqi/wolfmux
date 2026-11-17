@@ -339,6 +339,10 @@ teamctl done <id> "commit <sha>; tests pass" --tests "pytest: 38 passed"
 teamctl note <id> "a detail worth keeping, for whoever reads this task next"
 teamctl close <id> -r "..." --failed      # lead: reject instead of accepting
 teamctl reopen <id> "why it needs another pass"     # lead: send a closed task back
+teamctl show <id> --report                # the full report of a done task (the lead's notice is short)
+teamctl ledger                            # open tasks, recent done ones, decisions; the lead gets it after a compaction
+teamctl decide "workers use flash, not glm53"       # lead: a decision that outlives a compaction
+teamctl decide --list                     teamctl decide --drop 2
 ```
 
 Status map: pending = open/unassigned · assigned = open+assignee · in_progress ·

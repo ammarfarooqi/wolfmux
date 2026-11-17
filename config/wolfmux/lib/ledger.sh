@@ -6,7 +6,7 @@
 #   reports   $PROJECT_STATE/reports/<task-id>.md   the whole report `teamctl done` builds, kept as
 #             a file beside the store (one place for both stores). The lead's mail names the path
 #             and stays under WOLFMUX_REPORT_NOTICE_MAX characters. A task done again after a
-#             reopen keeps its earlier reports as <task-id>.1.md, <task-id>.2.md (1 is the oldest).
+#             reopen keeps its earlier reports as <task-id>~1.md, <task-id>~2.md (1 is the oldest).
 #   decisions $STATE_DIR/decisions                  one line per decision the lead recorded with
 #             `teamctl decide`: "<UTC time><TAB><text>". At most WOLFMUX_DECISIONS_MAX, oldest leave
 #             first. A file on both stores, never beads or rows.
@@ -31,33 +31,38 @@ ledger_reports_dir() { printf '%s/reports\n' "$PROJECT_STATE"; }
 ledger_report_path() { printf '%s/%s.md\n' "$(ledger_reports_dir)" "$1"; }
 
 # ledger_report_save <task-id> <text>: writes the report, atomically. An earlier report of the
-# same task moves to the first free <task-id>.<n>.md first, so nothing of it is lost. Prints the
-# path. 1 when the directory cannot be written or the id is not one.
+# same task moves to the first free <task-id>~<n>.md first, so nothing of it is lost ("~" is not
+# in any task id: a Beads child X.1 is not X's first older report). Under a lock (mkdir), so two
+# `done` of one task at once do not overwrite one. Prints the path. 1 when the directory cannot
+# be written, the id is not one or the lock is not had.
 ledger_report_save() {
-  local id="$1" text="$2" dir file n=1 tmp
+  local id="$1" text="$2" dir file n=1 tmp rc=0
   valid_bead_id "$id" || return 1
   dir="$(ledger_reports_dir)"
   /bin/mkdir -p "$dir" 2>/dev/null || return 1
+  _inbox_lock_dir "$dir/.lock" || return 1
   file="$dir/$id.md"
-  if [ -e "$file" ]; then
-    while [ -e "$dir/$id.$n.md" ]; do n=$((n + 1)); done
-    /bin/mv -f "$file" "$dir/$id.$n.md" 2>/dev/null || return 1
-  fi
   tmp="$file.tmp.$$"
-  printf '%s\n' "$text" >"$tmp" 2>/dev/null || {
+  if [ -e "$file" ]; then
+    while [ -e "$dir/$id~$n.md" ]; do n=$((n + 1)); done
+    /bin/mv -f "$file" "$dir/$id~$n.md" 2>/dev/null || rc=1
+  fi
+  if [ "$rc" -eq 0 ] && printf '%s\n' "$text" >"$tmp" 2>/dev/null && /bin/mv -f "$tmp" "$file" 2>/dev/null; then
+    printf '%s\n' "$file"
+  else
     /bin/rm -f "$tmp"
-    return 1
-  }
-  /bin/mv -f "$tmp" "$file" 2>/dev/null || return 1
-  printf '%s\n' "$file"
+    rc=1
+  fi
+  /bin/rm -rf "$dir/.lock" 2>/dev/null || true
+  return "$rc"
 }
 
 # ledger_report_older <task-id>: the earlier reports of that task, oldest first, one path a line
 ledger_report_older() {
   local dir n=1
   dir="$(ledger_reports_dir)"
-  while [ -e "$dir/$1.$n.md" ]; do
-    printf '%s\n' "$dir/$1.$n.md"
+  while [ -e "$dir/$1~$n.md" ]; do
+    printf '%s\n' "$dir/$1~$n.md"
     n=$((n + 1))
   done
 }
@@ -78,29 +83,65 @@ _ledger_cut() {
 # ledger_report_notice <task-id> <identity> <title> <summary> <tests-line> <branch> <sha> <stat-line> <path>
 # The text the lead gets for one `teamctl done`, the body of the "Done:" message. Together with
 # the "[wolfmux mail] " _mail_render_bead puts before it, at most WOLFMUX_REPORT_NOTICE_MAX
-# characters: every fixed line is capped first, and the summary gets what is left, cut with a
-# marker that names where the rest is.
+# characters, whatever the fields are. The summary keeps at least WOLFMUX_REPORT_SUMMARY_MIN
+# characters: when the fixed lines leave less, the report path goes first (`teamctl show <id>
+# --report` reaches it), then the tests line is cut, then the diff stat and the tests line go,
+# then the branch is cut. A final cap holds the bound in any case. Characters, not bytes: under a
+# locale that is not UTF-8 it switches to one for its own counting, so a cut never splits one.
+WOLFMUX_REPORT_SUMMARY_MIN=120
 ledger_report_notice() {
   local id="$1" who="$2" title="$3" summary="$4" tests="$5" branch="$6" sha="$7" stat="$8" path="$9"
-  local head tail room
-  title="$(_hook_title "$title")"
-  head="DONE $id by $(_ledger_cut 60 "$who"): $(_ledger_cut "$WOLFMUX_LEDGER_TITLE" "$title")"
-  tail="$(_ledger_cut 120 "$(printf '%s' "$tests" | LC_ALL=C tr '\n\r\t' '   ')")
-branch: $(_ledger_cut 80 "$branch") at ${sha:-?}"
-  [ -z "$stat" ] || tail="$tail
-$(_ledger_cut 90 "${stat# }")"
-  tail="$tail
-full report: $(_ledger_cut 140 "$path")
-read it: teamctl show $id --report
-This item is already marked read and needs no reply."
-  # 15 = "[wolfmux mail] ", 2 = the newlines around the summary
-  room=$((WOLFMUX_REPORT_NOTICE_MAX - 15 - ${#head} - ${#tail} - 2))
-  [ "$room" -ge 20 ] || room=20
-  summary="$(printf '%s' "$summary" | LC_ALL=C /usr/bin/tr -d '\000-\010\013-\037\177')"
-  if [ "${#summary}" -gt "$room" ]; then
-    summary="${summary:0:$((room - 34))} [cut: the rest is in the report]"
+  local LC_ALL="${LC_ALL:-}" probe loc head read_l note_l tests_l branch_l stat_l path_l step room want out max
+  probe="$(printf '\303\251')"
+  if [ "${#probe}" -ne 1 ]; then
+    for loc in C.UTF-8 en_US.UTF-8 C.utf8; do
+      LC_ALL="$loc"
+      [ "${#probe}" -ne 1 ] || break
+    done
   fi
-  printf '%s\n%s\n%s' "$head" "$summary" "$tail"
+  max=$((WOLFMUX_REPORT_NOTICE_MAX - 15)) # 15 = "[wolfmux mail] "
+  title="$(_hook_title "$title")"
+  tests="$(printf '%s' "$tests" | LC_ALL=C tr '\n\r\t' '   ')"
+  summary="$(printf '%s' "$summary" | LC_ALL=C /usr/bin/tr -d '\000-\010\013-\037\177')"
+  head="DONE $id by $(_ledger_cut 60 "$who"): $(_ledger_cut "$WOLFMUX_LEDGER_TITLE" "$title")"
+  read_l="read it: teamctl show $id --report"
+  note_l="This item is already marked read and needs no reply."
+  # a summary that will be cut needs room for its marker (34) as well
+  want="${#summary}"
+  [ "$want" -le "$WOLFMUX_REPORT_SUMMARY_MIN" ] || want=$((WOLFMUX_REPORT_SUMMARY_MIN + 34))
+  for step in 0 1 2 3 4 5; do
+    tests_l="$(_ledger_cut 120 "$tests")"
+    branch_l="branch: $(_ledger_cut 80 "$branch") at $(_ledger_cut 12 "${sha:-?}")"
+    stat_l="$(_ledger_cut 90 "${stat# }")"
+    path_l="full report: $path"
+    [ "$step" -lt 1 ] || path_l=""
+    [ "$step" -lt 2 ] || tests_l="$(_ledger_cut 50 "$tests")"
+    [ "$step" -lt 3 ] || stat_l=""
+    [ "$step" -lt 4 ] || tests_l=""
+    [ "$step" -lt 5 ] || branch_l="branch: $(_ledger_cut 30 "$branch") at $(_ledger_cut 12 "${sha:-?}")"
+    out="$tests_l${branch_l:+
+$branch_l}${stat_l:+
+$stat_l}${path_l:+
+$path_l}
+$read_l
+$note_l"
+    # the lines, plus the newline after the head and after the summary
+    room=$((max - ${#head} - ${#out} - 2))
+    [ "$room" -lt "$want" ] || break
+  done
+  [ "$room" -ge 0 ] || room=0
+  if [ "${#summary}" -gt "$room" ]; then
+    if [ "$room" -ge 54 ]; then
+      summary="${summary:0:$((room - 34))} [cut: the rest is in the report]"
+    else
+      summary="${summary:0:$room}"
+    fi
+  fi
+  out="$head
+$summary
+$out"
+  [ "${#out}" -le "$max" ] || out="${out:0:$max}"
+  printf '%s' "$out"
 }
 
 # --- decisions ----------------------------------------------------------------------------
@@ -142,8 +183,9 @@ cmd_decide() {
       case "$drop" in '' | *[!0-9]* | 0*) die_usage "--drop needs the number of a decision, as teamctl decide --list shows it" ;; esac
       mode="drop"
       ;;
-    -*) die_usage "unknown option for decide: $1" ;;
     *)
+      # a text that starts with "-" is a text: after "--", or as the only argument
+      [ "${1:-}" != "--" ] || shift
       [ "$#" -eq 1 ] || die_usage 'usage: teamctl decide "<text>"   (one argument: quote the text)'
       text="$(printf '%s' "$1" | LC_ALL=C tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\010\013-\037\177')"
       text="$(printf '%s' "$text" | /usr/bin/sed -e 's/^ *//' -e 's/ *$//')"
@@ -161,12 +203,29 @@ cmd_decide() {
     return 0
   fi
   require_manager decide
+  # one writer at a time: two decisions at once both stay (mkdir lock, as the inbox has)
+  /bin/mkdir -p "${file%/*}" 2>/dev/null || die "could not write $(short_path "$file")"
+  _inbox_lock_dir "$file.lock" || die "the decisions are being written by someone else; try again"
+  local msg rc=0
+  msg="$(_ledger_decide_locked "$mode" "$file" "$drop" "$text")" || rc=$?
+  /bin/rm -rf "$file.lock" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || die "$msg"
+  say "$msg"
+}
+
+# _ledger_decide_locked <add|drop> <file> <n> <text>: the change itself, under the caller's lock;
+# prints what to say, or why not (exit 1)
+_ledger_decide_locked() {
+  local mode="$1" file="$2" drop="$3" text="$4" kept count
   if [ "$mode" = "drop" ]; then
     count="$( (/usr/bin/awk 'NF' "$file" 2>/dev/null || true) | /usr/bin/wc -l | tr -d ' ')"
-    [ "$drop" -le "${count:-0}" ] || die "no decision $drop; there are ${count:-0}: teamctl decide --list"
+    if [ "$drop" -gt "${count:-0}" ]; then
+      printf 'no decision %s; there are %s: teamctl decide --list' "$drop" "${count:-0}"
+      return 1
+    fi
     kept="$(/usr/bin/awk -v n="$drop" 'NF { i++; if (i != n) print }' "$file")"
-    _ledger_decisions_write "$kept" || die "could not write $(short_path "$file")"
-    say "dropped decision $drop"
+    _ledger_decisions_write "$kept" || { printf 'could not write %s' "$(short_path "$file")"; return 1; }
+    printf 'dropped decision %s' "$drop"
     return 0
   fi
   kept="$(/usr/bin/awk 'NF' "$file" 2>/dev/null || true)"
@@ -174,9 +233,9 @@ cmd_decide() {
 }$(now_iso)	$text"
   # at most WOLFMUX_DECISIONS_MAX: the oldest leave first
   kept="$(printf '%s\n' "$kept" | /usr/bin/tail -n "$WOLFMUX_DECISIONS_MAX")"
-  _ledger_decisions_write "$kept" || die "could not write $(short_path "$file")"
+  _ledger_decisions_write "$kept" || { printf 'could not write %s' "$(short_path "$file")"; return 1; }
   count="$(printf '%s\n' "$kept" | /usr/bin/wc -l | tr -d ' ')"
-  say "decision $count recorded"
+  printf 'decision %s recorded' "$count"
 }
 
 # --- the ledger ---------------------------------------------------------------------------
@@ -215,6 +274,13 @@ _ledger_lines() {
   while IFS= read -r line; do lines+=("$line"); done
   total="${#lines[@]}"
   [ "$total" -gt 0 ] || return 0
+  # all of them when they fit; otherwise room for the "(N more: ...)" line as well
+  for line in "${lines[@]}"; do used=$((used + ${#line} + 1)); done
+  if [ "$used" -le "$budget" ]; then
+    printf '%s\n' "${lines[@]}"
+    return 0
+  fi
+  used=0
   budget=$((budget - ${#more} - 16))
   if [ "$keep" = "last" ]; then
     i=$((total - 1))
@@ -276,19 +342,17 @@ ledger_text() {
   open_t="open and in progress:"
   done_t="done since $(/bin/date -u -r "$cutoff" +%Y-%m-%dT%H:%MZ 2>/dev/null):"
   dec_t="decisions (oldest first):"
-  # Room: the header and the three section titles first. Decisions may take up to a third of
-  # what is left, done tasks a quarter, open work the rest (and whatever the others leave).
+  # Room: the header and the three section titles first. Decisions take what they need up to a
+  # third, done tasks what they need up to half of the rest; open work gets what is left and is
+  # the section that says "(N more: teamctl tasks)" (ADR-0040: the done rows and decisions are
+  # what a compacted lead cannot get back from one command).
   budget=$((WOLFMUX_LEDGER_MAX - ${#head} - ${#open_t} - ${#done_t} - ${#dec_t} - 12))
   dec_b=$((budget / 3))
-  [ "${#decisions}" -ge "$dec_b" ] || dec_b="${#decisions}"
-  done_b=$((budget / 4))
-  [ "${#done_rows}" -ge "$done_b" ] || done_b="${#done_rows}"
-  open_b=$((budget - dec_b - done_b))
-  open="$(printf '%s\n' "$open" | /usr/bin/awk 'NF' | _ledger_lines "$open_b" "teamctl tasks")"
-  done_b=$((budget - dec_b - ${#open}))
-  done_rows="$(printf '%s\n' "$done_rows" | /usr/bin/awk 'NF' | _ledger_lines "$done_b" "teamctl tasks --status closed")"
-  dec_b=$((budget - ${#open} - ${#done_rows}))
   decisions="$(printf '%s\n' "$decisions" | /usr/bin/awk 'NF' | _ledger_lines "$dec_b" "teamctl decide --list" last)"
+  done_b=$(((budget - ${#decisions} - 1) / 2))
+  done_rows="$(printf '%s\n' "$done_rows" | /usr/bin/awk 'NF' | _ledger_lines "$done_b" "teamctl tasks --status closed")"
+  open_b=$((budget - ${#decisions} - ${#done_rows} - 2))
+  open="$(printf '%s\n' "$open" | /usr/bin/awk 'NF' | _ledger_lines "$open_b" "teamctl tasks")"
   out="$head
 $open_t
 ${open:-(none)}

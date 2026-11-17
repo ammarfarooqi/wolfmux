@@ -116,6 +116,7 @@ cmd_deliver() {
     return 0
   fi
   mail_quiet_route "$identity" || return 0
+  payload="$(_mail_mark_done_notice "$payload")"
   # A message is never edited after it is written, but bd runs its update hook for the reply link
   # `--deps replies-to` adds right after the create, with the message still open: that is the
   # same message again (v1.25.0 handed every report twice, the second at the next tool call).
@@ -147,6 +148,17 @@ _mail_had_message() {
   return 1
 }
 
+# _mail_mark_done_notice <item-json>: the item with "wolfmux_done_notice": true when the command
+# that wrote it is cmd_done filing its notice (WOLFMUX_DONE_NOTICE, lib/tasks.sh); else as it is
+_mail_mark_done_notice() {
+  if [ -n "${WOLFMUX_DONE_NOTICE:-}" ]; then
+    printf '%s' "$1" | "$JQ_BIN" -c 'if (.issue_type // "") == "message" then . + {wolfmux_done_notice: true} else . end' 2>/dev/null ||
+      printf '%s' "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # mail_announce <event: create|update|close> <item-json> <actor-identity> — the native
 # store's own delivery, called by every teamctl command that just wrote it. Applies the same
 # rule hooks/beads-nudge applies for Beads: the assignee when someone else put or changed
@@ -157,6 +169,7 @@ mail_announce() {
   local event="$1" item="$2" actor="$3" assignee type status lead target
   [ "$(store_kind)" = "native" ] || return 0
   [ -n "$item" ] || return 0
+  item="$(_mail_mark_done_notice "$item")"
   assignee="$(printf '%s' "$item" | "$JQ_BIN" -r '.assignee // ""' 2>/dev/null)"
   type="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)"
   status="$(printf '%s' "$item" | "$JQ_BIN" -r '.status // ""' 2>/dev/null)"
@@ -245,7 +258,10 @@ _mail_render_bead() {
   fi
   # A worker's Done report (lib/tasks.sh cmd_done, ADR-0040): the body is already the whole short
   # notice, which names the report file and says it needs no reply; nothing is added around it.
-  if [ "$type" = "message" ] && [ "${title#Done: }" != "$title" ] && [ "${desc#DONE }" != "$desc" ]; then
+  # Only with the mark cmd_done sets (WOLFMUX_DONE_NOTICE), never on text alone: a message any
+  # worker writes as "Done: ..." / "DONE ..." gets its heading and reply hint like any other.
+  if [ "$type" = "message" ] && [ "${title#Done: }" != "$title" ] && [ "${desc#DONE }" != "$desc" ] &&
+    [ "$(printf '%s' "$json" | "$JQ_BIN" -r '.wolfmux_done_notice // false' 2>/dev/null)" = "true" ]; then
     printf '[wolfmux mail] %s' "$(_mail_sanitize_body "$desc" "$id")"
     return 0
   fi
