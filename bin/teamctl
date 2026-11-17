@@ -138,6 +138,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
     teamctl restart <role> [--continue] [--resume <session-id>] [--model <model>]    its own conversation, or the one you name;
                                                       on its recorded model, or the one --model records
                                                       (ids: teamctl status --json | jq -r '.agents[].session_id')
+    teamctl rotate <role> [--reason <text>] [--now]   a worker's fresh conversation in the same worktree and branch,
+                                                      with a hand-over wolfmux writes (run/<role>/memory/handover.md);
+                                                      waits for its turn end up to WOLFMUX_ROTATE_WAIT s (--now: not).
+                                                      A worker may rotate itself. Policy worker-rotation (ADR-0039)
     teamctl nudge <role>|--all [--id <bead-id>] [--quiet]    one fixed notification line in a pane
                                                       (--quiet: nobody to notify is not an error; the Beads hook uses it)
   Messages for you  agents write to you with teamctl send human "<subject>" "<body>" (on a Beads

@@ -51,6 +51,10 @@
 #                                           the agent sees a shortened form with the path
 #                                           (lib/offload.sh, ADR-0036), lead and workers alike. Off:
 #                                           not one hook entry of it is registered.
+#   worker-rotation     off | ask | auto    DEFAULT auto. A worker with a task in_progress that ends a
+#                                           turn at or past its rotate threshold, or thrashes, gets a
+#                                           fresh conversation with a hand-over (lib/rotate.sh,
+#                                           ADR-0039). ask: the lead is sent the command. off: told only.
 #   branch-template     <template>          how this team names its workers' branches, with the
 #                                           placeholders {team} {role} {ts} {ticket}. Empty = the
 #                                           built-in shape (lib/worktree.sh). The only key whose
@@ -926,6 +930,7 @@ cmd_policy() {
     say "  auto-prune          $(policy_get auto-prune)      (on|off)          sweep a lane's build output as soon as it is parked (protect one: teamctl keep <role>)"
     say "  auto-reclaim        $(policy_get auto-reclaim)      (on|off)          take a parked lane off the books once its task is closed and its work is all in main (protect one: teamctl keep <role>)"
     say "  output-offload      $(policy_get output-offload)      (on|off)          a long Bash output goes to a log; the agent sees head, tail, failure lines and the path"
+    say "  worker-rotation     $(policy_get worker-rotation)    (off|ask|auto)    a worker near its limit gets a fresh conversation with a hand-over at its turn end (ask: you get the command)"
     template="$(policy_get branch-template)"
     if [ -n "$template" ]; then
       say "  branch-template     $template     how this team names its workers' branches"
