@@ -2598,6 +2598,20 @@ edited `lib/calc.sh` 12 s and 2 requests after the rotation and closed the task 
 passed, 0 failed). Another run at 55% crossed only at the task's end: no task in progress, one lead
 message, `memory/rotate-declined`, no rotation. One run each, Haiku, a toy task.
 
+After the release review (Riley, at 55af571; ADR-0039, "After the release review"). HIGH: a worker
+could restart the lead or any role with `ROTATE_ACTING=1 teamctl restart <role>`, or by typing the
+internal `teamctl _rotate-run` or `_rotate-auto`. `main()` now unsets every in-process permission and
+who-did-what variable first (13, named in the ADR; `CALLER_RESOLVED=1` with an empty `CALLER_ROLE` was a
+third door to the same hole), the restart permission is a variable of the restarting subshell only,
+`rotate_run` refuses the lead, and the internal commands refuse (77) any caller but the rotated role
+itself and any run whose `rotate.lock` does not hold the token the taker handed over. MEDIUM: a stale lock
+with a leftover `rotate-due` no longer silences the Stop hooks (both go at the next Stop); a failed
+restart takes back `handover.pending`, its `rotated` line and `rotate-due`, and on the automatic and the
+self path tells the lead once ("rotation failed", the log line, the context figure, the retry command).
+LOW: a rotation removes the lock only while it holds its own token; the loop guard holds for a worker
+rotating itself. Checks: `tests/rotate.sh` 76 (17 new, each seen red first; the failed restart is made
+with a record whose working directory is gone).
+
 ## 48. A lead that stays small (v1.26.0, ADR-0040)
 
 The lead's conversation is the one that cannot be thrown away, and a worker's report reached it
