@@ -226,7 +226,7 @@ check "SessionStart after a compaction records what it kept (postTokens of the l
 printf '46\n' >"$RUN_W12/calls"
 compacted >/dev/null
 check "a second one 6 tool calls later: ONE message to the lead, with the limit, the window, the first request, what was kept and the room left (67000 - 54000 - 37000)" \
-  'poll_bead lead "[.[] | select(.title == \"w12: compacted twice within 6 tool calls\")] | length == 1" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"w12: compacted twice\"))][0].description | contains(\"67000 tokens of a limit of 67000\") and contains(\"window 100000\") and contains(\"54000\") and contains(\"kept by this compaction: 37000\") and contains(\"about -24000 tokens\") and contains(\"teamctl restart w12\")"'
+  'poll_bead lead "[.[] | select(.title == \"w12: compacted twice within 6 tool calls\")] | length == 1" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"w12: compacted twice\"))][0].description | contains(\"67000 tokens of a limit of 67000\") and contains(\"window 100000\") and contains(\"54000\") and contains(\"kept by this compaction: 37000\") and contains(\"about -24000 tokens\") and contains(\"teamctl rotate w12\")"'
 check "the team keeps the LARGEST kept part it saw (37000), since a window is made from it" '[ "$(cut -d" " -f2 "$STATE_OF_RUN/context/worker")" = 37000 ]'
 printf '49\n' >"$RUN_W12/calls"
 compacted >/dev/null

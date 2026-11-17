@@ -127,6 +127,15 @@ check "the new conversation's SessionStart carries it, with the one line, first"
 check "delivered once: a second startup, a compaction and a resume do not show it again" \
   '! { hook w1 SessionStart "{\"source\":\"startup\"}"; hook w1 SessionStart "{\"source\":\"compact\"}"; hook w1 SessionStart "{\"source\":\"resume\"}"; } | ctx_of | grep -q "fresh conversation for the same task"'
 
+printf 'busy\n' >"$R1/state"
+BEFORE="$(record w1 session_id)"
+(WOLFMUX_ROTATE_WAIT=20 teamctl rotate w1 --reason "waited" >"$WORK/wait.out" 2>&1; echo "$?" >"$WORK/wait.rc") &
+sleep 1.5
+check "the default waits for the turn end: nothing yet while the turn is busy" '[ ! -e "$WORK/wait.rc" ] && [ "$(record w1 session_id)" = "$BEFORE" ]'
+printf 'idle\n' >"$R1/state"
+check "the default waits for the turn end: rotated once the agent is idle" \
+  'poll "[ -e \"$WORK/wait.rc\" ]" && [ "$(cat "$WORK/wait.rc")" = 0 ] && [ "$(record w1 session_id)" != "$BEFORE" ] && grep -q "reason: waited" "$R1/memory/handover.md"'
+
 echo "== policy worker-rotation at Stop =="
 stop_at() { # <role> <percent> <session> [agent_id]
   "$JQ" -n --argjson p "$2" '{used: 1, limit: 2, percent: $p}' >"$(rundir "$1")/memory/ctx"
@@ -164,6 +173,11 @@ check "no task in_progress: no rotation" 'sleep 2; [ "$(record w2 session_id)" =
 stop_at w1 95 "$AUTO"
 check "the lock: a Stop while a rotation holds it starts no second one" 'sleep 2; [ "$(record w1 session_id)" = "$AUTO" ]'
 /bin/rmdir "$R1/rotate.lock"
+/bin/rm -f "$R1/memory/rotate-fired" "$R1/memory/rotated"
+: >"$R1/memory/thrash-told"
+stop_at w1 40 "$AUTO"
+check "the thrash event (two compactions within the tool-call window) rotates at the turn end, under the threshold" \
+  'poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]" && grep -q "reason: compacted twice" "$R1/memory/handover.md"'
 
 echo "== restart --continue wakes an agent with a task in_progress =="
 check "a notice 'continue task <id>' is filed through the inbox" \
