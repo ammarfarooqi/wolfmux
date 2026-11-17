@@ -414,16 +414,18 @@ check "a worker's own tenth call does not look (only the lead's)" \
 teamctl stop stl >/dev/null 2>&1
 
 echo "== a compaction nobody warned of (v1.26.0): the first hook after it says how far the last request jumped =="
-RUN_W16="$(run_of w16)"
-post16() { hook_json transcript_path="$TRANS" | TEAM_ROLE=w16 WOLFMUX_RUN_DIR="$RUN_W16" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook PostToolUse; }
-compacted16() { hook_json source=compact transcript_path="$TRANS" | TEAM_ROLE=w16 BEADS_ACTOR=w16 WOLFMUX_RUN_DIR="$RUN_W16" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook SessionStart; }
+# Policy worker-rotation off for w26: under auto a thrashing worker is rotated and the lead gets the rotation's
+# notice, not the thrash message these checks read (ADR-0039). Its own role name: w16 is used further up.
+RUN_W26="$(run_of w26)"
+post26() { hook_json transcript_path="$TRANS" | TEAM_ROLE=w26 WOLFMUX_WORKER_ROTATION=off WOLFMUX_RUN_DIR="$RUN_W26" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook PostToolUse; }
+compacted26() { hook_json source=compact transcript_path="$TRANS" | TEAM_ROLE=w26 WOLFMUX_WORKER_ROTATION=off BEADS_ACTOR=w26 WOLFMUX_RUN_DIR="$RUN_W26" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook SessionStart; }
 usage_line 60000 >"$TRANS" # 35%: far from a warning
-force_through "" "$RUN_W16"; post16 >/dev/null
+force_through "" "$RUN_W26"; post26 >/dev/null
 { usage_line 60000; boundary 150000 20000; } >"$TRANS"
-printf '40\n' >"$RUN_W16/calls"
-compacted16 >/dev/null
+printf '40\n' >"$RUN_W26/calls"
+compacted26 >/dev/null
 check "the compaction followed a figure of 60000 and no warning: the very next tool call reaches the watch (near file) and the hook says 150000 - 60000 = 90000, once" \
-  '[ -e "$RUN_W16/near" ] && usage_line 20000 >"$TRANS" && out="$(post16)" && printf "%s" "$out" | grep -q "compacted without a warning: the last request added 90000 tokens" && [ -z "$(post16)" ] && [ ! -e "$RUN_W16/memory/unwarned" ]'
+  '[ -e "$RUN_W26/near" ] && usage_line 20000 >"$TRANS" && out="$(post26)" && printf "%s" "$out" | grep -q "compacted without a warning: the last request added 90000 tokens" && [ -z "$(post26)" ] && [ ! -e "$RUN_W26/memory/unwarned" ]'
 RUN_W17="$(run_of w17)"
 compacted17() { hook_json source=compact transcript_path="$TRANS" | TEAM_ROLE=w17 BEADS_ACTOR=w17 WOLFMUX_RUN_DIR="$RUN_W17" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook SessionStart; }
 usage_line 110000 >"$TRANS" # 65%: the warning was given
@@ -432,12 +434,12 @@ force_through "" "$RUN_W17"; hook_json transcript_path="$TRANS" | TEAM_ROLE=w17 
 compacted17 >/dev/null
 check "a conversation that was warned (65% announced): the compaction says nothing of the kind" \
   '[ ! -e "$RUN_W17/memory/unwarned" ] && usage_line 20000 >"$TRANS" && force_through "" "$RUN_W17" && ! hook_json transcript_path="$TRANS" | TEAM_ROLE=w17 WOLFMUX_RUN_DIR="$RUN_W17" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook PostToolUse | grep -q "without a warning"'
-usage_line 20000 >"$TRANS"; force_through "" "$RUN_W16"; post16 >/dev/null
+usage_line 20000 >"$TRANS"; force_through "" "$RUN_W26"; post26 >/dev/null
 { usage_line 20000; boundary 150000 20000; boundary 130000 25000; } >"$TRANS"
-printf '45\n' >"$RUN_W16/calls"
-compacted16 >/dev/null
+printf '45\n' >"$RUN_W26/calls"
+compacted26 >/dev/null
 check "two compactions 5 tool calls apart, the second unwarned: the lead's message carries the line too (130000 - 20000)" \
-  'poll_bead lead "[.[] | select(.title == \"w16: compacted twice within 5 tool calls\")] | length == 1" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"w16: compacted twice\"))][0].description | contains(\"compacted without a warning: the last request added 110000 tokens\")"'
+  'poll_bead lead "[.[] | select(.title == \"w26: compacted twice within 5 tool calls\")] | length == 1" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"w26: compacted twice\"))][0].description | contains(\"compacted without a warning: the last request added 110000 tokens\")"'
 
 echo ""
 echo "$passed passed, $failed failed"

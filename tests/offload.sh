@@ -135,7 +135,13 @@ check "syntax error (bash): the message does not carry the wrapper's code" "! gr
 check "syntax error (bash): the whole message is short (under 600 characters)" "[ \$(wc -c <$WORK/syn/out) -lt 600 ]"
 check "syntax error (bash): the message still shows the user's command" "grep -q 'echo (bad' $WORK/syn/out"
 check "syntax error (bash): same exit code as unwrapped ($(cat $WORK/synp/rc))" "[ \"\$(cat $WORK/syn/rc)\" = \"\$(cat $WORK/synp/rc)\" ]"
-check "the line put in front of a command is short (under 400 characters with this path)" "[ \${#syn} -lt \$((400 + 5)) ]"
+# The length of the line is the length of its paths plus a constant, so the check is on its shape, not on a
+# number that a long checkout path would break.
+only_sources() {
+  case "$1" in "[ -r '"*"/offload-wrap.sh' ] && . '"*"/offload-wrap.sh' '"*"'; "*) ;; *) return 1 ;; esac
+  case "$1" in *trap* | *__wm_fin*) return 1 ;; esac
+}
+check "the line put in front of a command only sources offload-wrap.sh: no trap and no function for a syntax error to quote" 'only_sources "$syn"'
 echo "== a long output"
 long_cmd='seq 1 300000; echo "not ok 17 - the middle failure"; seq 300001 750000; echo "FAIL tests/x.sh" >&2; exit 1'
 run_as_cli "$WORK/pl" "$long_cmd"
