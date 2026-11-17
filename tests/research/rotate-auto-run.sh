@@ -96,7 +96,15 @@ while [ "$(/bin/date +%s)" -lt "$deadline" ]; do
   sleep 0.5
 done
 t_rot="$(python3 -c 'import time; print(time.time())')"
+# rotated_from is set BEFORE the restart, so session_id still holds the old id here: wait (60 s) for the new one.
 new_sid="$(rec session_id)"
+if [ -n "$(rec rotated_from)" ]; then
+  for _ in $(seq 1 120); do
+    new_sid="$(rec session_id)"
+    [ -n "$new_sid" ] && [ "$new_sid" != "$old_sid" ] && break
+    sleep 0.5
+  done
+fi
 if [ -z "$(rec rotated_from)" ]; then log "no rotation within ${ROT_MAX:-900} s"; else log "rotated: $old_sid -> $new_sid"; fi
 # The run directory exists once the worker's hooks have run; looked up now, not at the start.
 run=""
