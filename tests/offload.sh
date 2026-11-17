@@ -294,6 +294,8 @@ seq 1 3000 >"$WORK/big.txt"
 check "short result: no answer" "[ -z \"\$(post_json 'echo hi' hi | post)\" ]"
 check "long result: replaced by the Bash result OBJECT with the shortened form" "post_json 'cat x' \"\$(cat $WORK/big.txt)\" | post | jq -e '.hookSpecificOutput.updatedToolOutput | (.stdout | startswith(\"[wolfmux] long output shortened: 3000 lines\")) and .stderr == \"\" and .interrupted == false'"
 check "above 30k the CLI's persisted file is the full text" "seq 1 60000 >$WORK/persisted.txt; post_json 'seq' \"\$(head -c 30000 $WORK/persisted.txt)\" $WORK/persisted.txt | post | jq -e '(.hookSpecificOutput.updatedToolOutput | has(\"persistedOutputPath\") | not) and (.hookSpecificOutput.updatedToolOutput.stdout | contains(\"60000 lines\"))'"
+check "a command that only names offload-wrap.sh (grep -c . <path>) IS wrapped by PreToolUse" "[ -n \"\$(hook_json \"grep -c . $WOLFMUX_HOME/lib/offload-wrap.sh\" | $REPO/bin/teamctl _offload-pre)\" ]"
+check "a long result of a command that only names offload-wrap.sh IS shortened by PostToolUse" "post_json \"grep -c . $WOLFMUX_HOME/lib/offload-wrap.sh\" \"\$(cat $WORK/big.txt)\" | post | jq -e '.hookSpecificOutput.updatedToolOutput.stdout | startswith(\"[wolfmux] long output shortened\")'"
 check "a wrapped command's result is not shortened twice" "[ -z \"\$(post_json \"\$(rewritten 'cat x')\" \"\$(cat $WORK/big.txt)\" | post)\" ]"
 check "safety net off (not in the settings): no answer, nothing read" "[ -z \"\$(post_json 'cat x' \"\$(cat $WORK/big.txt)\" | $REPO/bin/teamctl _hook PostToolUse)\" ]"
 

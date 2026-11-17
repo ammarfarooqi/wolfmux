@@ -160,7 +160,9 @@ offload_summary() {
 # the backstop. Keeping both traps (a `trap` function that chains them) was not tried: the
 # semantics differ between bash and zsh, and a word match is plain and safe.
 
-WOLFMUX_OFFLOAD_MARK="offload-wrap.sh" # the file the line sources; also how a wrapped command is recognised
+# the fixed middle of the line offload_make_line writes (the sourcing form, not the file name, so a
+# command that merely names offload-wrap.sh is still wrapped); also how a wrapped command is recognised
+WOLFMUX_OFFLOAD_MARK="/offload-wrap.sh' ] && . '"
 # a command matching this (ERE, also used by jq) is never wrapped
 WOLFMUX_OFFLOAD_SKIP='(^|[^A-Za-z0-9_-])(exec|trap)([^A-Za-z0-9_-]|$)'
 
