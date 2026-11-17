@@ -186,7 +186,13 @@ cmd_rotate() {
     require_manager rotate "$role"
   fi
   by="$(if [ -n "$CALLER_ROLE" ]; then team_identity "$TEAM" "$CALLER_ROLE"; else printf 'operator'; fi)"
-  rotate_run "$role" "${reason:-asked by $by}" "$by" "$now" ""
+  local dir rc=0
+  dir="$(run_dir_ensure "$role")"
+  /bin/mkdir "$dir/rotate.lock" 2>/dev/null || die "a rotation of '$role' is already under way ($dir/rotate.lock)"
+  # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
+  (ROTATE_HAVE_LOCK=1 rotate_run "$role" "${reason:-asked by $by}" "$by" "$now" "") || rc=$?
+  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+  return "$rc"
 }
 
 # cmd_rotate_auto <role> <reason> <session> - internal (`teamctl _rotate-auto`), detached from a
@@ -196,8 +202,14 @@ cmd_rotate_auto() {
   require_tools
   load_project
   dir="$(run_dir "$role")"
-  # shellcheck disable=SC2064
-  trap "/bin/rm -rf '$dir/rotate.lock'" EXIT
+  # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
+  (_rotate_auto_body "$role" "$reason")
+  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+}
+
+_rotate_auto_body() {
+  local role="$1" reason="$2" dir policy task lead
+  dir="$(run_dir "$role")"
   reg_exists "$role" || return 0
   [ "$(reg_field "$role" family)" != "codex" ] || return 0
   task="$(memory_store_inprogress_task "$(team_identity "$TEAM" "$role")")" || task=""
@@ -213,20 +225,14 @@ teamctl rotate $role : wolfmux writes the hand-over, the task gets a fresh conve
       return 0
       ;;
   esac
-  ROTATE_HAVE_LOCK=1 rotate_run "$role" "$reason" "wolfmux (policy worker-rotation auto)" 0 "$task"
+  rotate_run "$role" "$reason" "wolfmux (policy worker-rotation auto)" 0 "$task"
 }
 
 # rotate_run <role> <reason> <by> <now 0|1> [<task-json>]
 rotate_run() {
-  local role="$1" reason="$2" by="$3" now="$4" task="${5:-}" dir lock workdir old_session transcript file old_fig new_fig lead
+  local role="$1" reason="$2" by="$3" now="$4" task="${5:-}" dir workdir old_session transcript file old_fig new_fig lead
   dir="$(run_dir_ensure "$role")"
-  lock="$dir/rotate.lock"
   [ "$(reg_field "$role" family)" != "codex" ] || die "teamctl rotate is for Claude Code agents in this release; '$role' runs Codex (restart it: teamctl restart $role)"
-  if [ -z "${ROTATE_HAVE_LOCK:-}" ]; then
-    /bin/mkdir "$lock" 2>/dev/null || die "a rotation of '$role' is already under way ($lock)"
-    # shellcheck disable=SC2064
-    trap "/bin/rm -rf '$lock'" EXIT
-  fi
   if [ "$now" -eq 0 ] && ! _rotate_wait_idle "$dir" "$WOLFMUX_ROTATE_WAIT"; then
     die "'$role' did not end its turn within ${WOLFMUX_ROTATE_WAIT}s (WOLFMUX_ROTATE_WAIT): not rotated. To rotate it in the middle of its turn: teamctl rotate $role --now"
   fi

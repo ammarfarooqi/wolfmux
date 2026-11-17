@@ -40,6 +40,7 @@ check() { # <description> <command string>, in a subshell
   fi
 }
 cleanup() {
+  if [ -n "${KEEP:-}" ]; then echo "kept $WORK"; return 0; fi
   tmux -L "$WOLFMUX_TMUX_SOCKET" kill-server >/dev/null 2>&1
   /bin/rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$WOLFMUX_TMUX_SOCKET"
   /bin/rm -rf "$WORK"
@@ -67,7 +68,7 @@ hook() { # <role> <event> <json>
   printf '%s' "$3" | TEAM_ROLE="$1" BEADS_ACTOR="$1" WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$(rundir "$1")" WOLFMUX_MODEL=glm53 teamctl _hook "$2"
 }
 ctx_of() { "$JQ" -r '[.. | objects | .additionalContext? // empty] | join("\n")' 2>/dev/null; }
-lead_msgs() { teamctl mail --json 2>/dev/null | "$JQ" -r '.. | objects | select(.title? != null) | .title' 2>/dev/null; }
+lmail() { BEADS_ACTOR=lead WOLFMUX_IDENTITY=lead teamctl mail 2>/dev/null; }
 
 echo "== the hand-over: order and caps (rotate_handover_write) =="
 HO="$WORK/ho"
@@ -119,7 +120,7 @@ check "the task stays in_progress and assigned" 'teamctl tasks --all --status in
 check "the hand-over carries the task, the uncommitted file and the reason" \
   'grep -q "Build the thing" "$R1/memory/handover.md" && grep -q "work.txt" "$R1/memory/handover.md" && grep -q "reason: test reason" "$R1/memory/handover.md"'
 check "one notice to the lead (the operator asked), with the hand-over path" \
-  'poll "teamctl show \$(teamctl mail --json 2>/dev/null | $JQ -r \"[.. | objects | select(.title? // \\\"\\\" | startswith(\\\"w1: rotated\\\")) | .id][0]\") | grep -q handover.md"'
+  'poll "lmail | grep -q \"w1: rotated\"" && lmail | grep -q "handover.md"'
 S1="$(hook w1 SessionStart '{"source":"startup"}' | ctx_of)"
 check "the new conversation's SessionStart carries it, with the one line, first" \
   'printf "%s" "$S1" | head -1 | grep -q "fresh conversation for the same task" && printf "%s" "$S1" | grep -q "Build the thing"'
@@ -144,7 +145,7 @@ check "policy off: no rotation" 'sleep 2; [ "$(record w1 session_id)" = "$CUR" ]
 teamctl policy worker-rotation ask >/dev/null 2>&1
 stop_at w1 85 "$CUR"
 check "policy ask: no rotation, one message to the lead with the exact command" \
-  'poll "teamctl mail --json | grep -q \"teamctl rotate w1\"" && [ "$(record w1 session_id)" = "$CUR" ]'
+  'poll "lmail | grep -q \"teamctl rotate w1\"" && [ "$(record w1 session_id)" = "$CUR" ]'
 /bin/rm -f "$R1/memory/rotate-fired"
 teamctl policy worker-rotation auto >/dev/null 2>&1
 printf 'idle\n' >"$R1/state"
@@ -153,7 +154,7 @@ check "policy auto at 85%: rotated at the turn end, without asking the agent" 'p
 AUTO="$(record w1 session_id)"
 stop_at w1 90 "$AUTO"
 check "the fresh conversation past the threshold at its first Stop is not rotated again; the lead gets the context message" \
-  'sleep 2; [ "$(record w1 session_id)" = "$AUTO" ] && poll "teamctl mail --json | grep -q \"w1: context at 90%\""'
+  'sleep 2; [ "$(record w1 session_id)" = "$AUTO" ] && poll "lmail | grep -q \"w1: context at 90%\""'
 R2="$(rundir w2)"
 CUR2="$(record w2 session_id)"
 stop_at w2 95 "$CUR2"
