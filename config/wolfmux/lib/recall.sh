@@ -117,7 +117,7 @@ _memory_session_start() {
   esac
   case "$HOOK_SOURCE" in
     # A new conversation: what the last one measured is not this one's.
-    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" "$HOOK_RUN/memory/rotate-fired" "$HOOK_RUN/memory/ctx" "$HOOK_RUN/memory/below-seen" "$HOOK_RUN/memory/rotate-declined" 2>/dev/null || true ;;
+    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" "$HOOK_RUN/memory/rotate-fired" "$HOOK_RUN/memory/ctx" "$HOOK_RUN/memory/below-seen" "$HOOK_RUN/memory/rotate-declined" "$HOOK_RUN/memory/rotate-due" 2>/dev/null || true ;;
     compact) _memory_compacted || true ;;
   esac
   # A rotation's hand-over comes first, before the notes and the mail briefing (ADR-0039)
@@ -287,6 +287,7 @@ _memory_check_thresholds() {
     figure="$(_memory_figure "$used" "$limit")"
     if rotate_will_follow; then
       # The rotation's own notice tells the lead; this agent only has to end its turn.
+      : >"$HOOK_RUN/memory/rotate-due" 2>/dev/null || true
       hook_context "[wolfmux] Your conversation holds $figure of the limit its CLI compacts at. Do not start anything new.
 $ROTATE_END_TURN"
     else
@@ -367,6 +368,7 @@ EOF
     : >"$HOOK_RUN/memory/thrash-told" 2>/dev/null || true
     thrash=1
     if rotate_will_follow; then
+      : >"$HOOK_RUN/memory/rotate-due" 2>/dev/null || true
       # A rotation follows this turn end (rotate_at_stop): the agent ends its turn, and the rotation's
       # own notice tells the lead, not the thrash message.
       hook_context "[wolfmux] This conversation was compacted twice within $gap tool calls: it has no room left to work in.

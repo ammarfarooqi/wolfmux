@@ -89,8 +89,8 @@ H="$HO/handover.md"
 check "a 50,000-character task body: the whole file stays at most 12,000 characters" '[ "$(wc -m <"$H" | tr -d " ")" -le 12001 ]'
 check "the body is cut and says so, and the git part, the answers, the paths and the reason are all still there" \
   'grep -q "cut at 2500" "$H" && grep -q "step one done" "$H" && grep -q "^ M a" "$H" && grep -q "answer number 7" "$H" && grep -q "old transcript: $HO/t.jsonl" "$H" && grep -q "reason: a reason" "$H" && grep -q "asked by: the lead" "$H"'
-check "parts in order a, b, c, d, e, f" \
-  '[ "$(grep -o "^## [a-f]\." "$H" | tr -d "\n")" = "## a.## b.## c.## d.## e.## f." ]'
+check "parts in order a, b, c, d, f, e: the reason and who asked come before the paths, which are cut first" \
+  '[ "$(grep -o "^## [a-f]\." "$H" | tr -d "\n")" = "## a.## b.## c.## d.## f.## e." ]'
 check "part c carries the uncommitted diff itself, inside the 12,000" 'grep -q "^### the uncommitted diff" "$H" && grep -q "^+dirty" "$H"'
 BIGDIFF="$(printf 'line %s of a long change\n' $(seq 1 2000))"
 printf '%s\n' "$BIGDIFF" >"$HO/tree/b"
@@ -268,6 +268,38 @@ check "the thrash event under auto: the agent is told to end its turn; the lead 
   'printf "%s" "$OUT3" | grep -q "compacted twice within 4 tool calls" && printf "%s" "$OUT3" | grep -q "END YOUR TURN" && sleep 3 && ! lmail | grep -q "w1: compacted twice"'
 /bin/rm -f "$R1/memory/thrash-told"
 
+echo "== A3 review: at the Stop that starts a rotation, wolfmux's Stop hooks add nothing =="
+inbox_stop() { printf '{}' | env TEAM_ROLE="$1" BEADS_ACTOR="$1" WOLFMUX_RUN_DIR="$(rundir "$1")" WOLFMUX_TEAM=default WOLFMUX_INBOX_CLIENTS=0 WOLFMUX_INBOX_STOP_COOLDOWN=0 "$REPO/tests/in-pane" _inbox-stop; }
+AUTO="$(record w1 session_id)"
+/bin/rm -f "$R1/memory/warned" "$R1/memory/rotate-fired" "$R1/memory/below-seen" "$R1/memory/rotate-due" "$R1"/tasks/reminded-*
+usage_line 84000 >"$TR"
+post w1 "$AUTO" >/dev/null
+usage_line 142000 >"$TR"
+post w1 "$AUTO" >/dev/null
+check "the crossing under auto writes memory/rotate-due, for every Stop hook to see" '[ -e "$R1/memory/rotate-due" ]'
+WOLFMUX_NUDGE_TYPE=off teamctl send w1 "a late message" "for the fresh conversation" >/dev/null 2>&1
+sleep 1
+check "_inbox-stop says nothing while a rotation is due: the notice waits for the fresh conversation" '[ -z "$(inbox_stop w1)" ]'
+printf 'busy\n' >"$R1/state"
+SOUT="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/bin/teamctl" _hook Stop)"
+check "the Stop that starts the rotation adds no context (no task reminder), so the turn ends and it is rotated" \
+  '! printf "%s" "$SOUT" | grep -q "You are stopping while" && [ -z "$(printf "%s" "$SOUT" | ctx_of)" ] && poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]"'
+check "after the rotation the notice is still there for the fresh conversation, and rotate-due is gone" \
+  '[ ! -e "$R1/memory/rotate-due" ] && inbox_stop w1 | grep -q "a late message"'
+CUR2="$(record w2 session_id)"
+T3="$(teamctl task w2 "Third thing" -d "one step" 2>/dev/null | tail -1 | sed -E 's/^task ([^ ]+) ->.*/\1/')"
+TEAM_ROLE=w2 BEADS_ACTOR=w2 teamctl claim "$T3" >/dev/null 2>&1
+/bin/rm -f "$R2/memory/rotate-fired" "$R2/memory/rotated" "$R2/memory/rotate-declined"
+printf 'busy\n' >"$R2/state"
+ROTATED_BEFORE="$(lcount "w2: rotated")"
+stop_at w2 95 "$CUR2"
+printf 'busy\n' >"$R2/state" # the Stop hook wrote idle; the turn goes on (the old conversation finishes the task)
+sleep 1.5
+teamctl close "$T3" -r "finished in the old conversation" >/dev/null 2>&1
+printf 'idle\n' >"$R2/state"
+check "the task closed while the rotation waited for the turn end: not rotated, rotate-fired cleared, said in rotate.log, no message to the lead" \
+  'sleep 3; [ "$(record w2 session_id)" = "$CUR2" ] && [ ! -e "$R2/memory/rotate-fired" ] && [ ! -e "$R2/rotate.lock" ] && grep -q "no task in progress any more" "$R2/rotate.log" && [ "$(lcount "w2: rotated")" = "$ROTATED_BEFORE" ]'
+
 echo "== A3 finding 5: the rotating process outlives the pane it was started from =="
 PANE_OUT="$WORK/pane"
 /bin/mkdir -p "$PANE_OUT"
@@ -291,7 +323,9 @@ printf 'busy\n' >"$R1/state"
 SELF="$(TEAM_ROLE=w1 WOLFMUX_ROTATE_WAIT=30 "$REPO/tests/in-pane" rotate w1 2>&1)"
 check "a worker rotating itself: it returns at once with 'rotation started: end your turn', nothing restarted yet" \
   'printf "%s" "$SELF" | grep -q "rotation started: end your turn" && sleep 1 && [ "$(record w1 session_id)" = "$AUTO" ] && [ -d "$R1/rotate.lock" ]'
-printf 'idle\n' >"$R1/state"
+/bin/rm -f "$R1"/tasks/reminded-*
+SOUT2="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/bin/teamctl" _hook Stop)"
+check "... its turn end gets no task reminder from wolfmux while that rotation waits" '[ -z "$(printf "%s" "$SOUT2" | ctx_of)" ] && [ "$(cat "$R1/state")" = idle ]'
 check "... and the detached process rotates it once its turn has ended; the lock goes" \
   'poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]" && [ "$(record w1 rotated_from)" = "$AUTO" ]'
 

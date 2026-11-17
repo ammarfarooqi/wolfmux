@@ -1018,6 +1018,9 @@ cmd_inbox_stop() {
   local notices stamp last
   /bin/cat >/dev/null 2>&1 || true # the hook's JSON on stdin; nothing here needs it
   _inbox_hook_ready || return 0
+  # A rotation is due at this turn end (lib/rotate.sh, memory/rotate-due): the notices wait for the
+  # fresh conversation, which gets them at its start. This hook runs beside _hook Stop, not after it.
+  [ ! -e "${WOLFMUX_RUN_DIR:-/nonexistent}/memory/rotate-due" ] || return 0
   [ "$(inbox_count_undelivered "$INBOX_ROLE")" != "0" ] || return 0
   stamp="$(inbox_dir)/.stop.$INBOX_ROLE"
   last="$(/bin/cat "$stamp" 2>/dev/null || printf '0')"
