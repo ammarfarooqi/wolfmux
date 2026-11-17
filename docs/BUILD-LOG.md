@@ -2533,6 +2533,137 @@ shortened form with exit code 1, the last line, and the failure line 6001 from t
 in `run/w1/out`. The worker's first request was 62,106 tokens in a pane. Status showed `68k/285k 23%` for
 the worker and `122k/967k 12%` for the lead, and the lead got one notice for one `done`.
 
+## 47. Rotation: a fresh conversation with a hand-over wolfmux writes (v1.26.0, ADR-0039)
+
+v1.25.0 told the lead when a worker was nearly full or compacting twice in a row, and the answer was a
+restart by hand that nobody had tried with uncommitted work, starting from a checkpoint no agent had
+written. `teamctl rotate <role>` (`lib/rotate.sh`) does that restart with a hand-over wolfmux writes
+itself: the task with its notes, the agent's own checkpoint text, the commits, the status and the
+uncommitted diff itself,
+its last five answers, the paths and the reason, each part capped so a 50,000-character task body cannot
+push the git part out (12,000 characters in all). The new conversation sees it first at its start, once,
+under a line saying its task is already claimed and the tree state is current.
+The lead may rotate any worker; a worker only itself; the lead role and Codex agents are refused.
+
+Policy `worker-rotation` (default `auto`) does it at a worker's turn end when it is past its rotate
+threshold or has thrashed, from a detached process the Stop hook starts under a lock, at most once per
+conversation, and never again for a conversation a rotation started (the lead gets the context message
+instead). `ask` sends the lead the command; `off` is v1.25.0. By default a rotation waits for the turn to
+end (`WOLFMUX_ROTATE_WAIT`, 120 s) and refuses when it does not, naming `--now`.
+
+`teamctl restart <role> --continue` now files one "continue task <id>" notice for an agent with a task in
+progress, which an idle agent used to wait for. The worker protocol gains two lines: keep a step log in
+the task, and after a rotation read the hand-over and go on.
+
+Found while testing: the lock was first removed by an EXIT trap, and another module sets its own EXIT
+trap later, so a failed rotation left the lock behind. The rotation now runs in a subshell and the lock
+goes after it, whatever ends it.
+
+Tests: `tests/rotate.sh` 35 checks, native store and Beads (`bd` stub); `tests/recall.sh` 69 (the thrash
+notice names `teamctl rotate`). Every suite in `tests/` (28) in a clean environment
+(`tests/research/run-suite.sh`, `env -i`): 2,658 checks passed, 0 failed, credential-routing exit 0;
+`tests/beads-hotpath.sh` 17 of 17 (the PostToolUse hot path still forks nothing when nothing is queued).
+
+One real-CLI run (the lead, Haiku 5.5, `tests/research/rotate-run.sh`): the calc task with no step log,
+rotated with `--now` after one commit and with the next helper's checks uncommitted. The new conversation
+edited `lib/calc.sh` 21.5 s and 4 requests after the rotation, 273,875 input tokens for those requests; it
+redid nothing, kept the uncommitted checks and committed them with their helper, and closed the task 61 s
+after the rotation. That does NOT beat the research restart (9.6 s, 2 requests, 117k), which had a step
+log: three of the four requests were the task's own demand to read the spec again, each about 63k of
+fixed start, and its first command re-derived the tree state the hand-over held. From that run: the
+hand-over now carries the uncommitted diff, and its first line says the task is claimed and the tree
+state current (stub checks; not measured again on the real CLI).
+
+A3, review findings on the automatic rotation. A worker on a task runs one long turn, so a rotation at its
+Stop waited for a turn end nobody asked for: under `auto`, at the rotate threshold and at the thrash
+event, the agent is now told to commit, not start the next step and END ITS TURN, and the lead's context
+message waits for the case where no rotation follows. A conversation a rotation started is rotated again
+once the watch has seen it under the threshold (`memory/below-seen`), not never. No task in progress
+clears `rotate-fired`. A lock older than 600 s is taken over and a refusal names its age. The rotating
+process is started in its own session with SIGHUP ignored (`/usr/bin/perl`, POSIX `setsid`; macOS has no
+`setsid` binary), what must outlive the restart is written before it, and a worker's own
+`teamctl rotate` hands the rotation to such a process and prints "rotation started: end your turn".
+Checks: `tests/rotate.sh` 53 (16 new A3 checks red on 7d6812e, the control green), `tests/recall.sh` 70.
+Two real-CLI scripts for the lead: `tests/research/rotate-auto-run.sh`, `rotate-self-run.sh`.
+
+The first real-CLI auto run failed: wolfmux's own "You are stopping while ..." task reminder came at the
+same Stop as the rotation's wait and continued the turn, so the agent finished the task in the old
+conversation and was rotated only after it was closed. The Stop entries run in parallel, so one of them
+cannot see what another is about to do; the fix is a file written before the Stop, `memory/rotate-due`
+(at the crossing, and by a worker's own `teamctl rotate`): while it exists `_inbox-stop` says nothing and
+`_hook Stop` runs no module after recall, and the task is asked again after the wait. In the rerun at
+028b66d (Haiku, thresholds lowered to 47%) the agent ended its turn 5.3 s after the message with three
+helpers committed, the rotation followed 0.7 s later, the lead got one notice, and the new conversation
+edited `lib/calc.sh` 12 s and 2 requests after the rotation and closed the task 42 s after it (tests 1213
+passed, 0 failed). Another run at 55% crossed only at the task's end: no task in progress, one lead
+message, `memory/rotate-declined`, no rotation. One run each, Haiku, a toy task.
+
+After the release review (Riley, at 55af571; ADR-0039, "After the release review"). HIGH: a worker
+could restart the lead or any role with `ROTATE_ACTING=1 teamctl restart <role>`, or by typing the
+internal `teamctl _rotate-run` or `_rotate-auto`. `main()` now unsets every in-process permission and
+who-did-what variable first (13, named in the ADR; `CALLER_RESOLVED=1` with an empty `CALLER_ROLE` was a
+third door to the same hole), the restart permission is a variable of the restarting subshell only,
+`rotate_run` refuses the lead, and the internal commands refuse (77) any caller but the rotated role
+itself and any run whose `rotate.lock` does not hold the token the taker handed over. MEDIUM: a stale lock
+with a leftover `rotate-due` no longer silences the Stop hooks (both go at the next Stop); a failed
+restart takes back `handover.pending`, its `rotated` line and `rotate-due`, and on the automatic and the
+self path tells the lead once ("rotation failed", the log line, the context figure, the retry command).
+LOW: a rotation removes the lock only while it holds its own token; the loop guard holds for a worker
+rotating itself. Checks: `tests/rotate.sh` 76 (17 new, each seen red first; the failed restart is made
+with a record whose working directory is gone).
+
+## 48. A lead that stays small (v1.26.0, ADR-0040)
+
+The lead's conversation is the one that cannot be thrown away, and a worker's report reached it
+whole: summary, commit list and up to 6,000 characters of `--body-file`, at its next tool call.
+After a compaction it had lost the table of who does what.
+
+`teamctl done` now writes the whole report to `<state>/reports/<task-id>.md` (beside the store, the
+same place on both stores; a reopened task done again keeps the earlier one as `<task-id>~1.md`; `~` is in no task id, so a Beads child `X.1` never collides).
+The lead's "Done:" message is a notice of at most 600 characters: task, summary (cut with a marker
+when long), tests line, branch at the short sha, diff stat, the report's path and
+`teamctl show <id> --report`, and it says it is already marked read and needs no reply; `done`
+marks it read in the store at once, on both stores. `teamctl ledger` prints the team's open work,
+what was closed since the lead's conversation began (or in the last 24 hours, whichever reaches
+further) with report paths, and the decisions the lead recorded with `teamctl decide` (300
+characters each, 30 kept, a file on both stores), at most 4,000 characters. The lead's SessionStart
+on `compact` and `resume` attaches it; never at a fresh start, never for a worker or a subagent.
+
+Measuring found a fault of v1.24.0 on Beads: `bd create --deps replies-to:` fires the update hook
+right after the create, with the message still open, so every report was queued twice and handed
+over again at the next tool call (12,368 characters for one 6,000-character report). `teamctl
+_deliver` skips an update of a message the recipient's spool already holds.
+
+Numbers, one done with a 6,000-character report, characters at the lead's next PostToolUse: native
+6,168 before, 377 after; Beads 6,184 (and the same again at the next call) before, 386 after.
+
+Proof: `tests/ledger.sh` runs the same checks on the native store and on Beads (the 600-character
+bound with a 20,000-character `--body-file`, every character in the file, a summary with newlines,
+quotes and `$(...)` arriving literally, one notice and no close notice, `show --report`, the
+reopen, `decide` refused to a worker and when empty or over 300, the 30 kept, the ledger with 200
+tasks under 4,000, SessionStart on compact and resume for the lead only, nothing with `agent_id`).
+Run against v1.25.0, its checks of the new behaviour fail; `tests/tasks.sh` checks the report file
+and the short message.
+
+## 49. Four low findings of the v1.25.0 review (v1.26.0, part C)
+
+1. **The wrapper line** (ADR-0036). The 700 character prefix became a sourced file, `lib/offload-wrap.sh`;
+   the line is `[ -r <wrap> ] && . <wrap> <log>; `. bash quotes the first line of a command in a syntax
+   error message; the message went from the whole wrapper (742 characters of line) to the user's command
+   with a short lead. Under zsh the message never quoted the line. Seen failing before: the new
+   "message under 600 characters" check. The fail-open checks now plant a fake lib directory (wrap file
+   plus a broken or killed show script) since the show script is found next to the wrap file.
+2. **A log size cap** (`WOLFMUX_OFFLOAD_LOG_MAX`, 50 MB). Applied when the command has ended, on the long
+   path only. Cost of a wrapped `echo hi` end to end, 50 runs: 15 ms before, 16 to 18 ms after (the extra
+   file read of the source); the PreToolUse hook alone 6 to 7 ms before and after. Seen failing before:
+   the "bytes left out" checks (a 5 MB log with a 1 MB cap stayed 5 MB).
+3. **The stall lookup** is bounded (`_bd_bounded 5`, Beads only); a wedged `bd` gives the report without
+   the task. `tests/stall-wedged.sh` stands in a task read that sleeps 30 s: before, 30 s and no
+   message; after, 5 s and the message. It runs inside `tests/context.sh`.
+4. **A compaction nobody warned of** is said once to the agent and in the thrash message
+   (`lib/recall.sh`, 38 added lines). Checks in `tests/recall.sh` (the section "a compaction nobody warned
+   of").
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

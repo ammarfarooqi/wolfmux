@@ -232,6 +232,7 @@ teamctl policy link-node-modules on|off         # share the repository's node_mo
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
 teamctl policy output-offload on|off            # a long Bash output goes to a log, the agent sees a short form  default on
+teamctl policy worker-rotation off|ask|auto     # a worker near its limit gets a fresh conversation with a hand-over  default auto
 teamctl policy human-pane-typing off|idle       # type notices into a pane you are watching?  default off (yours alone)
 teamctl policy lead-wake unwatched|off          # may an idle lead wake itself for a notice?  default unwatched (yours alone)
 teamctl policy orphan-steward <team>|off        # whose lead may bring back a team YOU founded  default off (yours alone)
@@ -338,6 +339,10 @@ teamctl done <id> "commit <sha>; tests pass" --tests "pytest: 38 passed"
 teamctl note <id> "a detail worth keeping, for whoever reads this task next"
 teamctl close <id> -r "..." --failed      # lead: reject instead of accepting
 teamctl reopen <id> "why it needs another pass"     # lead: send a closed task back
+teamctl show <id> --report                # the full report of a done task (the lead's notice is short)
+teamctl ledger                            # open tasks, recent done ones, decisions; the lead gets it after a compaction
+teamctl decide "workers use flash, not glm53"       # lead: a decision that outlives a compaction
+teamctl decide --list                     teamctl decide --drop 2
 ```
 
 Status map: pending = open/unassigned · assigned = open+assignee · in_progress ·
@@ -355,6 +360,7 @@ teamctl memories redis                                   # search it
 teamctl forget redis-url                                 # a memory's key defaults to a slug of its text
 teamctl checkpoint "API done; next: wire the UI; watch out for the stale cache key"
 teamctl checkpoint --show backend                        # read a role's stored checkpoint
+teamctl rotate backend                                   # a fresh conversation with a hand-over (--now: do not wait for its turn end)
 teamctl run -- npm test                                  # a long output to a log; head, tail, failure lines, path
 ```
 
@@ -368,8 +374,10 @@ worktree and branch, fresh conversation.
 **The context watch.** Every tenth tool call, the PostToolUse hook checks how full
 the conversation is. At `WOLFMUX_CONTEXT_WARN` percent (default 60) the agent is told
 once to commit and write a checkpoint. At `WOLFMUX_CONTEXT_ROTATE` percent (default
-80) it is told once to start nothing new, and the lead is messaged with the exact
-command to give the task a fresh conversation. `WOLFMUX_WORKER_COMPACT_WINDOW` sets
+80) it is told once to start nothing new, and at its next turn end it is rotated
+(policy `worker-rotation`, default `auto`; `ask` messages the lead the command instead):
+a fresh conversation in the same worktree and branch that starts from a hand-over
+wolfmux writes itself (`run/<role>/memory/handover.md`; ADR-0039). `WOLFMUX_WORKER_COMPACT_WINDOW` sets
 where a worker's own CLI compacts (default: the window `teamctl status` counts that
 model with; `off` leaves it to the CLI).
 
@@ -949,7 +957,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_LEAD_WAKE` | `unwatched` | the default of the `lead-wake` policy: may an idle Claude lead wake itself for a notice while you are not using its pane? `unwatched`: yes, its waiter hook hands the notices over and it takes a turn; nothing is typed. `off`: it waits for its next turn end or prompt. A value that is neither word is read as `unwatched` ([Notices](#notices-and-why-they-are-not-in-your-conversation)) |
 | `WOLFMUX_WATCH_FOCUS_MAX` | `0` | how long, in seconds, a focused terminal counts as "you are using this pane" with no key pressed. `0`: no limit. A terminal that never reports focus reads focused for ever, so a lead shown in it never wakes itself; `600` makes focus count only with a key in the last 10 minutes |
 | `WOLFMUX_AUTO_RECLAIM` | `on` | the default of the `auto-reclaim` policy: take a parked lane off the books by itself (worktree, branch, record) once its task is closed, its content is in main, nothing is uncommitted or stashed and no PR is open. `off`: nothing is removed unless you run `teamctl reclaim`. A value that is neither word is read as `off`: this one deletes a checkout and a branch, so an unreadable setting must never read as yes. A team's own policy wins over it, and `teamctl keep <role>` protects one lane ([Disk](#disk)) |
-| `WOLFMUX_OFFLOAD` | `on` | `off`: no Bash output is shortened and, for agents started with it, no hook entry of the feature is written (ADR-0036). `WOLFMUX_OFFLOAD_MIN` (default `4000`): an output longer than this many characters is shortened; `WOLFMUX_OFFLOAD_BACKSTOP` (default `16000`): the CLI's own cap on a Bash result for those agents. `WOLFMUX_OUTPUT_OFFLOAD` is the default of the `output-offload` policy |
+| `WOLFMUX_OFFLOAD` | `on` | `off`: no Bash output is shortened and, for agents started with it, no hook entry of the feature is written (ADR-0036). `WOLFMUX_OFFLOAD_MIN` (default `4000`): an output longer than this many characters is shortened; `WOLFMUX_OFFLOAD_LOG_MAX` (bytes, default `52428800`): a log over it keeps its head and tail when the command ends, and the summary says how many bytes were left out; `WOLFMUX_OFFLOAD_BACKSTOP` (default `16000`): the CLI's own cap on a Bash result for those agents. `WOLFMUX_OUTPUT_OFFLOAD` is the default of the `output-offload` policy |
 | `WOLFMUX_HUMAN` | `human` | your own name in Beads. Agents write to you with `bd create "Subject" -t message -a human`; the 📨 number next to the wolf counts those still unread, and `prefix N` or a click on the number opens them (Enter reads one, `r` marks it read). Letters, digits, `.`, `_`, `-` |
 | `WOLFMUX_LAYOUT` | `lead-left` | pane arrangement: `lead-left`, `lead-top`, `tiled` (`teamctl layout` per team) |
 | `WOLFMUX_SPLASH` | on | `off` removes the wolf popup when a team opens |

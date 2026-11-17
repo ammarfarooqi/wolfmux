@@ -47,9 +47,12 @@ number.)
 
 ## Re-run it
 
-The suites at v1.25.0, with the check count each one holds at the release commit afec957 (v1.24.1 plus offload, the smaller start and the context number).  All 27 suites passed with 0 failures, run one after the other in a clean environment (tasks and beads-hotpath on the release plus the two review fixes of wolfmux-bb9's period: 47 and 17 checks). Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
+The suites at v1.26.0, with the check count each one holds at the release commit (v1.25.0 plus rotation, the lead's report files and ledger, and four low findings of the v1.25.0 review). The 28 suites below that run unattended passed with 0 failures on 1e931d6 in a clean environment (`credential-routing.sh` is manual and was not run): two streams side by side, then `smoke.sh` alone; `rotate.sh` and `docs.sh` once more on the commit that adds one check and the last docs (76 and 36). Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
 `BEADS_ACTOR`, `TMUX` and `TMUX_PANE` variable unset, so an agent's own environment cannot
-leak into a suite, and `smoke.sh` alone, since its timing checks fail under parallel load.
+leak into a suite, and `smoke.sh` alone, since its timing checks fail under parallel load. Keep `TERM`:
+under `env -i` without it no tmux client can attach, `tests/inbox.sh` fails the setup of its
+attached-client checks and then stands still (seen at v1.26.0; with `TERM` set it passes, and
+`tests/research/run-suite.sh` passes it on).
 
 ```bash
 tests/smoke.sh                 # over 10 minutes, 389 checks, isolated from any running team
@@ -60,15 +63,17 @@ tests/reclaim.sh               # 10 to 14 minutes, 142 checks, its own tmux serv
 tests/inbox.sh                 # ~4 minutes, 220 checks, its own tmux server and its own pty client: nothing is typed into the human's conversation while they work in it, and the hooks hand mail over with its body
 tests/nudge-typing.sh          # ~2 minutes, 62 checks, its own tmux server and its own pty client: a notice never lands in a half-typed line
 tests/human-inbox-keys.sh      # ~35 seconds, 73 checks, its own tmux server (HOME emptied) and pty: prefix N/O open their popups
-tests/context.sh               # 33 checks: what a trimmed agent starts with (denied tools, connectors, context-exclude, lead-context)
-tests/offload.sh               # ~40 seconds, 220 checks: lib/offload.sh, a long Bash output kept in a log
+tests/context.sh               # 35 checks: what a trimmed agent starts with (denied tools, connectors, context-exclude, lead-context)
+tests/offload.sh               # ~40 seconds, 236 checks: lib/offload.sh, a long Bash output kept in a log
 tests/dashboard.sh             # ~2 minutes, 136 checks, its own tmux server and state: the machine-wide view and the status segment
 tests/providers.sh             # the provider table and the config allowlist, 147 checks
 tests/models.sh                # ~2.5 minutes, 34 checks, its own tmux server, HOME and state: the newest model of an alias, the drift check
 tests/store.sh                 # under 60 s, 95 checks: lib/store.sh, both backends
 tests/mail.sh                  # 62 checks: lib/mail.sh, one delivery system through the CLI's hooks and v1.23.0's inbox
-tests/tasks.sh                 # 47 checks: teamctl task/done/blocked, the Stop reminder
-tests/recall.sh                # 69 checks: shared team notes, the context watch, the one context figure, compaction counting, checkpoints
+tests/tasks.sh                 # 48 checks: teamctl task/done/blocked, the Stop reminder, the report file and the short Done notice
+tests/recall.sh                # 73 checks: shared team notes, the context watch, the one context figure, compaction counting, checkpoints, a compaction nobody warned of
+tests/rotate.sh                # ~80 seconds, 76 checks: teamctl rotate, the hand-over and its caps, policy worker-rotation, the Stop path, the lock, who may rotate whom
+tests/ledger.sh                # ~6 minutes, 147 checks, both stores: report files, the 600 character Done notice, teamctl ledger and decide, the lead's ledger after a compaction
 tests/native-callsites.sh      # 34 checks: the v1.23.0 code that asked bd directly works on a native store and never runs bd there
 tests/memory.sh                # 130 checks: team memory (teamctl memory), the lead's private folder
 tests/memory-skeleton.sh       # 283 checks: the memory skeleton and its tool, bin/mem

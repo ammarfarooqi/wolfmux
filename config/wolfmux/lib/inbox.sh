@@ -188,8 +188,12 @@ _inbox_lock_dir() {
       now_epoch >"$guard/ts" 2>/dev/null || true
       return 0
     fi
-    started="$(/bin/cat "$guard/ts" 2>/dev/null || printf '0')"
-    case "$started" in "" | *[!0-9]*) started=0 ;; esac
+    # The holder makes the directory first and writes its time after: a lock with no time yet
+    # is one just taken, so its age is the directory's own (never 0, which made it look stale
+    # and let a second writer in), and a lock whose age cannot be read is fresh.
+    started="$(/bin/cat "$guard/ts" 2>/dev/null || true)"
+    case "$started" in "" | *[!0-9]*) started="$(/usr/bin/stat -f %m "$guard" 2>/dev/null || /usr/bin/stat -c %Y "$guard" 2>/dev/null || now_epoch)" ;; esac
+    case "$started" in "" | *[!0-9]*) started="$(now_epoch)" ;; esac
     if [ $(($(now_epoch) - started)) -gt "$WOLFMUX_INBOX_LOCK_STALE" ]; then
       /bin/rm -rf "$guard" 2>/dev/null || true
       continue
@@ -1018,6 +1022,13 @@ cmd_inbox_stop() {
   local notices stamp last
   /bin/cat >/dev/null 2>&1 || true # the hook's JSON on stdin; nothing here needs it
   _inbox_hook_ready || return 0
+  # A rotation is due at this turn end (lib/rotate.sh, memory/rotate-due): the notices wait for the
+  # fresh conversation, which gets them at its start. This hook runs beside _hook Stop, not after it,
+  # so a missing rotate.lock still counts (that Stop may be taking it right now); a stale one does not:
+  # the rotation that took it is gone (rotate_lock_stale, asked only when rotate-due is there).
+  if [ -e "${WOLFMUX_RUN_DIR:-/nonexistent}/memory/rotate-due" ]; then
+    rotate_lock_stale "$WOLFMUX_RUN_DIR/rotate.lock" || return 0
+  fi
   [ "$(inbox_count_undelivered "$INBOX_ROLE")" != "0" ] || return 0
   stamp="$(inbox_dir)/.stop.$INBOX_ROLE"
   last="$(/bin/cat "$stamp" 2>/dev/null || printf '0')"

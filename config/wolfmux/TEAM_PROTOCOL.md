@@ -189,8 +189,8 @@ integration; you do not do the bulk implementation yourself.
    state, who spawned whom, each agent's permission mode, pending approvals, and
    CONTEXT: how much of its window each agent's conversation holds), `teamctl tasks`
    (work state). Use `teamctl capture <role>` only to diagnose a stuck or crashed agent.
-   A worker at 80% context sends you a message by itself: give it a fresh conversation
-   with `teamctl restart <role>` (it starts from its own checkpoint). `teamctl stop <role>`
+   A worker near its context limit is rotated by itself at its turn end (policy
+   `worker-rotation auto`); by hand: `teamctl rotate <role>` (a fresh conversation with a hand-over). `teamctl stop <role>`
    parks one. A worker on another provider (kimi, moonshot, deepseek, minimax, qwen, glm)
    that reports 401 or an authentication error: `teamctl doctor --probe` says whether that
    provider's key is accepted. A FAIL means the key in its Keychain slot is wrong or of the
@@ -223,7 +223,10 @@ integration; you do not do the bulk implementation yourself.
    teamctl diff <role> --stat       # then: teamctl diff <role>
    teamctl diff <role> --commits
    ```
-   Read the diff, check it against the task, run the tests yourself. Then decide:
+   A `DONE` notice is the short form: read the report (`teamctl show <id> --report`) only when it is not enough.
+   Review a diff through a subagent that returns a verdict and the lines that matter; never `cat` a whole diff into your own conversation.
+   A decision that must outlive a compaction: `teamctl decide "<text>"`; `teamctl ledger` is what you get back after one.
+   Check the diff against the task, run the tests yourself. Then decide:
    - request changes: `teamctl reopen <id> "<what to change>"`, or message the worker;
    - accept: `git cherry-pick <sha>` (or `git merge --no-ff <branch>`) in the project root;
    - reject: `teamctl close <id> -r "<reason>" --failed`;
@@ -269,6 +272,8 @@ structure and counts only. No other agent reads it.
 7. **Told your context is filling, or about to do something long?**
    `teamctl checkpoint "<done so far / what is next / what to watch out for>"`. It is
    shown to your next conversation, so write it for that reader, not for now.
+   A task of more than one step keeps a short step log in the task (`teamctl note <id>`), so a
+   fresh conversation finds its place. After a rotation, read the hand-over, then continue; do not start over.
 8. **Report to the lead and close the task, one command:**
    `teamctl done "<summary>" --tests "<command: result>"` — it adds the branch,
    commits and diff stat by itself; `<summary>` is what it cannot see.

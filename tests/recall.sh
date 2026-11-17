@@ -128,10 +128,18 @@ check "65% again: not repeated" '[ -z "$(hook_json transcript_path="$TRANS" | TE
 
 usage_line 142000 >"$TRANS"
 force_through "" "$RUN_W2"
-check "85%: the rotate text, once" 'hook_json transcript_path="$TRANS" | TEAM_ROLE=w2 WOLFMUX_RUN_DIR="$RUN_W2" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse | grep -q "Do not start anything new"'
+# Under policy worker-rotation auto (the default) a worker is told to end its turn and the rotation's own
+# notice tells the lead (tests/rotate.sh). The v1.25.0 text and the lead's message are policy ask's and off's.
+check "85% (policy ask): the rotate text, once" 'hook_json transcript_path="$TRANS" | TEAM_ROLE=w2 WOLFMUX_RUN_DIR="$RUN_W2" WOLFMUX_MODEL=glm53 WOLFMUX_WORKER_ROTATION=ask teamctl _hook PostToolUse | grep -q "Do not start anything new"'
 poll_bead() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do bd list --assignee "$1" --status open --include-infra --json 2>/dev/null | jq -e "$2" >/dev/null 2>&1 && return 0; sleep 0.3; done; return 1; }
 check "85%: a message bead for the lead appears (polled), and its body carries the same figure and the window" \
   'poll_bead lead "[.[] | select(.title == \"w2: context at 85%\")] | length > 0" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title == \"w2: context at 85%\")][0].description | contains(\"142k/167k 85%\") and contains(\"window 200000\")"'
+
+RUN_W16="$(run_of w16)"
+usage_line 142000 >"$TRANS"
+force_through "" "$RUN_W16"
+check "85% under the default (auto, no meta.json): the worker is told to END ITS TURN, and no bead for the lead" \
+  'hook_json transcript_path="$TRANS" | TEAM_ROLE=w16 WOLFMUX_RUN_DIR="$RUN_W16" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse | grep -q "END YOUR TURN"; sleep 1; [ "$(bd list --assignee lead --status open --include-infra --json 2>/dev/null | jq "[.[] | select(.title == \"w16: context at 85%\")] | length")" = 0 ]'
 
 RUN_LEAD2="$(run_of lead2)"
 usage_line 142000 >"$TRANS"
@@ -214,7 +222,7 @@ check "a new conversation (SessionStart startup) forgets the near file and what 
 echo "== compactions: what was kept, and two close together are told to the lead once =="
 RUN_W12="$(run_of w12)"
 boundary() { printf '{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto","preTokens":%s,"postTokens":%s,"durationMs":21000}}\n' "$1" "$2"; }
-compacted() { hook_json source=compact transcript_path="$TRANS" | TEAM_ROLE=w12 BEADS_ACTOR=w12 WOLFMUX_RUN_DIR="$RUN_W12" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000 teamctl _hook SessionStart; }
+compacted() { hook_json source=compact transcript_path="$TRANS" | TEAM_ROLE=w12 BEADS_ACTOR=w12 WOLFMUX_RUN_DIR="$RUN_W12" WOLFMUX_MODEL=glm53 WOLFMUX_WORKER_ROTATION=ask CLAUDE_CODE_AUTO_COMPACT_WINDOW=100000 teamctl _hook SessionStart; }
 thrash_beads() { bd list --assignee lead --status open --include-infra --json 2>/dev/null | jq "[.[] | select(.title | startswith(\"w12: compacted twice\"))] | length"; }
 { usage_line 54000; boundary 66000 19000; } >"$TRANS"
 printf '54000\n' >"$RUN_W12/memory/first" 2>/dev/null || { /bin/mkdir -p "$RUN_W12/memory"; printf '54000\n' >"$RUN_W12/memory/first"; }
@@ -226,7 +234,7 @@ check "SessionStart after a compaction records what it kept (postTokens of the l
 printf '46\n' >"$RUN_W12/calls"
 compacted >/dev/null
 check "a second one 6 tool calls later: ONE message to the lead, with the limit, the window, the first request, what was kept and the room left (67000 - 54000 - 37000)" \
-  'poll_bead lead "[.[] | select(.title == \"w12: compacted twice within 6 tool calls\")] | length == 1" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"w12: compacted twice\"))][0].description | contains(\"67000 tokens of a limit of 67000\") and contains(\"window 100000\") and contains(\"54000\") and contains(\"kept by this compaction: 37000\") and contains(\"about -24000 tokens\") and contains(\"teamctl restart w12\")"'
+  'poll_bead lead "[.[] | select(.title == \"w12: compacted twice within 6 tool calls\")] | length == 1" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"w12: compacted twice\"))][0].description | contains(\"67000 tokens of a limit of 67000\") and contains(\"window 100000\") and contains(\"54000\") and contains(\"kept by this compaction: 37000\") and contains(\"about -24000 tokens\") and contains(\"teamctl rotate w12\")"'
 check "the team keeps the LARGEST kept part it saw (37000), since a window is made from it" '[ "$(cut -d" " -f2 "$STATE_OF_RUN/context/worker")" = 37000 ]'
 printf '49\n' >"$RUN_W12/calls"
 compacted >/dev/null
@@ -244,7 +252,7 @@ check "two compactions 80 tool calls apart are ordinary: nobody is told" \
 # boundaries at the first one, and only the previous one at the second). The row follows within a second.
 RUN_W15="$(run_of w15)"
 TRANS15="$WORK/transcript15.jsonl"
-compacted15() { hook_json source=compact transcript_path="$TRANS15" | TEAM_ROLE=w15 BEADS_ACTOR=w15 WOLFMUX_RUN_DIR="$RUN_W15" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=141000 teamctl _hook SessionStart; }
+compacted15() { hook_json source=compact transcript_path="$TRANS15" | TEAM_ROLE=w15 BEADS_ACTOR=w15 WOLFMUX_RUN_DIR="$RUN_W15" WOLFMUX_MODEL=glm53 WOLFMUX_WORKER_ROTATION=ask CLAUDE_CODE_AUTO_COMPACT_WINDOW=141000 teamctl _hook SessionStart; }
 usage_line 62382 >"$TRANS15"
 printf '40\n' >"$RUN_W15/calls"
 compacted15 >/dev/null
@@ -404,6 +412,34 @@ check "the lead's tenth tool call looks too, at most once per WOLFMUX_STALL_LOOK
 check "a worker's own tenth call does not look (only the lead's)" \
   '/bin/rm -f "$(dirname "$AGENTS_DIR")/stall/.looked"; RUN_WS="$(dirname "$AGENTS_DIR")/run/stl2"; force_through "" "$RUN_WS"; hook_json transcript_path=/nonexistent/x.jsonl | TEAM_ROLE=stl2 WOLFMUX_RUN_DIR="$RUN_WS" WOLFMUX_MODEL=glm53 teamctl _hook PostToolUse >/dev/null; sleep 1.5; [ "$(stalled_beads stl)" = 3 ] && [ ! -e "$(dirname "$AGENTS_DIR")/stall/.looked" ]'
 teamctl stop stl >/dev/null 2>&1
+
+echo "== a compaction nobody warned of (v1.26.0): the first hook after it says how far the last request jumped =="
+# Policy worker-rotation off for w26: under auto a thrashing worker is rotated and the lead gets the rotation's
+# notice, not the thrash message these checks read (ADR-0039). Its own role name: w16 is used further up.
+RUN_W26="$(run_of w26)"
+post26() { hook_json transcript_path="$TRANS" | TEAM_ROLE=w26 WOLFMUX_WORKER_ROTATION=off WOLFMUX_RUN_DIR="$RUN_W26" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook PostToolUse; }
+compacted26() { hook_json source=compact transcript_path="$TRANS" | TEAM_ROLE=w26 WOLFMUX_WORKER_ROTATION=off BEADS_ACTOR=w26 WOLFMUX_RUN_DIR="$RUN_W26" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook SessionStart; }
+usage_line 60000 >"$TRANS" # 35%: far from a warning
+force_through "" "$RUN_W26"; post26 >/dev/null
+{ usage_line 60000; boundary 150000 20000; } >"$TRANS"
+printf '40\n' >"$RUN_W26/calls"
+compacted26 >/dev/null
+check "the compaction followed a figure of 60000 and no warning: the very next tool call reaches the watch (near file) and the hook says 150000 - 60000 = 90000, once" \
+  '[ -e "$RUN_W26/near" ] && usage_line 20000 >"$TRANS" && out="$(post26)" && printf "%s" "$out" | grep -q "compacted without a warning: the last request added 90000 tokens" && [ -z "$(post26)" ] && [ ! -e "$RUN_W26/memory/unwarned" ]'
+RUN_W17="$(run_of w17)"
+compacted17() { hook_json source=compact transcript_path="$TRANS" | TEAM_ROLE=w17 BEADS_ACTOR=w17 WOLFMUX_RUN_DIR="$RUN_W17" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook SessionStart; }
+usage_line 110000 >"$TRANS" # 65%: the warning was given
+force_through "" "$RUN_W17"; hook_json transcript_path="$TRANS" | TEAM_ROLE=w17 WOLFMUX_RUN_DIR="$RUN_W17" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook PostToolUse >/dev/null
+{ usage_line 110000; boundary 150000 20000; } >"$TRANS"
+compacted17 >/dev/null
+check "a conversation that was warned (65% announced): the compaction says nothing of the kind" \
+  '[ ! -e "$RUN_W17/memory/unwarned" ] && usage_line 20000 >"$TRANS" && force_through "" "$RUN_W17" && ! hook_json transcript_path="$TRANS" | TEAM_ROLE=w17 WOLFMUX_RUN_DIR="$RUN_W17" WOLFMUX_MODEL=glm53 CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000 teamctl _hook PostToolUse | grep -q "without a warning"'
+usage_line 20000 >"$TRANS"; force_through "" "$RUN_W26"; post26 >/dev/null
+{ usage_line 20000; boundary 150000 20000; boundary 130000 25000; } >"$TRANS"
+printf '45\n' >"$RUN_W26/calls"
+compacted26 >/dev/null
+check "two compactions 5 tool calls apart, the second unwarned: the lead's message carries the line too (130000 - 20000)" \
+  'poll_bead lead "[.[] | select(.title == \"w26: compacted twice within 5 tool calls\")] | length == 1" && bd list --assignee lead --status open --include-infra --json | jq -e "[.[] | select(.title | startswith(\"w26: compacted twice\"))][0].description | contains(\"compacted without a warning: the last request added 110000 tokens\")"'
 
 echo ""
 echo "$passed passed, $failed failed"

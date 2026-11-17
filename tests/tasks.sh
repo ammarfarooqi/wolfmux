@@ -102,10 +102,13 @@ check "done: refuses a dirty worktree" 'TEAM_ROLE=backend teamctl done "Summary"
 DONE_OUT="$(BEADS_ACTOR=backend TEAM_ROLE=backend teamctl done "Summary line" --tests "tests/foo.sh: 3 passed" 2>&1)"
 check "done: reports what it sent and closed" 'printf "%s" "$DONE_OUT" | grep -q "^sent: Done: Do the thing -> lead$" && printf "%s" "$DONE_OUT" | grep -q "^closed: $DONE_ID$"'
 check "done: the task is closed" 'bd show "$DONE_ID" --json | jq -e ".[0].status == \"closed\""'
-MSG_ID="$(bd list --assignee lead --status open --include-infra --json | jq -r '[.[] | select(.title == "Done: Do the thing")][0].id')"
+MSG_ID="$(bd list --assignee lead --all --include-infra --json | jq -r '[.[] | select(.title == "Done: Do the thing")][0].id')"
 MSG_DESC="$(bd show "$MSG_ID" --json | jq -r '.[0].description')"
-check "done: the report has the summary, the tests line, the branch, and a commit count" \
-  'printf "%s" "$MSG_DESC" | grep -q "^Summary line$" && printf "%s" "$MSG_DESC" | grep -q "tests/foo.sh: 3 passed" && printf "%s" "$MSG_DESC" | grep -q "^branch: " && printf "%s" "$MSG_DESC" | grep -Eq "^commits \([0-9]+\):"'
+REPORT_FILE="$(ls -d "$WOLFMUX_DATA"/state/* | head -1)/reports/$DONE_ID.md"
+check "done: the report file has the summary, the tests line, the branch, and a commit count (ADR-0040)" \
+  'grep -q "^Summary line$" "$REPORT_FILE" && grep -q "tests/foo.sh: 3 passed" "$REPORT_FILE" && grep -q "^branch: " "$REPORT_FILE" && grep -Eq "^commits \([0-9]+\):" "$REPORT_FILE"'
+check "done: the lead's message is the short notice: summary, tests line, the report's path, already read" \
+  'printf "%s" "$MSG_DESC" | grep -q "^Summary line$" && printf "%s" "$MSG_DESC" | grep -q "tests/foo.sh: 3 passed" && printf "%s" "$MSG_DESC" | grep -qF "full report: $REPORT_FILE" && [ "${#MSG_DESC}" -le 585 ] && bd show "$MSG_ID" --json | jq -e ".[0].status == \"closed\""'
 check "done: the report replies to the task" 'bd dep list "$MSG_ID" | grep -q "$DONE_ID"'
 check "done: the task is closed with the short commit sha in the reason (bd show, plain text)" \
   'cd "$BACKEND_DIR" && bd show "$DONE_ID" 2>&1 | grep -q "$(git rev-parse --short HEAD)"'

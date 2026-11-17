@@ -66,13 +66,15 @@ when its pane starts. What reaches a running team at the install, and what waits
   - `<role>: compacted twice within <n> tool calls`: that agent is about to thrash. The message holds
     the tokens before the second compaction, the limit, the first request, what the compaction kept and
     the room left. Act on it with the line it prints:
-    `WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl restart <role>` (a new conversation from its checkpoint,
-    with a larger window). Said once per conversation.
+    `teamctl rotate <role>` (a fresh conversation with a hand-over), or with a larger window
+    `WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl rotate <role>`. Said once per conversation. Under policy
+    `worker-rotation auto` (the default since v1.26.0) the worker is rotated at its next turn end by itself;
+    `ask` sends you the command instead, `off` only tells you.
   - `<role>: stalled on an error since <time>`: its last turn ended on an API error (a 529, a usage
     limit, the CLI's own "Autocompact is thrashing" stop) and no hook of it runs again. It arrives after
     `WOLFMUX_STALL_AFTER` seconds (300) of quiet and once per error. Act on it with
-    `teamctl restart <role> --continue`, then `teamctl send <role> "go on with <task>"`: a restart leaves
-    an idle agent idle. It is found only while somebody looks (the lead's hooks, its idle waiter, or any
+    `teamctl restart <role> --continue`: since v1.26.0 that files a "continue task <id>" notice for an
+    agent with a task in progress, so it does not stay idle. It is found only while somebody looks (the lead's hooks, its idle waiter, or any
     `teamctl status`); a stalled lead, a hung tool or a dialog is not seen.
   - The existing `<role>: context at N%` message (default at 60% and 80% of the limit) now arrives before the
     CLI compacts, not after.
@@ -945,13 +947,16 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | `teamctl mail [<role>] [--peek] [--json]` | your (or that role's) unread mail and open tasks; `--peek` leaves it unread |
 | `teamctl task <role> "<title>" [-d "<text>"\|--body-file <file>\|-] [-p <0-4>] [--after <bead-id>]… [--spawn <model>]` | assign work; `--after` adds a dependency, `--spawn` starts the role if it is not already running |
 | `teamctl claim [<id>]` | claim your only open task, or the one you name; refuses one still waiting on an unclosed blocker |
-| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | close a task, then report it: a `Done:` message to the lead (summary, tests, branch, commit log). Only the task's assignee (or the lead) may; a message id, a closed task and a task still waiting on a blocker are refused |
+| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | close a task, then report it: the full report (summary, tests, branch, commits, diff stat, `--body-file`) is written to `<state>/reports/<id>.md` and the lead gets a `Done:` notice of at most 600 characters that names it, already marked read. Only the task's assignee (or the lead) may; a message id, a closed task and a task still waiting on a blocker are refused |
 | `teamctl blocked [<id>] "<why>"` | mark a task blocked and tell the lead why; only the task's assignee (or the lead) may |
 | `teamctl tasks [<role>\|--all] [--status <list>] [--json]` | a list of tasks; default is your own team, not closed |
-| `teamctl show <id> [--json]` | one task (body, notes, blockers), or a message with its whole thread |
+| `teamctl show <id> [--json\|--report]` | one task (body, notes, blockers; a done task names its report file), or a message with its whole thread; `--report` prints the stored `teamctl done` report |
+| `teamctl ledger` | the team's table from the store, at most 4,000 characters: open and in-progress tasks, tasks done lately with their report paths, the decisions. The lead gets it by itself after a compaction or a resume |
+| `teamctl decide "<text>"\|--list\|--drop <n>` (lead adds and drops) | a dated decision that outlives a compaction, at most 300 characters; the last 30 are kept and shown in the ledger |
 | `teamctl note <id> "<text>"` | a durable note on a task; notifies nobody |
 | `teamctl reopen <id> "<why>"` (lead) | send a closed task back: open, the reason noted, the assignee told |
 | `teamctl close <id> -r "<reason>" [--failed]` (lead) | close or reject any task of this team |
+| `teamctl rotate <role> [--reason <text>] [--now]` | a worker's fresh conversation in the same worktree and branch, with a hand-over wolfmux writes (`run/<role>/memory/handover.md`: the task, the agent's own checkpoint text, commits, status and the uncommitted diff, its last five answers), shown once at its start. Waits for its turn to end (`WOLFMUX_ROTATE_WAIT`, 120 s); `--now` does not. The lead rotates any worker, a worker only itself (it gets "rotation started: end your turn", and a detached process rotates it once the turn has ended); policy `worker-rotation` does it by itself ([ADR-0039](adr/0039-rotation.md)) |
 | `teamctl checkpoint "<text>"\|--body-file <file>\|-\|--show [<role>]` | save where you left off, or print a role's stored checkpoint; shown again at the next `SessionStart` |
 | `teamctl run -- <command> [args...]` | runs it; a long output goes to a log and you get its head, tail, failure lines and the path, with the command's own exit code (Codex agents; Claude Code agents get this by hook, policy `output-offload`, on by default) |
 | `teamctl remember "<fact>" [--key <slug>]` | add to shared team notes, shown to every agent at session start (a note is at most 1500 characters; one that does not fit the 4000-character block is skipped, the others still show; control characters are removed and a line starting `[wolfmux` is quoted) |

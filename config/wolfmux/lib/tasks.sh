@@ -189,6 +189,7 @@ cmd_task() {
 cmd_done() {
   local id="" summary="" tests="" body_file="" allow_dirty=0 args=()
   local role me path branch base_commit title tests_line commits_block stat_line short_sha report extra lead_id item blocked_by force="" lead=0
+  local report_path notice
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --tests)
@@ -242,7 +243,10 @@ cmd_done() {
   commits_block="$(_tasks_commit_report "$path" "$base_commit")"
   stat_line="$("$GIT_BIN" -C "$path" diff --stat "$base_commit..HEAD" 2>/dev/null | tail -1)"
   short_sha="$("$GIT_BIN" -C "$path" rev-parse --short HEAD 2>/dev/null)"
-  report="$summary
+  report="# Done: $title ($id)
+by $me
+
+$summary
 $tests_line
 branch: $branch
 $commits_block
@@ -261,13 +265,54 @@ $extra"
   # a second time (D7, one notice per event; lib/mail.sh reads WOLFMUX_MAIL_CLOSE_REPORTED).
   WOLFMUX_MAIL_CLOSE_REPORTED="$([ "$lead" != 1 ] && printf 1)" \
     _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" "" "$force" || die "could not close $id"
+  # The whole report is a file (ADR-0040); the lead's mail is the short notice that names it.
+  # Where the reports directory cannot be written, the file goes to the temporary directory
+  # instead and the notice names that; the whole report never goes into the lead's mail.
+  if ! report_path="$(ledger_report_save "$id" "$report")"; then
+    report_path="${TMPDIR:-/tmp}/wolfmux-report-$id-$$.md"
+    if printf '%s\n' "$report" >"$report_path" 2>/dev/null; then
+      say "could not write the report under $(short_path "$(ledger_reports_dir)"); it is in $report_path"
+      # recorded on the task, so teamctl show finds it (ledger_report_noted)
+      store_task_note "$id" "$me" "report written to $report_path" >/dev/null 2>&1 || true
+    else
+      report_path=""
+      say "could not write the report file anywhere; the lead gets a one-line notice"
+    fi
+  fi
+  notice=""
+  [ -z "$report_path" ] ||
+    notice="$(ledger_report_notice "$id" "$me" "$title" "$summary" "$tests_line" "$branch" "$short_sha" "$stat_line" "$report_path")" ||
+    notice=""
+  # The task is closed by now: whatever goes wrong with the notice, the lead still gets one line
+  # that names the task and the command to its report, and done says what happened.
+  [ -n "$notice" ] || notice="DONE $id by $me: $(_ledger_cut 60 "$title"). Read it: teamctl show $id --report"
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$lead" != 1 ]; then
-    _tasks_reply "$me" "$lead_id" "Done: $title" "$report" "$id" ||
-      die "closed $id, but could not send the report message to $lead_id; tell the lead: teamctl send $WOLFMUX_LEAD_ROLE \"Done: $title\" --body-file <file>"
+    _tasks_report_send "$me" "$lead_id" "Done: $title" "$notice" "$id" >/dev/null ||
+      _tasks_report_send "$me" "$lead_id" "Done: $title" "DONE $id by $me. Read it: teamctl show $id --report" "$id" >/dev/null ||
+      die "closed $id, but could not send the report message to $lead_id; tell the lead: teamctl send $WOLFMUX_LEAD_ROLE \"Done: $title\" --body-file ${report_path:-<file>}"
     say "sent: Done: $title -> $lead_id"
   fi
+  [ -z "$report_path" ] || say "report: $report_path"
   say "closed: $id"
+}
+
+# _tasks_report_send <sender> <lead> <subject> <notice> <task-id>: the short Done notice as a
+# message that replies to the task, announced, and then marked read for the lead at once: the
+# notice says so, on both stores, and a lead that is compacted is not handed it again (its
+# ledger names the report). Prints the message id.
+_tasks_report_send() {
+  local sender="$1" to="$2" id
+  # Marked read before it is announced (native): the lead's hook judges the short form from the
+  # store, and finds it read (lib/mail.sh _mail_done_notice_genuine). The item announced is the
+  # one as written, still open, so mail_announce delivers it. On Beads bd's own hook delivers on
+  # the create, and waits for this read (cmd_deliver).
+  local item
+  id="$(store_msg_create "$sender" "$to" "$3" "$4" "$5")" || return 1
+  item="$(store_item_json "$id")"
+  store_msg_read "$to" "$id" >/dev/null 2>&1 || true
+  mail_announce create "$item" "$sender"
+  printf '%s\n' "$id"
 }
 
 # teamctl blocked [<bead-id>] "<why>"
@@ -447,18 +492,33 @@ _show_render_task() {
 
 # teamctl show <id> [--json] — one task (body, notes, blockers), or one message with its thread.
 cmd_show() {
-  local id="" asjson=0 item type thread
+  local id="" asjson=0 report=0 item type thread path
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) asjson=1 ;;
+      --report) report=1 ;;
       -*) die_usage "unknown option for show: $1" ;;
       *) id="$1" ;;
     esac
     shift
   done
-  [ -n "$id" ] && valid_bead_id "$id" || die_usage "usage: teamctl show <id> [--json]"
+  [ -n "$id" ] && valid_bead_id "$id" || die_usage "usage: teamctl show <id> [--json | --report]"
+  [ "$asjson" -eq 0 ] || [ "$report" -eq 0 ] || die_usage "usage: teamctl show <id> [--json | --report]"
   require_tools
   load_project
+  if [ "$report" -eq 1 ]; then
+    # the stored report as it was written, every character (ADR-0040); no store read needed
+    path="$(ledger_report_path "$id")"
+    if [ ! -r "$path" ]; then
+      # written outside the reports directory: the place done noted on the task
+      item="$(store_item_json "$id" 2>/dev/null)" || item=""
+      path="$(ledger_report_noted "$item")"
+      [ -n "$path" ] || die "no report for $id: only a task closed by teamctl done has one (looked in $(short_path "$(ledger_reports_dir)"))"
+      [ -r "$path" ] || die "the report for $id was written to $path, which cannot be read now"
+    fi
+    /bin/cat "$path"
+    return 0
+  fi
   item="$(store_item_json "$id")" || die "no such id: $id"
   type="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // "task"')"
   if [ "$type" = "message" ]; then
@@ -481,7 +541,20 @@ cmd_show() {
     return 0
   fi
   _show_render_task "$item"
+  _show_report_lines "$id" "$item"
   _show_mark_shown "$item" "$id"
+}
+
+# _show_report_lines <task-id> <item-json>: where its report is, when it has one, and its earlier ones
+_show_report_lines() {
+  local path older
+  path="$(ledger_report_path "$1")"
+  [ -e "$path" ] || path="$(ledger_report_noted "$2")"
+  [ -n "$path" ] && [ -e "$path" ] || return 0
+  say ""
+  say "report: $path   (teamctl show $1 --report)"
+  older="$(ledger_report_older "$1")"
+  [ -z "$older" ] || say "earlier reports: $(printf '%s\n' "$older" | tr '\n' ' ')"
 }
 
 # _show_mark_shown <item-json> <id> — D7: whatever shows an item to its addressee marks it
