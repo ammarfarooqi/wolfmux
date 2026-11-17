@@ -189,6 +189,7 @@ cmd_task() {
 cmd_done() {
   local id="" summary="" tests="" body_file="" allow_dirty=0 args=()
   local role me path branch base_commit title tests_line commits_block stat_line short_sha report extra lead_id item blocked_by force="" lead=0
+  local report_path notice
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --tests)
@@ -242,7 +243,10 @@ cmd_done() {
   commits_block="$(_tasks_commit_report "$path" "$base_commit")"
   stat_line="$("$GIT_BIN" -C "$path" diff --stat "$base_commit..HEAD" 2>/dev/null | tail -1)"
   short_sha="$("$GIT_BIN" -C "$path" rev-parse --short HEAD 2>/dev/null)"
-  report="$summary
+  report="# Done: $title ($id)
+by $me
+
+$summary
 $tests_line
 branch: $branch
 $commits_block
@@ -261,13 +265,35 @@ $extra"
   # a second time (D7, one notice per event; lib/mail.sh reads WOLFMUX_MAIL_CLOSE_REPORTED).
   WOLFMUX_MAIL_CLOSE_REPORTED="$([ "$lead" != 1 ] && printf 1)" \
     _tasks_close "$id" "commit $short_sha; $(printf '%s' "$summary" | head -1)" "$me" "" "$force" || die "could not close $id"
+  # The whole report is a file (ADR-0040); the lead's mail is the short notice that names it. A
+  # report that cannot be written goes whole into the message instead, so nothing is lost.
+  if report_path="$(ledger_report_save "$id" "$report")"; then
+    notice="$(ledger_report_notice "$id" "$me" "$title" "$summary" "$tests_line" "$branch" "$short_sha" "$stat_line" "$report_path")"
+  else
+    report_path=""
+    notice="$report"
+    say "could not write the report file under $(short_path "$(ledger_reports_dir)"); the whole report goes in the message"
+  fi
   lead_id="$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")"
   if [ "$lead" != 1 ]; then
-    _tasks_reply "$me" "$lead_id" "Done: $title" "$report" "$id" ||
-      die "closed $id, but could not send the report message to $lead_id; tell the lead: teamctl send $WOLFMUX_LEAD_ROLE \"Done: $title\" --body-file <file>"
+    _tasks_report_send "$me" "$lead_id" "Done: $title" "$notice" "$id" >/dev/null ||
+      die "closed $id, but could not send the report message to $lead_id; tell the lead: teamctl send $WOLFMUX_LEAD_ROLE \"Done: $title\" --body-file ${report_path:-<file>}"
     say "sent: Done: $title -> $lead_id"
   fi
+  [ -z "$report_path" ] || say "report: $report_path"
   say "closed: $id"
+}
+
+# _tasks_report_send <sender> <lead> <subject> <notice> <task-id>: the short Done notice as a
+# message that replies to the task, announced, and then marked read for the lead at once: the
+# notice says so, on both stores, and a lead that is compacted is not handed it again (its
+# ledger names the report). Prints the message id.
+_tasks_report_send() {
+  local sender="$1" to="$2" id
+  id="$(store_msg_create "$sender" "$to" "$3" "$4" "$5")" || return 1
+  mail_announce create "$(store_item_json "$id")" "$sender"
+  store_msg_read "$to" "$id" >/dev/null 2>&1 || true
+  printf '%s\n' "$id"
 }
 
 # teamctl blocked [<bead-id>] "<why>"
@@ -447,18 +473,27 @@ _show_render_task() {
 
 # teamctl show <id> [--json] — one task (body, notes, blockers), or one message with its thread.
 cmd_show() {
-  local id="" asjson=0 item type thread
+  local id="" asjson=0 report=0 item type thread path
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) asjson=1 ;;
+      --report) report=1 ;;
       -*) die_usage "unknown option for show: $1" ;;
       *) id="$1" ;;
     esac
     shift
   done
-  [ -n "$id" ] && valid_bead_id "$id" || die_usage "usage: teamctl show <id> [--json]"
+  [ -n "$id" ] && valid_bead_id "$id" || die_usage "usage: teamctl show <id> [--json | --report]"
+  [ "$asjson" -eq 0 ] || [ "$report" -eq 0 ] || die_usage "usage: teamctl show <id> [--json | --report]"
   require_tools
   load_project
+  if [ "$report" -eq 1 ]; then
+    # the stored report as it was written, every character (ADR-0040); no store read needed
+    path="$(ledger_report_path "$id")"
+    [ -r "$path" ] || die "no report for $id: only a task closed by teamctl done has one (looked in $(short_path "$(ledger_reports_dir)"))"
+    /bin/cat "$path"
+    return 0
+  fi
   item="$(store_item_json "$id")" || die "no such id: $id"
   type="$(printf '%s' "$item" | "$JQ_BIN" -r '.issue_type // "task"')"
   if [ "$type" = "message" ]; then
@@ -481,7 +516,19 @@ cmd_show() {
     return 0
   fi
   _show_render_task "$item"
+  _show_report_lines "$id"
   _show_mark_shown "$item" "$id"
+}
+
+# _show_report_lines <task-id>: where its report is, when it has one, and its earlier ones
+_show_report_lines() {
+  local path older
+  path="$(ledger_report_path "$1")"
+  [ -e "$path" ] || return 0
+  say ""
+  say "report: $path   (teamctl show $1 --report)"
+  older="$(ledger_report_older "$1")"
+  [ -z "$older" ] || say "earlier reports: $(printf '%s\n' "$older" | tr '\n' ' ')"
 }
 
 # _show_mark_shown <item-json> <id> — D7: whatever shows an item to its addressee marks it

@@ -192,6 +192,8 @@ complete_first_word() {
   complete_emit "$prefix" note "<id> \"<text>\": a durable note on a task"
   complete_emit "$prefix" reopen "<id> \"<why>\": (lead) send a closed task back"
   complete_emit "$prefix" close "<id> -r \"<reason>\": (lead) close or reject a task"
+  complete_emit "$prefix" ledger "open work, recent reports, decisions: what the lead gets back after a compaction"
+  complete_emit "$prefix" decide "\"<text>\": (lead) record a decision that outlives a compaction"
   complete_emit "$prefix" checkpoint "\"<text>\": save where you left off"
   complete_emit "$prefix" rotate "<role>: a fresh conversation with a hand-over"
   complete_emit "$prefix" run "-- <command>: a long output to a log, you get the short form"
@@ -238,9 +240,10 @@ complete_options() {
     task) options="--after --body-file --spawn" ;;
     done) options="--tests --body-file --allow-dirty" ;;
     tasks) options="--all --status --json" ;;
-    show) options="--json" ;;
+    show) options="--json --report" ;;
     close) options="--failed" ;;
     remember) options="--key" ;;
+    decide) options="--list --drop" ;;
     memories) options="--json" ;;
   esac
   for option in $options; do

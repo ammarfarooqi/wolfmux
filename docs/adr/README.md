@@ -44,3 +44,4 @@ build; superseded decisions will link to their replacement.
 | [0037](0037-what-a-trimmed-agent-starts-with.md) | A trimmed agent also starts without unusable tools, connectors and named instruction files; the lead may opt in | accepted | 2026-11-16 |
 | [0038](0038-one-context-number.md) | One context number per agent (used against the limit its CLI compacts at), and a worker window made from what was measured | accepted in part | 2026-11-16 |
 | [0039](0039-rotation.md) | Rotation: a nearly full worker gets a fresh conversation in the same worktree, with a hand-over wolfmux writes (teamctl rotate, policy worker-rotation) | accepted | 2026-11-17 |
+| [0040](0040-a-lead-that-stays-small.md) | A lead that stays small: the report is a file, the mail is short, a ledger comes back after a compaction | accepted | 2026-11-17 |

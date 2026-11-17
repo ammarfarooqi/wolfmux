@@ -2586,6 +2586,39 @@ process is started in its own session with SIGHUP ignored (`/usr/bin/perl`, POSI
 Checks: `tests/rotate.sh` 53 (16 new A3 checks red on 7d6812e, the control green), `tests/recall.sh` 70.
 Two real-CLI scripts for the lead: `tests/research/rotate-auto-run.sh`, `rotate-self-run.sh`.
 
+## 48. A lead that stays small (v1.26.0, ADR-0040)
+
+The lead's conversation is the one that cannot be thrown away, and a worker's report reached it
+whole: summary, commit list and up to 6,000 characters of `--body-file`, at its next tool call.
+After a compaction it had lost the table of who does what.
+
+`teamctl done` now writes the whole report to `<state>/reports/<task-id>.md` (beside the store, the
+same place on both stores; a reopened task done again keeps the earlier one as `<task-id>.1.md`).
+The lead's "Done:" message is a notice of at most 600 characters: task, summary (cut with a marker
+when long), tests line, branch at the short sha, diff stat, the report's path and
+`teamctl show <id> --report`, and it says it is already marked read and needs no reply; `done`
+marks it read in the store at once, on both stores. `teamctl ledger` prints the team's open work,
+what was closed since the lead's conversation began (or in the last 24 hours, whichever reaches
+further) with report paths, and the decisions the lead recorded with `teamctl decide` (300
+characters each, 30 kept, a file on both stores), at most 4,000 characters. The lead's SessionStart
+on `compact` and `resume` attaches it; never at a fresh start, never for a worker or a subagent.
+
+Measuring found a fault of v1.24.0 on Beads: `bd create --deps replies-to:` fires the update hook
+right after the create, with the message still open, so every report was queued twice and handed
+over again at the next tool call (12,368 characters for one 6,000-character report). `teamctl
+_deliver` skips an update of a message the recipient's spool already holds.
+
+Numbers, one done with a 6,000-character report, characters at the lead's next PostToolUse: native
+6,168 before, 377 after; Beads 6,184 (and the same again at the next call) before, 386 after.
+
+Proof: `tests/ledger.sh` runs the same checks on the native store and on Beads (the 600-character
+bound with a 20,000-character `--body-file`, every character in the file, a summary with newlines,
+quotes and `$(...)` arriving literally, one notice and no close notice, `show --report`, the
+reopen, `decide` refused to a worker and when empty or over 300, the 30 kept, the ledger with 200
+tasks under 4,000, SessionStart on compact and resume for the lead only, nothing with `agent_id`).
+Run against v1.25.0, its checks of the new behaviour fail; `tests/tasks.sh` checks the report file
+and the short message.
+
 ## 49. Four low findings of the v1.25.0 review (v1.26.0, part C)
 
 1. **The wrapper line** (ADR-0036). The 700 character prefix became a sourced file, `lib/offload-wrap.sh`;

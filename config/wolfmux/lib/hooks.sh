@@ -46,7 +46,7 @@
 # costs one bash start, no module and no fork.
 
 WOLFMUX_HOOK_EVENTS="SessionStart UserPromptSubmit PostToolUse PreCompact Stop"
-WOLFMUX_HOOK_MODULES="recall mail tasks" # the order their text appears in
+WOLFMUX_HOOK_MODULES="recall mail tasks ledger" # the order their text appears in (ledger: the lead only, ADR-0040)
 WOLFMUX_HOOK_TIMEOUT=20                  # seconds the CLI waits for one hook
 # Every Nth tool call the hot path lets PostToolUse through although nothing is queued, so a
 # module can look at something that changes with the work itself (context use). bin/teamctl

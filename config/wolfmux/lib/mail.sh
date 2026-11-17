@@ -116,7 +116,35 @@ cmd_deliver() {
     return 0
   fi
   mail_quiet_route "$identity" || return 0
+  # A message is never edited after it is written, but bd runs its update hook for the reply link
+  # `--deps replies-to` adds right after the create, with the message still open: that is the
+  # same message again (v1.25.0 handed every report twice, the second at the next tool call).
+  # Spooled or shown once for this recipient: not again (ADR-0040). Both hooks run detached and
+  # race, so the update waits up to 2 s for the create to land; nothing waits on this process.
+  if [ "$event" = "update" ] && [ "$(printf '%s' "$payload" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)" = "message" ]; then
+    local tries=0
+    while [ "$tries" -lt 8 ]; do
+      _mail_had_message "$MAIL_ROLE" "$payload" && return 0
+      sleep 0.25
+      tries=$((tries + 1))
+    done
+  fi
   _mail_deliver_to "$MAIL_ROLE" "$event" "$payload" "$identity"
+}
+
+# _mail_had_message <role> <payload-json>: 0 when the payload is a message whose id this role's
+# spool already holds, waiting (mail/new) or shown (mail/seen)
+_mail_had_message() {
+  local dir id f
+  [ "$(printf '%s' "$2" | "$JQ_BIN" -r '.issue_type // "task"' 2>/dev/null)" = "message" ] || return 1
+  id="$(printf '%s' "$2" | "$JQ_BIN" -r '.id // empty' 2>/dev/null)"
+  valid_bead_id "$id" || return 1
+  dir="$STATE_DIR/run/$1/mail"
+  for f in "$dir"/new/*-"$id".json "$dir"/seen/*-"$id".json; do
+    [ -f "$f" ] || continue
+    [ "$(_mail_spool_id "$f")" = "$id" ] && return 0
+  done
+  return 1
 }
 
 # mail_announce <event: create|update|close> <item-json> <actor-identity> — the native
@@ -213,6 +241,12 @@ _mail_render_bead() {
     who="${from:-someone}"
     role="$(printf '%s' "$json" | "$JQ_BIN" -r '.assignee // "?"' 2>/dev/null)"
     printf '[wolfmux mail] %s closed %s: %s. Review: teamctl diff %s --stat' "$who" "$id" "$title" "$role"
+    return 0
+  fi
+  # A worker's Done report (lib/tasks.sh cmd_done, ADR-0040): the body is already the whole short
+  # notice, which names the report file and says it needs no reply; nothing is added around it.
+  if [ "$type" = "message" ] && [ "${title#Done: }" != "$title" ] && [ "${desc#DONE }" != "$desc" ]; then
+    printf '[wolfmux mail] %s' "$(_mail_sanitize_body "$desc" "$id")"
     return 0
   fi
   if [ "$type" = "message" ]; then
