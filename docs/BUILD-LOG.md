@@ -2533,6 +2533,35 @@ shortened form with exit code 1, the last line, and the failure line 6001 from t
 in `run/w1/out`. The worker's first request was 62,106 tokens in a pane. Status showed `68k/285k 23%` for
 the worker and `122k/967k 12%` for the lead, and the lead got one notice for one `done`.
 
+## 47. Rotation: a fresh conversation with a hand-over wolfmux writes (v1.26.0, ADR-0039)
+
+v1.25.0 told the lead when a worker was nearly full or compacting twice in a row, and the answer was a
+restart by hand that nobody had tried with uncommitted work, starting from a checkpoint no agent had
+written. `teamctl rotate <role>` (`lib/rotate.sh`) does that restart with a hand-over wolfmux writes
+itself: the task with its notes, the agent's own checkpoint text, the commits and the uncommitted state,
+its last five answers, the paths and the reason, each part capped so a 50,000-character task body cannot
+push the git part out (12,000 characters in all). The new conversation sees it first at its start, once.
+The lead may rotate any worker; a worker only itself; the lead role and Codex agents are refused.
+
+Policy `worker-rotation` (default `auto`) does it at a worker's turn end when it is past its rotate
+threshold or has thrashed, from a detached process the Stop hook starts under a lock, at most once per
+conversation, and never again for a conversation a rotation started (the lead gets the context message
+instead). `ask` sends the lead the command; `off` is v1.25.0. By default a rotation waits for the turn to
+end (`WOLFMUX_ROTATE_WAIT`, 120 s) and refuses when it does not, naming `--now`.
+
+`teamctl restart <role> --continue` now files one "continue task <id>" notice for an agent with a task in
+progress, which an idle agent used to wait for. The worker protocol gains two lines: keep a step log in
+the task, and after a rotation read the hand-over and go on.
+
+Found while testing: the lock was first removed by an EXIT trap, and another module sets its own EXIT
+trap later, so a failed rotation left the lock behind. The rotation now runs in a subshell and the lock
+goes after it, whatever ends it.
+
+Tests: `tests/rotate.sh` 32 checks, native store and Beads (`bd` stub); `tests/recall.sh` 69 (the thrash
+notice names `teamctl rotate`). REGRESSION_LINE
+
+REAL_CLI_LINE
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
