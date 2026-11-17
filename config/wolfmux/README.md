@@ -232,6 +232,7 @@ teamctl policy link-node-modules on|off         # share the repository's node_mo
 teamctl policy auto-prune on|off                # sweep a lane's build output when it is parked  default on
 teamctl policy auto-reclaim on|off              # take a FINISHED parked lane off the books by itself  default on
 teamctl policy output-offload on|off            # a long Bash output goes to a log, the agent sees a short form  default on
+teamctl policy worker-rotation off|ask|auto     # a worker near its limit gets a fresh conversation with a hand-over  default auto
 teamctl policy human-pane-typing off|idle       # type notices into a pane you are watching?  default off (yours alone)
 teamctl policy lead-wake unwatched|off          # may an idle lead wake itself for a notice?  default unwatched (yours alone)
 teamctl policy orphan-steward <team>|off        # whose lead may bring back a team YOU founded  default off (yours alone)
@@ -355,6 +356,7 @@ teamctl memories redis                                   # search it
 teamctl forget redis-url                                 # a memory's key defaults to a slug of its text
 teamctl checkpoint "API done; next: wire the UI; watch out for the stale cache key"
 teamctl checkpoint --show backend                        # read a role's stored checkpoint
+teamctl rotate backend                                   # a fresh conversation with a hand-over (--now: do not wait for its turn end)
 teamctl run -- npm test                                  # a long output to a log; head, tail, failure lines, path
 ```
 
@@ -368,8 +370,10 @@ worktree and branch, fresh conversation.
 **The context watch.** Every tenth tool call, the PostToolUse hook checks how full
 the conversation is. At `WOLFMUX_CONTEXT_WARN` percent (default 60) the agent is told
 once to commit and write a checkpoint. At `WOLFMUX_CONTEXT_ROTATE` percent (default
-80) it is told once to start nothing new, and the lead is messaged with the exact
-command to give the task a fresh conversation. `WOLFMUX_WORKER_COMPACT_WINDOW` sets
+80) it is told once to start nothing new, and at its next turn end it is rotated
+(policy `worker-rotation`, default `auto`; `ask` messages the lead the command instead):
+a fresh conversation in the same worktree and branch that starts from a hand-over
+wolfmux writes itself (`run/<role>/memory/handover.md`; ADR-0039). `WOLFMUX_WORKER_COMPACT_WINDOW` sets
 where a worker's own CLI compacts (default: the window `teamctl status` counts that
 model with; `off` leaves it to the CLI).
 
