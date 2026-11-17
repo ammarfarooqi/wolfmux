@@ -2560,7 +2560,9 @@ trap later, so a failed rotation left the lock behind. The rotation now runs in 
 goes after it, whatever ends it.
 
 Tests: `tests/rotate.sh` 35 checks, native store and Beads (`bd` stub); `tests/recall.sh` 69 (the thrash
-notice names `teamctl rotate`). REGRESSION_LINE
+notice names `teamctl rotate`). Every suite in `tests/` (28) in a clean environment
+(`tests/research/run-suite.sh`, `env -i`): 2,658 checks passed, 0 failed, credential-routing exit 0;
+`tests/beads-hotpath.sh` 17 of 17 (the PostToolUse hot path still forks nothing when nothing is queued).
 
 One real-CLI run (the lead, Haiku 5.5, `tests/research/rotate-run.sh`): the calc task with no step log,
 rotated with `--now` after one commit and with the next helper's checks uncommitted. The new conversation
