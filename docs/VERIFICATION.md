@@ -49,10 +49,10 @@ number.)
 
 The suites at v1.26.0, with the check count each one holds at the release commit (v1.25.0 plus rotation, the lead's report files and ledger, and four low findings of the v1.25.0 review). The 28 suites below that run unattended passed with 0 failures on 1e931d6 in a clean environment (`credential-routing.sh` is manual and was not run): two streams side by side, then `smoke.sh` alone; `rotate.sh` and `docs.sh` once more on the commit that adds one check and the last docs (76 and 36). Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
 `BEADS_ACTOR`, `TMUX` and `TMUX_PANE` variable unset, so an agent's own environment cannot
-leak into a suite, and `smoke.sh` alone, since its timing checks fail under parallel load. Keep the rest of the
-environment: under a bare `env -i`, `tests/inbox.sh` fails the setup of its attached-client checks and
-then stands still (seen at v1.26.0, not yet explained; `tests/research/run-suite.sh` builds an
-environment it passes in).
+leak into a suite, and `smoke.sh` alone, since its timing checks fail under parallel load. Keep `TERM`:
+under `env -i` without it no tmux client can attach, `tests/inbox.sh` fails the setup of its
+attached-client checks and then stands still (seen at v1.26.0; with `TERM` set it passes, and
+`tests/research/run-suite.sh` passes it on).
 
 ```bash
 tests/smoke.sh                 # over 10 minutes, 389 checks, isolated from any running team
