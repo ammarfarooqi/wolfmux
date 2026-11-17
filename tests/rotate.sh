@@ -68,7 +68,7 @@ hook() { # <role> <event> <json>
   printf '%s' "$3" | TEAM_ROLE="$1" BEADS_ACTOR="$1" WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$(rundir "$1")" WOLFMUX_MODEL=glm53 teamctl _hook "$2"
 }
 ctx_of() { "$JQ" -r '[.. | objects | .additionalContext? // empty] | join("\n")' 2>/dev/null; }
-lmail() { BEADS_ACTOR=lead WOLFMUX_IDENTITY=lead teamctl mail 2>/dev/null; }
+lmail() { BEADS_ACTOR=lead WOLFMUX_IDENTITY=lead teamctl mail --peek 2>/dev/null; }
 
 echo "== the hand-over: order and caps (rotate_handover_write) =="
 HO="$WORK/ho"
