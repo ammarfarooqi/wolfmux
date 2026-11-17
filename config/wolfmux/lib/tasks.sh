@@ -295,8 +295,12 @@ $extra"
 # ledger names the report). Prints the message id.
 _tasks_report_send() {
   local sender="$1" to="$2" id
-  id="$(store_msg_create "$sender" "$to" "$3" "$4" "$5")" || return 1
-  mail_announce create "$(store_item_json "$id")" "$sender"
+  # WOLFMUX_DONE_NOTICE: the mark that this is the notice cmd_done builds, set only here and
+  # carried in the spooled item (native: mail_announce; Beads: bd hands its hook this
+  # environment, cmd_deliver). _mail_render_bead shows the short form only with it, never for a
+  # message whose text merely looks like one.
+  id="$(WOLFMUX_DONE_NOTICE=1 store_msg_create "$sender" "$to" "$3" "$4" "$5")" || return 1
+  WOLFMUX_DONE_NOTICE=1 mail_announce create "$(store_item_json "$id")" "$sender"
   store_msg_read "$to" "$id" >/dev/null 2>&1 || true
   printf '%s\n' "$id"
 }

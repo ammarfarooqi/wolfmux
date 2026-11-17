@@ -6,7 +6,7 @@
 #   reports   $PROJECT_STATE/reports/<task-id>.md   the whole report `teamctl done` builds, kept as
 #             a file beside the store (one place for both stores). The lead's mail names the path
 #             and stays under WOLFMUX_REPORT_NOTICE_MAX characters. A task done again after a
-#             reopen keeps its earlier reports as <task-id>.1.md, <task-id>.2.md (1 is the oldest).
+#             reopen keeps its earlier reports as <task-id>~1.md, <task-id>~2.md (1 is the oldest).
 #   decisions $STATE_DIR/decisions                  one line per decision the lead recorded with
 #             `teamctl decide`: "<UTC time><TAB><text>". At most WOLFMUX_DECISIONS_MAX, oldest leave
 #             first. A file on both stores, never beads or rows.
@@ -31,33 +31,38 @@ ledger_reports_dir() { printf '%s/reports\n' "$PROJECT_STATE"; }
 ledger_report_path() { printf '%s/%s.md\n' "$(ledger_reports_dir)" "$1"; }
 
 # ledger_report_save <task-id> <text>: writes the report, atomically. An earlier report of the
-# same task moves to the first free <task-id>.<n>.md first, so nothing of it is lost. Prints the
-# path. 1 when the directory cannot be written or the id is not one.
+# same task moves to the first free <task-id>~<n>.md first, so nothing of it is lost ("~" is not
+# in any task id: a Beads child X.1 is not X's first older report). Under a lock (mkdir), so two
+# `done` of one task at once do not overwrite one. Prints the path. 1 when the directory cannot
+# be written, the id is not one or the lock is not had.
 ledger_report_save() {
-  local id="$1" text="$2" dir file n=1 tmp
+  local id="$1" text="$2" dir file n=1 tmp rc=0
   valid_bead_id "$id" || return 1
   dir="$(ledger_reports_dir)"
   /bin/mkdir -p "$dir" 2>/dev/null || return 1
+  _inbox_lock_dir "$dir/.lock" || return 1
   file="$dir/$id.md"
-  if [ -e "$file" ]; then
-    while [ -e "$dir/$id.$n.md" ]; do n=$((n + 1)); done
-    /bin/mv -f "$file" "$dir/$id.$n.md" 2>/dev/null || return 1
-  fi
   tmp="$file.tmp.$$"
-  printf '%s\n' "$text" >"$tmp" 2>/dev/null || {
+  if [ -e "$file" ]; then
+    while [ -e "$dir/$id~$n.md" ]; do n=$((n + 1)); done
+    /bin/mv -f "$file" "$dir/$id~$n.md" 2>/dev/null || rc=1
+  fi
+  if [ "$rc" -eq 0 ] && printf '%s\n' "$text" >"$tmp" 2>/dev/null && /bin/mv -f "$tmp" "$file" 2>/dev/null; then
+    printf '%s\n' "$file"
+  else
     /bin/rm -f "$tmp"
-    return 1
-  }
-  /bin/mv -f "$tmp" "$file" 2>/dev/null || return 1
-  printf '%s\n' "$file"
+    rc=1
+  fi
+  /bin/rm -rf "$dir/.lock" 2>/dev/null || true
+  return "$rc"
 }
 
 # ledger_report_older <task-id>: the earlier reports of that task, oldest first, one path a line
 ledger_report_older() {
   local dir n=1
   dir="$(ledger_reports_dir)"
-  while [ -e "$dir/$1.$n.md" ]; do
-    printf '%s\n' "$dir/$1.$n.md"
+  while [ -e "$dir/$1~$n.md" ]; do
+    printf '%s\n' "$dir/$1~$n.md"
     n=$((n + 1))
   done
 }
@@ -178,8 +183,9 @@ cmd_decide() {
       case "$drop" in '' | *[!0-9]* | 0*) die_usage "--drop needs the number of a decision, as teamctl decide --list shows it" ;; esac
       mode="drop"
       ;;
-    -*) die_usage "unknown option for decide: $1" ;;
     *)
+      # a text that starts with "-" is a text: after "--", or as the only argument
+      [ "${1:-}" != "--" ] || shift
       [ "$#" -eq 1 ] || die_usage 'usage: teamctl decide "<text>"   (one argument: quote the text)'
       text="$(printf '%s' "$1" | LC_ALL=C tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\010\013-\037\177')"
       text="$(printf '%s' "$text" | /usr/bin/sed -e 's/^ *//' -e 's/ *$//')"
@@ -197,12 +203,29 @@ cmd_decide() {
     return 0
   fi
   require_manager decide
+  # one writer at a time: two decisions at once both stay (mkdir lock, as the inbox has)
+  /bin/mkdir -p "${file%/*}" 2>/dev/null || die "could not write $(short_path "$file")"
+  _inbox_lock_dir "$file.lock" || die "the decisions are being written by someone else; try again"
+  local msg rc=0
+  msg="$(_ledger_decide_locked "$mode" "$file" "$drop" "$text")" || rc=$?
+  /bin/rm -rf "$file.lock" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || die "$msg"
+  say "$msg"
+}
+
+# _ledger_decide_locked <add|drop> <file> <n> <text>: the change itself, under the caller's lock;
+# prints what to say, or why not (exit 1)
+_ledger_decide_locked() {
+  local mode="$1" file="$2" drop="$3" text="$4" kept count
   if [ "$mode" = "drop" ]; then
     count="$( (/usr/bin/awk 'NF' "$file" 2>/dev/null || true) | /usr/bin/wc -l | tr -d ' ')"
-    [ "$drop" -le "${count:-0}" ] || die "no decision $drop; there are ${count:-0}: teamctl decide --list"
+    if [ "$drop" -gt "${count:-0}" ]; then
+      printf 'no decision %s; there are %s: teamctl decide --list' "$drop" "${count:-0}"
+      return 1
+    fi
     kept="$(/usr/bin/awk -v n="$drop" 'NF { i++; if (i != n) print }' "$file")"
-    _ledger_decisions_write "$kept" || die "could not write $(short_path "$file")"
-    say "dropped decision $drop"
+    _ledger_decisions_write "$kept" || { printf 'could not write %s' "$(short_path "$file")"; return 1; }
+    printf 'dropped decision %s' "$drop"
     return 0
   fi
   kept="$(/usr/bin/awk 'NF' "$file" 2>/dev/null || true)"
@@ -210,9 +233,9 @@ cmd_decide() {
 }$(now_iso)	$text"
   # at most WOLFMUX_DECISIONS_MAX: the oldest leave first
   kept="$(printf '%s\n' "$kept" | /usr/bin/tail -n "$WOLFMUX_DECISIONS_MAX")"
-  _ledger_decisions_write "$kept" || die "could not write $(short_path "$file")"
+  _ledger_decisions_write "$kept" || { printf 'could not write %s' "$(short_path "$file")"; return 1; }
   count="$(printf '%s\n' "$kept" | /usr/bin/wc -l | tr -d ' ')"
-  say "decision $count recorded"
+  printf 'decision %s recorded' "$count"
 }
 
 # --- the ledger ---------------------------------------------------------------------------
