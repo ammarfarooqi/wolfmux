@@ -253,10 +253,12 @@ run clears, never a half-deleted `node_modules` that looks installed.
 | `teamctl mail [<role>] [--peek] [--json]` | your (or that role's) unread mail and open tasks; marks what it shows as read unless `--peek` |
 | `teamctl task <role> "<title>" [-d "<text>"\|--body-file <file>\|-] [-p <0-4>] [--after <bead-id>]… [--spawn <model>]` | assign work; `--after` adds a dependency, `--spawn` starts the role if it is not already running |
 | `teamctl claim [<id>]` | claim your only open task, or the one you name; refuses one still waiting on an unclosed blocker |
-| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | report and close a task: a `Done:` message to the lead (summary, tests, commit, `git log`), then closes it |
+| `teamctl done [<id>] "<summary>" [--tests "<command: result>"] [--body-file <file>] [--allow-dirty]` | report and close a task: the full report (summary, tests, commits, diff stat, `--body-file`) goes to a file, `<state>/reports/<id>.md`; the lead gets a notice of at most 600 characters, already marked read |
 | `teamctl blocked [<id>] "<why>"` | mark a task blocked and tell the lead why |
 | `teamctl tasks [<role>\|--all] [--status <list>] [--json]` | a list of tasks; default is your own team, not closed |
-| `teamctl show <id> [--json]` | one task (body, notes, blockers), or a message with its whole thread |
+| `teamctl show <id> [--json\|--report]` | one task (body, notes, blockers; a done task names its report file), or a message with its whole thread; `--report` prints the stored `teamctl done` report |
+| `teamctl ledger` | the team's table from the store, at most 4,000 characters: open and in-progress tasks, tasks done lately with their report paths, the decisions. The lead gets it by itself after a compaction or a resume |
+| `teamctl decide "<text>"\|--list\|--drop <n>` (lead adds and drops) | a dated decision that outlives a compaction, at most 300 characters; the last 30 are kept and shown in the ledger |
 | `teamctl note <id> "<text>"` | a durable note on a task; notifies nobody |
 | `teamctl reopen <id> "<why>"` (lead) | send a closed task back: open, the reason noted, the assignee told |
 | `teamctl close <id> -r "<reason>" [--failed]` (lead) | close or reject any task of this team |
