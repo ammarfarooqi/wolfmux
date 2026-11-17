@@ -1023,8 +1023,12 @@ cmd_inbox_stop() {
   /bin/cat >/dev/null 2>&1 || true # the hook's JSON on stdin; nothing here needs it
   _inbox_hook_ready || return 0
   # A rotation is due at this turn end (lib/rotate.sh, memory/rotate-due): the notices wait for the
-  # fresh conversation, which gets them at its start. This hook runs beside _hook Stop, not after it.
-  [ ! -e "${WOLFMUX_RUN_DIR:-/nonexistent}/memory/rotate-due" ] || return 0
+  # fresh conversation, which gets them at its start. This hook runs beside _hook Stop, not after it,
+  # so a missing rotate.lock still counts (that Stop may be taking it right now); a stale one does not:
+  # the rotation that took it is gone (rotate_lock_stale, asked only when rotate-due is there).
+  if [ -e "${WOLFMUX_RUN_DIR:-/nonexistent}/memory/rotate-due" ]; then
+    rotate_lock_stale "$WOLFMUX_RUN_DIR/rotate.lock" || return 0
+  fi
   [ "$(inbox_count_undelivered "$INBOX_ROLE")" != "0" ] || return 0
   stamp="$(inbox_dir)/.stop.$INBOX_ROLE"
   last="$(/bin/cat "$stamp" 2>/dev/null || printf '0')"

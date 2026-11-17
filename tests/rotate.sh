@@ -115,6 +115,22 @@ OLD="$(record w1 session_id)"
 check "the lead role is refused, and the refusal says why" 'out="$(teamctl rotate lead --now 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "not rotated"'
 check "a worker rotating another role is refused" \
   'out="$(TEAM_ROLE=w2 "$REPO/tests/in-pane" rotate w1 --now 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "may rotate only itself"'
+LEADS="$(record lead session_id)"
+untouched() { [ "$(record lead session_id)" = "$LEADS" ] && [ "$(record w1 session_id)" = "$OLD" ] && [ ! -e "$R1/memory/handover.pending" ]; }
+check "release review HIGH 1: ROTATE_ACTING=1 from a worker does not let it restart the lead" \
+  'out="$(ROTATE_ACTING=1 TEAM_ROLE=w2 "$REPO/tests/in-pane" restart lead 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "reserved for the lead" && untouched'
+check "release review HIGH 1: ROTATE_ACTING=1 from a worker does not let it restart another worker" \
+  'out="$(ROTATE_ACTING=1 TEAM_ROLE=w2 "$REPO/tests/in-pane" restart w1 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "reserved for the lead" && untouched'
+check "the internal _rotate-run, typed by a worker for the lead: refused (77), nothing written" \
+  'TEAM_ROLE=w2 "$REPO/tests/in-pane" _rotate-run lead x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
+check "the internal _rotate-run, typed by a worker for another worker: refused (77), nothing written" \
+  'TEAM_ROLE=w2 "$REPO/tests/in-pane" _rotate-run w1 x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
+check "the internal _rotate-auto, typed by a worker for another worker: refused (77), nothing written" \
+  'TEAM_ROLE=w2 "$REPO/tests/in-pane" _rotate-auto w1 x "$OLD" >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
+check "the internal _rotate-run, typed by the lead for a worker: refused (77); the lead uses teamctl rotate" \
+  'TEAM_ROLE=lead "$REPO/tests/in-pane" _rotate-run w1 x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched'
+check "the internal _rotate-run, typed by a worker for itself with no rotation lock taken: refused (77)" \
+  'TEAM_ROLE=w1 "$REPO/tests/in-pane" _rotate-run w1 x y 1 >/dev/null 2>&1; [ $? -eq 77 ] && untouched && [ ! -e "$R1/rotate.lock" ]'
 printf 'busy\n' >"$R1/state"
 check "the wait runs out: refused, it says so and names --now, nothing written" \
   'out="$(WOLFMUX_ROTATE_WAIT=1 teamctl rotate w1 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q -- "--now" && [ ! -e "$R1/memory/handover.md" ] && [ "$(record w1 session_id)" = "$OLD" ]'
@@ -300,6 +316,59 @@ printf 'idle\n' >"$R2/state"
 check "the task closed while the rotation waited for the turn end: not rotated, rotate-fired cleared, said in rotate.log, no message to the lead" \
   'sleep 3; [ "$(record w2 session_id)" = "$CUR2" ] && [ ! -e "$R2/memory/rotate-fired" ] && [ ! -e "$R2/rotate.lock" ] && grep -q "no task in progress any more" "$R2/rotate.log" && [ "$(lcount "w2: rotated")" = "$ROTATED_BEFORE" ]'
 
+echo "== release review MEDIUM 2: a stale rotate.lock with a leftover rotate-due does not silence the Stop hooks =="
+AUTO="$(record w1 session_id)"
+/bin/rm -f "$R1"/tasks/reminded-* "$R1/memory/rotate-fired"
+/bin/mkdir -p "$R1/rotate.lock"
+printf 'stop 1 dead.1\n' >"$R1/rotate.lock/by"
+: >"$R1/memory/rotate-due"
+WOLFMUX_NUDGE_TYPE=off teamctl send w1 "a message past a dead rotation" "must arrive" >/dev/null 2>&1
+sleep 1
+check "_inbox-stop: rotate-due with a stale lock is not honoured; the notice is handed over" \
+  'inbox_stop w1 | grep -q "a message past a dead rotation"'
+"$JQ" -n '{used: 1, limit: 2, percent: 40}' >"$R1/memory/ctx"
+printf 'busy\n' >"$R1/state"
+SOUT3="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_TEAM=default WOLFMUX_INBOX_CLIENTS=0 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/tests/in-pane" _hook Stop)"
+check "the Stop hook: a stale lock and rotate-due are removed, and the turn end speaks again (the task reminder)" \
+  '[ ! -e "$R1/rotate.lock" ] && [ ! -e "$R1/memory/rotate-due" ] && printf "%s" "$SOUT3" | grep -q "You are stopping while" && [ "$(record w1 session_id)" = "$AUTO" ]'
+/bin/mkdir -p "$R1/rotate.lock"
+printf 'stop %s fresh.1\n' "$(date +%s)" >"$R1/rotate.lock/by"
+: >"$R1/memory/rotate-due"
+WOLFMUX_NUDGE_TYPE=off teamctl send w1 "a message during a live rotation" "waits" >/dev/null 2>&1
+sleep 1
+check "_inbox-stop: rotate-due with a fresh lock is still honoured (silent)" '[ -z "$(inbox_stop w1)" ]'
+/bin/rm -rf "$R1/rotate.lock" "$R1/memory/rotate-due"
+inbox_stop w1 >/dev/null
+
+echo "== release review MEDIUM 3: a rotation whose restart fails leaves nothing behind and tells the lead =="
+# A record whose working directory is gone makes cmd_restart die after the hand-over is written.
+REC1="$(find "$WOLFMUX_DATA" -path "*/agents/w1.json" | head -1)"
+/bin/cp "$REC1" "$WORK/w1.json.saved"
+"$JQ" '.workdir = "/nonexistent/wolfmux-gone"' "$WORK/w1.json.saved" >"$REC1"
+AUTO="$(record w1 session_id)"
+/bin/rm -f "$R1/memory/rotate-fired" "$R1/memory/rotated" "$R1/memory/thrash-told" "$R1/memory/handover.pending"
+FAILED_BEFORE="$(lcount "w1: rotation failed")"
+printf 'idle\n' >"$R1/state"
+: >"$R1/memory/rotate-due"
+stop_at w1 95 "$AUTO"
+check "auto path, the restart fails: no handover.pending, no rotated line, no rotate-due, rotate-fired cleared, the lock gone" \
+  'poll "[ ! -e \"$R1/rotate.lock\" ]" && sleep 1 && [ ! -e "$R1/memory/handover.pending" ] && ! grep -qx "$AUTO" "$R1/memory/rotated" 2>/dev/null && [ ! -e "$R1/memory/rotate-due" ] && [ ! -e "$R1/memory/rotate-fired" ] && [ "$(record w1 session_id)" = "$AUTO" ]'
+check "auto path, the restart fails: one message at the lead with the log line, the context figure and the retry command" \
+  'poll "[ \"\$(lcount \"w1: rotation failed\")\" = $((FAILED_BEFORE + 1)) ]" && lmail | grep -q "working directory is gone" && lmail | grep -q "teamctl rotate w1" && lmail | grep -q "context: "'
+check "lead path, the restart fails: refused, the same three files gone, no message at the lead" \
+  '! teamctl rotate w1 --now >/dev/null 2>&1 && [ ! -e "$R1/memory/handover.pending" ] && ! grep -qx "$AUTO" "$R1/memory/rotated" 2>/dev/null && [ ! -e "$R1/rotate.lock" ] && sleep 1 && [ "$(lcount "w1: rotation failed")" = $((FAILED_BEFORE + 1)) ]'
+/bin/cp "$WORK/w1.json.saved" "$REC1"
+
+echo "== release review LOW 4: a rotation that ends removes its own lock only, never one taken over since =="
+AUTO="$(record w1 session_id)"
+printf 'busy\n' >"$R1/state"
+TEAM_ROLE=w1 WOLFMUX_ROTATE_WAIT=4 "$REPO/tests/in-pane" rotate w1 >/dev/null 2>&1
+sleep 1.5 # the detached process is past its entry check and waits for the turn end
+printf 'rotate %s other.1\n' "$(date +%s)" >"$R1/rotate.lock/by" # a second rotation took the lock over meanwhile
+check "the first one gives up (its wait runs out) and leaves the second one's lock in place" \
+  'poll "grep -q \"did not end its turn\" \"$R1/rotate.log\"" && sleep 1 && [ -d "$R1/rotate.lock" ] && grep -q "other.1" "$R1/rotate.lock/by" && [ "$(record w1 session_id)" = "$AUTO" ]'
+/bin/rm -rf "$R1/rotate.lock" "$R1/memory/rotate-due"
+
 echo "== A3 finding 5: the rotating process outlives the pane it was started from =="
 PANE_OUT="$WORK/pane"
 /bin/mkdir -p "$PANE_OUT"
@@ -328,6 +397,14 @@ SOUT2="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLF
 check "... its turn end gets no task reminder from wolfmux while that rotation waits" '[ -z "$(printf "%s" "$SOUT2" | ctx_of)" ] && [ "$(cat "$R1/state")" = idle ]'
 check "... and the detached process rotates it once its turn has ended; the lock goes" \
   'poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]" && [ "$(record w1 rotated_from)" = "$AUTO" ]'
+
+echo "== release review LOW 5: the loop guard holds for a worker rotating itself =="
+AUTO="$(record w1 session_id)"
+/bin/rm -f "$R1/memory/below-seen"
+grep -qx "new $AUTO" "$R1/memory/rotated" 2>/dev/null || printf 'new %s\n' "$AUTO" >>"$R1/memory/rotated"
+check "a conversation a rotation started, never seen under the threshold: its own teamctl rotate is refused, says why and that the lead can" \
+  'out="$(TEAM_ROLE=w1 "$REPO/tests/in-pane" rotate w1 --now 2>&1)"; [ $? -ne 0 ] && printf "%s" "$out" | grep -q "started by a rotation" && printf "%s" "$out" | grep -q "the lead can still rotate it" && [ ! -e "$R1/rotate.lock" ] && sleep 1 && [ "$(record w1 session_id)" = "$AUTO" ]'
+check "... the lead still can" 'teamctl rotate w1 --now | grep -q "rotated: w1"'
 
 echo "== restart --continue wakes an agent with a task in_progress =="
 check "a notice 'continue task <id>' is filed through the inbox" \

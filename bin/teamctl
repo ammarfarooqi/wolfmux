@@ -372,7 +372,14 @@ EOF
   exit 64
 }
 
+# Variables wolfmux sets inside one process as a permission or as who-did-what, and reads back with
+# ${NAME:-}. None of them is ever meant to come in from the environment: a caller that sets one
+# (ROTATE_ACTING=1 teamctl restart lead) would skip the check it stands for. main() drops them first.
+WOLFMUX_INTERNAL_FLAGS="ROTATE_ACTING ROTATE_HAVE_LOCK ROTATE_STARTED ROTATE_LOCK_TOKEN CALLER_RESOLVED CALLER_ROLE CALLER_TEAM CALLER_NOT_HERE FOUNDER_ACTING STEWARD_ACTING STEWARD_RECORDED LEAD_RESTART EVENT_BY"
+
 main() {
+  # shellcheck disable=SC2086
+  unset $WOLFMUX_INTERNAL_FLAGS
   # --team <name> may stand anywhere: `teamctl --team review status`, `teamctl stop qa --team review`
   local rest=() command
   while [ "$#" -gt 0 ]; do

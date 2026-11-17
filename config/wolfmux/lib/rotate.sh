@@ -16,7 +16,9 @@
 #                              of wolfmux stays quiet at that turn end (they run in parallel, so a file
 #                              written before the Stop is the one thing they all can see)
 #   rotate.lock                a directory: one rotation at a time per role; its "by" file holds
-#                              "<who> <epoch>"; older than WOLFMUX_ROTATE_LOCK_STALE seconds, it is taken over
+#                              "<who> <epoch> <token>"; older than WOLFMUX_ROTATE_LOCK_STALE seconds, it is
+#                              taken over. The token (pid and a random number of the taker) is handed to the
+#                              detached process, which proves with it that a rotation took the lock for it
 
 WOLFMUX_HANDOVER_CHARS="${WOLFMUX_HANDOVER_CHARS:-12000}"
 WOLFMUX_ROTATE_WAIT="${WOLFMUX_ROTATE_WAIT:-120}"
@@ -171,24 +173,76 @@ that says where you stand. wolfmux then replaces this conversation with a fresh 
 commits, the uncommitted diff, your last answers) and continues the task. Do not close the task, do not hand it back; no
 message to the lead is needed."
 
+# _rotate_lock_age <lock-dir> - its age in seconds: the epoch in its "by" file, else the directory's
+# mtime. 1 when it is not there or its age is unknown.
+_rotate_lock_age() {
+  local who="" at="" rest
+  [ -d "$1" ] || return 1
+  if [ -r "$1/by" ]; then read -r who at rest <"$1/by" || true; fi
+  _rotate_num "$at" || at="$(/usr/bin/stat -f %m "$1" 2>/dev/null)" || at=""
+  _rotate_num "$at" || return 1
+  printf '%s\n' "$(($(now_epoch) - at))"
+}
+
+# rotate_lock_stale <lock-dir> - 0 when it is there and older than WOLFMUX_ROTATE_LOCK_STALE seconds: the
+# process that held it is gone (killed, the machine slept) and it no longer stands for a rotation.
+rotate_lock_stale() {
+  local age
+  age="$(_rotate_lock_age "$1")" || return 1
+  [ "$age" -gt "$WOLFMUX_ROTATE_LOCK_STALE" ]
+}
+
 # _rotate_lock_take <lock-dir> <who> - 0 with the lock taken; a lock older than
 # WOLFMUX_ROTATE_LOCK_STALE seconds (its "by" file, else the directory's mtime) is taken over. 1 when
-# it is held; ROTATE_LOCK_AGE is then its age in seconds ("" when unknown).
+# it is held; ROTATE_LOCK_AGE is then its age in seconds ("" when unknown). Taken, ROTATE_LOCK_TOKEN
+# is the token written into its "by" file.
 _rotate_lock_take() {
-  local who="" at="" now
-  ROTATE_LOCK_AGE=""
+  ROTATE_LOCK_AGE="" ROTATE_LOCK_TOKEN="$$.$RANDOM$RANDOM"
   if ! /bin/mkdir "$1" 2>/dev/null; then
-    if [ -r "$1/by" ]; then read -r who at <"$1/by" || true; fi
-    _rotate_num "$at" || at="$(/usr/bin/stat -f %m "$1" 2>/dev/null)" || at=""
-    _rotate_num "$at" || return 1
-    now="$(now_epoch)"
-    ROTATE_LOCK_AGE=$((now - at))
+    ROTATE_LOCK_AGE="$(_rotate_lock_age "$1")" || return 1
     [ "$ROTATE_LOCK_AGE" -gt "$WOLFMUX_ROTATE_LOCK_STALE" ] || return 1
     /bin/rm -rf "$1" 2>/dev/null || true
     /bin/mkdir "$1" 2>/dev/null || return 1
   fi
-  printf '%s %s\n' "$2" "$(now_epoch)" >"$1/by" 2>/dev/null || true
+  printf '%s %s %s\n' "$2" "$(now_epoch)" "$ROTATE_LOCK_TOKEN" >"$1/by" 2>/dev/null || true
   return 0
+}
+
+# _rotate_lock_token <lock-dir> - the token its "by" file holds, or nothing
+_rotate_lock_token() {
+  local who="" at="" token=""
+  if [ -r "$1/by" ]; then read -r who at token <"$1/by" || true; fi
+  printf '%s' "$token"
+}
+
+# _rotate_lock_release <lock-dir> <token> - remove the lock only while it is still this rotation's: one
+# that outlived WOLFMUX_ROTATE_LOCK_STALE may have been taken over by a second rotation since.
+_rotate_lock_release() {
+  [ -n "${2:-}" ] && [ "$(_rotate_lock_token "$1")" = "$2" ] || return 0
+  /bin/rm -rf "$1" 2>/dev/null || true
+}
+
+# _rotate_internal_gate <role> <token> - the entry of _rotate-run and _rotate-auto, before anything is
+# written. They are started detached by a rotation of <role> that took run/<role>/rotate.lock (a Stop
+# hook of that agent, or its own teamctl rotate), and inherit its TEAM_ROLE and TMUX_PANE: the caller
+# must be <role> itself, never the lead, and the lock must hold the token that rotation handed over.
+# Anyone else typing them (a worker for the lead or another worker, the lead for a worker: the lead
+# uses teamctl rotate) is refused with 77. The detached process has left the pane, so the pane proof
+# cannot be asked of it; the role it names and the token are.
+_rotate_internal_gate() {
+  local why=""
+  caller_resolve
+  if [ "$1" = "$WOLFMUX_LEAD_ROLE" ]; then
+    why="the lead is not rotated"
+  elif [ -z "$CALLER_ROLE" ] || [ "$CALLER_ROLE" != "$1" ]; then
+    why="it runs only as '$1' itself, started by a rotation of '$1' (you are ${CALLER_ROLE:-the operator})"
+  elif [ ! -d "$(run_dir "$1")/rotate.lock" ]; then
+    why="no rotation of '$1' holds its rotate.lock"
+  elif [ -z "${2:-}" ] || [ "$(_rotate_lock_token "$(run_dir "$1")/rotate.lock")" != "$2" ]; then
+    why="the rotate.lock of '$1' was not taken for this process"
+  fi
+  [ -n "$why" ] || return 0
+  die "teamctl ${TEAMCTL_ARGS:-_rotate} is internal and was not run: $why. To rotate a worker: teamctl rotate <role> (the lead, or a worker for itself)." 77
 }
 
 # _rotate_detach <log> <command...> - start <command> so that it outlives the pane it was started
@@ -216,10 +270,16 @@ rotate_at_stop() {
   [ "$HOOK_ROLE" != "${WOLFMUX_LEAD_ROLE:-lead}" ] || return 0
   [ "${WOLFMUX_WORKER_ROTATION:-}" != "off" ] || return 0
   if [ -e "$HOOK_RUN/memory/rotate-due" ] && [ -d "$HOOK_RUN/rotate.lock" ]; then
-    # A rotation is under way and waits for this turn end (a worker's own teamctl rotate, or an
-    # earlier Stop): nothing more to start, and no other module may continue the turn.
-    ROTATE_STARTED=1
-    return 0
+    if ! rotate_lock_stale "$HOOK_RUN/rotate.lock"; then
+      # A rotation is under way and waits for this turn end (a worker's own teamctl rotate, or an
+      # earlier Stop): nothing more to start, and no other module may continue the turn.
+      ROTATE_STARTED=1
+      return 0
+    fi
+    # A stale lock: the rotation that took it is gone. Kept, it and rotate-due would keep every Stop
+    # hook of this conversation quiet for ever; both go, and this Stop goes on as usual.
+    /bin/rm -rf "$HOOK_RUN/rotate.lock" 2>/dev/null || true
+    /bin/rm -f "$HOOK_RUN/memory/rotate-due" 2>/dev/null || true
   fi
   if [ -r "$HOOK_RUN/memory/ctx" ]; then percent="$("$JQ_BIN" -r '.percent // empty' "$HOOK_RUN/memory/ctx" 2>/dev/null)"; fi
   rotate="$(_memory_threshold "${WOLFMUX_CONTEXT_ROTATE:-}" 80)"
@@ -244,7 +304,7 @@ rotate_at_stop() {
   fi
   lock="$HOOK_RUN/rotate.lock"
   _rotate_lock_take "$lock" stop || return 0
-  _rotate_detach "$HOOK_RUN/rotate.log" "$TEAMCTL_SELF" _rotate-auto "$HOOK_ROLE" "$reason" "$session"
+  _rotate_detach "$HOOK_RUN/rotate.log" "$TEAMCTL_SELF" _rotate-auto "$HOOK_ROLE" "$reason" "$session" "$ROTATE_LOCK_TOKEN"
   # cmd_hook runs no other module after this one at this Stop: no task reminder, no mail handed over,
   # nothing that would continue the turn the rotation waits for.
   ROTATE_STARTED=1
@@ -304,6 +364,11 @@ cmd_rotate() {
   by="$(if [ -n "$CALLER_ROLE" ]; then team_identity "$TEAM" "$CALLER_ROLE"; else printf 'operator'; fi)"
   local dir rc=0
   dir="$(run_dir_ensure "$role")"
+  if [ "${CALLER_ROLE:-}" = "$role" ] && _rotate_guarded "$dir" "$(reg_field "$role" session_id)"; then
+    # The loop guard of the automatic path, for a worker rotating itself: without it, a confused worker
+    # could rotate every turn. The lead is not held back by it.
+    die "not rotated: this conversation was started by a rotation and has not been under its rotate threshold since, so a fresh one would start just as full and a rotation would not help. Commit, end your turn with where you stand, and tell your lead: the lead can still rotate it (teamctl rotate $role)."
+  fi
   _rotate_lock_take "$dir/rotate.lock" rotate ||
     die "a rotation of '$role' is already under way ($dir/rotate.lock, ${ROTATE_LOCK_AGE:-?} s old; taken over after ${WOLFMUX_ROTATE_LOCK_STALE} s)"
   if [ -n "$CALLER_ROLE" ] && [ "$CALLER_ROLE" = "$role" ]; then
@@ -311,26 +376,43 @@ cmd_rotate() {
     # that runs it, and its turn cannot end while it waits. A detached process does it; it waits for
     # the turn end as the default does (or not, with --now).
     : >"$dir/memory/rotate-due" 2>/dev/null || true
-    _rotate_detach "$dir/rotate.log" "$TEAMCTL_SELF" _rotate-run "$role" "${reason:-asked by $by}" "$by" "$now"
+    _rotate_detach "$dir/rotate.log" "$TEAMCTL_SELF" _rotate-run "$role" "${reason:-asked by $by}" "$by" "$now" "$ROTATE_LOCK_TOKEN"
     say "rotation started: end your turn (wolfmux replaces this conversation once it has ended; log: $(short_path "$dir/rotate.log"))"
     return 0
   fi
   # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
   (ROTATE_HAVE_LOCK=1 rotate_run "$role" "${reason:-asked by $by}" "$by" "$now" "") || rc=$?
-  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+  _rotate_lock_release "$dir/rotate.lock" "$ROTATE_LOCK_TOKEN"
   return "$rc"
 }
 
-# cmd_rotate_detached <role> <reason> <by> <now> - internal (`teamctl _rotate-run`), detached by a
-# worker's own `teamctl rotate`, which already holds run/<role>/rotate.lock.
+# cmd_rotate_detached <role> <reason> <by> <now> <token> - internal (`teamctl _rotate-run`), detached by
+# a worker's own `teamctl rotate`, which already holds run/<role>/rotate.lock.
 cmd_rotate_detached() {
-  local role="$1" dir rc=0
+  local role="${1:-}" dir rc=0
+  require_role_arg "$role"
   require_tools
   load_project
+  _rotate_internal_gate "$role" "${5:-}"
   dir="$(run_dir "$role")"
   (ROTATE_HAVE_LOCK=1 rotate_run "$role" "$2" "$3" "$4" "") || rc=$?
-  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || _rotate_failed "$role" "$dir" "$2"
+  _rotate_lock_release "$dir/rotate.lock" "${5:-}"
   return "$rc"
+}
+
+# _rotate_failed <role> <run-dir> <reason> - a rotation nobody watches (the automatic one, a worker's own)
+# ended without one: its output, the die included, is in rotate.log. rotate-fired and rotate-due go, so
+# the next crossing may try again and the Stop hooks speak, and the lead gets one message to act on.
+_rotate_failed() {
+  local last
+  /bin/rm -f "$2/memory/rotate-fired" "$2/memory/rotate-due" 2>/dev/null || true
+  last="$(/usr/bin/tail -n 1 "$2/rotate.log" 2>/dev/null)"
+  memory_store_lead_message "$(team_identity "$TEAM" "$WOLFMUX_LEAD_ROLE")" "$(team_identity "$TEAM" "$1")" "$1: rotation failed" \
+    "rotation failed ($3), the old conversation goes on: ${last:-nothing in the log}
+context: $(_rotate_figure "$2")
+log: $2/rotate.log
+teamctl rotate $1 : to retry" >/dev/null 2>&1 || true
 }
 
 # _rotate_declined <role> <run-dir> <reason> - the auto path found no task: the conversation may
@@ -348,16 +430,18 @@ _rotate_declined() {
 teamctl rotate $1 : a fresh conversation in the same worktree and branch, with a hand-over wolfmux writes" >/dev/null 2>&1 || true
 }
 
-# cmd_rotate_auto <role> <reason> <session> - internal (`teamctl _rotate-auto`), detached from a
+# cmd_rotate_auto <role> <reason> <session> <token> - internal (`teamctl _rotate-auto`), detached from a
 # Stop hook that already holds run/<role>/rotate.lock. Policy, task and family are asked here.
 cmd_rotate_auto() {
-  local role="$1" reason="$2" dir policy task lead
+  local role="${1:-}" reason="${2:-}" dir
+  require_role_arg "$role"
   require_tools
   load_project
+  _rotate_internal_gate "$role" "${4:-}"
   dir="$(run_dir "$role")"
   # In a subshell: whatever ends it (a die, another module's EXIT trap), the lock goes after it.
-  (_rotate_auto_body "$role" "$reason")
-  /bin/rm -rf "$dir/rotate.lock" 2>/dev/null || true
+  (_rotate_auto_body "$role" "$reason") || _rotate_failed "$role" "$dir" "$reason"
+  _rotate_lock_release "$dir/rotate.lock" "${4:-}"
 }
 
 _rotate_auto_body() {
@@ -387,9 +471,36 @@ teamctl rotate $role : wolfmux writes the hand-over, the task gets a fresh conve
   rotate_run "$role" "$reason" "wolfmux (policy worker-rotation auto)" 0 "" 1
 }
 
+# _rotate_unrotated <rotated-file> <session-id> - drop the last line that is exactly <session-id>
+_rotate_unrotated() {
+  local tmp
+  [ -n "$2" ] && [ -r "$1" ] || return 0
+  tmp="$1.tmp.$$"
+  /usr/bin/awk -v id="$2" '{ line[NR] = $0; if ($0 == id) last = NR } END { for (i = 1; i <= NR; i++) if (i != last) print line[i] }' "$1" >"$tmp" 2>/dev/null &&
+    /bin/mv -f "$tmp" "$1" 2>/dev/null || /bin/rm -f "$tmp" 2>/dev/null || true
+}
+
+# _rotate_switch <role> <run-dir> <file> <task> <workdir> <old-session> <transcript> <reason> <by> - the
+# hand-over, the marks the new conversation and the loop guard read, then the restart. Run in a subshell.
+_rotate_switch() {
+  rotate_handover_write "$3" "$4" "$2/memory/checkpoint.md" "$5" "$(reg_field "$1" base_commit)" \
+    "$7" "$2/out/" "$8" "$9"
+  # What must outlive the restart is written before it: the restart may end the pane this runs from.
+  [ -z "$6" ] || printf '%s\n' "$6" >>"$2/memory/rotated"
+  reg_set "$1" rotated_from "$6"
+  event_log rotate "$1" "from ${6:-?}: $8"
+  : >"$2/memory/handover.pending"
+  # The permission to restart goes to cmd_restart in this process only: a plain shell variable of this
+  # subshell, never exported (main() drops any ROTATE_ACTING that comes in from the environment).
+  ROTATE_ACTING=1
+  cmd_restart "$1" >/dev/null
+}
+
 # rotate_run <role> <reason> <by> <now 0|1> [<task-json>] [<require-task 0|1>]
 rotate_run() {
-  local role="$1" reason="$2" by="$3" now="$4" task="${5:-}" require="${6:-0}" dir workdir old_session transcript file old_fig new_fig lead
+  local role="$1" reason="$2" by="$3" now="$4" task="${5:-}" require="${6:-0}" dir workdir old_session transcript file old_fig new_fig lead was_from err
+  # Whoever calls it: the lead is never rotated (its restart is the lead's own, or the founder's, call).
+  [ "$role" != "$WOLFMUX_LEAD_ROLE" ] || die "the lead is not rotated (restart it: teamctl restart lead)" 77
   dir="$(run_dir_ensure "$role")"
   [ "$(reg_field "$role" family)" != "codex" ] || die "teamctl rotate is for Claude Code agents in this release; '$role' runs Codex (restart it: teamctl restart $role)"
   if [ "$now" -eq 0 ] && ! _rotate_wait_idle "$dir" "$WOLFMUX_ROTATE_WAIT"; then
@@ -410,14 +521,18 @@ rotate_run() {
   transcript="$(session_transcript "$old_session" "$workdir")"
   file="$dir/memory/handover.md"
   old_fig="$(_rotate_figure "$dir")"
-  rotate_handover_write "$file" "$task" "$dir/memory/checkpoint.md" "$workdir" "$(reg_field "$role" base_commit)" \
-    "$transcript" "$dir/out/" "$reason" "$by"
-  : >"$dir/memory/handover.pending"
-  # What must outlive the restart is written before it: the restart may end the pane this runs from.
-  [ -z "$old_session" ] || printf '%s\n' "$old_session" >>"$dir/memory/rotated"
-  reg_set "$role" rotated_from "$old_session"
-  event_log rotate "$role" "from ${old_session:-?}: $reason"
-  ROTATE_ACTING=1 cmd_restart "$role" >/dev/null
+  was_from="$(reg_field "$role" rotated_from 2>/dev/null)" || was_from=""
+  # In a subshell: a die anywhere in it (the restart above all) is caught here, and what it wrote for
+  # the new conversation is taken back, so the old one, which goes on, is neither guarded nor handed over.
+  # Its error output is kept to name the cause in the one line that says it failed (rotate.log's last).
+  if ! err="$( (_rotate_switch "$role" "$dir" "$file" "$task" "$workdir" "$old_session" "$transcript" "$reason" "$by") 2>&1)"; then
+    /bin/rm -f "$dir/memory/handover.pending" "$dir/memory/rotate-due" 2>/dev/null || true
+    _rotate_unrotated "$dir/memory/rotated" "$old_session"
+    reg_set "$role" rotated_from "$was_from" 2>/dev/null || true
+    err="$(printf '%s\n' "$err" | /usr/bin/sed -e 's/^teamctl: //' -e '/^[[:space:]]*$/d' | /usr/bin/tail -n 1)"
+    die "the restart of '$role' failed (${err:-no message}): not rotated, the old conversation goes on (handover.pending and its rotated line taken back)"
+  fi
+  [ -z "$err" ] || printf '%s\n' "$err" >&2
   _rotate_note_new "$dir" "$(reg_field "$role" session_id)"
   /bin/rm -f "$dir/memory/rotate-fired" 2>/dev/null || true
   context_measured "$STATE_DIR" worker
