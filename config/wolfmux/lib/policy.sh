@@ -101,7 +101,7 @@
 # Precedence: `teamctl start` flags / `teamctl policy` (stored in this project's
 # meta.json) > environment > ~/.config/wolfmux/config > the defaults below.
 
-POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation worker-context lead-context context-exclude lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit output-offload"
+POLICY_KEYS="lead-permissions worker-permissions browser-writes worker-spawn worker-isolation worker-context lead-context context-exclude lead-teams disk-guard disk-min-gb link-node-modules auto-prune auto-reclaim branch-template human-pane-typing lead-wake orphan-steward lead-model team-memory restore-on-limit output-offload worker-rotation"
 
 policy_default() {
   case "$1" in
@@ -117,6 +117,7 @@ policy_default() {
     auto-prune) printf '%s\n' "${WOLFMUX_AUTO_PRUNE:-on}" ;;
     auto-reclaim) printf '%s\n' "${WOLFMUX_AUTO_RECLAIM:-on}" ;;
     worker-context) printf '%s\n' "${WOLFMUX_WORKER_CONTEXT:-trim}" ;;
+    worker-rotation) printf '%s\n' "${WOLFMUX_WORKER_ROTATION:-auto}" ;;
     lead-context) printf '%s\n' "${WOLFMUX_LEAD_CONTEXT:-full}" ;;
     context-exclude) printf '%s\n' "${WOLFMUX_CONTEXT_EXCLUDE:-}" ;;
     branch-template) printf '%s\n' "${WOLFMUX_BRANCH_TEMPLATE:-}" ;;
@@ -196,6 +197,7 @@ policy_valid() { # <key> <value>
       [ "$2" -le 10000 ]
       ;;
     worker-context:full | worker-context:trim | worker-context:lean) return 0 ;;
+    worker-rotation:off | worker-rotation:ask | worker-rotation:auto) return 0 ;;
     lead-context:full | lead-context:trim) return 0 ;;
     *) return 1 ;;
   esac
@@ -208,6 +210,7 @@ policy_choices() {
     browser-writes) printf 'ask|allow\n' ;;
     worker-spawn | worker-isolation | lead-teams | link-node-modules | auto-prune | auto-reclaim | output-offload) printf 'on|off\n' ;;
     worker-context) printf 'full|trim|lean\n' ;;
+    worker-rotation) printf 'off|ask|auto\n' ;;
     lead-context) printf 'full|trim\n' ;;
     context-exclude) printf "one or more globs of instruction files ('**/rules/pack/zh/**'), or the word none\n" ;;
     disk-guard) printf 'refuse|warn|off\n' ;;

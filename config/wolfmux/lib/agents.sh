@@ -1321,6 +1321,16 @@ cmd_stop() {
   if [ "$role" = "$WOLFMUX_LEAD_ROLE" ]; then founder_announce "stopped the lead of"; else founder_announce "stopped $role of"; fi
 }
 
+# restart_wake <role> - a continued agent with a task in_progress is told to go on, through the
+# notice inbox (the path every notice takes); an idle agent would otherwise wait for a message.
+restart_wake() {
+  local task id
+  task="$(memory_store_inprogress_task "$(team_identity "$TEAM" "$1")" 2>/dev/null)" || task=""
+  id="$(printf '%s' "$task" | "$JQ_BIN" -r '.id // empty' 2>/dev/null)"
+  [ -n "$id" ] || return 0
+  (inbox_add "$1" beads "continue task $id: you were restarted in the middle of it (git status, then go on)") >/dev/null 2>&1 || true
+}
+
 # restart_without_session <role> <resume 0|1> — the tmux session is gone (it was ended, or the
 # machine restarted) and the records remain. Restarting the lead is starting the team again, as
 # the model that led it; a worker needs that session first, and is told the exact commands.
@@ -1415,7 +1425,7 @@ cmd_restart() {
     restart_without_session "$role" "$resume" "$pin" "$new_model"
     return
   fi
-  require_manager restart "$role"
+  [ -n "${ROTATE_ACTING:-}" ] || require_manager restart "$role" # teamctl rotate asked already (lib/rotate.sh)
   memory_require_pinned "$role" "$resume" "$pin" "$(reg_field "$role" session_id)" "$family"
   model="${new_model:-$(reg_field "$role" model)}"
   models_refresh "$model" # fable/opus/sonnet/haiku: a restart is how an agent moves to a newer model
@@ -1468,6 +1478,7 @@ cmd_restart() {
     conversation="$(reg_field "$role" session_id)"
     event_log restart "$role" "continue ${conversation:-newest}$on"
     say "restarted: $role in pane $pane$on (continuing ${conversation:-its previous conversation})"
+    restart_wake "$role"
   else
     event_log restart "$role" "fresh$on"
     say "restarted: $role in pane $pane$on"

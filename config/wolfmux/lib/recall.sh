@@ -92,6 +92,7 @@ recall_hook() {
       _recall_stall_look
       ;;
     PreCompact) _memory_precompact ;;
+    Stop) rotate_at_stop ;;
   esac
   return 0
 }
@@ -116,9 +117,11 @@ _memory_session_start() {
   esac
   case "$HOOK_SOURCE" in
     # A new conversation: what the last one measured is not this one's.
-    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" 2>/dev/null || true ;;
+    startup | clear) /bin/rm -f "$HOOK_RUN/memory/first" "$HOOK_RUN/memory/kept" "$HOOK_RUN/memory/compactions" "$HOOK_RUN/memory/thrash-told" "$HOOK_RUN/memory/boundaries" "$HOOK_RUN/memory/rotate-fired" "$HOOK_RUN/memory/ctx" 2>/dev/null || true ;;
     compact) _memory_compacted || true ;;
   esac
+  # A rotation's hand-over comes first, before the notes and the mail briefing (ADR-0039)
+  rotate_session_handover
   local body
   if body="$(memory_store_memories_text)" && body="$(printf '%s\n' "$body" | _memory_quote_notes)" && [ -n "$body" ]; then
     hook_context "[wolfmux memory] What this project's teams have learned (teamctl memories <word> to search, teamctl remember \"<fact>\" to add):
@@ -317,7 +320,7 @@ _memory_tell_lead() {
   body="context: $2 of the limit its CLI compacts at
 $(_memory_numbers)
 checkpoint: $HOOK_RUN/memory/checkpoint.md
-teamctl restart $HOOK_ROLE : a new conversation in the same worktree and branch; it starts from the checkpoint"
+teamctl rotate $HOOK_ROLE : a fresh conversation in the same worktree and branch, with a hand-over wolfmux writes (policy worker-rotation auto does this at its next turn end)"
   (
     memory_store_lead_message "$lead" "$sender" "$HOOK_ROLE: context at $1%" "$body" &
   ) >/dev/null 2>&1
@@ -434,8 +437,8 @@ _memory_tell_thrash() {
 before the second: ${4:-(not written yet)} tokens${limit:+ of a limit of $limit} (window ${window:-unset}, limit = window - $WOLFMUX_COMPACT_RESERVE)
 first request (sent again every time): ${first:-not measured}; kept by this compaction: ${5:-(not written yet)}
 room left to work in: about $room tokens. It will compact again soon, and each time it stands still.
-A new conversation with a larger window: WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl restart $HOOK_ROLE
-(it starts from its checkpoint: $HOOK_RUN/memory/checkpoint.md). Said once per conversation."
+A fresh conversation with a hand-over: teamctl rotate $HOOK_ROLE (policy worker-rotation auto does this at its next turn end);
+with a larger window: WOLFMUX_WORKER_COMPACT_WINDOW=<tokens> teamctl rotate $HOOK_ROLE. Said once per conversation."
   if [ "$HOOK_ROLE" = "${WOLFMUX_LEAD_ROLE:-lead}" ]; then
     hook_context "[wolfmux] This conversation was compacted twice within $1 tool calls.
 $body"
