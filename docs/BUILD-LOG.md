@@ -2533,6 +2533,25 @@ shortened form with exit code 1, the last line, and the failure line 6001 from t
 in `run/w1/out`. The worker's first request was 62,106 tokens in a pane. Status showed `68k/285k 23%` for
 the worker and `122k/967k 12%` for the lead, and the lead got one notice for one `done`.
 
+## 49. Four low findings of the v1.25.0 review (v1.26.0, part C)
+
+1. **The wrapper line** (ADR-0036). The 700 character prefix became a sourced file, `lib/offload-wrap.sh`;
+   the line is `[ -r <wrap> ] && . <wrap> <log>; `. bash quotes the first line of a command in a syntax
+   error message; the message went from the whole wrapper (742 characters of line) to the user's command
+   with a short lead. Under zsh the message never quoted the line. Seen failing before: the new
+   "message under 600 characters" check. The fail-open checks now plant a fake lib directory (wrap file
+   plus a broken or killed show script) since the show script is found next to the wrap file.
+2. **A log size cap** (`WOLFMUX_OFFLOAD_LOG_MAX`, 50 MB). Applied when the command has ended, on the long
+   path only. Cost of a wrapped `echo hi` end to end, 50 runs: 15 ms before, 16 to 18 ms after (the extra
+   file read of the source); the PreToolUse hook alone 6 to 7 ms before and after. Seen failing before:
+   the "bytes left out" checks (a 5 MB log with a 1 MB cap stayed 5 MB).
+3. **The stall lookup** is bounded (`_bd_bounded 5`, Beads only); a wedged `bd` gives the report without
+   the task. `tests/stall-wedged.sh` stands in a task read that sleeps 30 s: before, 30 s and no
+   message; after, 5 s and the message. It runs inside `tests/context.sh`.
+4. **A compaction nobody warned of** is said once to the agent and in the thrash message
+   (`lib/recall.sh`, 38 added lines). Checks in `tests/recall.sh` (the section "a compaction nobody warned
+   of").
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |
