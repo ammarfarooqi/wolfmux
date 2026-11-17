@@ -33,17 +33,23 @@ ledger_report_path() { printf '%s/%s.md\n' "$(ledger_reports_dir)" "$1"; }
 # ledger_report_save <task-id> <text>: writes the report, atomically. An earlier report of the
 # same task moves to the first free <task-id>~<n>.md first, so nothing of it is lost ("~" is not
 # in any task id: a Beads child X.1 is not X's first older report). Under a lock (mkdir), so two
-# `done` of one task at once do not overwrite one. Prints the path. 1 when the directory cannot
-# be written, the id is not one or the lock is not had.
+# `done` of one task at once do not overwrite one. A lock not had in WOLFMUX_REPORT_LOCK_TRIES
+# tenths of a second: the report is written all the same, under a name of its own,
+# <task-id>~p<pid>.md, and that path is printed. 1 only when nothing can be written there.
+WOLFMUX_REPORT_LOCK_TRIES="${WOLFMUX_REPORT_LOCK_TRIES:-100}"
 ledger_report_save() {
-  local id="$1" text="$2" dir file n=1 tmp rc=0
+  local id="$1" text="$2" dir file n=1 tmp rc=0 locked=0
   valid_bead_id "$id" || return 1
   dir="$(ledger_reports_dir)"
   /bin/mkdir -p "$dir" 2>/dev/null || return 1
-  _inbox_lock_dir "$dir/.lock" || return 1
-  file="$dir/$id.md"
+  if WOLFMUX_INBOX_LOCK_TRIES="$WOLFMUX_REPORT_LOCK_TRIES" _inbox_lock_dir "$dir/.lock"; then
+    locked=1
+    file="$dir/$id.md"
+  else
+    file="$dir/$id~p$$.md"
+  fi
   tmp="$file.tmp.$$"
-  if [ -e "$file" ]; then
+  if [ "$locked" = 1 ] && [ -e "$file" ]; then
     while [ -e "$dir/$id~$n.md" ]; do n=$((n + 1)); done
     /bin/mv -f "$file" "$dir/$id~$n.md" 2>/dev/null || rc=1
   fi
@@ -53,7 +59,7 @@ ledger_report_save() {
     /bin/rm -f "$tmp"
     rc=1
   fi
-  /bin/rm -rf "$dir/.lock" 2>/dev/null || true
+  [ "$locked" = 0 ] || /bin/rm -rf "$dir/.lock" 2>/dev/null || true
   return "$rc"
 }
 
