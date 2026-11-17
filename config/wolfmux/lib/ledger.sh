@@ -162,14 +162,14 @@ cmd_decide() {
   fi
   require_manager decide
   if [ "$mode" = "drop" ]; then
-    count="$(/usr/bin/awk 'NF' "$file" 2>/dev/null | /usr/bin/wc -l | tr -d ' ')"
+    count="$( (/usr/bin/awk 'NF' "$file" 2>/dev/null || true) | /usr/bin/wc -l | tr -d ' ')"
     [ "$drop" -le "${count:-0}" ] || die "no decision $drop; there are ${count:-0}: teamctl decide --list"
     kept="$(/usr/bin/awk -v n="$drop" 'NF { i++; if (i != n) print }' "$file")"
     _ledger_decisions_write "$kept" || die "could not write $(short_path "$file")"
     say "dropped decision $drop"
     return 0
   fi
-  kept="$(/usr/bin/awk 'NF' "$file" 2>/dev/null)"
+  kept="$(/usr/bin/awk 'NF' "$file" 2>/dev/null || true)"
   kept="${kept:+$kept
 }$(now_iso)	$text"
   # at most WOLFMUX_DECISIONS_MAX: the oldest leave first
@@ -306,6 +306,8 @@ cmd_ledger() {
   [ "$#" -eq 0 ] || die_usage "usage: teamctl ledger"
   require_tools
   load_project
+  store_backend_ready
+  store_ensure >/dev/null 2>&1 || true
   rows="$(store_tasks_json "" "")" || die "could not read the store"
   text="$(ledger_text "$rows")"
   if [ -n "$text" ]; then say "$text"; else say "the ledger is empty: no open task, nothing done in the last ${WOLFMUX_LEDGER_DONE_HOURS}h, no decision"; fi

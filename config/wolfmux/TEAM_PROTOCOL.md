@@ -223,7 +223,10 @@ integration; you do not do the bulk implementation yourself.
    teamctl diff <role> --stat       # then: teamctl diff <role>
    teamctl diff <role> --commits
    ```
-   Read the diff, check it against the task, run the tests yourself. Then decide:
+   A `DONE` notice is the short form: read the report (`teamctl show <id> --report`) only when it is not enough.
+   Review a diff through a subagent that returns a verdict and the lines that matter; never `cat` a whole diff into your own conversation.
+   A decision that must outlive a compaction: `teamctl decide "<text>"`; `teamctl ledger` is what you get back after one.
+   Check the diff against the task, run the tests yourself. Then decide:
    - request changes: `teamctl reopen <id> "<what to change>"`, or message the worker;
    - accept: `git cherry-pick <sha>` (or `git merge --no-ff <branch>`) in the project root;
    - reject: `teamctl close <id> -r "<reason>" --failed`;
