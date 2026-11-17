@@ -281,7 +281,7 @@ WOLFMUX_NUDGE_TYPE=off teamctl send w1 "a late message" "for the fresh conversat
 sleep 1
 check "_inbox-stop says nothing while a rotation is due: the notice waits for the fresh conversation" '[ -z "$(inbox_stop w1)" ]'
 printf 'busy\n' >"$R1/state"
-SOUT="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/bin/teamctl" _hook Stop)"
+SOUT="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_TEAM=default WOLFMUX_INBOX_CLIENTS=0 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/tests/in-pane" _hook Stop)"
 check "the Stop that starts the rotation adds no context (no task reminder), so the turn ends and it is rotated" \
   '! printf "%s" "$SOUT" | grep -q "You are stopping while" && [ -z "$(printf "%s" "$SOUT" | ctx_of)" ] && poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]"'
 check "after the rotation the notice is still there for the fresh conversation, and rotate-due is gone" \
@@ -324,7 +324,7 @@ SELF="$(TEAM_ROLE=w1 WOLFMUX_ROTATE_WAIT=30 "$REPO/tests/in-pane" rotate w1 2>&1
 check "a worker rotating itself: it returns at once with 'rotation started: end your turn', nothing restarted yet" \
   'printf "%s" "$SELF" | grep -q "rotation started: end your turn" && sleep 1 && [ "$(record w1 session_id)" = "$AUTO" ] && [ -d "$R1/rotate.lock" ]'
 /bin/rm -f "$R1"/tasks/reminded-*
-SOUT2="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/bin/teamctl" _hook Stop)"
+SOUT2="$(printf '{"session_id":"%s"}' "$AUTO" | TEAM_ROLE=w1 BEADS_ACTOR=w1 WOLFMUX_TEAM=default WOLFMUX_INBOX_CLIENTS=0 WOLFMUX_ROOT="$PWD" WOLFMUX_RUN_DIR="$R1" WOLFMUX_MODEL=glm53 "$REPO/tests/in-pane" _hook Stop)"
 check "... its turn end gets no task reminder from wolfmux while that rotation waits" '[ -z "$(printf "%s" "$SOUT2" | ctx_of)" ] && [ "$(cat "$R1/state")" = idle ]'
 check "... and the detached process rotates it once its turn has ended; the lock goes" \
   'poll "[ \"\$(record w1 session_id)\" != \"$AUTO\" ]" && poll "[ ! -e \"$R1/rotate.lock\" ]" && [ "$(record w1 rotated_from)" = "$AUTO" ]'
