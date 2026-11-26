@@ -124,6 +124,23 @@ it. Kimi's background tier is its main model (`kimi-for-coding`) on purpose:
 `CLAUDE_CODE_EFFORT_LEVEL`; it is exported after the scrub and added to the scrub
 list, so a Claude-subscription child never inherits it.
 
+## Addendum 2026-11-26: openrouter
+
+The table gets a seventh row, `openrouter`, the twin of `deepseek`: metered, a Keychain item
+(`wolfmux-openrouter`) read through `apiKeyHelper`, the same login guard, and refused until the owner
+sets `WOLFMUX_METERED=on`. Endpoint `https://openrouter.ai/api` (not `/api/v1`: Claude Code adds
+`/v1/messages`). The key goes in `ANTHROPIC_AUTH_TOKEN` in env mode, as for DeepSeek.
+
+- Default models: `deepseek/deepseek-v4-pro` (main) and `deepseek/deepseek-v4-flash` (background),
+  the stable ids of the DeepSeek V4 family on OpenRouter's public model list. Dated snapshots
+  (`-0813`, `-0731`) and `~...-latest` aliases exist; pin one with `WOLFMUX_OPENROUTER_MODEL`.
+- OpenRouter ids are `vendor/model`, and a saved preset is `@preset/<slug>`. `valid_model_id` stays
+  strict (it feeds file names); `valid_provider_model_id` allows exactly one slash, and a leading
+  `@`, for openrouter only.
+- Provider routing: Claude Code does not send OpenRouter's `provider` object. The docs offer a saved
+  preset (used as the model id) and the account privacy and provider settings. Wolfmux says only that.
+- Sources: [Claude Code integration](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration).
+
 ## Sources (fetched 2026-09-20)
 
 - DeepSeek: [Claude Code integration](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/) · [Anthropic API](https://api-docs.deepseek.com/guides/anthropic_api) · [pricing](https://api-docs.deepseek.com/quick_start/pricing) (metered; no coding plan)

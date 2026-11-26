@@ -159,7 +159,7 @@ DOCTOR_HOME2="$WORK/doctor-home2"
 /bin/mkdir -p "$DOCTOR_HOME2/.claude"
 printf '{"note":"routes to api.deepseek.com"}\n' >"$DOCTOR_HOME2/.claude/settings.local.json"
 doctor_other() { env -u CLAUDE_CONFIG_DIR -u CODEX_HOME HOME="$DOCTOR_HOME2" WOLFMUX_CLAUDE_BIN="$WORK/stubbin/claude" WOLFMUX_CODEX_BIN="$WORK/app/Resources/codex" "$REPO/bin/teamctl" doctor 2>&1 </dev/null; }
-check "doctor: every provider has a section with its own Keychain service; a missing key of an optional one is a note, only Z.ai's is a warning" 'for p in kimi moonshot deepseek minimax qwen; do doctor_utf8 | grep -q "no Keychain item .wolfmux-$p." || exit 1; done && [ "$(doctor_utf8 | grep -c "optional, not set up: no Keychain item")" = 5 ] && doctor_utf8 | grep -q "WARNING.*no Keychain item .zai-coding-plan." && ! doctor_utf8 | grep "WARNING" | grep -q "wolfmux-"'
+check "doctor: every provider has a section with its own Keychain service; a missing key of an optional one is a note, only Z.ai's is a warning" 'for p in kimi moonshot deepseek minimax qwen openrouter; do doctor_utf8 | grep -q "no Keychain item .wolfmux-$p." || exit 1; done && [ "$(doctor_utf8 | grep -c "optional, not set up: no Keychain item")" = 6 ] && doctor_utf8 | grep -q "WARNING.*no Keychain item .zai-coding-plan." && ! doctor_utf8 | grep "WARNING" | grep -q "wolfmux-"'
 closed_check "doctor: a metered provider says so, and that teamctl refuses it (the environment does not count)" 'doctor_utf8 | grep -q "billing: METERED (.*prepaid balance.*); teamctl refuses" && WOLFMUX_METERED=on doctor_utf8 | grep -q "teamctl refuses" && doctor_utf8 | grep -q "billing: plan (Kimi for Coding"'
 check "doctor: a settings file that names the host of any provider (not only Z.ai) is reported" 'doctor_other | grep -q "settings.local.json mentions api.deepseek.com" && ! doctor_utf8 | grep -q "mentions api.deepseek.com"'
 # doctor --probe reads a key and sends it, so plain doctor must not, and with no key set up (as here:
@@ -334,7 +334,7 @@ check "providers: teamctl help, the usage line and the unknown-model error list 
   # Omitting the model is valid for start; an unknown model must still be a usage error.
   start_error="$(teamctl start nosuchmodel 2>&1)"
   [ $? -eq 64 ] || exit 1
-  for k in kimi moonshot deepseek minimax qwen kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\>; do
+  for k in kimi moonshot deepseek minimax qwen openrouter kimi:\<model-id\> moonshot:\<model-id\> deepseek:\<model-id\> minimax:\<model-id\> qwen:\<model-id\> openrouter:\<model-id\>; do
     teamctl help | grep -qF -- "$k" || exit 1
     teamctl spawn 2>&1 | grep -qF -- "$k" || exit 1
     teamctl spawn x nosuchmodel 2>&1 | grep -qF -- "$k" || exit 1

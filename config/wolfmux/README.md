@@ -41,6 +41,7 @@ security add-generic-password -U -s zai-coding-plan -a "$USER" -l "Z.ai Coding P
 security add-generic-password -U -s wolfmux-kimi     -a "$USER" -l "Kimi for Coding API key"      -w
 security add-generic-password -U -s wolfmux-moonshot -a "$USER" -l "Moonshot platform API key"    -w
 security add-generic-password -U -s wolfmux-deepseek -a "$USER" -l "DeepSeek API key"             -w
+security add-generic-password -U -s wolfmux-openrouter -a "$USER" -l "OpenRouter key"            -w
 security add-generic-password -U -s wolfmux-minimax  -a "$USER" -l "MiniMax Coding Plan API key"  -w
 security add-generic-password -U -s wolfmux-qwen     -a "$USER" -l "Alibaba Model Studio API key" -w
 
@@ -197,12 +198,14 @@ A provider worker needs that provider's key in the Keychain first (one-time setu
 | `kimi` | Claude Code + Kimi for Coding | Kimi for Coding subscription; the key is a Kimi Code membership key (starts `sk-kim`), not one from platform.kimi.ai |
 | `minimax` | Claude Code + MiniMax M3 | MiniMax Coding Plan |
 | `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan; the key starts `sk-sp-` |
+| `openrouter` | Claude Code + DeepSeek V4 through OpenRouter | OpenRouter prepaid credits, metered: refused until `WOLFMUX_METERED=on`; the key comes from openrouter.ai/settings/keys and starts `sk-or-` |
 | `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API, metered: refused until `WOLFMUX_METERED=on`; the key comes from platform.kimi.ai, not from the Kimi Code console |
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API, metered: refused until `WOLFMUX_METERED=on` |
+| `openrouter` | Claude Code + DeepSeek V4 through OpenRouter | OpenRouter credits, metered: refused until `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
-| `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` | any other model id of that provider (GLM is not pinnable) | the same plan, or the same metered account |
+| `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` · `openrouter:<model-id>` | any other model id of that provider (GLM is not pinnable; an OpenRouter id is `vendor/model`, or `@preset/<slug>`) | the same plan, or the same metered account |
 
 The same keys work for `teamctl start <model>`: any of them can lead.
 
@@ -913,10 +916,10 @@ meanwhile, nothing is deleted). Wolfmux never runs it itself. A weekly habit: ru
 
 | What | Where |
 |------|-------|
-| Launchers + CLI | `~/bin/`: `teamctl`, `claude-fable`, `codex-astra`, `claude-glm`; symlinks `claude-glm-flash`, `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen` → `claude-glm` (it picks the provider from the name it was started as) and `claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable` (the model the same way); `codex`, a small `sh` wrapper (one `exec` line) that starts ChatGPT.app's bundled CLI by its real path (only when no other `codex` is installed) |
+| Launchers + CLI | `~/bin/`: `teamctl`, `claude-fable`, `codex-astra`, `claude-glm`; symlinks `claude-glm-flash`, `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen`, `claude-openrouter` → `claude-glm` (it picks the provider from the name it was started as) and `claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable` (the model the same way); `codex`, a small `sh` wrapper (one `exec` line) that starts ChatGPT.app's bundled CLI by its real path (only when no other `codex` is installed) |
 | Code, tmux config, protocol, this file | `~/.config/wolfmux/` (`lib/*.sh`, `hooks/beads-nudge`, `tmux.conf`, `TEAM_PROTOCOL.md`, `config`, `glm-worker-settings.json`) |
 | Notifications | `~/.config/wolfmux/Wolfmux.app` (built by `install.sh`; owns the notifications of a team that is not open in a terminal which can show them itself — iTerm2, kitty, Ghostty, WezTerm — so a click opens the team) and `~/.wolfmux/notify/` (the message in transit, the last project, the script a click runs) |
-| Provider credentials | macOS login Keychain, one service each: `zai-coding-plan` (Z.ai), `wolfmux-kimi`, `wolfmux-moonshot`, `wolfmux-deepseek`, `wolfmux-minimax`, `wolfmux-qwen`. Nowhere else. |
+| Provider credentials | macOS login Keychain, one service each: `zai-coding-plan` (Z.ai), `wolfmux-kimi`, `wolfmux-moonshot`, `wolfmux-deepseek`, `wolfmux-minimax`, `wolfmux-qwen`, `wolfmux-openrouter`. Nowhere else. |
 | Claude / Codex logins | wherever those CLIs keep them (`/login`, `codex login`); untouched |
 | Worktrees | `~/.wolfmux/worktrees/<project>-<hash>/<role>-<timestamp>/`; a named team's under `…/<project>-<hash>/teams/<team>/` |
 | teamctl state (role ↔ model ↔ worktree, policy, approvals, event log) | `~/.wolfmux/state/<project>-<hash>/`; a named team's under `…/teams/<team>/` — nothing is written into your repository |
@@ -966,9 +969,9 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_GLM_AUTH_MODE` | `helper` | `env` hands the Z.ai key over as `ANTHROPIC_AUTH_TOKEN` instead: a last resort that cannot fix a wrong key ([Auth modes](#auth-modes-and-the-key-probe)) |
 | `WOLFMUX_GLM_CONTEXT` | 200000 tokens | `1m`, or a number: the context window GLM workers declare |
 | `WOLFMUX_METERED` | `off` | `on` lets the metered providers start. Which those are, and what that can cost: [Metered providers](#metered-providers) |
-| `WOLFMUX_KIMI_AUTH_MODE` · `WOLFMUX_MOONSHOT_AUTH_MODE` · `WOLFMUX_DEEPSEEK_AUTH_MODE` · `WOLFMUX_MINIMAX_AUTH_MODE` · `WOLFMUX_QWEN_AUTH_MODE` | `helper` | per provider, the same two modes as `WOLFMUX_GLM_AUTH_MODE`; `env` exports the vendor's documented variable (`ANTHROPIC_API_KEY` for Kimi, `ANTHROPIC_AUTH_TOKEN` for the others); a last resort, and Kimi's makes Claude Code ask "use this API key?" in the pane ([Auth modes](#auth-modes-and-the-key-probe)) |
-| `WOLFMUX_KIMI_CONTEXT` · `WOLFMUX_MOONSHOT_CONTEXT` · `WOLFMUX_DEEPSEEK_CONTEXT` · `WOLFMUX_MINIMAX_CONTEXT` · `WOLFMUX_QWEN_CONTEXT` | the table value | a number: the context window that provider's workers declare to Claude Code |
-| `WOLFMUX_KIMI_MODEL` · `WOLFMUX_MOONSHOT_MODEL` · `WOLFMUX_DEEPSEEK_MODEL` · `WOLFMUX_MINIMAX_MODEL` · `WOLFMUX_QWEN_MODEL` · `WOLFMUX_KIMI_FAST_MODEL` · `WOLFMUX_MOONSHOT_FAST_MODEL` · `WOLFMUX_DEEPSEEK_FAST_MODEL` · `WOLFMUX_MINIMAX_FAST_MODEL` · `WOLFMUX_QWEN_FAST_MODEL` | the ids in `lib/providers.sh` | model pins per provider, for when a vendor changes its ids. GLM is not pinnable |
+| `WOLFMUX_KIMI_AUTH_MODE` · `WOLFMUX_MOONSHOT_AUTH_MODE` · `WOLFMUX_DEEPSEEK_AUTH_MODE` · `WOLFMUX_MINIMAX_AUTH_MODE` · `WOLFMUX_QWEN_AUTH_MODE` · `WOLFMUX_OPENROUTER_AUTH_MODE` | `helper` | per provider, the same two modes as `WOLFMUX_GLM_AUTH_MODE`; `env` exports the vendor's documented variable (`ANTHROPIC_API_KEY` for Kimi, `ANTHROPIC_AUTH_TOKEN` for the others); a last resort, and Kimi's makes Claude Code ask "use this API key?" in the pane ([Auth modes](#auth-modes-and-the-key-probe)) |
+| `WOLFMUX_KIMI_CONTEXT` · `WOLFMUX_MOONSHOT_CONTEXT` · `WOLFMUX_DEEPSEEK_CONTEXT` · `WOLFMUX_MINIMAX_CONTEXT` · `WOLFMUX_QWEN_CONTEXT` · `WOLFMUX_OPENROUTER_CONTEXT` | the table value | a number: the context window that provider's workers declare to Claude Code |
+| `WOLFMUX_KIMI_MODEL` · `WOLFMUX_MOONSHOT_MODEL` · `WOLFMUX_DEEPSEEK_MODEL` · `WOLFMUX_MINIMAX_MODEL` · `WOLFMUX_QWEN_MODEL` · `WOLFMUX_OPENROUTER_MODEL` · `WOLFMUX_OPENROUTER_FAST_MODEL` · `WOLFMUX_KIMI_FAST_MODEL` · `WOLFMUX_MOONSHOT_FAST_MODEL` · `WOLFMUX_DEEPSEEK_FAST_MODEL` · `WOLFMUX_MINIMAX_FAST_MODEL` · `WOLFMUX_QWEN_FAST_MODEL` | the ids in `lib/providers.sh` | model pins per provider, for when a vendor changes its ids. GLM is not pinnable |
 | `WOLFMUX_MODEL_POLICY` | `latest` | what `fable`, `opus`, `sonnet` and `haiku` mean: `latest` asks Claude Code (once a day per alias, when an agent starts) for the newest model of that family; `pinned` keeps the built-in ids. `teamctl models` shows both and where each id came from |
 | `WOLFMUX_LEAD_MODEL` | `opus` | the default model for a new lead when `teamctl start` names none. The human can override it per project with `teamctl policy lead-model <model>`; `default` returns to this config value. Existing teams keep their lead's recorded model |
 | `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | unset (the newest model; astra: `gpt-6-astra`) | a pin: that key always means this model id, under either policy, and is never probed |
@@ -985,7 +988,7 @@ the same name wins for a launcher you start by hand.
   `model="gpt-6-astra"` → an API key cannot be used even if one appears later.
 - `claude-glm` and every name it is linked as (`claude-glm-flash`,
   `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`,
-  `claude-qwen`): reads provider, endpoint, key, billing and model ids from one
+  `claude-qwen`, `claude-openrouter`): reads provider, endpoint, key, billing and model ids from one
   table (`lib/providers.sh`), sets `ANTHROPIC_BASE_URL` to that provider's endpoint
   inside its own process only, and maps **every** Claude alias (opus, sonnet, fable,
   haiku, subagents) to that provider's main and background model ids (GLM's plan
@@ -1112,12 +1115,12 @@ Keychain item and Beads. By hand:
 teamctl destroy --worktrees                      # in each project that has a team
 rm ~/bin/teamctl ~/bin/claude-fable ~/bin/claude-opus ~/bin/claude-sonnet ~/bin/claude-haiku \
    ~/bin/codex-astra ~/bin/claude-glm ~/bin/claude-glm-flash \
-   ~/bin/claude-kimi ~/bin/claude-moonshot ~/bin/claude-deepseek ~/bin/claude-minimax ~/bin/claude-qwen
+   ~/bin/claude-kimi ~/bin/claude-moonshot ~/bin/claude-deepseek ~/bin/claude-minimax ~/bin/claude-qwen ~/bin/claude-openrouter
 grep -q wolfmux-codex-wrapper ~/bin/codex && rm ~/bin/codex      # only the wrapper install.sh wrote
 rm -r ~/.config/wolfmux ~/.wolfmux               # includes Wolfmux.app
 rm ~/.codex/rules/wolfmux.rules
 security delete-generic-password -s zai-coding-plan
-# the same for every provider key you added: -s wolfmux-kimi, -s wolfmux-moonshot, -s wolfmux-deepseek, -s wolfmux-minimax, -s wolfmux-qwen
+# the same for every provider key you added: -s wolfmux-kimi, -s wolfmux-moonshot, -s wolfmux-deepseek, -s wolfmux-minimax, -s wolfmux-qwen, -s wolfmux-openrouter
 # ~/.zshrc: delete the block between ">>> wolfmux >>>" and "<<< wolfmux <<<"
 # ~/.claude/settings.json: delete the teamctl / bd / git / tmux allow lines and the "ask" entry
 #   (or restore ~/.claude/settings.json.backup-<timestamp>)

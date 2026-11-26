@@ -13,7 +13,7 @@ About 10 minutes on a machine that already has the three subscriptions signed in
 | Codex CLI, signed in with ChatGPT | `codex login status` → `Logged in using ChatGPT` | the copy inside ChatGPT.app is enough; the installer links it as `~/bin/codex` when no `codex` is on PATH |
 | Beads (optional) | `bd version` | only to keep a project on the Beads backend, or to switch one to it (`teamctl store beads`); tested with 1.3.0; see below |
 | Z.ai GLM Coding Plan + an API key | [z.ai/manage-apikey](https://z.ai/manage-apikey/apikey-list) | the key goes into the Keychain in step 3 |
-| other providers (optional) | see step 3 | Kimi, Moonshot, DeepSeek, MiniMax, Qwen: add a key only for the ones you want |
+| other providers (optional) | see step 3 | Kimi, Moonshot, DeepSeek, MiniMax, Qwen, OpenRouter: add a key only for the ones you want |
 
 ### Installing Beads without Homebrew
 
@@ -41,7 +41,7 @@ What it does, and nothing else:
 | Action | Detail |
 |--------|--------|
 | copies files | `bin/*` → `~/bin/` (`teamctl`, `claude-fable`, `codex-astra`, `claude-glm`), `config/wolfmux/*` → `~/.config/wolfmux/` (a differing existing file is backed up first; `glm-worker-settings.json` is never overwritten; `config` is left alone once it holds one active line, and while it is still all comments it is replaced by the current template, so new settings show up in it) |
-| nine symlinks | `~/bin/claude-glm-flash` and the provider names `~/bin/claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen` → `claude-glm`, which picks the provider from the name it was started as; `~/bin/claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable`, which picks the model the same way |
+| ten symlinks | `~/bin/claude-glm-flash` and the provider names `~/bin/claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`, `claude-qwen`, `claude-openrouter` → `claude-glm`, which picks the provider from the name it was started as; `~/bin/claude-opus`, `claude-sonnet`, `claude-haiku` → `claude-fable`, which picks the model the same way |
 | `~/bin/codex` | only when no `codex` is on PATH: a small `sh` wrapper (one `exec` line) that starts ChatGPT.app's bundled CLI by its real path. Not a symlink: Codex looks for its helper programs next to the path it was started as, and through a symlink it could not run commands ("Code Mode is unavailable"). A symlink left by an earlier version is replaced |
 | builds `Wolfmux.app` | `~/.config/wolfmux/Wolfmux.app`, compiled with `osacompile` from `config/wolfmux/notifier/`, given the wolf icon and signed ad hoc. It owns the notifications of a team that is not open in a terminal which can show them itself (iTerm2, kitty, Ghostty, WezTerm), so that clicking one opens the team instead of Script Editor. Rebuilt only when its source changes. No network, no login item, nothing in `/Applications` |
 | `~/.zshrc` | appends one marked block that adds `~/bin` to the **end** of `PATH`, so nothing in it can shadow an existing tool, and sources the tab-completion shim for `teamctl` (registered only when a completion system is loaded) |
@@ -73,6 +73,7 @@ security add-generic-password -U -s wolfmux-moonshot -a "$USER" -l "Moonshot pla
 security add-generic-password -U -s wolfmux-deepseek -a "$USER" -l "DeepSeek API key"             -w
 security add-generic-password -U -s wolfmux-minimax  -a "$USER" -l "MiniMax Coding Plan API key"  -w
 security add-generic-password -U -s wolfmux-qwen     -a "$USER" -l "Alibaba Model Studio API key" -w
+security add-generic-password -U -s wolfmux-openrouter -a "$USER" -l "OpenRouter key"            -w
 ```
 
 | Provider | Get the key at | Pays with |
@@ -81,10 +82,11 @@ security add-generic-password -U -s wolfmux-qwen     -a "$USER" -l "Alibaba Mode
 | Kimi | [Kimi Code console](https://www.kimi.com/code/console): a membership key, starts `sk-kim` ([docs](https://www.kimi.com/code/docs/en/third-party-tools/claude-code)) | Kimi for Coding subscription |
 | Moonshot | [Kimi API platform](https://platform.kimi.ai/console/api-keys) ([docs](https://platform.kimi.ai/docs/guide/claude-code-kimi)) | platform API, billed per request |
 | DeepSeek | [DeepSeek Claude Code guide](https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code/) | API, billed per request |
+| OpenRouter | [OpenRouter keys](https://openrouter.ai/settings/keys): starts `sk-or-`; [Claude Code guide](https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration) (key: openrouter.ai/settings/keys, starts `sk-or-`) | prepaid credits, billed per request; set account privacy to no training / no logging and pin providers in the OpenRouter dashboard |
 | MiniMax | [MiniMax coding plan docs](https://platform.minimax.io/docs/coding-plan/claude-code) | MiniMax Coding Plan (subscription) |
 | Qwen | [Model Studio Claude Code guide](https://www.alibabacloud.com/help/en/model-studio/claude-code): a Coding Plan key, starts `sk-sp-` | Model Studio coding plan (subscription) |
 
-Moonshot and DeepSeek are the two metered providers: their workers refuse to start
+Moonshot, DeepSeek and OpenRouter are the three metered providers: their workers refuse to start
 until you set `WOLFMUX_METERED=on` in `~/.config/wolfmux/config` yourself. No agent
 can do that for you.
 
@@ -121,7 +123,7 @@ Account-side switches no local tool can see — check them once:
 - ChatGPT → Settings → Codex usage: do not buy or auto-refill credits.
 - z.ai → Billing: a **zero cash balance** makes pay-as-you-go impossible even if a
   call ever fell outside the plan.
-- Moonshot / DeepSeek, if you switched `WOLFMUX_METERED` on: they bill per request
+- Moonshot / DeepSeek / OpenRouter, if you switched `WOLFMUX_METERED` on: they bill per request
   for as long as the balance you loaded lasts. That switch is yours; an agent that
   asks for it should be refused.
 

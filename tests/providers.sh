@@ -434,12 +434,13 @@ check "the overlay and the per-agent settings file reach every provider" \
 
 echo
 echo "== key shape and source (the table's PROVIDER_KEY_PREFIX and PROVIDER_KEY_SOURCE)"
-check "only kimi (sk-kim) and qwen (sk-sp-) have a key prefix; the others are empty, meaning no check" \
+check "only kimi (sk-kim), qwen (sk-sp-) and openrouter (sk-or-) have a key prefix; the others are empty, meaning no check" \
   'for p in $WOLFMUX_PROVIDERS; do
      wolfmux_provider_info "$p"
      case "$p" in
        kimi) [ "$PROVIDER_KEY_PREFIX" = "sk-kim" ] || exit 1 ;;
        qwen) [ "$PROVIDER_KEY_PREFIX" = "sk-sp-" ] || exit 1 ;;
+       openrouter) [ "$PROVIDER_KEY_PREFIX" = "sk-or-" ] || exit 1 ;;
        *) [ -z "$PROVIDER_KEY_PREFIX" ] || exit 1 ;;
      esac
      case "$PROVIDER_KEY_PREFIX" in *[!A-Za-z0-9._-]*) exit 1 ;; esac # a literal prefix: no glob, no space, no quote
@@ -455,6 +456,48 @@ check "wolfmux_provider_of_model: the provider a model key runs on, nothing for 
    [ "$(wolfmux_provider_of_model moonshot)" = moonshot ] &&
    ! wolfmux_provider_of_model fable && ! wolfmux_provider_of_model astra && ! wolfmux_provider_of_model claude:kimi &&
    ! wolfmux_provider_of_model codex:glm && ! wolfmux_provider_of_model "" && ! wolfmux_provider_of_model nosuchmodel'
+
+echo
+echo "== openrouter: the DeepSeek twin, through OpenRouter's Anthropic-compatible endpoint"
+# common.sh holds the model table and the id validators; the provider table is already loaded.
+# shellcheck source=/dev/null
+. "$REPO/config/wolfmux/lib/common.sh"
+check "openrouter row: /api (not /api/v1), its own Keychain item, metered, token variable, DeepSeek default ids" \
+  'wolfmux_provider_info openrouter &&
+   [ "$PROVIDER_BASE_URL" = "https://openrouter.ai/api" ] && [ "$PROVIDER_KEYCHAIN" = "wolfmux-openrouter" ] &&
+   [ "$PROVIDER_BILLING" = metered ] && [ "$PROVIDER_AUTH_VAR" = ANTHROPIC_AUTH_TOKEN ] &&
+   [ "$PROVIDER_MAIN_MODEL" = "deepseek/deepseek-v4-pro" ] && [ "$PROVIDER_FAST_MODEL" = "deepseek/deepseek-v4-flash" ] &&
+   case "$PROVIDER_DOCTOR_NOTE" in *"no training / no logging providers"*"Claude Code cannot send per-request provider settings"*) ;; *) exit 1 ;; esac'
+check "openrouter: the launcher name resolves, and the model keys openrouter and openrouter:<vendor/model> belong to it" \
+  '[ "$(wolfmux_provider_of_launcher claude-openrouter)" = "openrouter main" ] &&
+   [ "$(wolfmux_provider_of_model openrouter)" = openrouter ] &&
+   [ "$(wolfmux_provider_of_model openrouter:deepseek/deepseek-v4-flash)" = openrouter ] &&
+   model_info openrouter:deepseek/deepseek-v4-flash && [ "$MODEL_ID" = "deepseek/deepseek-v4-flash" ] && [ "$MODEL_BILLING" = metered ] &&
+   model_info openrouter && [ -z "$MODEL_ID" ] &&
+   case " $WOLFMUX_MODEL_KEYS " in *" openrouter "*" openrouter:<model-id> "*) ;; *) exit 1 ;; esac'
+check "openrouter: only vendor/model or @preset/slug is a model id; nothing that climbs a path, no second slash, no shell syntax" \
+  'valid_provider_model_id openrouter deepseek/deepseek-v4-pro && valid_provider_model_id openrouter @preset/claude-code &&
+   valid_provider_model_id openrouter deepseek-v4-pro &&
+   for bad in "" / /x x/ ../x x/.. a//b a/b/c "a b" "a;b" "a:b" "x@y/z" "\$(id)/x" "a/\`id\`"; do
+     ! valid_provider_model_id openrouter "$bad" || exit 1
+   done
+   ! valid_provider_model_id kimi x/y && valid_provider_model_id kimi x-y &&
+   ! model_info kimi:x/y && ! model_info openrouter:a/b/c'
+check "openrouter: a slash id still cannot become a file name (valid_model_id stays strict)" \
+  '! valid_model_id deepseek/deepseek-v4-pro && ! valid_model_id @preset/x'
+check "openrouter: the default dry run names the endpoint, the DeepSeek ids, the metered billing and a closed gate" \
+  'D="$(dry claude-openrouter)"
+   [ "$(field "$D" endpoint)" = "https://openrouter.ai/api" ] &&
+   [ "$(field "$D" model)" = "deepseek/deepseek-v4-pro   (haiku/background tier: deepseek/deepseek-v4-flash)" ] &&
+   case "$(field "$D" billing)" in METERED*) ;; *) exit 1 ;; esac &&
+   case "$(field "$D" "context window")" in "786432 tokens (declared;"*) ;; *) exit 1 ;; esac'
+check "openrouter: WOLFMUX_OPENROUTER_MODEL and openrouter:<id> (--model) both decide the model" \
+  'P="$(dry claude-openrouter WOLFMUX_OPENROUTER_MODEL=deepseek/deepseek-v3.2)"
+   [ "$(field "$P" model)" = "deepseek/deepseek-v3.2   (haiku/background tier: deepseek/deepseek-v4-flash)" ] || exit 1
+   A="$(dry_args claude-openrouter --model @preset/mine)"
+   [ "$(field "$A" model)" = "@preset/mine   (haiku/background tier: deepseek/deepseek-v4-flash)" ]'
+check "openrouter: the endpoint is exported only inside the launcher, and the doctor line about privacy is in the table" \
+  '[ -z "${ANTHROPIC_BASE_URL:-}" ] && ! /usr/bin/grep -rn "openrouter.ai" "$REPO/bin" "$REPO/config/wolfmux/lib" | /usr/bin/grep -v "providers.sh" | /usr/bin/grep -q .'
 
 echo
 echo "== teamctl doctor --probe: one incomplete request per key, only the status shown"

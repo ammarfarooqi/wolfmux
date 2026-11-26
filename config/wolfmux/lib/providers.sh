@@ -12,7 +12,7 @@
 # Deliberately absent: any setting for the base URL. A setting that can redirect a key
 # to another endpoint is the thing ADR-0001 exists to prevent.
 
-WOLFMUX_PROVIDERS="glm kimi moonshot deepseek minimax qwen"
+WOLFMUX_PROVIDERS="glm kimi moonshot deepseek minimax qwen openrouter"
 
 # wolfmux_provider_info <provider> — sets the PROVIDER_* variables of one row.
 # Returns 1 for a name that is not in the table, having set nothing of use.
@@ -34,6 +34,7 @@ WOLFMUX_PROVIDERS="glm kimi moonshot deepseek minimax qwen"
 #   PROVIDER_KEY_URL     where the owner gets a key ("" when the vendor has no such page)
 #   PROVIDER_KEY_PREFIX  how a key of THIS endpoint starts ("" = no check); teamctl doctor --probe
 #                        warns when a stored key does not start with it
+#   PROVIDER_DOCTOR_NOTE a sentence teamctl doctor prints under the provider ("" = none)
 #   PROVIDER_KEY_SOURCE  a sentence: which console issues the key, and which look-alike key does
 #                        not work here ("" = doctor points at PROVIDER_KEY_URL instead)
 wolfmux_provider_info() {
@@ -42,6 +43,7 @@ wolfmux_provider_info() {
   PROVIDER_KEY_URL=""
   PROVIDER_KEY_PREFIX=""
   PROVIDER_KEY_SOURCE=""
+  PROVIDER_DOCTOR_NOTE=""
   case "$1" in
     glm)
       PROVIDER_VENDOR="Z.ai GLM Coding Plan"
@@ -153,6 +155,28 @@ wolfmux_provider_info() {
       PROVIDER_KEY_URL="https://www.alibabacloud.com/help/en/model-studio/claude-code"
       PROVIDER_KEY_PREFIX="sk-sp-"
       PROVIDER_KEY_SOURCE="A Coding Plan key starts with sk-sp-; any other Model Studio key is billed the other way, and this endpoint answers it with 403."
+      ;;
+    openrouter)
+      PROVIDER_VENDOR="OpenRouter"
+      PROVIDER_LABEL="OpenRouter"
+      # The Anthropic-compatible endpoint is /api, NOT /api/v1 (Claude Code adds /v1/messages).
+      PROVIDER_BASE_URL="https://openrouter.ai/api"
+      PROVIDER_KEYCHAIN="wolfmux-openrouter"
+      PROVIDER_KEY_LABEL="OpenRouter key"
+      PROVIDER_BILLING="metered"
+      PROVIDER_BILLING_NOTE="OpenRouter prepaid credits (no subscription exists)"
+      # Ids on OpenRouter are vendor/model. The window is the declared 1M of DeepSeek V4 minus
+      # room, as for the deepseek row; no [1m] suffix, because OpenRouter does not document one.
+      PROVIDER_MAIN_MODEL="deepseek/deepseek-v4-pro"
+      PROVIDER_FAST_MODEL="deepseek/deepseek-v4-flash"
+      PROVIDER_CONTEXT="786432"
+      PROVIDER_AUTH_VAR="ANTHROPIC_AUTH_TOKEN"
+      PROVIDER_EXTRA_ENV="CLAUDE_CODE_EFFORT_LEVEL=max"
+      PROVIDER_PINNABLE=1
+      PROVIDER_KEY_URL="https://openrouter.ai/docs/cookbook/coding-agents/claude-code-integration"
+      PROVIDER_KEY_PREFIX="sk-or-"
+      PROVIDER_KEY_SOURCE="An OpenRouter key comes from https://openrouter.ai/settings/keys and starts with sk-or-."
+      PROVIDER_DOCTOR_NOTE="Set OpenRouter account privacy to no training / no logging providers, and pin providers per model in the OpenRouter dashboard; Claude Code cannot send per-request provider settings. A saved preset can be used as the model id: teamctl spawn <role> openrouter:@preset/<slug>."
       ;;
     *)
       return 1

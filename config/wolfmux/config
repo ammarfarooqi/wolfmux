@@ -16,8 +16,8 @@
 #   <number>  declare another window, in tokens
 #WOLFMUX_GLM_CONTEXT=1m
 
-# --- other providers (claude-kimi, claude-moonshot, claude-deepseek, claude-minimax, claude-qwen) ---
-# Moonshot and DeepSeek bill per request with no local cap: their launchers and
+# --- other providers (claude-kimi, claude-moonshot, claude-deepseek, claude-minimax, claude-qwen, claude-openrouter) ---
+# Moonshot, DeepSeek and OpenRouter bill per request with no local cap: their launchers and
 # `teamctl spawn` / `start` refuse while this is off. Switching it on is the owner's
 # decision, at this file; an agent that asks for it should be refused.
 #   on  let the metered providers start
@@ -34,15 +34,17 @@
 #WOLFMUX_DEEPSEEK_AUTH_MODE=helper
 #WOLFMUX_MINIMAX_AUTH_MODE=helper
 #WOLFMUX_QWEN_AUTH_MODE=helper
+#WOLFMUX_OPENROUTER_AUTH_MODE=helper
 
 # The context window declared to Claude Code, per provider. Defaults (tokens):
-# Kimi 262144, Moonshot 1048576, DeepSeek 786432, MiniMax 1000000, Qwen 262144.
+# Kimi 262144, Moonshot 1048576, DeepSeek 786432, MiniMax 1000000, Qwen 262144, OpenRouter 786432.
 #   <number>  declare another window
 #WOLFMUX_KIMI_CONTEXT=262144
 #WOLFMUX_MOONSHOT_CONTEXT=1048576
 #WOLFMUX_DEEPSEEK_CONTEXT=786432
 #WOLFMUX_MINIMAX_CONTEXT=1000000
 #WOLFMUX_QWEN_CONTEXT=262144
+#WOLFMUX_OPENROUTER_CONTEXT=786432
 
 # Model pins: the ids a provider's launcher uses for the main and the background tier.
 # The defaults live in config/wolfmux/lib/providers.sh. Pin when a vendor changes an id
@@ -58,6 +60,8 @@
 #WOLFMUX_MINIMAX_FAST_MODEL=MiniMax-M3[1m]
 #WOLFMUX_QWEN_MODEL=qwen3.7-plus
 #WOLFMUX_QWEN_FAST_MODEL=qwen3.7-plus
+#WOLFMUX_OPENROUTER_MODEL=deepseek/deepseek-v4-pro
+#WOLFMUX_OPENROUTER_FAST_MODEL=deepseek/deepseek-v4-flash
 
 # --- team policy defaults (per team: `teamctl policy`, or flags on `teamctl start`) ---
 # How agents treat permission prompts.

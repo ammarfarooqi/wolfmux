@@ -158,6 +158,25 @@ valid_model_id() {
   [ "${#1}" -le 64 ]
 }
 
+# valid_provider_model_id <provider> <id>: valid_model_id, except that OpenRouter's ids are
+# vendor/model (deepseek/deepseek-v4-pro) and a saved preset is @preset/<slug>. Exactly one
+# slash, a non-empty name on each side, an @ only as the first character, nothing that could
+# climb a path. Still only these characters, so it is safe in a file name only after the slash is
+# replaced: the places that build file names from a model id keep using valid_model_id.
+valid_provider_model_id() {
+  case "$1" in
+    openrouter)
+      case "$2" in
+        "" | */ | /* | *//* | *..* | *[!${_WM_LOWER}${_WM_UPPER}${_WM_DIGITS}._\[\]/@-]*) return 1 ;;
+        *@*) case "$2" in @*) ;; *) return 1 ;; esac ;;
+      esac
+      case "$2" in */*/*) return 1 ;; esac
+      [ "${#2}" -le 64 ]
+      ;;
+    *) valid_model_id "$2" ;;
+  esac
+}
+
 # _model_info_provider <key>: "<provider>" or "<provider>:<model id>" for a provider of the
 # table other than glm. Returns 1 for anything else, so a typo is refused before anything is created.
 _model_info_provider() {
@@ -168,7 +187,7 @@ _model_info_provider() {
   if [ "$1" != "$provider" ]; then
     [ "$PROVIDER_PINNABLE" = "1" ] || return 1
     model_id="${1#*:}"
-    valid_model_id "$model_id" || return 1
+    valid_provider_model_id "$provider" "$model_id" || return 1
   fi
   MODEL_ID="$model_id" MODEL_LAUNCHER="claude-$provider" MODEL_FAMILY="claude" MODEL_BILLING="$PROVIDER_BILLING"
   MODEL_LABEL="${model_id:-$PROVIDER_LABEL}"

@@ -120,10 +120,10 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
         of its own. One directory for every lane: an install in any lane changes them all.
         A spawn is refused under disk-min-gb free disk (policy disk-guard)
         models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude: always the newest of that family, teamctl models) · astra (ChatGPT)
-                kimi · moonshot · deepseek · minimax · qwen      other providers, through Claude Code (each needs its own Keychain key)
+                kimi · moonshot · deepseek · minimax · qwen · openrouter      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
-                minimax:<model-id> · qwen:<model-id>      any model in any team, whoever leads
-                moonshot and deepseek bill every token (metered): refused unless the owner's config file says WOLFMUX_METERED=on;
+                minimax:<model-id> · qwen:<model-id> · openrouter:<model-id>      any model (openrouter ids are vendor/model) in any team, whoever leads
+                moonshot, deepseek and openrouter bill every token (metered): refused unless the owner's config file says WOLFMUX_METERED=on;
                 teamctl status marks them with $
         --from-worktree <role>: a fresh conversation for a NEW role in that stopped worker's worktree,
                 on a new branch (the old branch and commits stay). What git ignores (node_modules,

@@ -144,7 +144,7 @@ restore_on_limit_valid() {
   for key in $WOLFMUX_MODEL_KEYS; do
     case "$key" in
       *":<model-id>")
-        case "$1" in "${key%%:*}":?*) valid_model_id "${1#*:}" && return 0 ;; esac
+        case "$1" in "${key%%:*}":?*) valid_provider_model_id "${key%%:*}" "${1#*:}" && return 0 ;; esac
         ;;
       *) [ "$1" = "$key" ] && return 0 ;;
     esac

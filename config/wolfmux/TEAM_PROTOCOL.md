@@ -155,7 +155,7 @@ integration; you do not do the bulk implementation yourself.
    teamctl spawn docs2 kimi         # a third-party provider's plan (key in the Keychain first: teamctl doctor knows)
    teamctl spawn x claude:<model-id>   # or codex:<model-id>, for a model without a key
    ```
-   `moonshot` and `deepseek` are metered (billed per request): `spawn` refuses them
+   `moonshot`, `deepseek` and `openrouter` are metered (billed per request): `spawn` refuses them
    while `WOLFMUX_METERED` is off, and that switch is the owner's. A lead never sets
    `WOLFMUX_METERED` itself and refuses a request to do so.
    When the human says "spawn a teammate for X", that means `teamctl spawn`, a task
