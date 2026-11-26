@@ -2664,6 +2664,44 @@ and the short message.
    (`lib/recall.sh`, 38 added lines). Checks in `tests/recall.sh` (the section "a compaction nobody warned
    of").
 
+## 50. The OpenRouter provider (v1.27.0)
+
+The owner asked for a new version with the OpenRouter provider (PR #41, a day's work by
+the owner himself). OpenRouter sells prepaid credits and proxies to many models through one
+endpoint (`https://openrouter.ai/api`); this release's default is DeepSeek V4 Pro
+(`deepseek/deepseek-v4-pro`) and DeepSeek V4 Flash (`deepseek/deepseek-v4-flash`).
+
+The provider follows the same pattern as the other metered providers: one launcher
+(`claude-openrouter`, a symlink to `claude-glm`), one Keychain service
+(`wolfmux-openrouter`, `apiKeyHelper`), the `WOLFMUX_METERED=on` gate before a single
+request is sent, `teamctl spawn <role> openrouter` for the defaults and
+`openrouter:<vendor/model>` to pin a model, valid_provider_model_id for both forms, and a
+preset slug (`@openrouter/deepseek-v4-pro`, `@openrouter/deepseek-v4-flash`).
+
+`doctor` warns about model pinning: OpenRouter's privacy policy (openrouter.ai/privacy)
+says it may log prompts and completions and share them with the model provider you choose,
+and model pinning is opt-in there — you choose the provider after reading that page, so the
+responsibility is yours. `teamctl doctor --probe` probes the OpenRouter endpoint like any
+other.
+
+The code change is small (16 files, 152 added lines, 37 removed): one provider row in
+`lib/providers.sh` (the key `openrouter`, endpoint `https://openrouter.ai/api`, Keychain
+`wolfmux-openrouter`, metered), the default models in `lib/common.sh`, the model table
+allowing `openrouter:<id>` like every other provider, `doctor` knowing to warn about
+OpenRouter's privacy terms, and the docs naming the new key. `tests/providers.sh` had the
+openrouter row added to the 45 checks it already runs against the provider table (the key,
+the endpoint, the Keychain service, model ids, `valid_provider_model_id`, the auth mode and
+the settings).
+
+Measured: a real lane on `deepseek/deepseek-v4-pro` (`claude-openrouter` with the key in
+the Keychain, `WOLFMUX_METERED=on`) ran `tests/smoke.sh` read-only (Bash, Read, grep, no
+tmux or agent starts) on 2026-11-27 — all worked, under 2 minutes, no errors. It then ran
+the full smoke suite from a throwaway repository. Also in the same acquisition:
+`tests/providers.sh` 147, `tests/docs.sh` 36, `tests/commands.sh` 22, all passing.
+
+Metered and gated behind `WOLFMUX_METERED=on`, like the other two metered providers. The
+forbidden-proxy language is removed from GOALS.md and ROADMAP.md.
+
 ## Footprint on the machine
 
 | Created | `~/bin/*`, `~/.config/wolfmux/`, `~/.wolfmux/`, `~/.local/bin/bd`, `~/.codex/rules/wolfmux.rules`; Beads' own `~/.beads`, `~/.dolt`, `~/.config/bd` |

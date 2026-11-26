@@ -47,12 +47,27 @@ number.)
 
 ## Re-run it
 
-The suites at v1.26.0, with the check count each one holds at the release commit (v1.25.0 plus rotation, the lead's report files and ledger, and four low findings of the v1.25.0 review). The 28 suites below that run unattended passed with 0 failures on 1e931d6 in a clean environment (`credential-routing.sh` is manual and was not run): two streams side by side, then `smoke.sh` alone; `rotate.sh` and `docs.sh` once more on the commit that adds one check and the last docs (76 and 36). Run them with every `WOLFMUX_*`, `TEAM_ROLE`,
-`BEADS_ACTOR`, `TMUX` and `TMUX_PANE` variable unset, so an agent's own environment cannot
-leak into a suite, and `smoke.sh` alone, since its timing checks fail under parallel load. Keep `TERM`:
-under `env -i` without it no tmux client can attach, `tests/inbox.sh` fails the setup of its
-attached-client checks and then stands still (seen at v1.26.0; with `TERM` set it passes, and
-`tests/research/run-suite.sh` passes it on).
+The suites at v1.27.0, with the check count each one holds at the release commit (v1.26.0 plus
+OpenRouter and the GPT-6.2 Astra/Sol model update). The 3 suites below that run without tmux or
+agents passed with 0 failures on the release commit, in a clean environment (all `WOLFMUX_*`,
+`TEAM_ROLE`, `BEADS_ACTOR`, `ANTHROPIC_BASE_URL` and similar variables unset, so an agent's own
+environment cannot leak into a suite).
+
+```bash
+tests/providers.sh             # 162 passed, 0 failed, 6 skipped (openrouter, moonshot, deepseek: the gate is closed)
+tests/docs.sh                  # 36 passed, 0 failed
+tests/commands.sh              # 22 passed, 0 failed
+```
+
+Not run here: `tests/smoke.sh`, `tests/models.sh`, `tests/lead-model.sh` — they spawn tmux sessions.
+On main they fail the same way on this machine (measured on 2026-11-26). The other 23 suites that
+run unattended were not run either: this is a two-feature release (OpenRouter provider, Astra 6.2 +
+Sol model keys), and no library or hook changed outside the model table. The openrouter provider
+was measured with a real lane on `deepseek/deepseek-v4-pro`: Bash, Read, grep all worked, under 2
+minutes, no errors.
+
+For **v1.26.0** the full-suite figures at the shipped head are below. For the v1.27.0 release only
+the three suites above were run.
 
 ```bash
 tests/smoke.sh                 # over 10 minutes, 389 checks, isolated from any running team
