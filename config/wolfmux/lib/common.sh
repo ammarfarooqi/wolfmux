@@ -2,7 +2,7 @@
 # common.sh — output helpers, validation, tool lookup, model table, project resolution.
 # Compatible with macOS /bin/bash 3.2 (no associative arrays, no mapfile, no ${var,,}).
 
-WOLFMUX_VERSION="1.26.0"
+WOLFMUX_VERSION="1.27.0"
 WOLFMUX_HOME="${WOLFMUX_HOME:-$HOME/.config/wolfmux}"
 WOLFMUX_DATA="${WOLFMUX_DATA:-$HOME/.wolfmux}"
 # This project was first called "ai-team". A team started under that name keeps
@@ -220,7 +220,10 @@ model_info() {
       MODEL_ID="${1#codex:}" MODEL_LAUNCHER="codex-astra" MODEL_LABEL="${1#codex:}" MODEL_FAMILY="codex"
       ;;
     astra)
-      MODEL_LAUNCHER="codex-astra" MODEL_LABEL="GPT-6 Astra" MODEL_FAMILY="codex"
+      MODEL_ID="gpt-6.2-astra" MODEL_LAUNCHER="codex-astra" MODEL_LABEL="GPT-6.2 Astra" MODEL_FAMILY="codex"
+      ;;
+    sol)
+      MODEL_ID="gpt-6.2-sol" MODEL_LAUNCHER="codex-astra" MODEL_LABEL="GPT-6.2 Sol" MODEL_FAMILY="codex"
       ;;
     glm53)
       # The window is the glm provider row's, not a second number kept in step by hand:
@@ -272,7 +275,7 @@ model_context_window() {
 
 # What usage lines and "unknown model" errors list: the fixed keys, then whatever the provider
 # table holds (so a new provider is named everywhere without editing a string).
-WOLFMUX_MODEL_KEYS="glm53 flash fable opus sonnet haiku astra"
+WOLFMUX_MODEL_KEYS="glm53 flash fable opus sonnet haiku astra sol"
 for _wm_provider in $WOLFMUX_PROVIDERS; do
   [ "$_wm_provider" = "glm" ] || WOLFMUX_MODEL_KEYS="$WOLFMUX_MODEL_KEYS $_wm_provider"
 done
