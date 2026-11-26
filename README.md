@@ -19,7 +19,7 @@ No metered proxy, ever.**
 
 | | |
 |---|---|
-| **Any model in any seat** | Fable, Opus, Sonnet, Haiku, GPT-6 Astra, GLM-5.3 and GLM-5.3 Flash, plus the provider keys `kimi`, `moonshot`, `deepseek`, `minimax`, `qwen`, `openrouter`, as lead or as teammate, mixed freely in one team ([models](#models)) |
+| **Any model in any seat** | Fable, Opus, Sonnet, Haiku, GPT-6.2 Astra, GPT-6.2 Sol, GLM-5.3 and GLM-5.3 Flash, plus the provider keys `kimi`, `moonshot`, `deepseek`, `minimax`, `qwen`, `openrouter`, as lead or as teammate, mixed freely in one team ([models](#models)) |
 | **Several teams per project** | the first is called `default`, every further one is named by you; each has its own session, lead and teammates; `teamctl status` shows them as a tree. Teams message each other through Beads, and a lead can found a fresh team and hand work over to it, and recover or delete it if its lead dies ([diagram](docs/diagrams/teams.svg)) |
 | **One worktree per teammate** | its own branch and checkout, outside your project. A guard refuses a teammate's tool calls that change your checkout, read another teammate's worktree, switch or delete branches, push to main or drive tmux (Claude Code teammates; Codex has no such hook) |
 | **You always find the manager** | the 🐺 lead is the amber pane on the left, 🐶 teammates are stacked on the right. A desktop notification tells you when an agent finishes, and clicking it opens the team |
@@ -417,7 +417,8 @@ For `teamctl start` and `teamctl spawn`:
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API: metered, refuses to run until the owner sets `WOLFMUX_METERED=on` |
 | `openrouter` | Claude Code + DeepSeek V4 through OpenRouter (default `deepseek/deepseek-v4-pro`) | OpenRouter prepaid credits: metered, same gate; the key comes from [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys) and starts `sk-or-`. Any OpenRouter model: `openrouter:<vendor/model>` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
-| `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
+| `astra` | Codex CLI + GPT-6.2 Astra | ChatGPT subscription |
+| `sol` | Codex CLI + GPT-6.2 Sol | ChatGPT subscription |
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
 | `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` · `openrouter:<id>` | any other model id of that provider (GLM is not pinnable: its plan covers exactly its two) | the same plan, or the same metered account |
 

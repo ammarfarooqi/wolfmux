@@ -976,7 +976,8 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API: metered, off until the owner sets `WOLFMUX_METERED=on` |
 | `openrouter` | Claude Code + DeepSeek V4 through OpenRouter | OpenRouter prepaid credits: metered, off until `WOLFMUX_METERED=on`. `openrouter:<vendor/model>` picks any OpenRouter model, `openrouter:@preset/<slug>` a saved preset |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
-| `astra` | Codex CLI + GPT-6 Astra | ChatGPT / Codex subscription |
+| `astra` | Codex CLI + GPT-6.2 Astra | ChatGPT / Codex subscription |
+| `sol` | Codex CLI + GPT-6.2 Sol | ChatGPT / Codex subscription |
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
 | `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` · `openrouter:<id>` | any other model id of that provider (GLM is not pinnable) | the same plan, or the same metered account |
 
@@ -1281,6 +1282,6 @@ your own `~/.tmux.conf` first, so a wolfmux binding would quietly win over yours
 | Pane | Type | Expect |
 |------|------|--------|
 | Fable lead | `/status` | Claude subscription login, no API key, no custom base URL |
-| Astra lead | `/status` | signed in with ChatGPT, model `gpt-6-astra` |
+| Astra/Sol lead | `/status` | signed in with ChatGPT, model `gpt-6.2-astra` (or `gpt-6.2-sol`) |
 | GLM worker | `/status` | base URL `https://api.z.ai/api/anthropic`, auth `apiKeyHelper` (or `ANTHROPIC_AUTH_TOKEN` in env mode), model `glm-5.3` / `glm-5.3-flash` |
 | other provider worker | `/status` | that provider's base URL and model (Kimi auth may be `ANTHROPIC_API_KEY` in env mode); `WOLFMUX_DRY_RUN=1 claude-<provider>` prints the exact values |

@@ -11,7 +11,7 @@ project can have several teams.
                      LEAD  (pick one)
           claude-opus             codex-astra
           Claude Code             Codex CLI
-          Opus                    GPT-6 Astra
+          Opus                    GPT-6.2 Astra or Sol
           Claude subscription     ChatGPT/Codex subscription
                  └──────────┬──────────┘
         teamctl  = tmux panes · models · worktrees · lifecycle
@@ -203,7 +203,8 @@ A provider worker needs that provider's key in the Keychain first (one-time setu
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API, metered: refused until `WOLFMUX_METERED=on` |
 | `openrouter` | Claude Code + DeepSeek V4 through OpenRouter | OpenRouter credits, metered: refused until `WOLFMUX_METERED=on` |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
-| `astra` | Codex CLI + GPT-6 Astra | ChatGPT subscription |
+| `astra` | Codex CLI + GPT-6.2 Astra | ChatGPT subscription |
+| `sol` | Codex CLI + GPT-6.2 Sol | ChatGPT subscription |
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
 | `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` · `openrouter:<model-id>` | any other model id of that provider (GLM is not pinnable; an OpenRouter id is `vendor/model`, or `@preset/<slug>`) | the same plan, or the same metered account |
 
@@ -974,7 +975,7 @@ the same name wins for a launcher you start by hand.
 | `WOLFMUX_KIMI_MODEL` · `WOLFMUX_MOONSHOT_MODEL` · `WOLFMUX_DEEPSEEK_MODEL` · `WOLFMUX_MINIMAX_MODEL` · `WOLFMUX_QWEN_MODEL` · `WOLFMUX_OPENROUTER_MODEL` · `WOLFMUX_OPENROUTER_FAST_MODEL` · `WOLFMUX_KIMI_FAST_MODEL` · `WOLFMUX_MOONSHOT_FAST_MODEL` · `WOLFMUX_DEEPSEEK_FAST_MODEL` · `WOLFMUX_MINIMAX_FAST_MODEL` · `WOLFMUX_QWEN_FAST_MODEL` | the ids in `lib/providers.sh` | model pins per provider, for when a vendor changes its ids. GLM is not pinnable |
 | `WOLFMUX_MODEL_POLICY` | `latest` | what `fable`, `opus`, `sonnet` and `haiku` mean: `latest` asks Claude Code (once a day per alias, when an agent starts) for the newest model of that family; `pinned` keeps the built-in ids. `teamctl models` shows both and where each id came from |
 | `WOLFMUX_LEAD_MODEL` | `opus` | the default model for a new lead when `teamctl start` names none. The human can override it per project with `teamctl policy lead-model <model>`; `default` returns to this config value. Existing teams keep their lead's recorded model |
-| `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` | unset (the newest model; astra: `gpt-6-astra`) | a pin: that key always means this model id, under either policy, and is never probed |
+| `WOLFMUX_FABLE_MODEL` · `WOLFMUX_OPUS_MODEL` · `WOLFMUX_SONNET_MODEL` · `WOLFMUX_HAIKU_MODEL` · `WOLFMUX_ASTRA_MODEL` · `WOLFMUX_SOL_MODEL` | unset (the newest model; astra: `gpt-6.2-astra`, sol: `gpt-6.2-sol`) | a pin: that key always means this model id, under either policy, and is never probed |
 
 ## How subscription separation works
 
@@ -985,7 +986,7 @@ the same name wins for a launcher you start by hand.
   and every inherited agent-session variable from *its own process*, then execs the CLI.
 - `claude-fable`: no key, no endpoint → the only credential left is your `/login`.
 - `codex-astra`: `forced_login_method="chatgpt"`, `model_provider="openai"`,
-  `model="gpt-6-astra"` → an API key cannot be used even if one appears later.
+  `model="gpt-6.2-astra"` → an API key cannot be used even if one appears later.
 - `claude-glm` and every name it is linked as (`claude-glm-flash`,
   `claude-kimi`, `claude-moonshot`, `claude-deepseek`, `claude-minimax`,
   `claude-qwen`, `claude-openrouter`): reads provider, endpoint, key, billing and model ids from one
@@ -1073,7 +1074,7 @@ at your terminal; an agent that offers to flip it for you should be refused.
 | Pane | Type | Expect |
 |------|------|--------|
 | Fable lead | `/status` | Login method: Claude subscription · no API key · no custom base URL · model Fable 5.2 |
-| Astra lead | `/status` | Signed in with ChatGPT · model `gpt-6-astra` |
+| Astra lead | `/status` | Signed in with ChatGPT · model `gpt-6.2-astra` |
 | GLM worker | `/status` | Base URL `https://api.z.ai/api/anthropic` · auth: apiKeyHelper (or ANTHROPIC_AUTH_TOKEN in env mode) · model `glm-5.3` / `glm-5.3-flash` |
 | provider worker | `/status` | that provider's base URL and model (Kimi auth may be `ANTHROPIC_API_KEY` in env mode); `WOLFMUX_DRY_RUN=1 claude-<provider>` prints the exact values |
 

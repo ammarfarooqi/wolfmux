@@ -119,7 +119,7 @@ teamctl — tmux panes, models, worktrees and lifecycle for your AI team
         --link-node-modules: a brand-new lane shares its repository's node_modules instead of installing 2+ GB
         of its own. One directory for every lane: an install in any lane changes them all.
         A spawn is refused under disk-min-gb free disk (policy disk-guard)
-        models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude: always the newest of that family, teamctl models) · astra (ChatGPT)
+        models: glm53 · flash (Z.ai) · fable · opus · sonnet · haiku (Claude: always the newest of that family, teamctl models) · astra (GPT-6.2 Astra) · sol (GPT-6.2 Sol) (ChatGPT)
                 kimi · moonshot · deepseek · minimax · qwen · openrouter      other providers, through Claude Code (each needs its own Keychain key)
                 claude:<model-id> · codex:<model-id> · kimi:<model-id> · moonshot:<model-id> · deepseek:<model-id>
                 minimax:<model-id> · qwen:<model-id> · openrouter:<model-id>      any model (openrouter ids are vendor/model) in any team, whoever leads
