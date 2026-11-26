@@ -6,7 +6,7 @@
 #   claude-glm        -> GLM-5.3          claude-glm-flash -> GLM-5.3 Flash
 #   claude-kimi       -> Kimi Code        claude-moonshot  -> Kimi K3 (open platform)
 #   claude-deepseek   -> DeepSeek V4      claude-minimax   -> MiniMax M3
-#   claude-qwen       -> Qwen 3.7 Plus
+#   claude-qwen       -> Qwen 3.7 Plus    claude-openrouter -> OpenRouter (DeepSeek V4)
 #
 # The endpoint, the key and the model mapping exist ONLY inside this process. Nothing is
 # written to ~/.claude/settings.json, the shell profile, or any file, so plain `claude`

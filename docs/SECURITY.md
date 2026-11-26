@@ -37,7 +37,7 @@ The key is read from the macOS Keychain (service `zai-coding-plan`), never from 
 file or a profile.
 
 Every provider works the same way with its own Keychain service (`wolfmux-kimi`,
-`wolfmux-moonshot`, `wolfmux-deepseek`, `wolfmux-minimax`, `wolfmux-qwen`) and its
+`wolfmux-moonshot`, `wolfmux-deepseek`, `wolfmux-minimax`, `wolfmux-qwen`, `wolfmux-openrouter`) and its
 own knob (`WOLFMUX_<P>_AUTH_MODE`); Z.ai is the example here. Kimi's `env` mode
 exports `ANTHROPIC_API_KEY`, which its documentation asks for; the others export
 `ANTHROPIC_AUTH_TOKEN`.
@@ -127,7 +127,7 @@ reminders rather than pretending:
 - **z.ai → Billing**: keep the cash balance at zero. Z.ai's FAQ says calls outside
   the plan's two models or endpoint can draw on a balance.
 
-- **Moonshot platform / DeepSeek, with `WOLFMUX_METERED=on`**: billed per request
+- **Moonshot platform / DeepSeek / OpenRouter, with `WOLFMUX_METERED=on`**: billed per request
   with no local cap. wolfmux has no spending limit a run can hit: a long run costs
   what the vendor's per-request prices make it cost, for as long as the balance you
   loaded lasts. The switch is in your config file; an agent that asks for it should

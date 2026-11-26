@@ -974,10 +974,11 @@ A worker gets exit 77. `--team <name>` goes with any command, before or after it
 | `qwen` | Claude Code + Qwen 3.7 Plus | Alibaba Model Studio coding plan |
 | `moonshot` | Claude Code + Kimi K3 API | Moonshot platform API: metered, off until the owner sets `WOLFMUX_METERED=on` |
 | `deepseek` | Claude Code + DeepSeek V4 | DeepSeek API: metered, off until the owner sets `WOLFMUX_METERED=on` |
+| `openrouter` | Claude Code + DeepSeek V4 through OpenRouter | OpenRouter prepaid credits: metered, off until `WOLFMUX_METERED=on`. `openrouter:<vendor/model>` picks any OpenRouter model, `openrouter:@preset/<slug>` a saved preset |
 | `fable` · `opus` · `sonnet` · `haiku` | Claude Code + that Claude model | Claude subscription |
 | `astra` | Codex CLI + GPT-6 Astra | ChatGPT / Codex subscription |
 | `claude:<model-id>` · `codex:<model-id>` | any other model of those two subscriptions | the same subscription |
-| `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` | any other model id of that provider (GLM is not pinnable) | the same plan, or the same metered account |
+| `kimi:<id>` · `moonshot:<id>` · `deepseek:<id>` · `minimax:<id>` · `qwen:<id>` · `openrouter:<id>` | any other model id of that provider (GLM is not pinnable) | the same plan, or the same metered account |
 
 New leads run Opus unless you name another model or set `teamctl policy lead-model <model>`.
 Existing leads keep their recorded model on start, restart and restore. For example, the

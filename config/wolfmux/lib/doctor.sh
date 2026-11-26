@@ -325,6 +325,7 @@ _doc_provider() {
     printf '                   security add-generic-password -U -s %s -a "$USER" -l "%s key" -w\n' "$PROVIDER_KEYCHAIN" "$PROVIDER_LABEL"
   fi
   [ -z "$PROVIDER_KEY_SOURCE" ] || _note "key: $PROVIDER_KEY_SOURCE"
+  [ -z "$PROVIDER_DOCTOR_NOTE" ] || _note "$PROVIDER_DOCTOR_NOTE"
   _ok "endpoint  $PROVIDER_BASE_URL  (set only inside the launcher process)"
   mode="$(wolfmux_provider_setting "$p" AUTH_MODE)"
   case "${mode:-helper}" in
