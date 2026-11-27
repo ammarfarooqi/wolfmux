@@ -5,7 +5,7 @@
 Run a small AI development team locally, the way one would run a human one:
 
 - a **lead** that acts as architect, coordinator and reviewer — either
-  Claude Code + Fable 5.2 or Codex CLI + GPT-6 Astra, interchangeably;
+  Claude Code + Fable 5.2 or Codex CLI + GPT-6.2 Astra, interchangeably;
 - **workers** that implement — Claude Code driving GLM-5.3 (substantial work) or
   GLM-5.3 Flash (simple, repetitive, QA and integration work);
 - everything **visible at once** in tmux panes, similar to Claude's Agent Teams;
@@ -21,10 +21,10 @@ These are requirements, not preferences. Each one maps to a mechanism described 
 
 1. **Metered inference is never reached by accident.** The subscriptions are the
    default: Claude, ChatGPT/Codex, and the coding plans of Z.ai, Kimi, MiniMax and
-   Alibaba. Two providers in the table (Moonshot's platform, DeepSeek) are
+   Alibaba. Three providers in the table (Moonshot's platform, DeepSeek, OpenRouter) are
    pay-as-you-go APIs: they refuse to run until the owner has stored their key and
    set `WOLFMUX_METERED=on` (`teamctl` and the launcher both refuse without it).
-   Never Anthropic API billing, OpenAI API billing, OpenRouter, LiteLLM or any
+   Never Anthropic API billing, OpenAI API billing, LiteLLM or any
    metered proxy, whatever that switch says ([ADR-0020](adr/0020-providers-beyond-the-three-subscriptions.md)).
 2. **Normal `claude` is never redirected.** No global environment variable and no
    settings entry may point Claude Code at Z.ai. Z.ai configuration exists only

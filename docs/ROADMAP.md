@@ -68,7 +68,7 @@ Candidates that would solve real problems, in the order they are likely to matte
    on the mutating ones.
 
 Not planned: an MCP server, a web UI, a daemon, and the metered aggregators and
-proxies (OpenRouter, LiteLLM, Fireworks, Novita, SiliconFlow: forbidden by
+proxies (LiteLLM, Fireworks, Novita, SiliconFlow: forbidden by
 [GOALS.md](GOALS.md#hard-constraints), before and after v1.10). The direct metered
 providers (the Moonshot platform, DeepSeek) exist since v1.10, gated behind
 `WOLFMUX_METERED`, off until the owner sets it.

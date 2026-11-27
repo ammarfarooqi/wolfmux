@@ -150,7 +150,8 @@ integration; you do not do the bulk implementation yourself.
    Any model can join any team, whatever model leads it. GLM is the default for
    workers; use another model when the human asks for it or the task needs it:
    ```bash
-   teamctl spawn fe-review astra    # GPT-6 Astra (Codex CLI), e.g. a second opinion on the frontend
+   teamctl spawn fe-review astra    # GPT-6.2 Astra (Codex CLI), e.g. a second opinion on the frontend
+   teamctl spawn fe-review sol      # GPT-6.2 Sol (Codex CLI), coding-plan subscription, same as astra
    teamctl spawn summary sonnet     # Claude: fable · opus · sonnet · haiku
    teamctl spawn docs2 kimi         # a third-party provider's plan (key in the Keychain first: teamctl doctor knows)
    teamctl spawn x claude:<model-id>   # or codex:<model-id>, for a model without a key

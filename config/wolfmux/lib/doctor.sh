@@ -135,7 +135,7 @@ _doc_fable() {
 
 _doc_astra() {
   local bin status inherited
-  _head "Lead option 2 — Codex CLI + GPT-6 Astra   (expected billing: ChatGPT/Codex subscription)"
+  _head "Lead option 2 — Codex CLI + GPT-6.2 Astra / GPT-6.2 Sol   (expected billing: ChatGPT/Codex subscription)"
   _doc_launcher codex-astra
   if bin="$(wolfmux_resolve_codex)"; then
     _ok "codex     $bin  ($("$bin" --version 2>/dev/null | head -1))"
